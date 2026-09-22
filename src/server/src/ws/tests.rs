@@ -1,22 +1,21 @@
 use super::*;
-use uuid::Uuid;
 
 #[test]
 fn ping_limit_is_shared_across_connections_per_user() {
     let lim = PingRateLimiter::new();
-    let u = Uuid::from_u128(1);
+    let u = crate::test_ids::test_uuid(1);
     for i in 0..30 {
         assert!(lim.check(u, 1_000 + i, 30), "first 30 allowed");
     }
     assert!(!lim.check(u, 1_031, 30), "31st in window denied (per-user)");
     // A different user has an independent budget.
-    assert!(lim.check(Uuid::from_u128(2), 1_032, 30));
+    assert!(lim.check(crate::test_ids::test_uuid(2), 1_032, 30));
 }
 
 #[test]
 fn audio_rate_is_its_own_bucket_and_caps_at_audio_rate_per_min() {
     let state = WsState::new();
-    let u = Uuid::from_u128(1);
+    let u = crate::test_ids::test_uuid(1);
     for i in 0..crate::ws::AUDIO_RATE_PER_MIN {
         assert!(
             state
@@ -56,6 +55,42 @@ fn the_vfx_bucket_is_a_distinct_limiter_from_ping_emote_and_message() {
     for other in [&ws2.ping_rate, &ws2.emote_rate, &ws2.message_rate] {
         assert!(!Arc::ptr_eq(&ws2.vfx_rate, other));
     }
+}
+
+#[tokio::test]
+async fn wait_for_drain_returns_false_on_timeout_while_a_guard_is_still_held() {
+    let ws = WsState::new();
+    let guard = ws.connection_guard();
+    assert_eq!(ws.live_connection_count(), 1);
+    // Nothing ever drops `guard` before the bound elapses.
+    assert!(
+        !ws.wait_for_drain(std::time::Duration::from_millis(20))
+            .await
+    );
+    assert_eq!(ws.live_connection_count(), 1);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn wait_for_drain_resolves_once_every_guard_of_several_drops() {
+    let ws = WsState::new();
+    let g1 = ws.connection_guard();
+    let g2 = ws.connection_guard();
+    assert_eq!(ws.live_connection_count(), 2);
+
+    let ws2 = ws.clone();
+    let waiter =
+        tokio::spawn(async move { ws2.wait_for_drain(std::time::Duration::from_secs(5)).await });
+
+    // Dropping only one guard must not satisfy the wait.
+    drop(g1);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(!waiter.is_finished());
+    assert_eq!(ws.live_connection_count(), 1);
+
+    drop(g2);
+    assert!(waiter.await.unwrap());
+    assert_eq!(ws.live_connection_count(), 0);
 }
 
 #[test]

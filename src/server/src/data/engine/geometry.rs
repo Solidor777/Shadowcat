@@ -293,7 +293,7 @@ impl PortalTarget {
     /// (the same bound the movement gate and `TokenEngine::validate` enforce —
     /// a teleport must never place a token past the coordinate ceiling every
     /// other write path already refuses), `elevation` finite when present,
-    /// `vfx` non-empty when present.
+    /// `vfx` a valid asset ref when present.
     pub(crate) fn validate(&self) -> Result<(), String> {
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
         for (name, v) in [("x", self.x), ("y", self.y)] {
@@ -309,8 +309,8 @@ impl PortalTarget {
                 return Err("elevation must be finite".to_string());
             }
         }
-        if self.vfx.as_deref() == Some("") {
-            return Err("vfx must be non-empty when present".to_string());
+        if let Some(vfx) = &self.vfx {
+            validate_asset_ref(vfx).map_err(|m| format!("vfx: {m}"))?;
         }
         Ok(())
     }
@@ -478,6 +478,51 @@ pub struct DrawingShape {
     pub points: Vec<f64>,
 }
 
+/// The one shared colour-field shape check across every engine doc type: exactly `#` + 6 hex
+/// digits (a css `#rrggbb` string, the only syntax `<input type="color">` ever emits — every
+/// client color-authoring path in the tree uses that input, never a hand-typed field, so this
+/// shape is safe to enforce at ingress). Replaces the two former per-doc-type copies
+/// (`token::validate_emission_color`/`registries::validate_fx_color`) that duplicated this exact
+/// check — a colour field anywhere in the `data::engine` tree calls this one function.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::geometry::validate_hex_color;
+///
+/// assert!(validate_hex_color("#ff00aa").is_ok());
+/// assert!(validate_hex_color("ff00aa").is_err()); // missing '#'
+/// assert!(validate_hex_color("#ff00a").is_err()); // 5 digits
+/// assert!(validate_hex_color("#gg0000").is_err()); // non-hex digit
+/// ```
+pub fn validate_hex_color(color: &str) -> Result<(), String> {
+    match color.strip_prefix('#') {
+        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
+        _ => Err("color must be a css #rrggbb string".to_string()),
+    }
+}
+
+/// The one shared asset-reference shape check across every engine doc type: a valid UUID string
+/// (`data::asset::Asset.id: Uuid` — every asset ref in the tree names a row by that same id).
+/// FORMAT ONLY: this never queries the repository, so it says nothing about whether the id
+/// actually resolves to a stored asset — existence is a read-time concern (a dangling ref reads
+/// as "no asset" at every consumer), not an ingress structural one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::geometry::validate_asset_ref;
+///
+/// assert!(validate_asset_ref("3fa85f64-5717-4562-b3fc-2c963f66afa6").is_ok());
+/// assert!(validate_asset_ref("").is_err());
+/// assert!(validate_asset_ref("not-a-uuid").is_err());
+/// ```
+pub fn validate_asset_ref(asset: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(asset)
+        .map(|_| ())
+        .map_err(|_| "asset ref must be a uuid".to_string())
+}
+
 /// A drawing's outline style.
 ///
 /// # Examples
@@ -496,6 +541,17 @@ pub struct Stroke {
     pub color: String,
     /// Stroke width, scene units.
     pub width: f64,
+}
+
+impl Stroke {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` color and a finite width.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_hex_color(&self.color)?;
+        if !self.width.is_finite() {
+            return Err("stroke width must be finite".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// A drawing's fill style.
@@ -517,6 +573,21 @@ pub struct Fill {
     /// Fill opacity 0..=1; absent = opaque.
     #[serde(default)]
     pub alpha: Option<f64>,
+}
+
+impl Fill {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` color and, when present, a finite
+    /// `alpha` (the presentation range `0..=1` is clamped read-side where consumed, matching
+    /// every other emission-scalar convention in this tree).
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_hex_color(&self.color)?;
+        if let Some(a) = self.alpha {
+            if !a.is_finite() {
+                return Err("fill alpha must be finite".to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A drawing document's engine body. Client mirror: `DrawingEngine` (`@shadowcat/core`).
@@ -554,6 +625,20 @@ pub struct DrawingEngine {
     /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
     #[serde(default)]
     pub elevation: Option<ElevationBand>,
+}
+
+impl DrawingEngine {
+    /// Ingress validation beyond serde shape: `stroke`/`fill`, when present, validate through
+    /// their own `Stroke`/`Fill::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(stroke) = &self.stroke {
+            stroke.validate().map_err(|m| format!("stroke: {m}"))?;
+        }
+        if let Some(fill) = &self.fill {
+            fill.validate().map_err(|m| format!("fill: {m}"))?;
+        }
+        Ok(())
+    }
 }
 
 /// A template's area anchored at `(x,y)` with a `size` and `direction`
@@ -614,4 +699,11 @@ pub struct TemplateEngine {
     /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
     #[serde(default)]
     pub elevation: Option<ElevationBand>,
+}
+
+impl TemplateEngine {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` `color`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_hex_color(&self.color)
+    }
 }

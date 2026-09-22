@@ -193,14 +193,14 @@ async fn combat_harness() -> Harness {
     let wdoc = crate::data::document::tests::world_scoped_doc;
 
     let (scene_id, actor_id, token_id, registry_id, combat_id, pc_id, npc_id, npc_actor_id) = (
-        Uuid::from_u128(0xCA01),
-        Uuid::from_u128(0xCA02),
-        Uuid::from_u128(0xCA03),
-        Uuid::from_u128(0xCA04),
-        Uuid::from_u128(0xCA05),
-        Uuid::from_u128(0xCA06),
-        Uuid::from_u128(0xCA07),
-        Uuid::from_u128(0xCA08),
+        crate::test_ids::test_uuid(0xCA01),
+        crate::test_ids::test_uuid(0xCA02),
+        crate::test_ids::test_uuid(0xCA03),
+        crate::test_ids::test_uuid(0xCA04),
+        crate::test_ids::test_uuid(0xCA05),
+        crate::test_ids::test_uuid(0xCA06),
+        crate::test_ids::test_uuid(0xCA07),
+        crate::test_ids::test_uuid(0xCA08),
     );
 
     // Scene the combat runs on.
@@ -222,7 +222,7 @@ async fn combat_harness() -> Harness {
     actor.owner = Some(player_id);
     actor.engine = Some(json!({
         "displayName": "Player Fixture",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 100.0, "h": 100.0 },
         "shape": "square",
         "conditions": [],
@@ -285,7 +285,11 @@ async fn combat_harness() -> Harness {
     // Channel registry: `CombatRoll`'s channel gate refuses unregistered
     // channels; "table" is the combat roll channel these tests exercise
     // alongside the seeded "general".
-    let mut channels = wdoc(world.id, Uuid::from_u128(0xCA09), "channel-registry");
+    let mut channels = wdoc(
+        world.id,
+        crate::test_ids::test_uuid(0xCA09),
+        "channel-registry",
+    );
     channels.owner = Some(gm_id);
     let mut channel_registry = crate::data::engine::ChannelRegistryEngine::seed();
     channel_registry.channels.insert(
@@ -460,7 +464,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatStart {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
         },
         0,
@@ -504,7 +508,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
         },
         0,
@@ -517,7 +521,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatPause {
-            request_id: Uuid::from_u128(3),
+            request_id: crate::test_ids::test_uuid(3),
             combat_id: h.combat,
         },
         0,
@@ -530,7 +534,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatEnd {
-            request_id: Uuid::from_u128(4),
+            request_id: crate::test_ids::test_uuid(4),
             combat_id: h.combat,
         },
         0,
@@ -570,7 +574,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(7),
+            request_id: crate::test_ids::test_uuid(7),
             combat_id: h.combat,
         },
         0,
@@ -602,7 +606,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(8),
+            request_id: crate::test_ids::test_uuid(8),
             combat_id: h.combat,
         },
         0,
@@ -614,8 +618,8 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(9),
-            combat_id: Uuid::from_u128(0xDEAD),
+            request_id: crate::test_ids::test_uuid(9),
+            combat_id: crate::test_ids::test_uuid(0xDEAD),
         },
         0,
         &h.rate,
@@ -815,7 +819,7 @@ async fn combat_dispatch_is_rate_limited() {
             h.repo.as_ref(),
             &h.gm,
             ClientMsg::CombatSort {
-                request_id: Uuid::from_u128(i),
+                request_id: crate::test_ids::test_uuid(i),
                 combat_id: h.combat,
             },
             0,
@@ -945,7 +949,7 @@ async fn concurrent_combat_resource_writes_produce_a_clean_conflict_not_a_lost_u
 async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() {
     let h = combat_harness().await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let event_id = Uuid::from_u128(0xCA10);
+    let event_id = crate::test_ids::test_uuid(0xCA10);
 
     // A one-shot Event between the player's combatant and the hidden NPC: it resolves and
     // deletes itself on the advance that reaches it.
@@ -982,11 +986,11 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
 
     for (i, msg) in [
         ClientMsg::CombatStart {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
         },
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
         },
     ]
@@ -1014,7 +1018,7 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
                 h.repo.as_ref(),
                 &h.gm,
                 ClientMsg::CombatRewind {
-                    request_id: Uuid::from_u128(10 + u128::from(i)),
+                    request_id: crate::test_ids::test_uuid(10 + u128::from(i)),
                     combat_id: h.combat,
                 },
                 0,
@@ -1089,7 +1093,7 @@ async fn gm_sort_rewrites_the_order_from_current_initiatives_and_players_are_ref
         h.repo.as_ref(),
         &h.player,
         ClientMsg::CombatSort {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
         },
         0,
@@ -1111,7 +1115,7 @@ async fn gm_sort_rewrites_the_order_from_current_initiatives_and_players_are_ref
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatSort {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
         },
         0,
@@ -1153,14 +1157,14 @@ async fn a_per_user_override_refuses_the_owner_of_an_unreadable_combatant() {
 
     for msg in [
         ClientMsg::CombatResource {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
             combatant_id: h.player_combatant,
             resource: "movement".into(),
             op: ResourceOp::Set { value: 1.0 },
         },
         ClientMsg::CombatRoll {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
             channel: "table".into(),
             rolls: vec![CombatRollEntry {
@@ -1169,7 +1173,7 @@ async fn a_per_user_override_refuses_the_owner_of_an_unreadable_combatant() {
             }],
         },
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(3),
+            request_id: crate::test_ids::test_uuid(3),
             combat_id: h.combat,
         },
     ] {
@@ -1213,7 +1217,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             h.repo.as_ref(),
             &h.player,
             ClientMsg::CombatResource {
-                request_id: Uuid::from_u128(1),
+                request_id: crate::test_ids::test_uuid(1),
                 combat_id: h.combat,
                 combatant_id: h.player_combatant,
                 resource: "movement".into(),
@@ -1238,7 +1242,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             h.repo.as_ref(),
             &h.player,
             ClientMsg::CombatRoll {
-                request_id: Uuid::from_u128(2),
+                request_id: crate::test_ids::test_uuid(2),
                 combat_id: h.combat,
                 channel: "table".into(),
                 rolls: vec![CombatRollEntry {
@@ -1267,7 +1271,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             h.repo.as_ref(),
             &h.player,
             ClientMsg::CombatAdvance {
-                request_id: Uuid::from_u128(3),
+                request_id: crate::test_ids::test_uuid(3),
                 combat_id: h.combat,
             },
             0,
@@ -1305,14 +1309,14 @@ async fn a_combatant_owner_without_write_capability_may_end_its_turn_but_not_wri
 
     for msg in [
         ClientMsg::CombatResource {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
             combatant_id: h.player_combatant,
             resource: "movement".into(),
             op: ResourceOp::Set { value: 1.0 },
         },
         ClientMsg::CombatRoll {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
             channel: "table".into(),
             rolls: vec![CombatRollEntry {
@@ -1353,7 +1357,7 @@ async fn a_combatant_owner_without_write_capability_may_end_its_turn_but_not_wri
             h.repo.as_ref(),
             &h.player,
             ClientMsg::CombatAdvance {
-                request_id: Uuid::from_u128(3),
+                request_id: crate::test_ids::test_uuid(3),
                 combat_id: h.combat,
             },
             0,
@@ -1393,14 +1397,14 @@ async fn write_capability_without_ownership_does_not_admit_a_combat_intent() {
 
     for msg in [
         ClientMsg::CombatResource {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
             combatant_id: h.player_combatant,
             resource: "movement".into(),
             op: ResourceOp::Set { value: 1.0 },
         },
         ClientMsg::CombatRoll {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             combat_id: h.combat,
             channel: "table".into(),
             rolls: vec![CombatRollEntry {
@@ -1409,7 +1413,7 @@ async fn write_capability_without_ownership_does_not_admit_a_combat_intent() {
             }],
         },
         ClientMsg::CombatAdvance {
-            request_id: Uuid::from_u128(3),
+            request_id: crate::test_ids::test_uuid(3),
             combat_id: h.combat,
         },
     ] {
@@ -1540,29 +1544,29 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
 
     let actor_engine = serde_json::json!({
         "displayName": "Emb Fixture",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 100.0, "h": 100.0 },
         "shape": "square",
         "conditions": [],
         "prototype": false,
     });
     // The linked actor: `init` 1 — must NOT be read.
-    let linked_id = Uuid::from_u128(0xCA10);
+    let linked_id = crate::test_ids::test_uuid(0xCA10);
     let mut linked = wdoc(h.world_id, linked_id, "actor");
     linked.owner = Some(h.gm.user_id);
     linked.engine = Some(actor_engine.clone());
     linked.system = serde_json::json!({ "init": 1 });
     // The embedded copy: `init` 9 — the host the roll must resolve against.
-    let mut copy = wdoc(h.world_id, Uuid::from_u128(0xCA11), "actor");
+    let mut copy = wdoc(h.world_id, crate::test_ids::test_uuid(0xCA11), "actor");
     copy.engine = Some(actor_engine);
     copy.system = serde_json::json!({ "init": 9 });
-    let token_id = Uuid::from_u128(0xCA12);
+    let token_id = crate::test_ids::test_uuid(0xCA12);
     let mut token = wdoc(h.world_id, token_id, "token");
     token.owner = Some(h.gm.user_id);
     token.engine = Some(token_engine(50.0, 50.0));
     token.embedded.insert("actor".to_string(), vec![copy]);
     // The combatant naming that token (and the linked actor, for the precedence test).
-    let combatant_id = Uuid::from_u128(0xCA13);
+    let combatant_id = crate::test_ids::test_uuid(0xCA13);
     let mut combatant = wdoc(h.world_id, combatant_id, "combatant");
     combatant.parent_id = Some(h.combat);
     combatant.owner = Some(h.gm.user_id);
@@ -1640,7 +1644,7 @@ async fn combat_result_reaches_only_the_originator_and_matches_the_broadcast_seq
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::CombatStart {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
         },
         0,
@@ -1650,7 +1654,7 @@ async fn combat_result_reaches_only_the_originator_and_matches_the_broadcast_seq
     let Some(ServerMsg::CombatResult { request_id, seq }) = reply else {
         panic!("expected a CombatResult, got {reply:?}");
     };
-    assert_eq!(request_id, Uuid::from_u128(1));
+    assert_eq!(request_id, crate::test_ids::test_uuid(1));
 
     let gm_event = next_event(&mut gm_rx).await;
     assert_eq!(
@@ -1676,7 +1680,7 @@ async fn a_rejected_combat_intent_never_yields_a_combat_result() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::CombatStart {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             combat_id: h.combat,
         },
         0,

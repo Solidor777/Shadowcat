@@ -365,29 +365,32 @@ pub async fn set_world_enabled_modules(
         .filter(|e| seen.insert(e.id.clone()))
         .collect();
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
+    // Collect every per-entry failure rather than returning on the first: a GM correcting a
+    // multi-entry batch one rejection at a time would otherwise need one round trip per bad
+    // id. All failures are reported together in one `AppError::Unprocessable`, and the whole
+    // batch is still rejected atomically (unchanged from the single-failure behavior below).
+    let mut failures: Vec<String> = Vec::new();
     for entry in &entries {
         let Some(m) = installed.iter().find(|m| m.id == entry.id) else {
-            return Err(AppError::Unprocessable(format!(
-                "module '{}' is not installed",
-                entry.id
-            )));
+            failures.push(format!("module '{}' is not installed", entry.id));
+            continue;
         };
         if !crate::modules::engine_compat_ok(m) {
-            return Err(AppError::Unprocessable(format!(
+            failures.push(format!(
                 "module '{}' is incompatible with this server version (requires shadowcat {})",
                 entry.id,
                 m.engines_shadowcat
                     .as_deref()
                     .unwrap_or("(missing engines.shadowcat)")
-            )));
+            ));
         }
         // An enabled module with no declared validators can never meaningfully opt in.
         if entry.validators_enabled && m.validators.is_empty() {
-            return Err(AppError::Unprocessable(format!(
-                "module '{}' declares no validators",
-                entry.id
-            )));
+            failures.push(format!("module '{}' declares no validators", entry.id));
         }
+    }
+    if !failures.is_empty() {
+        return Err(AppError::Unprocessable(failures.join("; ")));
     }
     // At most one enabled module may provide the system contract: the
     // server's system-defaults derivation and the client's singleton-contract

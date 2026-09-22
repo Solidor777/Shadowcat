@@ -5,7 +5,7 @@ fn sample_manifest() -> BundleManifest {
     row_counts.insert("documents".to_string(), 1);
     BundleManifest {
         schema_version: BUNDLE_SCHEMA_VERSION,
-        world_id: Uuid::from_u128(1),
+        world_id: crate::test_ids::test_uuid(1),
         world_name: "MOCK_WORLD_A".to_string(),
         world_seq: 42,
         world_created_at: 1000,

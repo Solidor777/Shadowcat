@@ -147,6 +147,15 @@ pub struct EnvironmentLight {
     pub intensity: f64,
 }
 
+impl EnvironmentLight {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` `color`. The `intensity`
+    /// `0..=1` range is validated by each carrying overlay (`SceneDefaultsOverlay::validate`)
+    /// rather than here, matching the existing shared-range-check convention for this field.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        crate::data::engine::geometry::validate_hex_color(&self.color)
+    }
+}
+
 /// A scene's authored dimensions in GRID UNITS (width × height cells).
 ///
 /// # Examples
@@ -489,8 +498,13 @@ pub struct AnimationSettings {
 
 impl SceneEngine {
     /// Every combat lifecycle formula present parses, the ambience override's gain is
-    /// finite when present, and `levels` is well-formed (see `validate_levels`).
+    /// finite when present, a present `background` is a valid asset ref, and `levels` is
+    /// well-formed (see `validate_levels`).
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(bg) = &self.background {
+            crate::data::engine::geometry::validate_asset_ref(bg)
+                .map_err(|m| format!("background: {m}"))?;
+        }
         if let Some(c) = &self.combat {
             c.validate("combat")?;
         }
@@ -499,12 +513,16 @@ impl SceneEngine {
                 return Err("ambience gain must be finite".to_string());
             }
         }
+        if let Some(env) = self.lighting.as_ref().and_then(|l| l.environment.as_ref()) {
+            env.validate()
+                .map_err(|m| format!("lighting.environment: {m}"))?;
+        }
         self.validate_levels()
     }
 
     /// `levels`: at most `MAX_SCENE_LEVELS`, every id non-empty/bounded/unique,
     /// every band finite with `bottom < top`, bands non-overlapping (sorted by
-    /// `bottom`, adjacent bands compared), and a present `background` non-empty.
+    /// `bottom`, adjacent bands compared), and a present `background` a valid asset ref.
     fn validate_levels(&self) -> Result<(), String> {
         if self.levels.len() > MAX_SCENE_LEVELS {
             return Err(format!("levels exceeds {MAX_SCENE_LEVELS}"));
@@ -520,11 +538,9 @@ impl SceneEngine {
             if !level.bottom.is_finite() || !level.top.is_finite() || level.bottom >= level.top {
                 return Err(format!("level '{}' has an invalid band", level.id));
             }
-            if level.background.as_deref() == Some("") {
-                return Err(format!(
-                    "level '{}' background must be non-empty when present",
-                    level.id
-                ));
+            if let Some(bg) = &level.background {
+                crate::data::engine::geometry::validate_asset_ref(bg)
+                    .map_err(|m| format!("level '{}' background: {m}", level.id))?;
             }
         }
         let mut bands: Vec<(f64, f64)> = self.levels.iter().map(|l| (l.bottom, l.top)).collect();
@@ -787,8 +803,8 @@ pub struct LightEmission {
 
 impl LightEmission {
     /// Ingress validation beyond serde shape, the posture every engine struct
-    /// carries: `intensity` finite (its `0..=1` range is a read-side clamp),
-    /// both radii finite, non-negative and bounded by the shared cell cap
+    /// carries: a valid css-`#rrggbb` `color`, `intensity` finite (its `0..=1` range is a
+    /// read-side clamp), both radii finite, non-negative and bounded by the shared cell cap
     /// `scene::pathfinding::MAX_FOOTPRINT_CELLS` — the bound the aura and the
     /// footprint already share — so no authored glow can reach a scan bound
     /// the egress clip would otherwise have to fail closed on
@@ -800,6 +816,7 @@ impl LightEmission {
     /// emission.validate()  // Err("dimRadius exceeds 64") past the cap
     /// ```
     pub(crate) fn validate(&self) -> Result<(), String> {
+        crate::data::engine::geometry::validate_hex_color(&self.color)?;
         if !self.intensity.is_finite() {
             return Err("intensity must be finite".to_string());
         }

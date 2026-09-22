@@ -18,12 +18,125 @@ use crate::data::DataError;
 /// codebase, but it now bounds every block, not just `system`.
 pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 
-/// Reject a document — and every embedded descendant — whose opaque `system`
-/// body, or (when present) typed `engine` body, or (when present) opaque
-/// `base` snapshot, exceeds the per-block size cap. Embedded children are
-/// stored inline in the parent JSON, so each body is bounded independently;
-/// the recursion mirrors `embedded`'s finite stored depth (a document cannot
-/// embed itself).
+/// Maximum UTF-8 byte length of `Document.name` — the ONE envelope field
+/// exempt from the `MAX_SYSTEM_BYTES`-style band caps (it lives outside all
+/// three opaque/typed bodies `validate_system_size` bounds). 512 bytes is
+/// generous for a display name — no client editor imposes its own cap today
+/// (checked: no `maxlength` attribute exists on a document-name input in the
+/// tree), so this is sized purely to bound the field rather than to match an
+/// existing client limit; ordinary usage never approaches it, so it should
+/// never surface as a rejected-intent toast.
+pub const MAX_DOCUMENT_NAME_BYTES: usize = 512;
+
+/// Reject a client-supplied `Document.id` that is not a v4 (random) or v7
+/// (timestamp + random) UUID. `uuid::Uuid::get_version()` reads the VERSION
+/// nibble (octet 6's high nibble; the RFC-4122 variant lives separately, in
+/// octet 8's top bits, and is not what this check reads) — it never queries
+/// storage, so this is a format check only, mirroring every other
+/// `validate_*` structural gate in this module. v1 (`Version::Mac`) embeds
+/// the generating host's MAC
+/// address and a timestamp; a nil, max, or unrecognized-version id is
+/// likewise refused. Every server-generated id in the tree already uses
+/// `uuid::Uuid::new_v4()`, so this closes an ingress gap without touching any
+/// production id-generation path.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::validation::validate_document_id;
+///
+/// assert!(validate_document_id(uuid::Uuid::new_v4()).is_ok());
+/// // A v1 (MAC + timestamp) id is refused.
+/// let v1 = uuid::Uuid::from_bytes([0x11; 16]); // version nibble 1 -> Mac
+/// assert!(validate_document_id(v1).is_err());
+/// assert!(validate_document_id(uuid::Uuid::nil()).is_err());
+/// ```
+pub fn validate_document_id(id: uuid::Uuid) -> Result<(), DataError> {
+    match id.get_version() {
+        Some(uuid::Version::Random) | Some(uuid::Version::SortRand) => Ok(()),
+        _ => Err(DataError::OpFailed(
+            "document id must be a v4 or v7 uuid".to_string(),
+        )),
+    }
+}
+
+/// `validate_document_id`, recursed over `doc` and every embedded descendant. The document's
+/// OWN top-level id is assigned once at Create and never revisited by an `Operation::Update`
+/// (an Update's `doc_id` targets an existing row); an Update CAN still introduce a new id,
+/// though — a whole-collection embedded-child replacement, or an Update that adds an embedded
+/// child wholesale, carries child ids this walk has never checked before — so `apply_intent`'s
+/// Update arm runs this same recursion over the merged post-image, in lockstep with
+/// `validate_engine_tree`, not only at Create.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::validation::validate_document_id_tree;
+///
+/// fn doc(id: uuid::Uuid) -> Document {
+///     Document {
+///         id,
+///         scope: Scope::Compendium { pack: "core".into() },
+///         doc_type: "note".into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: PermissionSet::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// assert!(validate_document_id_tree(&doc(uuid::Uuid::new_v4())).is_ok());
+/// assert!(validate_document_id_tree(&doc(uuid::Uuid::nil())).is_err());
+/// ```
+pub fn validate_document_id_tree(doc: &Document) -> Result<(), DataError> {
+    validate_document_id(doc.id)?;
+    for children in doc.embedded.values() {
+        for child in children {
+            validate_document_id_tree(child)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject a `Document.name` whose UTF-8 byte length exceeds
+/// `MAX_DOCUMENT_NAME_BYTES`. `None` (no name) always passes.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::validation::validate_document_name;
+///
+/// assert!(validate_document_name(&None).is_ok());
+/// assert!(validate_document_name(&Some("Goblin Scout".to_string())).is_ok());
+/// let over = Some("x".repeat(shadowcat::data::validation::MAX_DOCUMENT_NAME_BYTES + 1));
+/// assert!(validate_document_name(&over).is_err());
+/// ```
+pub fn validate_document_name(name: &Option<String>) -> Result<(), DataError> {
+    if let Some(n) = name {
+        if n.len() > MAX_DOCUMENT_NAME_BYTES {
+            return Err(DataError::OpFailed(format!(
+                "document name exceeds {MAX_DOCUMENT_NAME_BYTES} bytes"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Reject a document — and every embedded descendant — whose envelope `name`
+/// exceeds `MAX_DOCUMENT_NAME_BYTES`, or whose opaque `system` body, or (when
+/// present) typed `engine` body, or (when present) opaque `base` snapshot,
+/// exceeds the per-block size cap. Embedded children are stored inline in
+/// the parent JSON, so each body is bounded independently; the recursion
+/// mirrors `embedded`'s finite stored depth (a document cannot embed itself).
 ///
 /// # Examples
 ///
@@ -57,6 +170,7 @@ pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 /// assert!(validate_system_size(&doc(oversized)).is_err());
 /// ```
 pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
+    validate_document_name(&doc.name)?;
     let bytes = serde_json::to_vec(&doc.system)?.len();
     if bytes > MAX_SYSTEM_BYTES {
         return Err(DataError::TooLarge(bytes));

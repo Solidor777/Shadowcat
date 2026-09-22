@@ -52,6 +52,9 @@ pub struct Cli {
     /// Installed-module discovery root override (default: sibling `modules/`).
     #[arg(long)]
     pub modules_dir: Option<String>,
+    /// Rolling log-file output root override (default: sibling `logs/`).
+    #[arg(long)]
+    pub log_dir: Option<String>,
     /// In-server backup output root override (default: sibling `backups/`).
     #[arg(long)]
     pub backups_dir: Option<String>,
@@ -71,8 +74,15 @@ pub struct Cli {
     /// (`Config.retain_originals`); `--retain-originals false` discards it.
     #[arg(long)]
     pub retain_originals: Option<bool>,
+    /// Declares that a TLS-terminating reverse proxy fronts this bind on the same host
+    /// (`Config.behind_tls_proxy`). A loopback bind fronted this way is internet-reachable
+    /// even though the bind address itself is not — set this so the setup-token policy,
+    /// session-cookie `Secure` flag, and HSTS response header all treat the deployment as
+    /// exposed. Never inferred automatically.
+    #[arg(long)]
+    pub behind_tls_proxy: Option<bool>,
     /// Subcommand; `None` (the default — no subcommand given) is ordinary serve mode. Every
-    /// root flag above continues to work exactly as before this field existed.
+    /// root flag above parses unconditionally regardless of which variant, if any, this holds.
     #[command(subcommand)]
     pub command: Option<CliCommand>,
 }
@@ -162,6 +172,9 @@ pub struct Config {
     pub assets_dir: Option<String>,
     /// Installed-module discovery root. `None` → sibling `modules/` dir beside the db file.
     pub modules_dir: Option<String>,
+    /// Rolling log-file output root (`main::init_tracing`). `None` → sibling `logs/`
+    /// dir beside the db file, mirroring `assets_dir`/`modules_dir`'s own convention.
+    pub log_dir: Option<String>,
     /// In-server backup output root (`POST /api/admin/backup`). `None` → sibling
     /// `backups/` dir beside the db file.
     pub backups_dir: Option<String>,
@@ -193,15 +206,30 @@ pub struct Config {
     /// Per-IP `/api/invites/accept` budget (trailing 60s); `None` →
     /// `throttle::INVITE_PER_MIN_PER_IP`.
     pub invite_per_min_per_ip: Option<usize>,
+    /// Per-account `POST /api/worlds` budget (trailing 60s); `None` →
+    /// `throttle::WORLD_CREATE_PER_MIN_PER_ACCOUNT`. Same rationale as
+    /// `login_per_min_per_identity`: an automated test harness that creates many
+    /// worlds under one seeded identity across a long-running session needs to raise
+    /// this — never lower it below a value that still bounds a scripted flood.
+    pub world_create_per_min_per_account: Option<usize>,
     /// Exact peer IP addresses trusted to set `X-Forwarded-For` (reverse-proxy deployments only).
     /// Default empty — `ClientIp` never consults the header and resolves solely from the TCP peer
-    /// address, exactly as before this field existed. Matched by EXACT address only, not CIDR range
+    /// address. Matched by EXACT address only, not CIDR range
     /// (self-hosting operators list every trusted proxy's address explicitly; a typical single
     /// reverse-proxy-on-the-same-host deployment needs one entry, e.g. `"127.0.0.1"`). A request
     /// whose immediate TCP peer is NOT in this list gets its `X-Forwarded-For` header ignored
     /// entirely, regardless of content — this is what prevents an arbitrary internet client from
     /// spoofing its own address by sending the header directly.
     pub trusted_proxies: Vec<String>,
+    /// Declares a TLS-terminating reverse proxy fronts `bind` on the same host. Default
+    /// `false`. Two present-tense readers, at two different decision granularities:
+    /// `is_exposed()` folds this together with `is_loopback_bind()` into the single derived
+    /// predicate `setup_token_policy`'s `"auto"` arm, `AppState::resolve_setup_token`'s
+    /// warning, and the session cookie's `Secure` flag (`auth::session::session_layer`) all
+    /// read; the HSTS response header (`http::router`) reads this field DIRECTLY instead,
+    /// never through `is_exposed()` — see `is_exposed()`'s own doc for why HSTS's decision is
+    /// narrower.
+    pub behind_tls_proxy: bool,
 }
 
 impl Default for Config {
@@ -215,6 +243,7 @@ impl Default for Config {
             session_key: None,
             assets_dir: None,
             modules_dir: None,
+            log_dir: None,
             backups_dir: None,
             upload_max_bytes: 25 * 1024 * 1024,
             upload_rate_per_min: 20,
@@ -225,7 +254,9 @@ impl Default for Config {
             login_per_min_per_ip: None,
             invite_per_min_per_account: None,
             invite_per_min_per_ip: None,
+            world_create_per_min_per_account: None,
             trusted_proxies: Vec::new(),
+            behind_tls_proxy: false,
         }
     }
 }
@@ -302,14 +333,66 @@ impl Config {
         if let Some(v) = cli.modules_dir {
             cfg.modules_dir = Some(v);
         }
+        if let Some(v) = cli.log_dir {
+            cfg.log_dir = Some(v);
+        }
         if let Some(v) = cli.backups_dir {
             cfg.backups_dir = Some(v);
+        }
+        if let Some(v) = cli.behind_tls_proxy {
+            cfg.behind_tls_proxy = v;
         }
         Ok(cfg)
     }
 
+    /// Resolves a directory named `name` as a sibling of the on-disk database
+    /// file `crate::db::database_file` (the single decider for "which file on
+    /// disk is `self.db`" -- see its own doc) resolves `self.db` to, or `None`
+    /// when `self.db` names an in-memory database or fails to parse. An
+    /// unparseable `self.db` yields the same `None` fallback as an in-memory
+    /// one here, because `SqliteRepository::connect` already rejects such a
+    /// string at server startup, before any caller of this resolver ever
+    /// runs. Shared by every sibling-directory resolver below so the "what
+    /// counts as a filesystem-backed db" decision is made in exactly one
+    /// place rather than re-derived per resolver.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// db_sibling_dir("backups") == None  // in-memory or malformed self.db
+    /// ```
+    fn db_sibling_dir(&self, name: &str) -> Option<std::path::PathBuf> {
+        let file = crate::db::database_file(&self.db).ok().flatten()?;
+        Some(Self::sibling_of(&file, name))
+    }
+
+    /// The directory named `name` beside the database file `db_file`. A bare
+    /// file name (no parent component) resolves against the current
+    /// directory: `Path::parent` returns `Some("")` for it, which is filtered
+    /// to `.` so the result is never an empty-rooted path. The one place the
+    /// sibling layout is spelled — `db_sibling_dir` and `backups_path_for`
+    /// both derive through it.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// sibling_of("/data/shadowcat.db", "logs") == "/data/logs"
+    /// sibling_of("shadowcat.db", "logs")       == "./logs"
+    /// ```
+    fn sibling_of(db_file: &std::path::Path, name: &str) -> std::path::PathBuf {
+        db_file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(name)
+    }
+
     /// Resolve the asset storage root: explicit `assets_dir`, else a sibling
-    /// `assets/` directory beside the db file (built via std::path, #2).
+    /// `assets/` directory beside the db file (built via std::path, #2), via
+    /// `db_sibling_dir`. Falls back to the current directory when the db has
+    /// no on-disk location (in-memory, or unparseable) and no `assets_dir`
+    /// override was given -- asset storage is required infrastructure
+    /// regardless of where (or whether) the database lives on disk.
     ///
     /// # Examples
     ///
@@ -324,18 +407,16 @@ impl Config {
         if let Some(dir) = &self.assets_dir {
             return std::path::PathBuf::from(dir);
         }
-        std::path::Path::new(&self.db)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("assets")
+        self.db_sibling_dir("assets")
+            .unwrap_or_else(|| std::path::PathBuf::from(".").join("assets"))
     }
 
     /// Resolve the installed-module discovery root: explicit `modules_dir`, else a
-    /// sibling `modules/` directory beside the db file (built via std::path, #2).
-    /// Unlike `assets_path`, nothing writes here server-side (install is a
-    /// manual filesystem extract — no server-side installer exists) — the
-    /// directory need not exist; a missing dir scans as "no modules installed"
+    /// sibling `modules/` directory beside the db file (built via std::path, #2),
+    /// via `db_sibling_dir`, falling back to the current directory on the same terms
+    /// as `assets_path`. Unlike `assets_path`, nothing writes here server-side
+    /// (install is a manual filesystem extract — no server-side installer exists) —
+    /// the directory need not exist; a missing dir scans as "no modules installed"
     /// (see `modules::scan_installed_modules`).
     ///
     /// # Examples
@@ -351,31 +432,64 @@ impl Config {
         if let Some(dir) = &self.modules_dir {
             return std::path::PathBuf::from(dir);
         }
-        std::path::Path::new(&self.db)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("modules")
+        self.db_sibling_dir("modules")
+            .unwrap_or_else(|| std::path::PathBuf::from(".").join("modules"))
     }
 
-    /// Resolve the in-server backup output root: explicit `backups_dir`, else a
-    /// sibling `backups/` directory beside the db file (built via std::path, #2).
+    /// Resolve the rolling log-file output root: explicit `log_dir` always wins (even over an
+    /// in-memory `db`, since an operator who names a directory explicitly clearly wants file
+    /// logging); otherwise `None` when `db_sibling_dir` cannot place a directory beside the db
+    /// file — the db is in-memory (either `:memory:` spelling, or a `mode=memory` query
+    /// parameter — see `crate::db::database_file`) or its connection string fails to parse;
+    /// otherwise a sibling `logs/` directory beside the db file (built via std::path, #2), the
+    /// same sibling-of-the-db-file convention `assets_path`/`modules_path` use. `None` means file
+    /// logging is off entirely (`init_tracing` falls back to stdout-only) — never a directory
+    /// this function invents on the caller's behalf for a database it cannot locate on disk.
     ///
     /// # Examples
     ///
     /// ```
-    /// let cfg = shadowcat::config::Config::default(); // db = ./shadowcat.db
-    /// assert_eq!(cfg.backups_path(), std::path::Path::new(".").join("backups"));
+    /// let cfg = shadowcat::config::Config {
+    ///     db: "data/shadowcat.db".into(),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(cfg.logs_path(), Some(std::path::Path::new("data").join("logs")));
+    ///
+    /// let memory_cfg = shadowcat::config::Config {
+    ///     db: "sqlite::memory:".into(),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(memory_cfg.logs_path(), None);
     /// ```
-    pub fn backups_path(&self) -> std::path::PathBuf {
-        if let Some(dir) = &self.backups_dir {
-            return std::path::PathBuf::from(dir);
+    pub fn logs_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(dir) = &self.log_dir {
+            return Some(std::path::PathBuf::from(dir));
         }
-        std::path::Path::new(&self.db)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("backups")
+        self.db_sibling_dir("logs")
+    }
+
+    /// Resolve the backup output root for the on-disk database file
+    /// `db_file`: explicit `backups_dir`, else a sibling `backups/` directory
+    /// beside `db_file` (built via std::path, #2). Takes the already-resolved
+    /// file rather than re-deriving it from `self.db`, so the caller decides
+    /// once — through `crate::db::database_file` — whether a backup is
+    /// possible at all (an in-memory `db` has no file to back up) and this
+    /// resolver only places the output.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut cfg = shadowcat::config::Config::default();
+    /// let db_file = std::path::Path::new("data").join("shadowcat.db");
+    /// assert_eq!(cfg.backups_path_for(&db_file), std::path::Path::new("data").join("backups"));
+    /// cfg.backups_dir = Some("elsewhere".into());
+    /// assert_eq!(cfg.backups_path_for(&db_file), std::path::PathBuf::from("elsewhere"));
+    /// ```
+    pub fn backups_path_for(&self, db_file: &std::path::Path) -> std::path::PathBuf {
+        match &self.backups_dir {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => Self::sibling_of(db_file, "backups"),
+        }
     }
 
     /// Role-tiered upload size cap (GM defaults to 2× the regular value).
@@ -438,9 +552,34 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// True when this deployment is reachable from beyond the local host: a non-loopback
+    /// bind, OR a loopback bind explicitly declared `behind_tls_proxy` (a TLS-terminating
+    /// reverse proxy on the same host forwards internet traffic to it). This is the predicate
+    /// every "is this deployment exposed" security decision reads — `setup_token_policy`'s
+    /// `"auto"` arm, `AppState::resolve_setup_token`'s warning, and the session cookie's
+    /// `Secure` flag (`auth::session::session_layer`) all call this rather than
+    /// `is_loopback_bind()` directly, so those cannot drift out of agreement with each other
+    /// on this input. The HSTS response header (`http::router`) is a NARROWER decision and
+    /// reads `behind_tls_proxy` directly, never through this predicate: HSTS instructs a
+    /// browser to upgrade every future request to HTTPS, which is correct only when a TLS
+    /// proxy is actually declared in front of this bind — a plain non-loopback bind with no
+    /// TLS anywhere in the path is "exposed" by this predicate but must never send HSTS.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut cfg = shadowcat::config::Config::default(); // loopback, no proxy
+    /// assert!(!cfg.is_exposed());
+    /// cfg.behind_tls_proxy = true;
+    /// assert!(cfg.is_exposed());
+    /// ```
+    pub fn is_exposed(&self) -> bool {
+        !self.is_loopback_bind() || self.behind_tls_proxy
+    }
+
     /// Resolve the `setup_token` string into the effective policy: `off` →
-    /// open, `required` → token generated at boot, `auto` → derived from the
-    /// bind (loopback = open, exposed = required), anything else = that
+    /// open, `required` → token generated at boot, `auto` → derived from
+    /// `is_exposed()` (not exposed = open, exposed = required), anything else = that
     /// literal token.
     ///
     /// # Examples
@@ -456,10 +595,10 @@ impl Config {
             "off" => SetupTokenPolicy::Open,
             "required" => SetupTokenPolicy::Required(None),
             "auto" => {
-                if self.is_loopback_bind() {
-                    SetupTokenPolicy::Open
-                } else {
+                if self.is_exposed() {
                     SetupTokenPolicy::Required(None)
+                } else {
+                    SetupTokenPolicy::Open
                 }
             }
             explicit => SetupTokenPolicy::Required(Some(explicit.to_string())),

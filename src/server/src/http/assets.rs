@@ -223,6 +223,7 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use mutate::attachment_disposition;
 use tokio::io::AsyncWriteExt;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
@@ -626,7 +627,14 @@ pub async fn serve(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if if_none_match.split(',').any(|t| t.trim() == etag) {
-            return Ok(([(header::ETAG, etag)], StatusCode::NOT_MODIFIED).into_response());
+            return Ok((
+                [
+                    (header::ETAG, etag),
+                    (header::CACHE_CONTROL, "no-cache".to_string()),
+                ],
+                StatusCode::NOT_MODIFIED,
+            )
+                .into_response());
         }
         let canonical = state.config.assets_path().join(&asset.storage_key);
         let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
@@ -635,12 +643,21 @@ pub async fn serve(
             .map_err(|_| AppError::NotFound)?;
         // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
         // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
+        // `no-cache` (never `immutable`): the request URL (`/api/assets/{uuid}?variant=opus`)
+        // carries no asset version, so a cache must always revalidate through `If-None-Match`
+        // rather than trust a heuristic freshness lifetime.
+        // `X-Content-Type-Options` is NOT set here: `http::router`'s global
+        // `security_headers` layer applies it to every response via
+        // `SetResponseHeaderLayer::overriding`, which removes and replaces any existing
+        // value on the way out — a per-handler copy here would be dead weight, proven by
+        // `serve_never_lets_a_browser_render_a_stored_type_as_a_document` (an e2e test
+        // against the live router) still asserting `nosniff` with no per-handler header.
         return Ok((
             [
                 (header::CONTENT_TYPE, content_type.to_string()),
                 (header::CONTENT_DISPOSITION, "inline".to_string()),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                 (header::ETAG, etag),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
             ],
             Body::from(bytes),
         )
@@ -679,8 +696,18 @@ pub async fn serve(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
             if if_none_match.split(',').any(|t| t.trim() == etag) {
-                return Ok((StatusCode::NOT_MODIFIED).into_response());
+                return Ok((
+                    [
+                        (header::ETAG, etag),
+                        (header::CACHE_CONTROL, "no-cache".to_string()),
+                    ],
+                    StatusCode::NOT_MODIFIED,
+                )
+                    .into_response());
             }
+            // `no-cache`: `?variant=sheet` carries no asset version in the URL either.
+            // `X-Content-Type-Options` comes from the global `security_headers` layer — see
+            // the comment on the Opus branch above.
             return Ok((
                 [
                     (
@@ -688,8 +715,8 @@ pub async fn serve(
                         crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
                     ),
                     (header::CONTENT_DISPOSITION, "inline".to_string()),
-                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
                     (header::ETAG, etag),
+                    (header::CACHE_CONTROL, "no-cache".to_string()),
                 ],
                 Body::from(bytes),
             )
@@ -715,10 +742,18 @@ pub async fn serve(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if if_none_match.split(',').any(|t| t.trim() == etag) {
-        return Ok((StatusCode::NOT_MODIFIED).into_response());
+        return Ok((
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+            ],
+            StatusCode::NOT_MODIFIED,
+        )
+            .into_response());
     }
 
     let canonical = state.config.assets_path().join(&asset.storage_key);
+    let original_name = asset.original_name.clone();
     let (path, content_type) = match variant {
         None => (canonical, asset.content_type),
         Some(v) => match ensure_derivative(&canonical, v).await {
@@ -744,17 +779,24 @@ pub async fn serve(
     // types a browser cannot execute — everything else (SVG included, which
     // can carry script when navigated to directly) downloads. `<img>`
     // embedding is unaffected by the disposition.
+    // Reuses `mutate::attachment_disposition` rather than a bare `"attachment"`, so a
+    // downloaded non-inline asset names itself after the upload exactly like
+    // `mutate::original`'s retained-original download does.
     let disposition = if INLINE_CONTENT_TYPES.contains(&content_type.as_str()) {
-        "inline"
+        "inline".to_string()
     } else {
-        "attachment"
+        attachment_disposition(&original_name)
     };
+    // `no-cache`: the request URL carries no asset version, so a cache must always
+    // revalidate through `If-None-Match` rather than trust a heuristic freshness lifetime.
+    // `X-Content-Type-Options` comes from the global `security_headers` layer — see the
+    // comment on the Opus branch above.
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, disposition.to_string()),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (header::CONTENT_DISPOSITION, disposition),
             (header::ETAG, etag),
+            (header::CACHE_CONTROL, "no-cache".to_string()),
         ],
         Body::from(bytes),
     )

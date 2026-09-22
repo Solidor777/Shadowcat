@@ -497,7 +497,11 @@ async fn create_update_delete_round_trip_via_invert() {
     };
     let c1 = r.apply_command(create.clone()).await.unwrap();
     assert_eq!(c1.command.seq, 1);
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_some());
 
     // Update
     let update = UnsequencedCommand {
@@ -505,7 +509,7 @@ async fn create_update_delete_round_trip_via_invert() {
         author,
         ts: 2,
         ops: vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 remove: false,
                 path: "/system/hp".into(),
@@ -517,7 +521,7 @@ async fn create_update_delete_round_trip_via_invert() {
     let c2 = r.apply_command(update.clone()).await.unwrap();
     assert_eq!(c2.command.seq, 2);
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -528,7 +532,7 @@ async fn create_update_delete_round_trip_via_invert() {
     // Invert the update — hp returns to 10
     r.apply_command(c2.command.invert()).await.unwrap();
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -538,7 +542,11 @@ async fn create_update_delete_round_trip_via_invert() {
 
     // Invert the create — document gone
     r.apply_command(c1.command.invert()).await.unwrap();
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -549,15 +557,19 @@ async fn apply_command_on_unknown_world_fails_and_writes_nothing() {
         .await
         .unwrap();
     let cmd = UnsequencedCommand {
-        world_id: Uuid::from_u128(999),
+        world_id: crate::test_ids::test_uuid(999),
         author,
         ts: 1,
         ops: vec![Operation::Create {
-            doc: world_doc(1, Uuid::from_u128(999), serde_json::json!({})),
+            doc: world_doc(1, crate::test_ids::test_uuid(999), serde_json::json!({})),
         }],
     };
     assert!(r.apply_command(cmd).await.is_err());
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -617,11 +629,15 @@ async fn create_with_foreign_world_scope_is_rejected() {
         author,
         ts: 1,
         ops: vec![Operation::Create {
-            doc: world_doc(1, Uuid::from_u128(777), serde_json::json!({})),
+            doc: world_doc(1, crate::test_ids::test_uuid(777), serde_json::json!({})),
         }],
     };
     assert!(r.apply_command(cmd).await.is_err());
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -637,7 +653,7 @@ async fn delete_with_foreign_world_scope_is_rejected() {
         author,
         ts: 1,
         ops: vec![Operation::Delete {
-            doc: world_doc(1, Uuid::from_u128(777), serde_json::json!({})),
+            doc: world_doc(1, crate::test_ids::test_uuid(777), serde_json::json!({})),
         }],
     };
     assert!(r.apply_command(cmd).await.is_err());
@@ -671,18 +687,26 @@ async fn update_cannot_change_document_id() {
         author,
         ts: 2,
         ops: vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 remove: false,
                 path: "/id".into(),
-                old: serde_json::json!(Uuid::from_u128(1)),
-                new: serde_json::json!(Uuid::from_u128(2)),
+                old: serde_json::json!(crate::test_ids::test_uuid(1)),
+                new: serde_json::json!(crate::test_ids::test_uuid(2)),
             }],
         }],
     };
     assert!(r.apply_command(bad).await.is_err());
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
-    assert!(r.get_document(Uuid::from_u128(2)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(2))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -710,7 +734,7 @@ async fn update_stamps_updated_at_from_command_ts() {
         author,
         ts: 42,
         ops: vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 remove: false,
                 path: "/system/hp".into(),
@@ -723,7 +747,7 @@ async fn update_stamps_updated_at_from_command_ts() {
     .unwrap();
 
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -800,7 +824,7 @@ async fn documents_by_source_finds_instances_for_push() {
         .create_user("author", None, ServerRole::User, 0)
         .await
         .unwrap();
-    let src = Uuid::from_u128(77);
+    let src = crate::test_ids::test_uuid(77);
     let mut doc = world_doc(1, w.id, serde_json::json!({}));
     doc.source = Some(Source {
         id: src,
@@ -819,7 +843,7 @@ async fn documents_by_source_finds_instances_for_push() {
     let found = r.documents_by_source(Some("dnd5e"), src).await.unwrap();
     assert_eq!(found.len(), 1);
     assert!(r
-        .documents_by_source(Some("dnd5e"), Uuid::from_u128(0))
+        .documents_by_source(Some("dnd5e"), crate::test_ids::test_uuid(0))
         .await
         .unwrap()
         .is_empty());
@@ -2028,7 +2052,11 @@ async fn apply_intent_delete_requires_delete_capability() {
     )
     .await
     .unwrap();
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -3013,8 +3041,8 @@ async fn a_second_active_combat_on_the_same_scene_is_rejected_but_another_scene_
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene_a = Uuid::from_u128(0xa);
-    let scene_b = Uuid::from_u128(0xb);
+    let scene_a = crate::test_ids::test_uuid(0xa);
+    let scene_b = crate::test_ids::test_uuid(0xb);
     r.apply_intent(
         &ctx,
         w.id,
@@ -3080,7 +3108,7 @@ async fn activating_a_combat_by_update_is_gated_like_create() {
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0xa);
+    let scene = crate::test_ids::test_uuid(0xa);
     r.apply_intent(
         &ctx,
         w.id,
@@ -3098,7 +3126,7 @@ async fn activating_a_combat_by_update_is_gated_like_create() {
     .await
     .unwrap();
     let activate = Operation::Update {
-        doc_id: Uuid::from_u128(2),
+        doc_id: crate::test_ids::test_uuid(2),
         changes: vec![FieldChange {
             remove: false,
             path: "/engine/active".into(),
@@ -3113,7 +3141,7 @@ async fn activating_a_combat_by_update_is_gated_like_create() {
     assert!(matches!(err, DataError::Conflict(_)));
     // Deactivate the first, then the same Update succeeds.
     let deactivate = Operation::Update {
-        doc_id: Uuid::from_u128(1),
+        doc_id: crate::test_ids::test_uuid(1),
         changes: vec![FieldChange {
             remove: false,
             path: "/engine/active".into(),
@@ -3145,7 +3173,7 @@ async fn two_active_combats_for_one_scene_in_one_batch_are_rejected() {
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0xa);
+    let scene = crate::test_ids::test_uuid(0xa);
     let err = r
         .apply_intent(
             &ctx,
@@ -3183,7 +3211,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0xa);
+    let scene = crate::test_ids::test_uuid(0xa);
     // Parent is an actor, not a combat.
     r.apply_intent(
         &ctx,
@@ -3201,7 +3229,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
             &ctx,
             w.id,
             vec![Operation::Create {
-                doc: combatant_doc(10, w.id, Uuid::from_u128(9)),
+                doc: combatant_doc(10, w.id, crate::test_ids::test_uuid(9)),
             }],
             2,
             WriteOrigin::Client,
@@ -3215,7 +3243,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
             &ctx,
             w.id,
             vec![Operation::Create {
-                doc: combatant_doc(11, w.id, Uuid::from_u128(99)),
+                doc: combatant_doc(11, w.id, crate::test_ids::test_uuid(99)),
             }],
             3,
             WriteOrigin::Client,
@@ -3232,7 +3260,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
                 doc: combat_doc(1, w.id, scene, false),
             },
             Operation::Create {
-                doc: combatant_doc(12, w.id, Uuid::from_u128(1)),
+                doc: combatant_doc(12, w.id, crate::test_ids::test_uuid(1)),
             },
         ],
         4,
@@ -3241,7 +3269,11 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
     .await
     .unwrap();
     // Deleting the combat cascades to its combatants.
-    let combat = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let combat = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     r.apply_intent(
         &ctx,
         w.id,
@@ -3251,7 +3283,11 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
     )
     .await
     .unwrap();
-    assert!(r.get_document(Uuid::from_u128(12)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(12))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -3283,7 +3319,7 @@ async fn update_snapshot_records_pre_image_permissions() {
             &ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/permissions/default".into(),
@@ -3329,7 +3365,7 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
     let mut combat = world_doc(0xC0, w.id, serde_json::json!({}));
     combat.doc_type = "combat".into();
     combat.engine = Some(serde_json::json!({
-        "scene_id": Uuid::from_u128(0x5CE),
+        "scene_id": crate::test_ids::test_uuid(0x5CE),
         "active": false, "round": 0, "turn": null,
         "turn_control": "owner_may_end",
         "order": [],
@@ -3349,9 +3385,9 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
 
     let mut stamped = world_doc(0xC1, w.id, serde_json::json!({}));
     stamped.doc_type = "combatant".into();
-    stamped.parent_id = Some(Uuid::from_u128(0xC0));
+    stamped.parent_id = Some(crate::test_ids::test_uuid(0xC0));
     stamped.engine = Some(serde_json::json!({
-        "kind": { "type": "actor", "token_id": Uuid::from_u128(0x70), "actor_id": null },
+        "kind": { "type": "actor", "token_id": crate::test_ids::test_uuid(0x70), "actor_id": null },
         "initiative": null, "tiebreak": 0.0,
         "resources": { "movement": { "current": 3.0 } }
     }));
@@ -3366,7 +3402,7 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
     .await
     .unwrap();
     let got = r
-        .get_document(Uuid::from_u128(0xC1))
+        .get_document(crate::test_ids::test_uuid(0xC1))
         .await
         .unwrap()
         .unwrap();
@@ -3394,9 +3430,9 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
 
     let mut explicit = world_doc(0xC2, w.id, serde_json::json!({}));
     explicit.doc_type = "combatant".into();
-    explicit.parent_id = Some(Uuid::from_u128(0xC0));
+    explicit.parent_id = Some(crate::test_ids::test_uuid(0xC0));
     explicit.engine = Some(serde_json::json!({
-        "kind": { "type": "actor", "token_id": Uuid::from_u128(0x71), "actor_id": null },
+        "kind": { "type": "actor", "token_id": crate::test_ids::test_uuid(0x71), "actor_id": null },
         "initiative": null, "tiebreak": 0.0, "resources": {}
     }));
     explicit
@@ -3413,7 +3449,7 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
     .await
     .unwrap();
     let got = r
-        .get_document(Uuid::from_u128(0xC2))
+        .get_document(crate::test_ids::test_uuid(0xC2))
         .await
         .unwrap()
         .unwrap();
@@ -3996,7 +4032,7 @@ async fn occ_normalizes_an_embedded_child_engine_pre_image_under_the_child_doc_t
     let (w, ctx) = gm_world(&r).await;
     let client_shape = |name: &str| {
         serde_json::json!({
-            "displayName": name, "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": name, "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
             "conditions": [], "prototype": true
         })
@@ -4064,7 +4100,7 @@ async fn apply_command_update_surfaces_note_body_derived_side_effect() {
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note.id = Uuid::from_u128(1);
+    note.id = crate::test_ids::test_uuid(1);
     note.scope = Scope::World { world_id: w.id };
     r.apply_command(UnsequencedCommand {
         world_id: w.id,
@@ -4085,7 +4121,7 @@ async fn apply_command_update_surfaces_note_body_derived_side_effect() {
             author,
             ts: 2,
             ops: vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/engine/source".into(),
@@ -4135,7 +4171,7 @@ async fn apply_intent_update_surfaces_note_body_derived_side_effect() {
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note.id = Uuid::from_u128(1);
+    note.id = crate::test_ids::test_uuid(1);
     note.scope = Scope::World { world_id: w.id };
     r.apply_intent(
         &ctx,
@@ -4152,7 +4188,7 @@ async fn apply_intent_update_surfaces_note_body_derived_side_effect() {
             &ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/engine/source".into(),
@@ -4218,7 +4254,7 @@ async fn apply_intent_denies_a_derived_engine_path_without_its_declared_capabili
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note.id = Uuid::from_u128(1);
+    note.id = crate::test_ids::test_uuid(1);
     note.scope = Scope::World { world_id: w.id };
     let gm_ctx = PermissionContext {
         user_id: gm,
@@ -4243,7 +4279,7 @@ async fn apply_intent_denies_a_derived_engine_path_without_its_declared_capabili
             &player_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/engine/source".into(),
@@ -4261,7 +4297,11 @@ async fn apply_intent_denies_a_derived_engine_path_without_its_declared_capabili
          capability must be denied a source edit that derives it: {denied:?}"
     );
 
-    let row = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let row = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         row.engine.unwrap().pointer("/source").unwrap(),
         &serde_json::json!(""),
@@ -4310,7 +4350,7 @@ async fn apply_intent_permits_a_derived_engine_path_once_the_capability_is_grant
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note.id = Uuid::from_u128(1);
+    note.id = crate::test_ids::test_uuid(1);
     note.scope = Scope::World { world_id: w.id };
     let gm_ctx = PermissionContext {
         user_id: gm,
@@ -4335,7 +4375,7 @@ async fn apply_intent_permits_a_derived_engine_path_once_the_capability_is_grant
             &player_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/engine/source".into(),
@@ -4422,7 +4462,7 @@ async fn two_note_capability_batch_fixture(
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note_a.id = Uuid::from_u128(1);
+    note_a.id = crate::test_ids::test_uuid(1);
     note_a.scope = Scope::World { world_id: w.id };
 
     let mut note_b = tests_engine_doc(
@@ -4430,7 +4470,7 @@ async fn two_note_capability_batch_fixture(
         crate::data::engine::NOTE_DOC_TYPE,
         serde_json::json!({ "source": "", "body": [], "sort": 0 }),
     );
-    note_b.id = Uuid::from_u128(2);
+    note_b.id = crate::test_ids::test_uuid(2);
     note_b.scope = Scope::World { world_id: w.id };
 
     let gm_ctx = PermissionContext {
@@ -4454,7 +4494,13 @@ async fn two_note_capability_batch_fixture(
         user_id: player,
         world_role: WorldRole::Player,
     };
-    (r, w.id, player_ctx, Uuid::from_u128(1), Uuid::from_u128(2))
+    (
+        r,
+        w.id,
+        player_ctx,
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
+    )
 }
 
 /// An `Update` op writing a note's `/engine/source` to `new`, with `old` set

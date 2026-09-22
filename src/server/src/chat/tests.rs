@@ -19,13 +19,16 @@ fn roll_embed_carries_roll_id_spec_raw_and_defaults_recalc_history_to_none() {
     let seg = Segment::RollEmbed {
         formula: "1d6".into(),
         outcome,
-        roll_id: Uuid::from_u128(1),
+        roll_id: crate::test_ids::test_uuid(1),
         spec: Some(Box::new(spec.clone())),
         raw: Some(Box::new(raw.clone())),
         recalc_history: None,
     };
     let j = serde_json::to_value(&seg).unwrap();
-    assert_eq!(j["roll_id"], serde_json::json!(Uuid::from_u128(1)));
+    assert_eq!(
+        j["roll_id"],
+        serde_json::json!(crate::test_ids::test_uuid(1))
+    );
     assert!(j.get("spec").is_some(), "spec must serialize when Some");
     assert!(j.get("raw").is_some(), "raw must serialize when Some");
     assert!(
@@ -130,14 +133,14 @@ fn roll_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_onl
         Segment::RollEmbed {
             formula: "1d6".into(),
             outcome: outcome.clone(),
-            roll_id: Uuid::from_u128(1),
+            roll_id: crate::test_ids::test_uuid(1),
             spec: Some(Box::new(spec.clone())),
             raw: Some(Box::new(raw.clone())),
             recalc_history: Some(vec![RecalcEntry {
                 ops: vec![crate::dice::RecalcOp::RerollDice(vec![0])],
                 previous_raw: raw.clone(),
                 previous_outcome: outcome,
-                recalculated_by: Uuid::from_u128(2),
+                recalculated_by: crate::test_ids::test_uuid(2),
                 recalculated_at: 100,
             }]),
         },
@@ -198,7 +201,7 @@ fn roll_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
     let content = vec![Segment::RollEmbed {
         formula: "1d6".into(),
         outcome,
-        roll_id: Uuid::from_u128(5),
+        roll_id: crate::test_ids::test_uuid(5),
         spec: None,
         raw: None,
         recalc_history: None,
@@ -258,9 +261,9 @@ fn table_draw_spec_and_raw_are_gm_only_at_every_depth() {
 
     // A message whose content is one TableDraw with two nested draws --
     // three draws total, each contributing spec+raw, for six GmOnly pointers.
-    let inner_a = fixture_table_draw(10, Uuid::from_u128(1), vec![]);
-    let inner_b = fixture_table_draw(11, Uuid::from_u128(2), vec![]);
-    let top = fixture_table_draw(12, Uuid::from_u128(3), vec![inner_a, inner_b]);
+    let inner_a = fixture_table_draw(10, crate::test_ids::test_uuid(1), vec![]);
+    let inner_b = fixture_table_draw(11, crate::test_ids::test_uuid(2), vec![]);
+    let top = fixture_table_draw(12, crate::test_ids::test_uuid(3), vec![inner_a, inner_b]);
     let content = vec![Segment::TableDraw(top)];
 
     let overrides = roll_property_overrides(&content);
@@ -286,9 +289,9 @@ fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() 
     use crate::data::document::{Document, PermissionSet, Scope};
     use crate::data::permission::{filter_properties, Access};
 
-    let inner_a = fixture_table_draw(20, Uuid::from_u128(11), vec![]);
-    let inner_b = fixture_table_draw(21, Uuid::from_u128(12), vec![]);
-    let top = fixture_table_draw(22, Uuid::from_u128(13), vec![inner_a, inner_b]);
+    let inner_a = fixture_table_draw(20, crate::test_ids::test_uuid(11), vec![]);
+    let inner_b = fixture_table_draw(21, crate::test_ids::test_uuid(12), vec![]);
+    let top = fixture_table_draw(22, crate::test_ids::test_uuid(13), vec![inner_a, inner_b]);
     let content = vec![Segment::TableDraw(top)];
     let overrides = roll_property_overrides(&content);
     assert_eq!(overrides.len(), 6);
@@ -299,9 +302,9 @@ fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() 
     };
 
     let doc = Document {
-        id: Uuid::from_u128(100),
+        id: crate::test_ids::test_uuid(100),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: MESSAGE_DOC_TYPE.into(),
         schema_version: 1,
@@ -388,7 +391,7 @@ fn recalc_entry_round_trips() {
         ops: vec![crate::dice::RecalcOp::RerollDice(vec![0])],
         previous_raw: raw,
         previous_outcome: outcome,
-        recalculated_by: Uuid::from_u128(9),
+        recalculated_by: crate::test_ids::test_uuid(9),
         recalculated_at: 1000,
     };
     let j = serde_json::to_value(&entry).unwrap();
@@ -411,7 +414,7 @@ fn html_segment_tagged_roundtrip() {
 fn message_system_omits_absent_edit_delete_markers() {
     let sys = MessageEngine {
         channel: "general".into(),
-        user_owner: Uuid::from_u128(1),
+        user_owner: crate::test_ids::test_uuid(1),
         actor_owner: None,
         kind: MessageKind::Normal,
         audience: Audience::Public,
@@ -436,8 +439,8 @@ fn message_system_omits_absent_edit_delete_markers() {
 #[test]
 fn build_message_doc_threads_kind() {
     let doc = build_message_doc(
-        Uuid::from_u128(10),
-        Uuid::from_u128(20),
+        crate::test_ids::test_uuid(10),
+        crate::test_ids::test_uuid(20),
         MessageDraft {
             channel: "general".into(),
             actor_owner: None,
@@ -455,14 +458,14 @@ fn build_message_doc_threads_kind() {
 #[test]
 fn actor_owner_ref_tagged_roundtrip() {
     let a = ActorOwnerRef::Actor {
-        actor_id: Uuid::from_u128(1),
+        actor_id: crate::test_ids::test_uuid(1),
     };
     let j = serde_json::to_value(&a).unwrap();
     assert_eq!(j["kind"], "actor");
     assert_eq!(a, serde_json::from_value(j).unwrap());
 
     let t = ActorOwnerRef::TokenInstance {
-        token_id: Uuid::from_u128(2),
+        token_id: crate::test_ids::test_uuid(2),
     };
     let j = serde_json::to_value(&t).unwrap();
     assert_eq!(j["kind"], "token_instance");
@@ -505,8 +508,8 @@ fn plain_text_empty_is_empty_segment() {
 
 #[test]
 fn build_message_doc_is_server_owned_message() {
-    let world = Uuid::from_u128(10);
-    let user = Uuid::from_u128(20);
+    let world = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
     let doc = build_message_doc(
         world,
         user,
@@ -540,8 +543,8 @@ fn build_message_doc_is_server_owned_message() {
 #[test]
 fn ops_target_message_detects_message_create_and_update() {
     let msg = build_message_doc(
-        Uuid::from_u128(1),
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
         MessageDraft {
             channel: "general".into(),
             actor_owner: None,
@@ -558,8 +561,8 @@ fn ops_target_message_detects_message_create_and_update() {
     assert!(ops_target_message(&[Operation::Delete { doc: msg }]));
 
     let mut note = build_message_doc(
-        Uuid::from_u128(1),
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
         MessageDraft {
             channel: "general".into(),
             actor_owner: None,
@@ -580,8 +583,8 @@ fn ops_target_message_detects_message_in_mixed_batch() {
     // Create must still trip the guard: `.any()` must not short-circuit
     // on the first (non-matching) op.
     let mut note = build_message_doc(
-        Uuid::from_u128(1),
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
         MessageDraft {
             channel: "general".into(),
             actor_owner: None,
@@ -594,8 +597,8 @@ fn ops_target_message_detects_message_in_mixed_batch() {
     );
     note.doc_type = "note".into();
     let msg = build_message_doc(
-        Uuid::from_u128(1),
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
         MessageDraft {
             channel: "general".into(),
             actor_owner: None,
@@ -615,7 +618,7 @@ fn ops_target_message_detects_message_in_mixed_batch() {
 #[test]
 fn audience_tagged_roundtrip_and_default() {
     let w = Audience::Whisper {
-        recipients: vec![Uuid::from_u128(1)],
+        recipients: vec![crate::test_ids::test_uuid(1)],
     };
     let j = serde_json::to_value(&w).unwrap();
     assert_eq!(j["kind"], "whisper");
@@ -629,9 +632,9 @@ fn audience_tagged_roundtrip_and_default() {
 
 #[test]
 fn build_message_doc_public_matches_c1_shape() {
-    let owner = Uuid::from_u128(1);
+    let owner = crate::test_ids::test_uuid(1);
     let doc = build_message_doc(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         owner,
         MessageDraft {
             channel: "general".into(),
@@ -650,10 +653,10 @@ fn build_message_doc_public_matches_c1_shape() {
 
 #[test]
 fn build_message_doc_whisper_restricts_default_and_gm() {
-    let owner = Uuid::from_u128(1);
-    let recipient = Uuid::from_u128(2);
+    let owner = crate::test_ids::test_uuid(1);
+    let recipient = crate::test_ids::test_uuid(2);
     let doc = build_message_doc(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         owner,
         MessageDraft {
             channel: "whispers".into(),
@@ -678,9 +681,9 @@ fn build_message_doc_whisper_restricts_default_and_gm() {
 
 #[test]
 fn build_message_doc_whisper_self_recipient_does_not_downgrade_owner() {
-    let owner = Uuid::from_u128(1);
+    let owner = crate::test_ids::test_uuid(1);
     let doc = build_message_doc(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         owner,
         MessageDraft {
             channel: "whispers".into(),
@@ -703,9 +706,9 @@ fn build_message_doc_whisper_self_recipient_does_not_downgrade_owner() {
 
 #[test]
 fn build_message_doc_gm_only_has_no_named_recipients() {
-    let owner = Uuid::from_u128(1);
+    let owner = crate::test_ids::test_uuid(1);
     let doc = build_message_doc(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         owner,
         MessageDraft {
             channel: "gm".into(),
@@ -1385,7 +1388,7 @@ async fn handle_send_message_rejects_unknown_whisper_recipient() {
     let rate = PingRateLimiter::new();
 
     // A uuid that belongs to no user at all, let alone this world.
-    let foreign = Uuid::from_u128(99_999);
+    let foreign = crate::test_ids::test_uuid(99_999);
     let err = handle_send_message(
         MessageRequestCtx {
             room: &room,
@@ -1515,7 +1518,7 @@ async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
     // would instead fail with UnknownRecipient — proving the cap check
     // runs FIRST, before any member_role query.
     let recipients: Vec<Uuid> = (0..(MAX_WHISPER_RECIPIENTS as u128 + 1))
-        .map(Uuid::from_u128)
+        .map(crate::test_ids::test_uuid)
         .collect();
     let err = handle_send_message(
         MessageRequestCtx {
@@ -2844,7 +2847,7 @@ fn stored_message_without_a_source_key_deserializes() {
     // A stored `MessageEngine` JSON carrying no `source` key at all.
     let j = serde_json::json!({
         "channel": "general",
-        "user_owner": Uuid::from_u128(1),
+        "user_owner": crate::test_ids::test_uuid(1),
         "kind": "normal",
         "audience": { "kind": "public" },
         "content": [],
@@ -2938,7 +2941,7 @@ fn seed_actor_doc(id: Uuid, world: Uuid, owner: Option<Uuid>) -> Document {
         parent_id: None,
         engine: Some(serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -4010,7 +4013,7 @@ async fn handle_recalc_roll_rejects_unknown_roll_id_and_missing_stored_state() {
             budget_per_min: 30,
         },
         message_id,
-        Uuid::from_u128(999_999),
+        crate::test_ids::test_uuid(999_999),
         vec![],
     )
     .await
@@ -4031,7 +4034,7 @@ async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let roll_id = Uuid::from_u128(42);
+    let roll_id = crate::test_ids::test_uuid(42);
     let outcome = crate::dice::evaluate(
         &crate::dice::notation::parse(
             "1d6",

@@ -112,6 +112,41 @@ enum Egress {
     },
 }
 
+/// Per-block cap (`system`, `engine`, `base`) a single document body can carry,
+/// enforced at `data::validation::validate_system_size`. A Create op's document
+/// therefore fits in at most three such blocks before counting embedded children.
+const MAX_DOCUMENT_BLOCK_BYTES: usize = crate::data::validation::MAX_SYSTEM_BYTES;
+
+/// Sizing assumption for the largest *legitimate* client-authored `Intent` frame this
+/// protocol admits: one document at its three-block cap (`system`+`engine`+`base`, see
+/// `MAX_DOCUMENT_BLOCK_BYTES`). This crate places no explicit cap on `ClientMsg::Intent.ops`'s
+/// length or on embedded-child count/depth, so a batch of several such documents (e.g. a
+/// multi-select move/duplicate) is the realistic upper bound a legitimate client sends in one
+/// frame — sized generously below at `WS_MAX_MESSAGE_BYTES`, never assumed unbounded.
+const MAX_INTENT_DOCS: usize = 16;
+
+/// Upper bound on one WebSocket message/frame, in bytes, set on both `max_message_size` and
+/// `max_frame_size` in `ws_handler`'s `WebSocketUpgrade`. Derived from `MAX_INTENT_DOCS`
+/// documents each at `3 * MAX_DOCUMENT_BLOCK_BYTES`, plus 64 KiB of headroom for JSON
+/// structural overhead (field names, string escaping, the frame envelope) — never a bare
+/// magic number. Well below `config::Config::default`'s `upload_max_bytes` (25 MiB): a WS
+/// frame is never the transport for a large asset, which uploads over HTTP instead.
+const WS_MAX_MESSAGE_BYTES: usize = MAX_INTENT_DOCS * 3 * MAX_DOCUMENT_BLOCK_BYTES + 64 * 1024;
+
+/// Interval between server-initiated `ServerMsg::Ping` heartbeats on an otherwise-idle
+/// connection, driven by `egress_loop`'s periodic timer arm.
+const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Liveness timeout: a connection with no inbound frame of ANY kind (a `ClientMsg::Pong`
+/// reply or anything else — `handle_socket`'s ingress arm stamps `EgressConnState.
+/// last_activity` on every frame it receives, not only recognized ones) for this long is
+/// treated as dead; `egress_loop` sends a Close frame and exits so the room stops fanning
+/// out to a socket nobody is reading. Set to exactly 3x `PING_INTERVAL`: a client that misses
+/// one heartbeat still gets a second full interval to answer (covering a transient network
+/// stall or a slow event loop) before the connection is dropped, while staying tight enough
+/// that a genuinely dead socket is reclaimed within three heartbeat periods rather than
+/// lingering indefinitely.
+const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// Max live search subscriptions per connection; a subscribe beyond this is
 /// rejected with `SearchError`.
 const MAX_SUBSCRIPTIONS: usize = 16;
@@ -211,7 +246,20 @@ pub async fn ws_handler(
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state, user.id, user.role, q.world))
+    // Acquired HERE, synchronously, still within the HTTP request cycle hyper's own
+    // graceful-shutdown accounting tracks — never inside the task `on_upgrade` spawns. That
+    // task starts running strictly AFTER the 101 response is written, so if the guard were
+    // taken there instead, `WsState::live_connection_count` could read zero, `axum::serve`
+    // could resolve, and `wait_for_drain` could return, all before the spawned task has run
+    // its first line — the exact drain-accounting gap this ordering closes. Moved into the
+    // upgrade closure so `handle_socket` holds it for the connection's whole lifetime;
+    // `handle_socket` must never acquire a second one.
+    let connection_guard = state.ws.connection_guard();
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| {
+            handle_socket(socket, state, user.id, user.role, q.world, connection_guard)
+        })
 }
 
 /// Serialize a server frame to a text WS message. Serializing our own types
@@ -322,7 +370,14 @@ async fn handle_socket(
     user_id: Uuid,
     user_role: ServerRole,
     world_id: Uuid,
+    _connection_guard: crate::ws::ConnectionGuard,
 ) {
+    // Held for this whole task's lifetime (every `return` path below drops it, including a
+    // panic unwind): this is what makes this connection observable to
+    // `WsState::wait_for_drain` during graceful shutdown. Acquired by the CALLER
+    // (`ws_handler`), synchronously, before `on_upgrade` ever spawns this task — see
+    // `ws_handler`'s own doc for why acquiring it in here instead would leave a window where
+    // `wait_for_drain` can return before this task has run its first line.
     let repo = state.repo.clone();
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
@@ -387,6 +442,15 @@ async fn handle_socket(
     let egress_repo = repo.clone();
     let modules_dir = state.config.modules_path();
     let module_scan_cache = state.ws.module_scan_cache.clone();
+    let shutdown = state.ws.shutdown.clone();
+    // Seeded at connect time, not the epoch: a freshly-opened connection must not read as
+    // already-silent before its first inbound frame has had a chance to arrive. `std::time::
+    // Instant`, never `SystemTime`/`now_millis` — a wall-clock step (an NTP correction, a
+    // manual clock change) must not be able to fabricate or erase silence. A `std::sync::Mutex`
+    // (never a `tokio::sync::Mutex`) is enough: the guard is never held across an `.await`,
+    // just a synchronous read-or-write of one `Instant`.
+    let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let egress_last_activity = last_activity.clone();
     let mut egress = tokio::spawn(egress_loop(
         sink,
         rx,
@@ -398,6 +462,8 @@ async fn handle_socket(
             current_seq,
             modules_dir,
             module_scan_cache,
+            shutdown,
+            last_activity: egress_last_activity,
         },
     ));
 
@@ -425,9 +491,39 @@ async fn handle_socket(
                     _ = &mut egress => break,
                     frame = stream.next() => {
                         let Some(Ok(frame)) = frame else { break };
+                        // Liveness stamp: ANY inbound frame counts, not only a recognized
+                        // `ClientMsg::Pong` -- a client that is merely quiet on the heartbeat
+                        // reply but actively sending other traffic (intents, search, etc.) is
+                        // just as alive as one that dutifully answers pings. Monotonic
+                        // (`std::time::Instant`), never wall-clock — see `last_activity`'s doc.
+                        // A poisoned mutex still yields its last-written value via `into_inner`:
+                        // a stale liveness stamp is not an invariant worth ending this task over.
+                        *last_activity
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                         match frame {
                             Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
                                 Ok(ClientMsg::Intent { intent_id, ops }) => {
+                                    // Structural admission chokepoint for `MAX_INTENT_DOCS`:
+                                    // `WS_MAX_MESSAGE_BYTES` derives the frame-size cap FROM
+                                    // this constant, on the invariant that no admitted intent
+                                    // carries more ops than this — enforced here, before any op
+                                    // is authorized or applied, so a frame under the byte cap
+                                    // cannot still carry an unbounded `ops.len()` of tiny
+                                    // documents; both caps bound the same quantity.
+                                    if ops.len() > MAX_INTENT_DOCS {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                                intent_id,
+                                                reason: RejectReason::Invalid,
+                                                detail: Some(format!(
+                                                    "intent carries {} ops, exceeding the {MAX_INTENT_DOCS}-op limit",
+                                                    ops.len()
+                                                )),
+                                            })))
+                                            .await;
+                                        continue;
+                                    }
                                     // Every WS-originated write always publishes as
                                     // `WriteOrigin::Client` below — `ClientMsg::Intent`
                                     // carries no field a client could set to select
@@ -1917,6 +2013,23 @@ struct EgressConnState {
     /// Shared cache for the installed-module scan behind the Welcome frame's
     /// capability requirements — see `crate::modules::ModuleScanCache`.
     module_scan_cache: Arc<crate::modules::ModuleScanCache>,
+    /// Server-wide graceful-shutdown signal, cloned from `WsState::shutdown`. `egress_loop`
+    /// selects on it and exits (sending a Close frame) once `WsState::trigger_shutdown` fires.
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    /// Monotonic timestamp of the most recent inbound frame of ANY kind, updated by
+    /// `handle_socket`'s ingress arm on every frame it receives (never gated on which
+    /// `ClientMsg` variant it parses into, or on parsing succeeding at all). Deliberately
+    /// `std::time::Instant`, never wall-clock `now_millis`/`SystemTime`: a wall-clock step
+    /// backward (an NTP correction, a manual clock change) would never register as silence,
+    /// and a step forward could close a perfectly healthy connection instantly.
+    /// `egress_loop`'s periodic ping timer reads `Instant::elapsed()` against this value to
+    /// decide whether the connection has gone silent past `PING_TIMEOUT`. Shared (not moved)
+    /// because `handle_socket`'s ingress loop and `egress_loop` run as two separate tasks over
+    /// the same logical connection; a `std::sync::Mutex` (not `tokio::sync::Mutex`) is enough
+    /// since every access is a synchronous read-or-write never held across an `.await`.
+    /// Document timestamps (`ServerMsg`/`StoredCommand` fields) keep using `now_millis` — this
+    /// field is heartbeat-liveness-only.
+    last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
 }
 
 /// The egress half: fans room broadcasts into this connection with
@@ -1944,6 +2057,8 @@ async fn egress_loop<S>(
         current_seq,
         modules_dir,
         module_scan_cache,
+        mut shutdown,
+        last_activity,
     } = conn;
     let world_id = room.world_id;
     // Loaded once per connection (not per event): a per-event read would contend
@@ -2010,6 +2125,15 @@ async fn egress_loop<S>(
     let mut listen_as: Option<Uuid> = None;
 
     let mut next_expected = current_seq + 1;
+    // Heartbeat: fires every `PING_INTERVAL` to send a `ServerMsg::Ping` and check
+    // `last_activity` against `PING_TIMEOUT`. `Delay` (not the default `Burst`) means a tick
+    // delayed by a slow poll doesn't fire a burst of catch-up ticks once polling resumes —
+    // irrelevant to correctness here (the timeout check reads a live timestamp, not a tick
+    // count) but avoids a pointless flurry of Ping sends. The immediate first tick is
+    // consumed up front so the connection isn't pinged the instant it opens.
+    let mut ping_timer = tokio::time::interval(PING_INTERVAL);
+    ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping_timer.tick().await;
     loop {
         // `biased` — `erx` (this connection's own direct replies, incl. `Reject`) MUST be
         // drained ahead of `rx` (the room broadcast, incl. this same connection's own
@@ -2027,6 +2151,50 @@ async fn egress_loop<S>(
         // pending entry is oldest rather than the one the arriving command actually completes.
         tokio::select! {
             biased;
+            // Graceful shutdown is checked FIRST, ahead of `erx`/`rx`/the search-reeval timer:
+            // a busy room keeps both of those arms ready on nearly every poll, and an
+            // unbiased-by-position ordering after them would let a sustained broadcast/intent
+            // stream defer this connection's close indefinitely once shutdown has been
+            // requested. `changed()` (not `wait_for`) deliberately — `wait_for`'s `Ref` return
+            // type wraps a `std::sync::RwLockReadGuard`, which is `!Send`, and
+            // `tokio::select!`'s generated state machine keeps every branch's output type live
+            // across the whole function's suspension points, making the spawned task's future
+            // itself `!Send`. `changed()` returns a plain `Result<(), _>`; the boolean is read
+            // and the borrow dropped synchronously via `borrow_and_update`, before the `.await`
+            // below, so nothing non-`Send` is ever held across it. A `Recv` error (the sender —
+            // `WsState`'s own field — dropped) is treated the same as a real shutdown signal,
+            // since there is then nobody left who could ever flip it.
+            res = shutdown.changed() => {
+                let should_close = res.is_err() || *shutdown.borrow_and_update();
+                if should_close {
+                    let _ = sink.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+            // Heartbeat is checked SECOND, immediately after shutdown and ahead of
+            // `erx`/`rx`/the search-reeval timer, for the same reason shutdown is first: a
+            // room that broadcasts continuously keeps `rx` ready on nearly every poll, and a
+            // `biased` select tries arms strictly in listed order, so an arm listed after an
+            // always-ready one starves — with this arm last, a continuously-broadcasting room
+            // could defer Ping emission and dead-peer detection indefinitely, exactly the
+            // failure mode `biased` exists to prevent for the other arms. Past `PING_TIMEOUT`
+            // of silence, the connection is dead -- close it so the room stops fanning
+            // broadcasts out to a socket nobody is reading. Otherwise, send the next
+            // `ServerMsg::Ping`; a client that is still alive answers with `ClientMsg::Pong`
+            // (or any other frame), which stamps `last_activity` on the ingress side and
+            // resets this connection's silence clock.
+            _ = ping_timer.tick() => {
+                // A poisoned mutex still yields its last-written value via `into_inner`: a
+                // stale liveness stamp is not an invariant worth ending this task over.
+                let idle = last_activity.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
+                if idle >= PING_TIMEOUT {
+                    let _ = sink.send(Message::Close(None)).await;
+                    break;
+                }
+                if sink.send(text(&ServerMsg::Ping)).await.is_err() {
+                    break;
+                }
+            }
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
                     if send_plain(&mut sink, f.as_ref()).await.is_err() { break; }

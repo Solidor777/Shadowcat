@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "signal"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["uuid-impl"] }
@@ -23,9 +23,11 @@ geo = "0.32"
 glam = "0.30"
 futures-util = "0.3"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "request-id", "util"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "util", "set-header", "compression-gzip", "compression-br"] }
+http-body = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 anyhow = "1"
 rust-embed = "8"
 mime_guess = "2"
@@ -121,7 +123,7 @@ tempfile = "3"
 axum-test = "17"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time", "test-util"] }
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
 # WAT-authored WASM test fixtures for `sandbox::runtime`'s unit tests (MIT/Apache-2.0).

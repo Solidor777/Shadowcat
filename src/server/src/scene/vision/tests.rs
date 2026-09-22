@@ -57,6 +57,51 @@ fn a_wall_casts_an_occlusion_shadow() {
 }
 
 #[test]
+fn a_wall_entirely_outside_bound_does_not_affect_the_polygon() {
+    // Same occluding wall as `a_wall_casts_an_occlusion_shadow`, plus a second wall whose whole
+    // bbox lies past `bound`'s edge (bound spans ±100) — the pre-filter must drop it, and the
+    // polygon must be byte-for-byte identical to the no-extra-wall case.
+    let near_wall = Seg {
+        a: (10.0, -5.0),
+        b: (10.0, 5.0),
+    };
+    let outside_wall = Seg {
+        a: (500.0, -5.0),
+        b: (500.0, 5.0),
+    };
+    let baseline = visibility_polygon((0.0, 0.0), &[near_wall], bound());
+    let with_outside_wall = visibility_polygon((0.0, 0.0), &[near_wall, outside_wall], bound());
+    assert_eq!(
+        baseline, with_outside_wall,
+        "a wall entirely outside bound must not change a single vertex"
+    );
+}
+
+#[test]
+fn a_wall_straddling_bounds_edge_still_cuts_the_polygon() {
+    // A wall spanning x=[95,105] at y=-5: `bound()`'s maxx=100 cuts it at x=100, so half the
+    // wall (x∈[100,105]) lies outside `bound` while the other half (x∈[95,100]) is inside. The
+    // pre-filter must keep this wall (its bbox overlaps `bound`), so the in-bound portion still
+    // occludes what's directly behind it.
+    let straddling_wall = Seg {
+        a: (95.0, -5.0),
+        b: (105.0, -5.0),
+    };
+    let poly = visibility_polygon((0.0, 0.0), &[straddling_wall], bound());
+    assert!(
+        point_in_poly(&poly, (0.0, 50.0)),
+        "off to the side of the straddling wall's narrow occlusion cone is still visible"
+    );
+    // (97, -5) sits on the wall itself (t=1 along the ray from the origin through it);
+    // (98.94, -5.1) = 1.02 * (97, -5) is further along the SAME ray, still inside `bound`
+    // (maxx=100), and therefore occluded by the nearer wall intersection at t=1.
+    assert!(
+        !point_in_poly(&poly, (98.94, -5.1)),
+        "directly behind the straddling wall's in-bound portion is occluded"
+    );
+}
+
+#[test]
 fn enclosing_room_limits_vision_to_inside() {
     // A 4-wall room around the origin; a point outside a wall is not visible.
     let r = 20.0;

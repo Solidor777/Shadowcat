@@ -361,6 +361,71 @@ async fn login_throttles_identity_after_budget_spending_no_argon2() {
 }
 
 #[tokio::test]
+async fn create_world_throttles_per_account_after_budget_spent() {
+    use crate::http::throttle::WORLD_CREATE_PER_MIN_PER_ACCOUNT;
+    let server = server_with_user("world-spammer", "pw", ServerRole::User).await;
+    server
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "world-spammer", "password": "pw" }))
+        .await
+        .assert_status(axum::http::StatusCode::NO_CONTENT);
+
+    for i in 0..WORLD_CREATE_PER_MIN_PER_ACCOUNT {
+        server
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": format!("world-{i}") }))
+            .await
+            .assert_status_ok();
+    }
+    server
+        .post("/api/worlds")
+        .json(&serde_json::json!({ "name": "one-too-many" }))
+        .await
+        .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn world_create_throttle_budget_is_config_tunable() {
+    // A configured `world_create_per_min_per_account` overrides the built-in
+    // constant default — a budget BELOW the default (well under
+    // `WORLD_CREATE_PER_MIN_PER_ACCOUNT`) trips on the 3rd attempt, proving the
+    // configured value, not the constant, gates.
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        world_create_per_min_per_account: Some(2),
+        ..crate::config::Config::default()
+    });
+    let hash = hash_password("pw").unwrap();
+    state
+        .repo
+        .create_user("world-spammer-cfg", Some(&hash), ServerRole::User, 0)
+        .await
+        .unwrap();
+    let server = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state).await)
+        .unwrap();
+    server
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "world-spammer-cfg", "password": "pw" }))
+        .await
+        .assert_status(axum::http::StatusCode::NO_CONTENT);
+
+    for i in 0..2 {
+        server
+            .post("/api/worlds")
+            .json(&serde_json::json!({ "name": format!("world-cfg-{i}") }))
+            .await
+            .assert_status_ok();
+    }
+    server
+        .post("/api/worlds")
+        .json(&serde_json::json!({ "name": "one-too-many-cfg" }))
+        .await
+        .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn login_throttle_budget_is_config_tunable() {
     // A configured `login_per_min_per_identity` overrides the built-in
     // constant default — the ops-facing knob this test pins.
@@ -683,7 +748,7 @@ async fn export_world_blocks_while_write_barrier_held() {
         .await;
 }
 
-/// Same regression coverage as `export_world_blocks_while_write_barrier_held`,
+/// Same write-barrier coverage as `export_world_blocks_while_write_barrier_held`,
 /// for `import_world`. Same `LocalSet`/`spawn_local` reasoning applies.
 #[tokio::test]
 async fn import_world_blocks_while_write_barrier_held() {
@@ -854,6 +919,93 @@ async fn user_delete_authz_and_guards() {
     root.delete(&format!("/api/users/{}", Uuid::new_v4()))
         .await
         .assert_status(StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn user_password_reset_by_admin_succeeds_and_old_password_stops_working() {
+    let state = initialized_state().await;
+    seed_admin(&state, "root").await;
+    let target = seed_user(&state, "target").await;
+
+    // The old password logs in fine before the reset.
+    let target_before = login_server(&state, "target").await;
+    target_before
+        .post("/api/logout")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let root = login_server(&state, "root").await;
+    root.post(&format!("/api/users/{target}/password"))
+        .json(&serde_json::json!({ "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // The old password no longer authenticates.
+    let anon = anon_server(&state).await;
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "target", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    // The new password does.
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "target", "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn user_password_reset_by_non_admin_gets_the_same_rejection_as_create_user() {
+    let state = initialized_state().await;
+    seed_user(&state, "not-admin").await;
+    let target = seed_user(&state, "target").await;
+    let not_admin = login_server(&state, "not-admin").await;
+
+    let reset = not_admin
+        .post(&format!("/api/users/{target}/password"))
+        .json(&serde_json::json!({ "password": "a-new-password" }))
+        .await;
+    let create = not_admin
+        .post("/api/users")
+        .json(&serde_json::json!({ "username": "new-user", "password": "a-new-password" }))
+        .await;
+    reset.assert_status(StatusCode::FORBIDDEN);
+    create.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(reset.text(), create.text(), "same rejection as create_user");
+}
+
+#[tokio::test]
+async fn user_password_reset_unknown_id_is_not_found() {
+    let state = initialized_state().await;
+    seed_admin(&state, "root").await;
+    let root = login_server(&state, "root").await;
+    root.post(&format!("/api/users/{}/password", Uuid::new_v4()))
+        .json(&serde_json::json!({ "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}
+
+/// An admin resetting their OWN password is not exempted from the same live-eviction rule
+/// `set_user_password` applies to any other target: their own session dies in the same
+/// transaction as the hash update, so the very server instance that just performed the reset
+/// is authenticated no longer. Pins the intent `reset_user_password`'s own doc now states.
+#[tokio::test]
+async fn user_password_reset_by_admin_on_their_own_account_evicts_their_own_session() {
+    let state = initialized_state().await;
+    let root_id = seed_admin(&state, "root").await;
+    let root = login_server(&state, "root").await;
+
+    // Sanity: the admin's own session authenticates an admin-only route before the reset.
+    root.get("/api/users").await.assert_status(StatusCode::OK);
+
+    root.post(&format!("/api/users/{root_id}/password"))
+        .json(&serde_json::json!({ "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // The same server instance's cookie is now for a purged session.
+    root.get("/api/users")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -1292,7 +1444,7 @@ async fn add_member_rejects_unknown_and_absent_targets() {
     // An unknown uuid would otherwise trip the world_members foreign key
     // and surface as a 500.
     f.gm.post(&format!("/api/worlds/{world_id}/members"))
-        .json(&serde_json::json!({ "user": Uuid::from_u128(4242), "role": "player" }))
+        .json(&serde_json::json!({ "user": crate::test_ids::test_uuid(4242), "role": "player" }))
         .await
         .assert_status(StatusCode::NOT_FOUND);
 
@@ -2003,7 +2155,7 @@ fn doc_json(
         // tests actually exercise (untouched).
         "engine": {
             "displayName": "Test",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2039,7 +2191,7 @@ async fn world_membership_and_document_authorization() {
         .json();
     let world_id = world["id"].as_str().unwrap().to_string();
 
-    let doc_id = Uuid::from_u128(10);
+    let doc_id = crate::test_ids::test_uuid(10);
     let doc = doc_json(
         doc_id,
         &world_id,
@@ -2156,7 +2308,7 @@ async fn by_id_routes_hide_existence_from_non_members() {
         .json();
     let world_id = world["id"].as_str().unwrap().to_string();
 
-    let doc_id = Uuid::from_u128(321);
+    let doc_id = crate::test_ids::test_uuid(321);
     let doc = doc_json(
         doc_id,
         &world_id,
@@ -2200,7 +2352,7 @@ async fn conflicting_patch_returns_conflict() {
         .json();
     let world_id = world["id"].as_str().unwrap().to_string();
 
-    let doc_id = Uuid::from_u128(42);
+    let doc_id = crate::test_ids::test_uuid(42);
     let doc = doc_json(
         doc_id,
         &world_id,
@@ -2247,7 +2399,7 @@ async fn get_document_strips_gm_only_for_player() {
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
-    let doc_id = Uuid::from_u128(99);
+    let doc_id = crate::test_ids::test_uuid(99);
     let perms = serde_json::json!({
         "default": "observer",
         "users": {},
@@ -2298,7 +2450,7 @@ async fn read_routes_admit_the_inheriting_owner_of_a_default_none_token() {
         .assert_status(StatusCode::NO_CONTENT);
 
     // Actor owned by the player.
-    let actor_id = Uuid::from_u128(501);
+    let actor_id = crate::test_ids::test_uuid(501);
     let actor = serde_json::json!({
         "id": actor_id,
         "scope": { "kind": "world", "world_id": world_id },
@@ -2308,7 +2460,7 @@ async fn read_routes_admit_the_inheriting_owner_of_a_default_none_token() {
         "permissions": { "default": "observer", "users": {}, "property_overrides": {} },
         "engine": {
             "displayName": "Test",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2326,7 +2478,7 @@ async fn read_routes_admit_the_inheriting_owner_of_a_default_none_token() {
 
     // Token linked to the actor: no literal owner, default `none`, an
     // `owner_or_gm` property override on `/system/notes`.
-    let token_id = Uuid::from_u128(502);
+    let token_id = crate::test_ids::test_uuid(502);
     let token = serde_json::json!({
         "id": token_id,
         "scope": { "kind": "world", "world_id": world_id },
@@ -2394,7 +2546,7 @@ async fn world_capability_defaults_enable_owner_embedded() {
 
     // A doc the player owns (so they hold the write_fields floor) but with no
     // per-document capability grant.
-    let doc_id = Uuid::from_u128(700);
+    let doc_id = crate::test_ids::test_uuid(700);
     let perms = serde_json::json!({
         "default": "none",
         "users": { player_id.to_string(): "owner" },
@@ -2814,6 +2966,204 @@ async fn admin_backup_is_admin_gated_and_writes_a_manifest() {
             .and_then(|v| v.as_u64())
             .unwrap_or(0)
             > 0
+    );
+}
+
+#[tokio::test]
+async fn admin_backup_rejects_an_in_memory_database_as_unprocessable() {
+    // An in-memory `config.db` is a caller-facing configuration mistake for a backup
+    // request, distinct from a malformed `config.db` string (which stays an opaque
+    // `AppError::Internal`). `initialized_state`'s underlying repository connection is
+    // always its own separate `sqlite::memory:` pool regardless of `Config.db`'s value, so
+    // `config.db` is set explicitly here to the in-memory form under test.
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        db: "sqlite::memory:".into(),
+        ..crate::config::Config::default()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.post("/api/admin/backup").await;
+    res.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        res.text()
+            .contains("backup requires a file-backed database"),
+        "body: {}",
+        res.text()
+    );
+}
+
+#[tokio::test]
+async fn admin_backup_reports_a_malformed_database_string_as_an_internal_error() {
+    // A `config.db` that `db::database_file` cannot parse is a server misconfiguration, not a
+    // caller mistake: it surfaces as an opaque `AppError::Internal`, never the in-memory 422.
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        db: "sqlite://a.db?bogus=1".into(),
+        ..crate::config::Config::default()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.post("/api/admin/backup").await;
+    res.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        !res.text().contains("file-backed database"),
+        "a malformed db string must not be reported as the in-memory case; body: {}",
+        res.text()
+    );
+}
+
+#[tokio::test]
+async fn security_response_headers_are_set_on_every_response_without_hsts_by_default() {
+    let server = fresh_server().await;
+    let res = server.get("/health").await;
+    res.assert_status_ok();
+    assert_eq!(res.header(axum::http::header::X_FRAME_OPTIONS), "DENY");
+    assert_eq!(
+        res.header(axum::http::header::X_CONTENT_TYPE_OPTIONS),
+        "nosniff"
+    );
+    assert_eq!(
+        res.header(axum::http::header::REFERRER_POLICY),
+        "same-origin"
+    );
+    // Not behind a TLS proxy by default: HSTS over plain HTTP is wrong and must be absent.
+    assert!(res
+        .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
+        .is_none());
+}
+
+#[tokio::test]
+async fn hsts_header_present_only_when_behind_tls_proxy() {
+    let mut state = test_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        behind_tls_proxy: true,
+        ..crate::config::Config::default()
+    });
+    let server = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state).await)
+        .unwrap();
+    let res = server.get("/health").await;
+    res.assert_status_ok();
+    assert_eq!(
+        res.header(axum::http::header::STRICT_TRANSPORT_SECURITY),
+        "max-age=31536000; includeSubDomains"
+    );
+}
+
+#[tokio::test]
+async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
+    // `is_exposed()` is true here (non-loopback bind), but HSTS reads `behind_tls_proxy`
+    // directly — see `Config::is_exposed`'s doc. A non-loopback bind with no TLS proxy
+    // declared has no TLS anywhere in the path, so sending HSTS would be wrong.
+    let mut state = test_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        bind: "0.0.0.0:30000".into(),
+        behind_tls_proxy: false,
+        ..crate::config::Config::default()
+    });
+    assert!(state.config.is_exposed());
+    let server = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state).await)
+        .unwrap();
+    let res = server.get("/health").await;
+    res.assert_status_ok();
+    assert!(res
+        .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
+        .is_none());
+}
+
+/// Build a `test_state()`-shaped state (uninitialized repo, one seeded user) whose `Config` is
+/// `mutate`d before the router is built, then log in and return the raw `set-cookie` header
+/// value — exercises the real `session_layer(&repo, &config)` construction inside `router`,
+/// not a config-level re-assertion of `is_exposed()` (see the anti-drift gotcha on
+/// `behind_tls_proxy_flips_setup_token_policy_and_session_secure_together` in
+/// `config::tests`: that test pins `session_layer`'s ARGUMENT, `config.is_exposed()`, but never
+/// actually builds a `session_layer` or inspects the cookie it produces).
+async fn login_set_cookie_header(mutate: impl FnOnce(&mut crate::config::Config)) -> String {
+    let mut cfg = crate::config::Config::default();
+    mutate(&mut cfg);
+    let mut state = test_state().await;
+    state.config = std::sync::Arc::new(cfg);
+    state
+        .initialized
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    state
+        .repo
+        .create_user(
+            "u",
+            Some(&hash_password("pw").unwrap()),
+            ServerRole::User,
+            0,
+        )
+        .await
+        .unwrap();
+    let server = axum_test::TestServer::builder()
+        .build(router(state).await)
+        .unwrap();
+    let res = server
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "u", "password": "pw" }))
+        .await;
+    res.assert_status(axum::http::StatusCode::NO_CONTENT);
+    res.header(axum::http::header::SET_COOKIE)
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn session_cookie_is_not_secure_on_a_plain_loopback_bind() {
+    let set_cookie = login_set_cookie_header(|_| {}).await;
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("secure"),
+        "unexpected Secure attribute: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn session_cookie_is_secure_on_a_loopback_bind_behind_a_declared_tls_proxy() {
+    let set_cookie = login_set_cookie_header(|cfg| cfg.behind_tls_proxy = true).await;
+    assert!(
+        set_cookie.to_ascii_lowercase().contains("secure"),
+        "missing Secure attribute: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn session_cookie_is_secure_on_a_plain_non_loopback_bind() {
+    let set_cookie = login_set_cookie_header(|cfg| cfg.bind = "0.0.0.0:30000".into()).await;
+    assert!(
+        set_cookie.to_ascii_lowercase().contains("secure"),
+        "missing Secure attribute: {set_cookie}"
+    );
+}
+
+#[tokio::test]
+async fn a_compressed_response_carries_vary_accept_encoding() {
+    let server = fresh_server().await;
+    let res = server
+        .get("/")
+        .add_header(axum::http::header::ACCEPT_ENCODING, "gzip")
+        .await;
+    res.assert_status_ok();
+    // The embedded SPA index is real built HTML, comfortably over the default 32-byte
+    // compression floor, and `text/html` is not excluded by `AssetAndWsSafePredicate`.
+    assert_eq!(
+        res.header(axum::http::header::CONTENT_ENCODING)
+            .to_str()
+            .unwrap(),
+        "gzip",
+        "expected the response to actually be compressed for this assertion to be meaningful"
+    );
+    assert_eq!(
+        res.header(axum::http::header::VARY).to_str().unwrap(),
+        "accept-encoding",
+        "a cache must know a compressed response varies by Accept-Encoding"
     );
 }
 

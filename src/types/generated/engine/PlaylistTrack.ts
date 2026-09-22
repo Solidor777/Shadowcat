@@ -8,7 +8,7 @@
  * ```
  * use shadowcat::data::engine::audio::PlaylistTrack;
  *
- * let track = PlaylistTrack { asset: "tavern-loop".into(), name: None, gain: 0.8, loop_: true };
+ * let track = PlaylistTrack { asset: "11111111-1111-1111-1111-111111111111".into(), name: None, gain: 0.8, loop_: true };
  * assert!(track.loop_);
  * ```
  */

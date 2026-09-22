@@ -3,7 +3,6 @@ use crate::auth::role::ServerRole;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_sessions::Session;
-use uuid::Uuid;
 
 // Test-only routes that exercise the extractors without the prod surface.
 async fn login_as_admin(session: Session) -> &'static str {
@@ -11,7 +10,7 @@ async fn login_as_admin(session: Session) -> &'static str {
         .insert(
             "user",
             SessionUser {
-                id: Uuid::from_u128(1),
+                id: crate::test_ids::test_uuid(1),
                 username: "a".into(),
                 role: ServerRole::Admin,
             },
@@ -25,7 +24,7 @@ async fn login_as_user(session: Session) -> &'static str {
         .insert(
             "user",
             SessionUser {
-                id: Uuid::from_u128(2),
+                id: crate::test_ids::test_uuid(2),
                 username: "u".into(),
                 role: ServerRole::User,
             },
@@ -142,7 +141,7 @@ async fn sweep_deletes_only_rows_expired_past_grace() {
     let world = repo.create_world_owned("W", gm, 0).await.unwrap();
     let now: i64 = 100 * 24 * 60 * 60 * 1000; // day 100
     let mk = |id: u128, expires_at: i64| NewInvite {
-        id: Uuid::from_u128(id),
+        id: crate::test_ids::test_uuid(id),
         world: world.id,
         secret_hash: "x",
         role: crate::data::document::WorldRole::Player,
@@ -160,12 +159,12 @@ async fn sweep_deletes_only_rows_expired_past_grace() {
     let deleted = super::sweep_spent_invites(repo.pool(), now).await.unwrap();
     assert_eq!(deleted, 1);
     assert!(repo
-        .invite_by_id(Uuid::from_u128(1))
+        .invite_by_id(crate::test_ids::test_uuid(1))
         .await
         .unwrap()
         .is_none());
     assert!(repo
-        .invite_by_id(Uuid::from_u128(2))
+        .invite_by_id(crate::test_ids::test_uuid(2))
         .await
         .unwrap()
         .is_some());

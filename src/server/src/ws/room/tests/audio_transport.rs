@@ -27,7 +27,7 @@ async fn seeded_room(
 fn playlist_doc(world: Uuid) -> crate::data::document::Document {
     let engine = PlaylistEngine {
         tracks: vec![PlaylistTrack {
-            asset: "tavern-loop".into(),
+            asset: "11111111-1111-1111-1111-111111111111".into(),
             name: None,
             gain: 0.8,
             loop_: false,
@@ -136,7 +136,7 @@ async fn a_gm_play_through_handle_transport_commits_the_new_playing_entry() {
     assert_eq!(state.playing.len(), 1);
     let entry = &state.playing[0];
     assert_eq!(entry.playlist, Some(playlist_id));
-    assert_eq!(entry.asset, "tavern-loop");
+    assert_eq!(entry.asset, "11111111-1111-1111-1111-111111111111");
     assert_eq!(entry.channel, AudioChannel::Music);
     assert_eq!(entry.started_at, 1_000.0);
 }

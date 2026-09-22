@@ -18,7 +18,7 @@ fn compile_regex_rejects_oversize_and_invalid_patterns() {
 fn cursor_round_trips_and_rejects_garbage() {
     let c = AssetCursor {
         sort_key: "map of crypt.png".into(),
-        id: Uuid::from_u128(7),
+        id: crate::test_ids::test_uuid(7),
     };
     let text = encode_cursor(&c);
     assert!(!text.contains(CURSOR_SEP));
@@ -27,7 +27,7 @@ fn cursor_round_trips_and_rejects_garbage() {
     // split off from the RIGHT.
     let tricky = AssetCursor {
         sort_key: format!("a{CURSOR_SEP}b"),
-        id: Uuid::from_u128(8),
+        id: crate::test_ids::test_uuid(8),
     };
     assert_eq!(decode_cursor(&encode_cursor(&tricky)).unwrap(), tricky);
     assert!(matches!(decode_cursor("!!"), Err(AppError::BadRequest(_))));

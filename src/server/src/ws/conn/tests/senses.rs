@@ -11,7 +11,7 @@ fn wall() -> serde_json::Value {
 }
 
 /// The stranger's token document the walk below moves, readable by every player.
-const STRANGER_TOKEN: Uuid = Uuid::from_u128(0x5E);
+const STRANGER_TOKEN: Uuid = crate::test_ids::test_uuid(0x5E);
 
 /// Publishes the stranger's token at (250,50) — behind the wall — at `elevation`.
 async fn publish_stranger_token(
@@ -47,9 +47,9 @@ async fn publish_stranger_token(
 /// The stranger's unlit two-sample walk behind the wall, moving `STRANGER_TOKEN`.
 fn dark_walk(scene: Uuid, now: i64) -> ServerMsg {
     ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0x5E1),
+        request_id: crate::test_ids::test_uuid(0x5E1),
         token_id: STRANGER_TOKEN,
-        mover: Uuid::from_u128(0xAABB),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene,
         start_server_ms: now as f64,
         duration_ms: 1_000.0,

@@ -49,3 +49,9 @@ pub mod tables;
 /// the HTTP routes).
 pub mod world_bundle;
 pub mod ws;
+
+/// Deterministic test-fixture UUIDs. Every server-generated document id is a v4 UUID
+/// (`data::validation::validate_document_id`), so a fixture built from a small integer must carry
+/// the same version/variant bits or every Create-path test fails identically at ingress.
+#[cfg(test)]
+pub(crate) mod test_ids;

@@ -36,7 +36,7 @@ async fn create_derives_base_for_an_instance_discarding_a_client_supplied_value(
     let mut doc = world_doc(1, world, serde_json::json!({ "hp": 7 }));
     doc.name = Some("Goblin".into());
     doc.source = Some(Source {
-        id: Uuid::from_u128(900),
+        id: crate::test_ids::test_uuid(900),
         pack: None,
         version: 1,
     });
@@ -51,7 +51,11 @@ async fn create_derives_base_for_an_instance_discarding_a_client_supplied_value(
     .await
     .unwrap();
 
-    let stored = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let stored = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     let base = stored.base.clone().expect("an instance carries a base");
     // The stored value is the SERVER's snapshot of the document's own
     // (validated, normalized) bands — nothing of the forged value survives.
@@ -82,7 +86,11 @@ async fn create_without_source_stores_no_base() {
     )
     .await
     .unwrap();
-    let stored = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let stored = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(stored.base.is_none(), "a non-instance never carries a base");
 }
 
@@ -91,7 +99,7 @@ async fn create_clears_base_on_embedded_children_recursively() {
     let (r, world, gm_ctx) = gm_setup().await;
     let mut doc = world_doc(1, world, serde_json::json!({}));
     doc.source = Some(Source {
-        id: Uuid::from_u128(900),
+        id: crate::test_ids::test_uuid(900),
         pack: None,
         version: 1,
     });
@@ -111,7 +119,11 @@ async fn create_clears_base_on_embedded_children_recursively() {
     .await
     .unwrap();
 
-    let stored = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let stored = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     let child = &stored.embedded["items"][0];
     assert!(
         child.base.is_none(),
@@ -148,7 +160,7 @@ async fn client_update_to_base_is_forbidden_even_for_a_gm() {
             &gm_ctx,
             world,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/base".into(),
@@ -177,7 +189,7 @@ async fn seeded_instance(
     let mut doc = world_doc(1, world, serde_json::json!({ "hp": 7 }));
     doc.name = Some("Goblin".into());
     doc.source = Some(Source {
-        id: Uuid::from_u128(900),
+        id: crate::test_ids::test_uuid(900),
         pack: None,
         version: 1,
     });
@@ -190,7 +202,10 @@ async fn seeded_instance(
     )
     .await
     .unwrap();
-    r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap()
+    r.get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -338,7 +353,7 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
     doc.doc_type = "wall".into();
     doc.engine = crate::data::document::tests::default_test_engine("wall");
     doc.source = Some(Source {
-        id: Uuid::from_u128(900),
+        id: crate::test_ids::test_uuid(900),
         pack: None,
         version: 1,
     });
@@ -355,7 +370,11 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
     r.seed_document_unvalidated(&doc).await.unwrap();
 
     // Reads never validate: the stale snapshot comes back verbatim.
-    let loaded = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    let loaded = r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.base, doc.base);
 
     // Rewriting the row re-validates the post-image — and fails closed on
@@ -369,7 +388,7 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
             &gm_ctx,
             world,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/name".into(),
@@ -408,7 +427,10 @@ async fn seeded_doc_with_embedded_item(
     )
     .await
     .unwrap();
-    r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap()
+    r.get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 /// A client-origin Update that would leave a `base` on an embedded child —
@@ -542,7 +564,7 @@ async fn create_propagates_the_templates_policy_and_records_it_in_the_base() {
 
     let mut instance = world_doc(2, world, serde_json::json!({ "hp": 7 }));
     instance.source = Some(Source {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         pack: None,
         version: 1,
     });
@@ -556,7 +578,11 @@ async fn create_propagates_the_templates_policy_and_records_it_in_the_base() {
     .await
     .unwrap();
 
-    let stored = r.get_document(Uuid::from_u128(2)).await.unwrap().unwrap();
+    let stored = r
+        .get_document(crate::test_ids::test_uuid(2))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         stored.permissions.property_overrides.get("/system/secret"),
         Some(&crate::data::document::Visibility::GmOnly),
@@ -574,7 +600,7 @@ async fn create_propagates_the_templates_policy_and_records_it_in_the_base() {
     // derives a base recording its own (empty) policy.
     let mut orphan = world_doc(3, world, serde_json::json!({ "hp": 1 }));
     orphan.source = Some(Source {
-        id: Uuid::from_u128(900),
+        id: crate::test_ids::test_uuid(900),
         pack: None,
         version: 1,
     });
@@ -587,10 +613,52 @@ async fn create_propagates_the_templates_policy_and_records_it_in_the_base() {
     )
     .await
     .unwrap();
-    let stored = r.get_document(Uuid::from_u128(3)).await.unwrap().unwrap();
+    let stored = r
+        .get_document(crate::test_ids::test_uuid(3))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(stored.permissions.property_overrides.is_empty());
     assert_eq!(
         stored.base.unwrap()["property_overrides"],
         serde_json::json!({})
+    );
+}
+
+/// `apply_intent`'s Update arm runs `validate_document_id_tree` over the merged post-image
+/// (not only at Create): a whole-collection `/embedded/items` replacement that introduces a
+/// child carrying a v1-shaped (time-based) id must be rejected, same as a Create ever would.
+#[tokio::test]
+async fn client_update_cannot_introduce_an_embedded_child_with_a_v1_shaped_id() {
+    let (r, world, gm_ctx) = gm_setup().await;
+    let stored = seeded_doc_with_embedded_item(&r, world, &gm_ctx).await;
+    let before = serde_json::to_value(&stored.embedded["items"]).unwrap();
+    let mut new_child = before[0].clone();
+    // A v1 (time-based, MAC-embedding) id: version nibble 0x1, RFC4122 variant -- rejected by
+    // `data::validation::validate_document_id`, never a v4/v7-shaped id.
+    new_child["id"] = serde_json::json!("11111111-1111-1111-8111-111111111111");
+    let after = serde_json::json!([new_child]);
+
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            world,
+            vec![Operation::Update {
+                doc_id: stored.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded/items".into(),
+                    old: before,
+                    new: after,
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::OpFailed(ref m) if m.contains("v4 or v7")),
+        "an embedded child with a v1-shaped id must be rejected, got {err:?}"
     );
 }

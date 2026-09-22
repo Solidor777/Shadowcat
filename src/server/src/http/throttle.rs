@@ -21,6 +21,13 @@ pub const LOGIN_PER_MIN_PER_IP: usize = 30;
 pub const INVITE_PER_MIN_PER_ACCOUNT: usize = 10;
 /// Per-IP invite-redemption budget.
 pub const INVITE_PER_MIN_PER_IP: usize = 30;
+/// Per-account world-creation budget (trailing 60 s). `create_world` requires only an
+/// authenticated `AuthUser` with no per-world capability check, so an unthrottled account
+/// could mint unbounded worlds (each seeding a full config-doc set via `apply_intent`),
+/// exhausting storage/DB rows with no signal beyond ordinary write volume. Sized well above
+/// legitimate interactive use (no test in this crate creates more than a handful of worlds
+/// per session) while still bounding a scripted flood to one order of magnitude per minute.
+pub const WORLD_CREATE_PER_MIN_PER_ACCOUNT: usize = 10;
 /// Tracked-key capacity. Unauthenticated input mints identity keys, so the map
 /// must be bounded; per-IP budgets cap the mint rate per address, and on
 /// overflow new keys FAIL CLOSED (throttled) rather than evicting live state.

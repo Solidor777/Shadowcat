@@ -466,7 +466,7 @@ async fn effective_owner_of_joins_the_linked_actor_on_the_pool() {
     let mut dangling = token.clone();
     dangling.engine = Some(serde_json::json!({
         "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
-        "actor_id": Uuid::from_u128(999999).to_string()
+        "actor_id": crate::test_ids::test_uuid(999999).to_string()
     }));
     assert_eq!(r.effective_owner_of(&dangling).await.unwrap(), None);
 
@@ -945,7 +945,7 @@ async fn carried_light_authoring_is_gm_only() {
     // WRITE_FIELDS grant on the actor first, so ONLY the light rule can refuse the write.
     let mut lit_actor = actor_doc_owned_by(w, Some(p1));
     lit_actor.engine = Some(serde_json::json!({
-        "displayName": "Torch", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Torch", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true
     }));

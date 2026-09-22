@@ -163,13 +163,13 @@ async fn duplicate_settings_docs_resolve_deterministically_by_lowest_id() {
     // lowest-UUID doc's policy always wins.
     let (repo, world_id, gm) = world().await;
     let mut low = settings_doc(world_id, gm, serde_json::json!({ "markdown": true }));
-    low.id = Uuid::from_u128(1);
+    low.id = crate::test_ids::test_uuid(1);
     let mut high = settings_doc(
         world_id,
         gm,
         serde_json::json!({ "markdown": false, "html": true }),
     );
-    high.id = Uuid::from_u128(u128::MAX);
+    high.id = crate::test_ids::test_uuid(u128::MAX);
     // Insert the high-id doc FIRST to prove insertion order doesn't decide it.
     seed_settings_doc(&repo, world_id, gm, high).await;
     seed_settings_doc(&repo, world_id, gm, low).await;

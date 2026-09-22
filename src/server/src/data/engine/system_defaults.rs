@@ -145,6 +145,8 @@ impl SceneDefaultsOverlay {
             if !(0.0..=1.0).contains(&e.intensity) {
                 return Err("scene.environment.intensity must be within 0..=1".into());
             }
+            e.validate()
+                .map_err(|m| format!("scene.environment: {m}"))?;
         }
         Ok(())
     }

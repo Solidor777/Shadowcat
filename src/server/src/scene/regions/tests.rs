@@ -361,7 +361,7 @@ fn parse_region_shape_malformed_is_none() {
 /// A `TriggerRegion` fixture covering `cells` with `triggers`, id derived from `id`.
 fn trigger_region(id: u128, cells: &[(i32, i32)], triggers: Vec<RegionTrigger>) -> TriggerRegion {
     TriggerRegion {
-        region_id: Uuid::from_u128(id),
+        region_id: crate::test_ids::test_uuid(id),
         visible_to_all: true,
         triggers,
         cells: cells.iter().copied().collect(),
@@ -387,7 +387,7 @@ fn fired_triggers_enter_matches_only_covered_entered_cells() {
     ];
     let fired = fired_triggers(&regions, &[(0, 0), (1, 0)], None);
     assert_eq!(fired.len(), 1, "only the covered region's trigger fires");
-    assert_eq!(fired[0].0.region_id, Uuid::from_u128(1));
+    assert_eq!(fired[0].0.region_id, crate::test_ids::test_uuid(1));
 
     let none = fired_triggers(&regions, &[(0, 0)], None);
     assert!(none.is_empty(), "no coverage, no fire");

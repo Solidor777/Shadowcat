@@ -250,8 +250,8 @@ async fn parent_id_round_trips_and_query_children_filters() {
         .await
         .unwrap();
     let world = repo.create_world_owned("w", owner, 0).await.unwrap();
-    let scene = Uuid::from_u128(10);
-    let token = Uuid::from_u128(11);
+    let scene = crate::test_ids::test_uuid(10);
+    let token = crate::test_ids::test_uuid(11);
     let scene_doc = crate::data::document::tests::world_scoped_doc(world.id, scene, "scene");
     let mut token_doc = crate::data::document::tests::world_scoped_doc(world.id, token, "token");
     token_doc.parent_id = Some(scene);
@@ -614,6 +614,50 @@ async fn delete_user_guards() {
 }
 
 #[tokio::test]
+async fn set_user_password_updates_hash_and_revokes_sessions() {
+    let repo = repo().await;
+    crate::auth::session::SqlxSqliteStore::new(
+        repo.pool().clone(),
+        repo.open_read_pool().await.unwrap(),
+    )
+    .migrate()
+    .await
+    .unwrap();
+    let u = repo
+        .create_user("u", Some("old-hash"), ServerRole::User, 0)
+        .await
+        .unwrap();
+    seed_session(&repo, 1, u, "u").await;
+    assert_eq!(session_count_for(&repo, u).await, 1);
+
+    repo.set_user_password(u, "new-hash").await.unwrap();
+
+    assert_eq!(session_count_for(&repo, u).await, 0, "sessions revoked");
+    let stored_hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
+        .bind(u.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored_hash, "new-hash");
+}
+
+#[tokio::test]
+async fn set_user_password_unknown_id_is_not_found() {
+    let repo = repo().await;
+    crate::auth::session::SqlxSqliteStore::new(
+        repo.pool().clone(),
+        repo.open_read_pool().await.unwrap(),
+    )
+    .migrate()
+    .await
+    .unwrap();
+    assert!(matches!(
+        repo.set_user_password(Uuid::new_v4(), "h").await,
+        Err(DataError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn user_delete_nulls_asset_created_by() {
     let repo = repo().await;
     let u = repo
@@ -836,9 +880,9 @@ async fn deleting_a_scene_expands_to_descendant_delete_ops() {
         .await
         .unwrap();
     let world = repo.create_world_owned("w", owner, 0).await.unwrap();
-    let scene = Uuid::from_u128(10);
-    let t1 = Uuid::from_u128(11);
-    let t2 = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let t1 = crate::test_ids::test_uuid(11);
+    let t2 = crate::test_ids::test_uuid(12);
     let mk = |id, parent: Option<Uuid>, ty| {
         let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, ty);
         d.parent_id = parent;
@@ -943,7 +987,7 @@ async fn cross_world_parent_create_is_rejected() {
     // Parent persisted in world B (the self-FK references the global documents
     // table, so a cross-world parent_id satisfies the FK and must be caught by
     // the scope check instead).
-    let parent_id = Uuid::from_u128(77);
+    let parent_id = crate::test_ids::test_uuid(77);
     let parent = crate::data::document::tests::world_scoped_doc(wb.id, parent_id, "scene");
     r.apply_command(UnsequencedCommand {
         world_id: wb.id,
@@ -991,7 +1035,7 @@ async fn self_referential_parent_delete_terminates() {
         .await
         .unwrap();
     let world = r.create_world_owned("w", owner, 0).await.unwrap();
-    let id = Uuid::from_u128(42);
+    let id = crate::test_ids::test_uuid(42);
     let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, "scene");
     d.parent_id = Some(id); // self-referential
     d.owner = Some(owner);
@@ -1033,9 +1077,9 @@ async fn query_scene_entities_returns_scenes_and_children_only() {
         .await
         .unwrap();
     let world = r.create_world_owned("w", owner, 0).await.unwrap();
-    let scene = Uuid::from_u128(10);
-    let token = Uuid::from_u128(11);
-    let actor = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let token = crate::test_ids::test_uuid(11);
+    let actor = crate::test_ids::test_uuid(12);
     let mk = |id, parent: Option<Uuid>, ty| {
         let mut d = crate::data::document::tests::world_scoped_doc(world.id, id, ty);
         d.parent_id = parent;
@@ -1078,7 +1122,7 @@ async fn asset_insert_get_replace_delete_list_round_trip() {
         .await
         .unwrap();
     let world = r.create_world_owned("w", owner, 0).await.unwrap();
-    let id = Uuid::from_u128(500);
+    let id = crate::test_ids::test_uuid(500);
     let a = Asset {
         id,
         world_id: world.id,
@@ -1318,7 +1362,7 @@ async fn ui_state_merges_per_top_level_key_and_per_world() {
     assert_eq!(v["worlds"]["w1"]["panelLayout"]["version"], 2);
 
     // Unknown user → NotFound.
-    let ghost = Uuid::from_u128(1);
+    let ghost = crate::test_ids::test_uuid(1);
     assert!(matches!(
         repo.merge_ui_state(ghost, &serde_json::json!({}), 64 * 1024)
             .await,
@@ -1431,11 +1475,11 @@ async fn ui_state_merge_caps_the_merged_result_not_the_patch() {
 #[tokio::test]
 async fn explored_fog_round_trips_and_is_per_scene_user() {
     let repo = repo().await;
-    let world = Uuid::from_u128(9);
-    let scene_a = Uuid::from_u128(10);
-    let scene_b = Uuid::from_u128(11);
-    let alice = Uuid::from_u128(20);
-    let bob = Uuid::from_u128(21);
+    let world = crate::test_ids::test_uuid(9);
+    let scene_a = crate::test_ids::test_uuid(10);
+    let scene_b = crate::test_ids::test_uuid(11);
+    let alice = crate::test_ids::test_uuid(20);
+    let bob = crate::test_ids::test_uuid(21);
 
     // Unexplored → None.
     assert_eq!(repo.get_explored(scene_a, "", alice).await.unwrap(), None);
@@ -2003,7 +2047,7 @@ async fn create_actor_omitting_faction_persists_explicit_null() {
         "actor",
         serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "conditions": [],
@@ -2078,7 +2122,7 @@ async fn apply_intent_update_normalizes_engine_broadcast_and_event_log_smuggled_
         "actor",
         serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2113,7 +2157,7 @@ async fn apply_intent_update_normalizes_engine_broadcast_and_event_log_smuggled_
     // `visual` tagged-enum sub-object.
     let smuggled_engine = serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "b.png", "smuggled": "evil" },
+        "visual": { "kind": "image", "asset": "22222222-2222-2222-2222-222222222222", "smuggled": "evil" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -2217,7 +2261,7 @@ async fn apply_intent_update_normalizes_engine_integer_literal_to_stored_float()
         "actor",
         serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2311,7 +2355,7 @@ async fn apply_command_update_normalizes_engine_broadcast_and_event_log_smuggled
         "actor",
         serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2341,7 +2385,7 @@ async fn apply_command_update_normalizes_engine_broadcast_and_event_log_smuggled
     // `visual` tagged-enum sub-object.
     let smuggled_engine = serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "b.png", "smuggled": "evil" },
+        "visual": { "kind": "image", "asset": "22222222-2222-2222-2222-222222222222", "smuggled": "evil" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -2413,7 +2457,7 @@ async fn apply_command_update_normalizes_engine_integer_literal_to_stored_float(
         "actor",
         serde_json::json!({
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -2807,9 +2851,9 @@ async fn declarative_requirement_blocks_create_with_protected_subtree() {
 #[tokio::test]
 async fn explored_fog_is_keyed_per_scene_level_user() {
     let repo = repo().await;
-    let world = Uuid::from_u128(9);
-    let scene = Uuid::from_u128(10);
-    let alice = Uuid::from_u128(20);
+    let world = crate::test_ids::test_uuid(9);
+    let scene = crate::test_ids::test_uuid(10);
+    let alice = crate::test_ids::test_uuid(20);
 
     // Two levels of the SAME scene keep independent memory: a blob written under "l1" is
     // invisible to a read under "l2", and each level's upsert replaces only its own row.

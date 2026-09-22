@@ -34,7 +34,7 @@ async fn place_region(
     triggers: serde_json::Value,
 ) -> Uuid {
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let region_id = Uuid::from_u128(id);
+    let region_id = crate::test_ids::test_uuid(id);
     let mut region = wdoc(h.world_id, region_id, "region");
     region.parent_id = Some(h.scene_id);
     region.owner = Some(h.gm.user_id);
@@ -64,12 +64,12 @@ async fn link_actor(
     system: serde_json::Value,
 ) -> Uuid {
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let actor_id = Uuid::from_u128(actor_id);
+    let actor_id = crate::test_ids::test_uuid(actor_id);
     let mut actor = wdoc(h.world_id, actor_id, "actor");
     actor.owner = Some(h.gm.user_id);
     actor.system = system;
     actor.engine = Some(json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": conditions, "prototype": false
     }));
@@ -262,9 +262,9 @@ async fn resource_delta_applies_tracked_amounts_against_the_entering_tokens_comb
 
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (combat_id, combatant_id, registry_id) = (
-        Uuid::from_u128(0x7A7),
-        Uuid::from_u128(0x7A8),
-        Uuid::from_u128(0x7A9),
+        crate::test_ids::test_uuid(0x7A7),
+        crate::test_ids::test_uuid(0x7A8),
+        crate::test_ids::test_uuid(0x7A9),
     );
     let mut combat = wdoc(h.world_id, combat_id, "combat");
     combat.owner = Some(h.gm.user_id);
@@ -414,7 +414,7 @@ async fn resource_delta_without_an_active_combat_is_a_gm_only_failure_notice() {
 async fn a_secret_regions_notice_is_forced_gm_only_whatever_it_authored() {
     let h = movement_scene("unrestricted", false).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let region_id = Uuid::from_u128(0x7AD);
+    let region_id = crate::test_ids::test_uuid(0x7AD);
     let mut region = wdoc(h.world_id, region_id, "region");
     region.parent_id = Some(h.scene_id);
     region.owner = Some(h.gm.user_id);
@@ -472,7 +472,7 @@ async fn placement_and_teleport_fire_enter_effects_but_region_edits_and_disabled
     .await;
 
     // Placement: a token created inside the region fires its enter effects.
-    let mut placed = wdoc(h.world_id, Uuid::from_u128(0x7AF), "token");
+    let mut placed = wdoc(h.world_id, crate::test_ids::test_uuid(0x7AF), "token");
     placed.parent_id = Some(h.scene_id);
     placed.owner = Some(h.gm.user_id);
     placed.engine = Some(token_engine(550.0, 550.0));
@@ -625,7 +625,7 @@ async fn placement_and_teleport_fire_enter_effects_but_region_edits_and_disabled
 /// Creates a GM-owned, world-readable second scene in `h`'s world, for cross-scene teleports.
 async fn place_scene(h: &MovementHandle, id: u128) -> Uuid {
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(id);
+    let scene_id = crate::test_ids::test_uuid(id);
     let mut scene = wdoc(h.world_id, scene_id, "scene");
     scene.owner = Some(h.gm.user_id);
     // The same envelope convention `place_region` uses: world-readable.
@@ -774,7 +774,7 @@ async fn place_vfx_teleport_region(h: &MovementHandle, id: u128, cell: (i32, i32
         "terrain",
         json!([
             { "on": "enter", "effect": { "type": "teleport",
-                "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": null, "vfx": "portal-flash" } } },
+                "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": null, "vfx": "11111111-1111-1111-1111-111111111111" } } },
             { "on": "enter", "effect": { "type": "chat_notice", "text": "A portal hums.", "audience": "public" } },
         ]),
     )
@@ -843,7 +843,7 @@ async fn teleport_vfx_is_throttled_by_the_shared_vfx_rate_bucket_like_repeated_f
 #[tokio::test]
 async fn teleport_to_a_missing_scene_notices_the_gm_and_moves_nothing() {
     let h = movement_scene("unrestricted", false).await;
-    let missing = Uuid::from_u128(0xDEAD);
+    let missing = crate::test_ids::test_uuid(0xDEAD);
     place_region(
         &h,
         0x7D0,
@@ -900,7 +900,7 @@ async fn teleport_to_a_cross_world_scene_notices_the_gm_and_moves_nothing() {
         .await
         .unwrap()
         .unwrap();
-    let foreign_scene_id = Uuid::from_u128(0x7F0_5CE1);
+    let foreign_scene_id = crate::test_ids::test_uuid(0x7F0_5CE1);
     let mut foreign_scene =
         crate::data::document::tests::world_scoped_doc(other_world.id, foreign_scene_id, "scene");
     foreign_scene.owner = Some(h.gm.user_id);
@@ -1045,7 +1045,10 @@ async fn teleporting_a_combatant_off_an_active_combats_scene_posts_a_notice() {
     let h = movement_scene("unrestricted", false).await;
     let actor_id = link_actor(&h, 0x800, vec![], json!({})).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let (combat_id, combatant_id) = (Uuid::from_u128(0x801), Uuid::from_u128(0x802));
+    let (combat_id, combatant_id) = (
+        crate::test_ids::test_uuid(0x801),
+        crate::test_ids::test_uuid(0x802),
+    );
     let mut combat = wdoc(h.world_id, combat_id, "combat");
     combat.owner = Some(h.gm.user_id);
     combat.engine = Some(json!({

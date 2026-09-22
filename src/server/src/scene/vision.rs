@@ -226,6 +226,19 @@ pub(crate) fn point_in_poly(poly: &[P], p: P) -> bool {
     inside
 }
 
+/// Whether `seg`'s own axis-aligned bounding box overlaps `r`'s. `viewpoint` lies inside `bound`
+/// by every caller's construction (`bound_for`/`bound_for_scene` build it that way), so a segment
+/// whose bbox has zero overlap with `bound`'s bbox lies entirely outside the rectangle; by
+/// convexity, any ray leaving an interior point already crosses `bound`'s own edge (one of
+/// `Rect::edges`, always present in `segs`) before it could reach that segment, so `nearest_hit`
+/// never needs to consider it. Filtering it out here changes no polygon vertex, only how many
+/// segments `nearest_hit` scans per ray.
+fn seg_overlaps_rect(seg: &Seg, r: &Rect) -> bool {
+    let (minx, maxx) = (seg.a.0.min(seg.b.0), seg.a.0.max(seg.b.0));
+    let (miny, maxy) = (seg.a.1.min(seg.b.1), seg.a.1.max(seg.b.1));
+    minx <= r.maxx && maxx >= r.minx && miny <= r.maxy && maxy >= r.miny
+}
+
 /// The visibility polygon from `viewpoint`, occluded by `walls`, terminated by `bound`.
 /// Vertices are in ascending-angle order (a star-shaped polygon around the viewpoint).
 ///
@@ -240,7 +253,14 @@ pub(crate) fn point_in_poly(poly: &[P], p: P) -> bool {
 /// assert!(!poly.is_empty());
 /// ```
 pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
-    let mut segs: Vec<Seg> = walls.to_vec();
+    // Pre-filter to walls whose bbox overlaps `bound` before cloning/sampling: a large scene's
+    // wall slice otherwise gets fully cloned and every endpoint angle-sampled regardless of how
+    // few walls are actually near this viewpoint's bound.
+    let mut segs: Vec<Seg> = walls
+        .iter()
+        .copied()
+        .filter(|s| seg_overlaps_rect(s, &bound))
+        .collect();
     segs.extend(bound.edges());
 
     // Sample three angles per endpoint (θ, θ±ε) so rays slip past corners.

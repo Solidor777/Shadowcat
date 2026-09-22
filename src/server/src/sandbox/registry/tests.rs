@@ -181,7 +181,7 @@ async fn validate_document_over_a_scanned_registry_isolates_each_modules_fault_s
     write_installed_module(dir.path(), "module-b", "item", ACCEPTING_WAT);
 
     let registry = scan_dir(dir.path());
-    let world = uuid::Uuid::from_u128(42);
+    let world = crate::test_ids::test_uuid(42);
     let a_only = vec!["module-a".to_string()];
     let b_only = vec!["module-b".to_string()];
     let mut d = doc("item", serde_json::json!({}));
@@ -225,7 +225,7 @@ async fn cache_detects_an_in_place_wasm_swap() {
     let dir = tempfile::tempdir().unwrap();
     write_installed_module(dir.path(), "module-a", "item", ACCEPTING_WAT);
     let cache = ValidatorRegistryCache::default();
-    let world = uuid::Uuid::from_u128(77);
+    let world = crate::test_ids::test_uuid(77);
     let ids = vec!["module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
 
@@ -293,7 +293,7 @@ async fn cache_detects_a_declared_wasm_dropped_in_after_a_missing_scan() {
     assert!(second.validator_for("module-a", "item").is_some());
     assert!(second.load_error_for("module-a").is_none());
 
-    let world = uuid::Uuid::from_u128(78);
+    let world = crate::test_ids::test_uuid(78);
     let ids = vec!["module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
     let verdict =

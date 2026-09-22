@@ -147,25 +147,37 @@ pub async fn admin_backup(
     _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<crate::backup::BackupManifest>, AppError> {
+    // Resolved through `db::database_file` rather than treated as a bare path — `state.config.db`
+    // may be a `sqlite:`-scheme URL, which a literal `Path::new` would target incorrectly.
+    // `Ok(None)` (in-memory) is a caller-facing configuration mistake, distinct from `Err(e)`
+    // (a malformed `config.db` string) — the same two-way split `run_backup`'s own
+    // `database_file` call makes for the CLI backup mode.
+    let db_path = match crate::db::database_file(&state.config.db) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return Err(AppError::Unprocessable(format!(
+                "backup requires a file-backed database; {} is in-memory",
+                state.config.db
+            )));
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "in-server backup failed to resolve the database file");
+            return Err(AppError::Internal);
+        }
+    };
+    let backups_root = state.config.backups_path_for(&db_path);
     let _quiesce = state.write_barrier.write().await;
-    let out = state
-        .config
-        .backups_path()
-        .join(format!("backup-{}", now_millis()));
+    let out = backups_root.join(format!("backup-{}", now_millis()));
     // `create_backup` opens its own single-connection pool against the same
     // SQLite file; a `VACUUM INTO` "database is locked" from racing the live
     // pool surfaces as an ordinary Internal error for the admin to retry —
     // no busy-loop.
-    let manifest = crate::backup::create_backup(
-        std::path::Path::new(&state.config.db),
-        &state.config.assets_path(),
-        &out,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "in-server backup failed");
-        AppError::Internal
-    })?;
+    let manifest = crate::backup::create_backup(&db_path, &state.config.assets_path(), &out)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "in-server backup failed");
+            AppError::Internal
+        })?;
     Ok(Json(manifest))
 }
 
@@ -689,6 +701,24 @@ pub(crate) fn validate_username(raw: &str) -> Result<String, AppError> {
     Ok(name.to_owned())
 }
 
+/// Validate a plaintext password against the account policy (length floor/ceiling). Applied
+/// at EVERY password-setting path — `create_user` and `reset_user_password` — so the two
+/// routes can never drift on what password is admissible (never fork a decision two call
+/// sites must agree on).
+fn validate_password_policy(password: &str) -> Result<(), AppError> {
+    if password.len() < MIN_PASSWORD_LEN {
+        return Err(AppError::Unprocessable(format!(
+            "password must be at least {MIN_PASSWORD_LEN} characters"
+        )));
+    }
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::Unprocessable(format!(
+            "password must be at most {MAX_PASSWORD_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// `POST /api/users` body (admin-only route).
 ///
 /// # Examples
@@ -778,16 +808,7 @@ pub async fn create_user(
     Json(body): Json<CreateUserRequest>,
 ) -> Result<Json<UserEntry>, AppError> {
     let username = validate_username(&body.username)?;
-    if body.password.len() < MIN_PASSWORD_LEN {
-        return Err(AppError::Unprocessable(format!(
-            "password must be at least {MIN_PASSWORD_LEN} characters"
-        )));
-    }
-    if body.password.len() > MAX_PASSWORD_BYTES {
-        return Err(AppError::Unprocessable(format!(
-            "password must be at most {MAX_PASSWORD_BYTES} bytes"
-        )));
-    }
+    validate_password_policy(&body.password)?;
     let server_role = body.server_role.unwrap_or(ServerRole::User);
     let hash = crate::auth::password::hash_password_async(body.password)
         .await
@@ -910,6 +931,90 @@ pub async fn delete_user(
         return Err(AppError::Conflict("cannot delete your own account".into()));
     }
     state.repo.delete_user(target).await?;
+    state.ws.rooms.evict_user(target);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/users/{id}/password` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::ResetPasswordRequest;
+///
+/// let body: ResetPasswordRequest = serde_json::from_str(r#"{"password":"a-new-password"}"#).unwrap();
+/// assert_eq!(body.password, "a-new-password");
+/// ```
+#[derive(Deserialize)]
+pub struct ResetPasswordRequest {
+    /// The account's new plaintext password (Argon2-hashed before storage;
+    /// checked against the same policy `create_user` applies).
+    pub password: String,
+}
+
+/// POST /api/users/{id}/password — server-admin only (`AdminUser`, the same guard
+/// `create_user` uses). Resets the target account's password and, in the same
+/// transaction as the hash update, revokes every existing session for that account
+/// (`SqliteRepository::set_user_password`) — the identical live-eviction reasoning
+/// `delete_user` already documents (a surviving session would keep the OLD password's
+/// authenticated state alive). Live WS connections are kicked via `state.ws.rooms.
+/// evict_user`, the SAME call `delete_user`'s route makes, never a second eviction
+/// mechanism. An admin resetting their OWN password is not special-cased: their own
+/// sessions and live connections are evicted too, the same as any other target —
+/// intended, since a password change invalidates every session for the account, self
+/// included. Failure mapping is condition-specific, not uniform: an unknown target id is
+/// `AppError::NotFound` (404, existence-hiding, matching `create_user`/`delete_user`'s own
+/// routes); a password failing `validate_password_policy` is `AppError::Unprocessable`
+/// (422); an Argon2 hashing failure is `AppError::Internal` (500).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{reset_user_password, ResetPasswordRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let admin_id = repo.create_user("admin", None, ServerRole::Admin, 0).await.unwrap();
+/// let target = repo.create_user("gm", Some("old-hash"), ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// // `reset_user_password` also clears the target's session-store rows, so the
+/// // `tower_sessions` table must exist first, same as `delete_user`'s own example.
+/// let _ = shadowcat::http::router(state.clone()).await;
+/// let admin_user = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
+/// let body = ResetPasswordRequest { password: "a-new-password".into() };
+/// let result = reset_user_password(admin_user, State(state), Path(target), Json(body)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
+pub async fn reset_user_password(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Path(target): Path<Uuid>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    validate_password_policy(&body.password)?;
+    let hash = crate::auth::password::hash_password_async(body.password)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    state.repo.set_user_password(target, &hash).await?;
     state.ws.rooms.evict_user(target);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1075,7 +1180,12 @@ pub async fn list_worlds(
     ))
 }
 
-/// Any authenticated user may create a world; the creator is seated as its GM.
+/// Any authenticated user may create a world; the creator is seated as its GM. Throttled
+/// per-account via `AppState.auth_throttle` (`throttle::WORLD_CREATE_PER_MIN_PER_ACCOUNT`,
+/// overridable via `Config.world_create_per_min_per_account` exactly like `login`'s
+/// `Config.login_per_min_per_identity` — the same sliding-window limiter the login/invite
+/// endpoints share) — `AuthThrottle::check` rejects with `AppError::TooManyRequests` before
+/// any world row is created.
 ///
 /// # Examples
 ///
@@ -1115,6 +1225,17 @@ pub async fn create_world(
     State(state): State<AppState>,
     Json(body): Json<CreateWorldRequest>,
 ) -> Result<Json<World>, AppError> {
+    use crate::http::throttle::WORLD_CREATE_PER_MIN_PER_ACCOUNT;
+    let per_account = state
+        .config
+        .world_create_per_min_per_account
+        .unwrap_or(WORLD_CREATE_PER_MIN_PER_ACCOUNT);
+    let key = format!("world_create:u:{}", user.id);
+    if !state.auth_throttle.check(&key, now_millis(), per_account) {
+        return Err(AppError::TooManyRequests(
+            "too many worlds created; try again later".to_string(),
+        ));
+    }
     let world = state
         .repo
         .create_world_owned(&body.name, user.id, now_millis())
@@ -1917,7 +2038,7 @@ pub async fn remove_member(
 ///     parent_id: None,
 ///     engine: Some(serde_json::json!({
 ///         "displayName": "Player Dragon",
-///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "visual": { "kind": "image", "asset": "77777777-7777-7777-7777-777777777777" },
 ///         "size": { "w": 1.0, "h": 1.0 },
 ///         "shape": "square",
 ///         "faction": null,
@@ -2309,7 +2430,7 @@ pub struct PatchRequest {
 ///     parent_id: None,
 ///     engine: Some(serde_json::json!({
 ///         "displayName": "Player Dragon",
-///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "visual": { "kind": "image", "asset": "77777777-7777-7777-7777-777777777777" },
 ///         "size": { "w": 1.0, "h": 1.0 },
 ///         "shape": "square",
 ///         "faction": null,
@@ -2419,7 +2540,7 @@ pub async fn patch_document(
 ///     parent_id: None,
 ///     engine: Some(serde_json::json!({
 ///         "displayName": "Player Dragon",
-///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "visual": { "kind": "image", "asset": "77777777-7777-7777-7777-777777777777" },
 ///         "size": { "w": 1.0, "h": 1.0 },
 ///         "shape": "square",
 ///         "faction": null,

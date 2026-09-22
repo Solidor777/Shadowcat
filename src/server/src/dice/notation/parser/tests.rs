@@ -417,9 +417,40 @@ fn rejects_min_with_wrong_arity() {
     match parse("min(3)", ParseContext::default()) {
         Err(ParseError::Unexpected(msg)) => {
             assert!(msg.contains("min"), "{msg}");
-            assert!(msg.contains('2'), "{msg}");
+            assert!(msg.contains("at least 2"), "{msg}");
         }
         other => panic!("expected an arity Unexpected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_min_with_zero_args() {
+    // The grammar requires at least one `expr` before any `,`, so `min()` fails at the
+    // leading-expression parse, never reaching the arity check at all.
+    assert!(parse("min()", ParseContext::default()).is_err());
+}
+
+#[test]
+fn parses_min_call_with_three_dice_groups() {
+    let spec = parse("min(1d6,1d8,1d10)", ParseContext::default()).unwrap();
+    match spec.expr {
+        Expr::Call {
+            name: FnName::Min,
+            args,
+        } => assert_eq!(args.len(), 3),
+        other => panic!("expected a 3-arg Min call, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_max_call_with_four_bare_consts() {
+    let spec = parse("max(1,2,3,4)", ParseContext::default()).unwrap();
+    match spec.expr {
+        Expr::Call {
+            name: FnName::Max,
+            args,
+        } => assert_eq!(args.len(), 4),
+        other => panic!("expected a 4-arg Max call, got {other:?}"),
     }
 }
 

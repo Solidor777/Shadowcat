@@ -62,6 +62,26 @@ impl Sink<Message> for GatedSink {
     }
 }
 
+/// A graceful-shutdown receiver that never fires — the sender is leaked into the returned
+/// receiver's channel by being dropped only after the process exits (it lives for the whole
+/// test binary), so an `EgressConnState` built with this never sees its `shutdown` arm
+/// resolve. Every existing `egress_loop` test that isn't specifically exercising shutdown uses
+/// this, so adding the field doesn't change any of their behavior.
+fn never_shuts_down() -> tokio::sync::watch::Receiver<bool> {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    // Leaked deliberately: keeps the channel open for the receiver's lifetime without
+    // threading an extra `_tx` binding through every call site.
+    std::mem::forget(tx);
+    rx
+}
+
+/// A fresh `EgressConnState.last_activity` timestamp, stamped "now" -- the same seeding
+/// `handle_socket` does at connect time, so a test-constructed `egress_loop` never reads as
+/// already-silent before its ping timer has had a chance to run.
+fn fresh_last_activity() -> Arc<std::sync::Mutex<std::time::Instant>> {
+    Arc::new(std::sync::Mutex::new(std::time::Instant::now()))
+}
+
 /// Extracts the text payload of a `Message::Text`, or `""` for any other variant.
 fn msg_text(m: &Message) -> &str {
     match m {
@@ -127,6 +147,8 @@ async fn egress_lag_triggers_resync_and_converges() {
                 "nonexistent-test-modules-dir-for-egress-lag-test",
             ),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: fresh_last_activity(),
         },
     ));
 
@@ -144,7 +166,7 @@ async fn egress_lag_triggers_resync_and_converges() {
     for n in 0..30u128 {
         let mut doc = crate::data::document::tests::world_scoped_doc(
             world.id,
-            Uuid::from_u128(1000 + n),
+            crate::test_ids::test_uuid(1000 + n),
             "actor",
         );
         doc.owner = Some(author);
@@ -190,6 +212,416 @@ async fn egress_lag_triggers_resync_and_converges() {
 
     drop(etx);
     let _ = egress.await;
+}
+
+/// `WsState::trigger_shutdown`'s signal reaches a live `egress_loop`: it sends a Close frame
+/// and its spawned task completes, mirroring `main`'s `axum::serve(..).with_graceful_shutdown`
+/// wiring — the shutdown future there only resolves once every such task has exited.
+#[tokio::test]
+async fn egress_loop_exits_on_shutdown_signal() {
+    use crate::data::document::WorldRole;
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let author = repo
+        .create_user("a", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", author, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: author,
+        world_role: WorldRole::Gm,
+    };
+    let reg = crate::ws::room::RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (rx, current_seq) = room.subscribe();
+
+    let credits = Arc::new(Semaphore::new(64));
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let (_etx, erx) = mpsc::channel::<Egress>(8);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let egress = tokio::spawn(egress_loop(
+        GatedSink {
+            out: out_tx,
+            credits,
+            acquiring: None,
+        },
+        rx,
+        erx,
+        EgressConnState {
+            room: room.clone(),
+            repo: repo.clone(),
+            ctx,
+            current_seq,
+            modules_dir: std::path::PathBuf::from("nonexistent-modules-dir-for-shutdown-test"),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: shutdown_rx,
+            last_activity: fresh_last_activity(),
+        },
+    ));
+
+    let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .expect("egress did not emit Welcome")
+        .expect("egress sink closed before Welcome");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&welcome)).unwrap()["type"],
+        "welcome"
+    );
+
+    // Not yet shut down: the task must still be running.
+    assert!(!egress.is_finished());
+
+    shutdown_tx.send(true).unwrap();
+
+    // The task completes...
+    tokio::time::timeout(std::time::Duration::from_secs(5), egress)
+        .await
+        .expect("egress task did not exit after shutdown signal")
+        .unwrap();
+
+    // ...having sent a Close frame as its last outgoing message.
+    let mut saw_close = false;
+    while let Ok(m) = out_rx.try_recv() {
+        if matches!(m, Message::Close(_)) {
+            saw_close = true;
+        }
+    }
+    assert!(saw_close, "egress must send a Close frame before exiting");
+}
+
+/// Everything `heartbeat_test_harness` builds, held together so the caller can keep it all
+/// alive for its test's whole duration. `_etx` is the ingress-side sender `egress_loop`'s
+/// `cmd = erx.recv()` arm reads: dropping it (as a local variable inside the harness function
+/// would, once the function returns) makes that arm observe `None` and `break` on the very
+/// next poll — an ordinary ingress-gone shutdown, not a heartbeat-related close, but
+/// indistinguishable from one to a caller that isn't holding `_etx` open. `_room_registry` and
+/// `room` are handed back for the same reason: the registry and room outlive the harness
+/// function so the room a test broadcasts into is the one `egress_loop` subscribed to. The
+/// repository needs no such field — `egress_loop` owns its own `Arc` clone of it.
+struct HeartbeatHarness {
+    /// The spawned `egress_loop` task.
+    egress: tokio::task::JoinHandle<()>,
+    /// The frames `egress_loop` has sent, in order.
+    out_rx: mpsc::UnboundedReceiver<Message>,
+    /// The shared liveness timestamp a test manipulates to simulate elapsed real silence.
+    last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
+    /// Kept alive only (never read): see the struct doc's `_etx` paragraph.
+    _etx: mpsc::Sender<Egress>,
+    /// Kept alive only (never read): a strong reference the test must not let drop.
+    _room_registry: crate::ws::room::RoomRegistry,
+    /// The world's room — exposed (not `_`-prefixed) so a test can broadcast into it.
+    room: Arc<crate::ws::room::Room>,
+}
+
+/// Builds a fresh room + egress task, past its Welcome frame and inside its `select!` loop (see
+/// `heartbeat_test_harness_with_credits`), for the heartbeat tests below.
+/// `std::time::Instant` — what `HeartbeatHarness.last_activity` stores — is NOT affected by
+/// `tokio::time::pause()`/`advance()` (those only drive tokio's own virtual clock), so a test
+/// manipulates it directly (by writing an already-elapsed `Instant`) to simulate silence rather
+/// than relying on virtual-time advancement alone.
+async fn heartbeat_test_harness() -> HeartbeatHarness {
+    // Ample rather than tight: unlike `egress_lag_triggers_resync_and_converges` (which
+    // deliberately starts near-zero to force a `Lagged` overflow), these two tests need the
+    // sink to never itself become the bottleneck -- a tight credit budget would stall the
+    // egress task mid-send waiting on a permit nothing ever grants, masking the heartbeat
+    // behavior under test with an unrelated backpressure stall. The continuously-broadcasting
+    // test below needs the OPPOSITE (a deliberately starved sink), so it builds its own harness
+    // via `heartbeat_test_harness_with_credits` instead of sharing this one.
+    heartbeat_test_harness_with_credits(100_000).await.0
+}
+
+/// As `heartbeat_test_harness`, but with a caller-chosen sink credit count, returning the
+/// `Semaphore` handle so the caller can `add_permits` later. `credits` is the count left AFTER
+/// the handshake: the harness grants its own two handshake credits (Welcome, then the
+/// loop-ready probe below) on top. A count of 0 stalls the egress task's very next send on
+/// `poll_ready`, so it cannot drain anything further from the room's broadcast channel however
+/// the scheduler interleaves the caller against the spawned task.
+///
+/// INVARIANT: on return, `egress_loop` has entered its `select!` loop, so its `ping_timer`
+/// exists and its deadline counts from BEFORE any caller-side `tokio::time::pause`/`advance`.
+/// Welcome alone does not prove this — `egress_loop` creates `ping_timer` after sending
+/// Welcome, and a caller that never yields before advancing the paused clock would otherwise
+/// have the timer created at the ALREADY-ADVANCED instant, a full `PING_INTERVAL` late. The
+/// probe is an `Egress::TimePong` round trip: only the loop's `erx` arm answers it.
+async fn heartbeat_test_harness_with_credits(credits: usize) -> (HeartbeatHarness, Arc<Semaphore>) {
+    use crate::data::document::WorldRole;
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let author = repo
+        .create_user("a", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", author, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: author,
+        world_role: WorldRole::Gm,
+    };
+    let reg = crate::ws::room::RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (rx, current_seq) = room.subscribe();
+
+    let credits = Arc::new(Semaphore::new(credits + 2));
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let (etx, erx) = mpsc::channel::<Egress>(8);
+    let last_activity = fresh_last_activity();
+    let egress_last_activity = last_activity.clone();
+    let egress = tokio::spawn(egress_loop(
+        GatedSink {
+            out: out_tx,
+            credits: credits.clone(),
+            acquiring: None,
+        },
+        rx,
+        erx,
+        EgressConnState {
+            room: room.clone(),
+            repo: repo.clone(),
+            ctx,
+            current_seq,
+            modules_dir: std::path::PathBuf::from("nonexistent-modules-dir-for-heartbeat-test"),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: egress_last_activity,
+        },
+    ));
+
+    let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .expect("egress did not emit Welcome")
+        .expect("egress sink closed before Welcome");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&welcome)).unwrap()["type"],
+        "welcome"
+    );
+
+    etx.send(Egress::TimePong {
+        client_t0: 0,
+        server_t: 0,
+    })
+    .await
+    .expect("egress command channel closed before the loop-ready probe");
+    let probe = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .expect("egress loop did not answer the loop-ready probe")
+        .expect("egress sink closed before the loop-ready probe");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&probe)).unwrap()["type"],
+        "time_pong"
+    );
+
+    let harness = HeartbeatHarness {
+        egress,
+        out_rx,
+        last_activity,
+        _etx: etx,
+        _room_registry: reg,
+        room,
+    };
+    (harness, credits)
+}
+
+/// The heartbeat's periodic `ServerMsg::Ping` is actually emitted on schedule, and a
+/// connection that never answers (its `last_activity` never advances past what production
+/// code would observe as `PING_TIMEOUT` of silence) is closed once that threshold is crossed.
+///
+/// Time is paused only AFTER `heartbeat_test_harness` completes, not via `start_paused =
+/// true` on the attribute -- the harness opens a real sqlx connection pool
+/// (`SqliteRepository::connect`), whose own internal acquire-timeout is driven by the same
+/// tokio clock; pausing before that connection is established makes the paused clock
+/// auto-advance straight through the pool's timeout with no real work having happened,
+/// failing the acquire with `PoolTimedOut`. Pausing after setup avoids the collision while
+/// still making the heartbeat ticks themselves instant.
+#[tokio::test]
+async fn heartbeat_pings_are_emitted_and_a_never_answering_connection_is_closed_after_timeout() {
+    // Bound as one struct, never destructured with `..` -- a `..` pattern drops every
+    // unbound field (including the `_etx`/`_room`/`_repo` handles the struct's own doc
+    // explains must outlive this test) the instant the `let` completes.
+    let mut h = heartbeat_test_harness().await;
+    tokio::time::pause();
+
+    // First heartbeat tick: the connection is fresh (`last_activity` was just stamped by the
+    // harness), so this must be a Ping, not a Close. No manual `tokio::time::advance` call --
+    // under a paused clock, `timeout`'s own deadline auto-advances the clock straight to
+    // whatever timer fires next once nothing else is runnable, which is exactly the pending
+    // `ping_timer` tick here; a bound comfortably past `PING_INTERVAL` is "instant" in real
+    // wall-clock terms regardless of its virtual size.
+    let heartbeat_wait = PING_INTERVAL + std::time::Duration::from_secs(5);
+    let first = tokio::time::timeout(heartbeat_wait, h.out_rx.recv())
+        .await
+        .expect("no frame received for the first heartbeat tick")
+        .expect("egress sink closed unexpectedly");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&first)).unwrap()["type"],
+        "ping",
+        "the first heartbeat tick on a fresh connection must send a Ping frame"
+    );
+    assert!(
+        !h.egress.is_finished(),
+        "a connection with recent activity must not be closed"
+    );
+
+    // Simulate a connection that never replies: back-date `last_activity` past
+    // `PING_TIMEOUT` — exactly the condition `egress_loop`'s own timeout check reads.
+    *h.last_activity.lock().unwrap() =
+        std::time::Instant::now() - (PING_TIMEOUT + std::time::Duration::from_secs(1));
+
+    tokio::time::timeout(heartbeat_wait, h.egress)
+        .await
+        .expect("egress task did not exit after the liveness timeout")
+        .unwrap();
+
+    let mut saw_close = false;
+    while let Ok(m) = h.out_rx.try_recv() {
+        if matches!(m, Message::Close(_)) {
+            saw_close = true;
+        }
+    }
+    assert!(
+        saw_close,
+        "a connection silent past PING_TIMEOUT must be closed"
+    );
+}
+
+/// A connection that keeps answering (its `last_activity` is refreshed before each heartbeat
+/// check, mirroring `handle_socket`'s ingress arm stamping it on every inbound frame,
+/// including `ClientMsg::Pong`) is never closed by the liveness timeout.
+///
+/// Time is paused only after harness setup completes -- see the sibling test's doc comment
+/// for why `start_paused = true` on the attribute collides with the harness's real sqlx pool.
+#[tokio::test]
+async fn heartbeat_keeps_an_answering_connection_open() {
+    // See the sibling test's comment: bound as one struct, never destructured with `..`.
+    let mut h = heartbeat_test_harness().await;
+    tokio::time::pause();
+    // See the sibling test's comment: no manual `advance` -- the paused clock auto-advances
+    // to the next pending timer (the `ping_timer` tick) once this `timeout` is the only
+    // thing left to drive forward.
+    let heartbeat_wait = PING_INTERVAL + std::time::Duration::from_secs(5);
+
+    for _ in 0..5 {
+        let frame = tokio::time::timeout(heartbeat_wait, h.out_rx.recv())
+            .await
+            .expect("no frame received for a heartbeat tick")
+            .expect("egress sink closed unexpectedly");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(msg_text(&frame)).unwrap()["type"],
+            "ping",
+            "an answering connection must keep receiving Ping heartbeats, never a Close"
+        );
+        // Mirrors `handle_socket`'s ingress arm: a reply (e.g. `ClientMsg::Pong`) stamps
+        // `last_activity` to "now", resetting the silence clock before the next tick.
+        *h.last_activity.lock().unwrap() = std::time::Instant::now();
+    }
+
+    assert!(
+        !h.egress.is_finished(),
+        "a connection that keeps answering must never be closed by the liveness timeout"
+    );
+}
+
+/// Broadcasts one out-of-band `ServerMsg::AssetChanged` frame into `h`'s room, so a call to this
+/// function is exactly one `RoomEvent::Other` becoming ready on the egress task's `rx` arm.
+/// INVARIANT: an out-of-band frame reaches the sink through `send_plain` with no repository
+/// query. A backlog of sequenced `RoomEvent::Event`s would instead run a per-recipient filter
+/// query on the SQLite driver's own worker thread, and under a paused tokio clock a runtime
+/// waiting on a thread tokio does not track counts as idle and auto-advances the clock to the
+/// next timer — firing a test `timeout` (or the ping timer) whenever that worker is slow.
+fn broadcast_backlog_frame(h: &HeartbeatHarness, seed: u128) {
+    h.room.broadcast_aux(ServerMsg::AssetChanged {
+        uuid: crate::test_ids::test_uuid(seed),
+        op: crate::ws::protocol::AssetOp::Moved,
+        version: 1,
+    });
+}
+
+/// A room that never lets the `rx` (room-broadcast) arm go idle must not starve the ping
+/// timer arm. The harness leaves the sink with zero credits, so nothing it sends afterward can
+/// complete until more credits are granted — a credit COUNT of zero admits
+/// no send regardless of scheduler interleaving. `BACKLOG` out-of-band frames (see
+/// `broadcast_backlog_frame`) are broadcast while credits stay at zero, so every one sits ready
+/// on the room's broadcast ring (well under `BROADCAST_CAPACITY` (256), so this never trips the
+/// `Lagged`/resync path) before the ping deadline is made to elapse.
+///
+/// The ping deadline fires before any credit is granted: tokio marks an expired timer as fired
+/// only when its time driver is turned, and `tokio::time::advance` ends with a `yield_now`,
+/// whose deferred wake makes the current-thread scheduler turn the driver (its `park_yield`)
+/// once the run queue — here, the egress task blocking on a zero-credit send — drains.
+///
+/// `SCAN_BUDGET` credits are then granted in one grant, strictly FEWER than `BACKLOG` — the
+/// discriminating construction: with `ping_timer` listed ahead of `rx`, a `biased` select picks
+/// the already-fired ping the moment the in-flight send completes, so a Ping appears within the
+/// first couple of frames. With `rx` listed ahead of `ping_timer`, `rx` wins on every iteration
+/// while it has ready work and a `biased` select never polls a later arm once an earlier one is
+/// ready, so every one of the `SCAN_BUDGET` frames is a backlog frame and the assertion fails
+/// instead of hanging.
+#[tokio::test]
+async fn heartbeat_still_fires_despite_a_continuously_broadcasting_room() {
+    /// Broadcast while the sink holds zero credits, so every one of these sits ready on the
+    /// broadcast ring before the scan below grants any credit at all.
+    const BACKLOG: u128 = 40;
+    /// Strictly fewer than `BACKLOG`: the reverse arm order can drain at most `SCAN_BUDGET` of
+    /// the `BACKLOG` queued frames (one send per granted credit), and `BACKLOG` still has more
+    /// queued behind them, so that order never reaches a Ping within this scan.
+    const SCAN_BUDGET: usize = 20;
+
+    let (mut h, credits) = heartbeat_test_harness_with_credits(0).await;
+
+    for n in 0..BACKLOG {
+        broadcast_backlog_frame(&h, 9_000 + n);
+    }
+
+    tokio::time::pause();
+    tokio::time::advance(PING_INTERVAL + std::time::Duration::from_millis(1)).await;
+
+    credits.add_permits(SCAN_BUDGET);
+
+    let mut saw_ping = false;
+    for _ in 0..SCAN_BUDGET {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), h.out_rx.recv())
+            .await
+            .expect("no frame received while scanning for a heartbeat Ping")
+            .expect("egress sink closed unexpectedly");
+        if serde_json::from_str::<serde_json::Value>(msg_text(&frame)).unwrap()["type"] == "ping" {
+            saw_ping = true;
+            break;
+        }
+    }
+    assert!(
+        saw_ping,
+        "a continuously-broadcasting room must not starve Ping emission"
+    );
+    assert!(!h.egress.is_finished(), "must not have been closed yet");
+
+    // Total silence from here on. `last_activity` is `std::time::Instant`-backed (monotonic real
+    // time, which `tokio::time::advance` does not move), so it is back-dated directly — the same
+    // technique the sibling heartbeat tests use. Enough credits are granted to send every
+    // remaining backlog frame plus the Close, so the exit below depends only on the ping arm
+    // reading `last_activity`, never on how many credits the scan above left unspent.
+    *h.last_activity.lock().unwrap() =
+        std::time::Instant::now() - (PING_TIMEOUT + std::time::Duration::from_secs(1));
+    credits.add_permits(BACKLOG as usize + 1);
+    tokio::time::advance(PING_INTERVAL + std::time::Duration::from_millis(1)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), &mut h.egress)
+        .await
+        .expect("egress task did not exit after the liveness timeout")
+        .unwrap();
+
+    let mut last = None;
+    while let Ok(frame) = h.out_rx.try_recv() {
+        last = Some(frame);
+    }
+    assert!(
+        matches!(last, Some(Message::Close(_))),
+        "the liveness timeout must end the connection with a Close frame, got {last:?}"
+    );
 }
 
 #[tokio::test]
@@ -609,9 +1041,9 @@ fn square_grid_shapes(
 #[tokio::test]
 async fn enrich_accumulates_persists_and_emits_explored() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-    let world = Uuid::from_u128(1);
-    let scene = Uuid::from_u128(10);
-    let user = Uuid::from_u128(20);
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
 
@@ -703,9 +1135,9 @@ async fn enrich_accumulates_persists_and_emits_explored() {
 #[tokio::test]
 async fn enrich_skips_scene_absent_from_grid_maps() {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-    let world = Uuid::from_u128(1);
-    let user = Uuid::from_u128(2);
-    let ghost = Uuid::from_u128(0xDEAD);
+    let world = crate::test_ids::test_uuid(1);
+    let user = crate::test_ids::test_uuid(2);
+    let ghost = crate::test_ids::test_uuid(0xDEAD);
     let grid: std::collections::HashMap<Uuid, f64> = std::collections::HashMap::new();
     let shapes = square_grid_shapes(&grid);
 
@@ -739,9 +1171,9 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
 #[tokio::test]
 async fn enrich_see_as_player_is_read_only() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-    let world = Uuid::from_u128(1);
-    let scene = Uuid::from_u128(10);
-    let target = Uuid::from_u128(20);
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let target = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
 
@@ -836,9 +1268,9 @@ async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
     let wdoc = crate::data::document::tests::world_scoped_doc;
 
     let (scene_id, token_id, ws_id) = (
-        Uuid::from_u128(0xA001),
-        Uuid::from_u128(0xA002),
-        Uuid::from_u128(0xA003),
+        crate::test_ids::test_uuid(0xA001),
+        crate::test_ids::test_uuid(0xA002),
+        crate::test_ids::test_uuid(0xA003),
     );
 
     // World-settings: visible restriction, totally dark (env_intensity=0, no placed lights).
@@ -897,7 +1329,7 @@ async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
     .await
     .unwrap();
 
-    let rid = Uuid::from_u128(0xF001);
+    let rid = crate::test_ids::test_uuid(0xF001);
 
     // GM: unconstrained (no mask) → PathResult for any reachable goal.
     let gm_result = handle_pathfind(
@@ -999,13 +1431,13 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
     };
 
     let (scene_id, token_id, combat_id, combatant_id, event_id, registry_id, ws_id) = (
-        Uuid::from_u128(0xB001),
-        Uuid::from_u128(0xB002),
-        Uuid::from_u128(0xB003),
-        Uuid::from_u128(0xB004),
-        Uuid::from_u128(0xB005),
-        Uuid::from_u128(0xB006),
-        Uuid::from_u128(0xB007),
+        crate::test_ids::test_uuid(0xB001),
+        crate::test_ids::test_uuid(0xB002),
+        crate::test_ids::test_uuid(0xB003),
+        crate::test_ids::test_uuid(0xB004),
+        crate::test_ids::test_uuid(0xB005),
+        crate::test_ids::test_uuid(0xB006),
+        crate::test_ids::test_uuid(0xB007),
     );
 
     // Unrestricted movement: the clamp under test is the budget, not the mask.
@@ -1084,7 +1516,7 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
     publish(ev).await;
 
     let request = |rid: u128| PathfindRequest {
-        request_id: Uuid::from_u128(rid),
+        request_id: crate::test_ids::test_uuid(rid),
         scene: scene_id,
         start: (50.0, 50.0),
         waypoints: vec![(450.0, 50.0)],
@@ -1322,9 +1754,9 @@ async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
     let wdoc = crate::data::document::tests::world_scoped_doc;
 
     let (vis_id, foreign_id, hidden_id) = (
-        Uuid::from_u128(0xB001),
-        Uuid::from_u128(0xB002),
-        Uuid::from_u128(0xB003),
+        crate::test_ids::test_uuid(0xB001),
+        crate::test_ids::test_uuid(0xB002),
+        crate::test_ids::test_uuid(0xB003),
     );
 
     // A readable scene in this world (default DocRole is `None`, so an explicit
@@ -1376,7 +1808,13 @@ async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
     assert!(!scene_ping_permitted(foreign_id, &spectator, world.id, repo.as_ref()).await);
     assert!(!scene_ping_permitted(hidden_id, &spectator, world.id, repo.as_ref()).await);
     assert!(
-        !scene_ping_permitted(Uuid::from_u128(0xDEAD), &spectator, world.id, repo.as_ref()).await
+        !scene_ping_permitted(
+            crate::test_ids::test_uuid(0xDEAD),
+            &spectator,
+            world.id,
+            repo.as_ref()
+        )
+        .await
     );
 }
 
@@ -1440,11 +1878,11 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_a, scene_b, token_id, wall_id, ws_id) = (
-        Uuid::from_u128(0xB001),
-        Uuid::from_u128(0xB002),
-        Uuid::from_u128(0xB003),
-        Uuid::from_u128(0xB004),
-        Uuid::from_u128(0xB005),
+        crate::test_ids::test_uuid(0xB001),
+        crate::test_ids::test_uuid(0xB002),
+        crate::test_ids::test_uuid(0xB003),
+        crate::test_ids::test_uuid(0xB004),
+        crate::test_ids::test_uuid(0xB005),
     );
 
     // Unrestricted world-wide: no visibility mask anywhere, so nothing else fails closed.
@@ -1520,7 +1958,7 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
     .await
     .unwrap();
 
-    let rid = Uuid::from_u128(0xF002);
+    let rid = crate::test_ids::test_uuid(0xF002);
 
     let leaked = handle_pathfind(
         PathfindRequest {
@@ -1652,10 +2090,10 @@ async fn pathfind_naming_an_unowned_token_is_refused() {
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, ws_id, token_a, token_b) = (
-        Uuid::from_u128(0xC001),
-        Uuid::from_u128(0xC002),
-        Uuid::from_u128(0xC003),
-        Uuid::from_u128(0xC004),
+        crate::test_ids::test_uuid(0xC001),
+        crate::test_ids::test_uuid(0xC002),
+        crate::test_ids::test_uuid(0xC003),
+        crate::test_ids::test_uuid(0xC004),
     );
 
     let mut ws = wdoc(world.id, ws_id, "world-settings");
@@ -1727,7 +2165,7 @@ async fn pathfind_naming_an_unowned_token_is_refused() {
     .await
     .unwrap();
 
-    let rid = Uuid::from_u128(0xF010);
+    let rid = crate::test_ids::test_uuid(0xF010);
     let res = handle_pathfind(
         PathfindRequest {
             request_id: rid,
@@ -1788,11 +2226,11 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_a, scene_b, ws_id, token_in_a, token_in_b) = (
-        Uuid::from_u128(0xC101),
-        Uuid::from_u128(0xC102),
-        Uuid::from_u128(0xC103),
-        Uuid::from_u128(0xC104),
-        Uuid::from_u128(0xC105),
+        crate::test_ids::test_uuid(0xC101),
+        crate::test_ids::test_uuid(0xC102),
+        crate::test_ids::test_uuid(0xC103),
+        crate::test_ids::test_uuid(0xC104),
+        crate::test_ids::test_uuid(0xC105),
     );
 
     let mut ws = wdoc(world.id, ws_id, "world-settings");
@@ -1869,7 +2307,7 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     .await
     .unwrap();
 
-    let rid = Uuid::from_u128(0xF011);
+    let rid = crate::test_ids::test_uuid(0xF011);
     let res = handle_pathfind(
         PathfindRequest {
             request_id: rid,
@@ -1937,12 +2375,12 @@ async fn harness_with_narrow_corridor_and_large_owned_token() -> (
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, ws_id, wall_1, wall_2, actor_id, token_id) = (
-        Uuid::from_u128(0xC201),
-        Uuid::from_u128(0xC202),
-        Uuid::from_u128(0xC203),
-        Uuid::from_u128(0xC204),
-        Uuid::from_u128(0xC205),
-        Uuid::from_u128(0xC206),
+        crate::test_ids::test_uuid(0xC201),
+        crate::test_ids::test_uuid(0xC202),
+        crate::test_ids::test_uuid(0xC203),
+        crate::test_ids::test_uuid(0xC204),
+        crate::test_ids::test_uuid(0xC205),
+        crate::test_ids::test_uuid(0xC206),
     );
 
     let mut ws = wdoc(world.id, ws_id, "world-settings");
@@ -2009,7 +2447,7 @@ async fn harness_with_narrow_corridor_and_large_owned_token() -> (
     actor.owner = Some(author);
     actor.engine = Some(json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 2.0, "h": 2.0 },
         "shape": "circle",
         "conditions": [],
@@ -2052,7 +2490,7 @@ async fn harness_with_narrow_corridor_and_large_owned_token() -> (
 async fn pathfind_naming_an_owned_token_ignores_a_lying_wire_footprint() {
     let (repo, room, player, scene_id, token_id) =
         harness_with_narrow_corridor_and_large_owned_token().await;
-    let rid = Uuid::from_u128(0xF012);
+    let rid = crate::test_ids::test_uuid(0xF012);
     let res = handle_pathfind(
         PathfindRequest {
             request_id: rid,
@@ -2079,7 +2517,7 @@ async fn pathfind_naming_an_owned_token_ignores_a_lying_wire_footprint() {
 async fn pathfind_without_a_token_uses_the_wire_footprint() {
     let (repo, room, player, scene_id, _token_id) =
         harness_with_narrow_corridor_and_large_owned_token().await;
-    let rid = Uuid::from_u128(0xF013);
+    let rid = crate::test_ids::test_uuid(0xF013);
     let res = handle_pathfind(
         PathfindRequest {
             request_id: rid,
@@ -2140,10 +2578,10 @@ async fn pathfind_refuses_an_oversized_derived_footprint() {
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, ws_id, actor_id, token_id) = (
-        Uuid::from_u128(0xC301),
-        Uuid::from_u128(0xC302),
-        Uuid::from_u128(0xC303),
-        Uuid::from_u128(0xC304),
+        crate::test_ids::test_uuid(0xC301),
+        crate::test_ids::test_uuid(0xC302),
+        crate::test_ids::test_uuid(0xC303),
+        crate::test_ids::test_uuid(0xC304),
     );
 
     let mut ws = wdoc(world.id, ws_id, "world-settings");
@@ -2189,7 +2627,7 @@ async fn pathfind_refuses_an_oversized_derived_footprint() {
     actor.owner = Some(author);
     actor.engine = Some(json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1000.0, "h": 1000.0 },
         "shape": "square",
         "conditions": [],
@@ -2223,7 +2661,7 @@ async fn pathfind_refuses_an_oversized_derived_footprint() {
     .await
     .unwrap();
 
-    let rid = Uuid::from_u128(0xF014);
+    let rid = crate::test_ids::test_uuid(0xF014);
     let res = handle_pathfind(
         PathfindRequest {
             request_id: rid,
@@ -2285,9 +2723,9 @@ async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
     let wdoc = crate::data::document::tests::world_scoped_doc;
 
     let (scene_id, token_id, ws_id) = (
-        Uuid::from_u128(0xB001),
-        Uuid::from_u128(0xB002),
-        Uuid::from_u128(0xB003),
+        crate::test_ids::test_uuid(0xB001),
+        crate::test_ids::test_uuid(0xB002),
+        crate::test_ids::test_uuid(0xB003),
     );
 
     // World-settings: unrestricted movement so the player token can move freely.
@@ -2349,7 +2787,7 @@ async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
     // Subscribe BEFORE issuing the request so the broadcast is not missed.
     let (mut rx, _) = room.subscribe();
 
-    let request_id = Uuid::from_u128(7);
+    let request_id = crate::test_ids::test_uuid(7);
     let expected_goal = [150.0_f64, 50.0_f64];
 
     // Success: handle_move_request returns None (no etx frame to the requester).
@@ -2425,7 +2863,7 @@ async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
     }
 
     // Rejection: a move for a non-existent token yields MoveError to etx only.
-    let bad_token = Uuid::from_u128(0xDEAD);
+    let bad_token = crate::test_ids::test_uuid(0xDEAD);
     let err_result = handle_move_request(
         &room,
         repo.as_ref(),
@@ -2433,7 +2871,7 @@ async fn handle_move_request_broadcasts_move_stream_no_etx_on_success() {
         scene_id,
         bad_token,
         vec![[50.0, 50.0], [150.0, 50.0]],
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
     )
     .await;
     assert!(
@@ -2456,8 +2894,8 @@ async fn enrich_token_less_player_emits_no_explored() {
             grid: &grid,
             grid_shapes: &grid_shapes,
             repo: &repo,
-            world: Uuid::from_u128(1),
-            user: Uuid::from_u128(2),
+            world: crate::test_ids::test_uuid(1),
+            user: crate::test_ids::test_uuid(2),
         },
         "",
         true,
@@ -2575,7 +3013,7 @@ async fn setup_clip_room_lit(
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
 
-    let scene_id = Uuid::from_u128(0xE001);
+    let scene_id = crate::test_ids::test_uuid(0xE001);
     let mut scene = wdoc(world.id, scene_id, "scene");
     scene.owner = Some(gm);
     scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
@@ -2598,12 +3036,12 @@ async fn setup_clip_room_lit(
     if let Some(pos) = obs_token_pos {
         let mut engine = token_engine(pos.0, pos.1);
         if let Some(vision) = vision {
-            let actor_id = Uuid::from_u128(0xE004);
+            let actor_id = crate::test_ids::test_uuid(0xE004);
             let mut actor = wdoc(world.id, actor_id, "actor");
             actor.owner = Some(obs);
             actor.permissions.users.insert(obs, DocRole::Owner);
             actor.engine = Some(json!({
-                "displayName": "Watcher", "visual": { "kind": "image", "asset": "a.png" },
+                "displayName": "Watcher", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                 "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
                 "prototype": true, "vision": vision,
             }));
@@ -2618,7 +3056,7 @@ async fn setup_clip_room_lit(
             .unwrap();
             engine["actor_id"] = json!(actor_id.to_string());
         }
-        let token_id = Uuid::from_u128(0xE002);
+        let token_id = crate::test_ids::test_uuid(0xE002);
         let mut tok = wdoc(world.id, token_id, "token");
         tok.parent_id = Some(scene_id);
         tok.owner = Some(obs);
@@ -2636,7 +3074,7 @@ async fn setup_clip_room_lit(
     }
 
     if let Some(ws) = wall_system {
-        let wall_id = Uuid::from_u128(0xE003);
+        let wall_id = crate::test_ids::test_uuid(0xE003);
         let mut wall = wdoc(world.id, wall_id, "wall");
         wall.parent_id = Some(scene_id);
         wall.owner = Some(gm);
@@ -2676,11 +3114,11 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     let now = crate::ws::time::now_millis();
 
     // A: a stranger's move entirely behind the wall, in flight since `now`.
-    let a_req = Uuid::from_u128(0xA11);
+    let a_req = crate::test_ids::test_uuid(0xA11);
     let a_frame = ServerMsg::MoveStream {
         request_id: a_req,
-        token_id: Uuid::from_u128(0xA),
-        mover: Uuid::from_u128(0xAABB),
+        token_id: crate::test_ids::test_uuid(0xA),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: now as f64,
         duration_ms: 3_000.0,
@@ -2701,9 +3139,9 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
         truncated: Some(false),
     };
     room.register_stream_for_test(
-        Uuid::from_u128(0xA),
+        crate::test_ids::test_uuid(0xA),
         crate::ws::room::ActiveStream {
-            mover: Uuid::from_u128(0xAABB),
+            mover: crate::test_ids::test_uuid(0xAABB),
             scene: scene_id,
             end_ms: now + 3_000,
             frame: Arc::new(a_frame),
@@ -2731,6 +3169,8 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
             current_seq,
             modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: fresh_last_activity(),
         },
     ));
     let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
@@ -2745,8 +3185,8 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     // R (the observer) starts a move at now+100 whose sweep sees behind the wall from t=0.
     let r_start = now + 100;
     let r_frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0xB11),
-        token_id: Uuid::from_u128(0xE002),
+        request_id: crate::test_ids::test_uuid(0xB11),
+        token_id: crate::test_ids::test_uuid(0xE002),
         mover: obs_ctx.user_id,
         scene: scene_id,
         start_server_ms: r_start as f64,
@@ -2778,7 +3218,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     };
     let r_arc = Arc::new(r_frame);
     room.register_stream_for_test(
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         crate::ws::room::ActiveStream {
             mover: obs_ctx.user_id,
             scene: scene_id,
@@ -2796,7 +3236,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     // `room.broadcast_aux`/`broadcast_aux_shared` instead of this connection's own `sink.send`
     // — such a regression would land on every subscriber, including this one.
     let a_ctx = PermissionContext {
-        user_id: Uuid::from_u128(0xAABB),
+        user_id: crate::test_ids::test_uuid(0xAABB),
         world_role: crate::data::document::WorldRole::Player,
     };
     let (a_rx, a_current_seq) = room.subscribe();
@@ -2818,6 +3258,8 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
             current_seq: a_current_seq,
             modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: fresh_last_activity(),
         },
     ));
     let a_welcome = tokio::time::timeout(std::time::Duration::from_secs(5), a_out_rx.recv())
@@ -2839,7 +3281,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     assert_eq!(first["type"], "move_stream");
     assert_eq!(
         first["request_id"],
-        json!(Uuid::from_u128(0xB11)),
+        json!(crate::test_ids::test_uuid(0xB11)),
         "own move forwarded first, unchanged"
     );
     assert!(first["mover_vision"].is_array());
@@ -2887,7 +3329,7 @@ async fn clip_mover_receives_full_frame() {
 
     let (room, _, _, scene_id, _) = setup_clip_room(None, None, false).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     // ctx.user_id == mover → mover branch fires before GM / observer branches.
     let ctx = PermissionContext {
         user_id: mover_id,
@@ -2909,8 +3351,8 @@ async fn clip_mover_receives_full_frame() {
         polygons: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
     }]);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -2950,10 +3392,10 @@ async fn clip_observer_no_token_suppressed() {
     // No observer token in the scene — player_vision_polygons returns empty.
     let (room, _, obs_ctx, scene_id, _) = setup_clip_room(None, None, false).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3004,10 +3446,10 @@ async fn clip_observer_sees_near_side_prefix() {
     let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3101,10 +3543,10 @@ async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
     let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3195,10 +3637,10 @@ async fn clip_gm_only_wall_suppresses_observer() {
     let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3253,7 +3695,7 @@ async fn clip_gm_receives_all_samples_mover_vision_nulled() {
     let (room, gm_ctx, _, scene_id, _) = setup_clip_room(None, Some(wall_sys), false).await;
 
     // GM is NOT the mover.
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     assert_ne!(
         gm_ctx.user_id, mover_id,
         "GM must not be the mover in this test"
@@ -3281,8 +3723,8 @@ async fn clip_gm_receives_all_samples_mover_vision_nulled() {
         polygons: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
     }]);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3344,10 +3786,10 @@ async fn clip_gm_see_as_clips_to_target_vision() {
     let (room, gm_ctx, target_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3447,8 +3889,8 @@ async fn clip_gm_see_as_different_scene_not_clipped() {
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
     // The move happens in a DIFFERENT scene where the target has no token.
-    let other_scene = Uuid::from_u128(0xE099);
-    let mover_id = Uuid::from_u128(0xAABB);
+    let other_scene = crate::test_ids::test_uuid(0xE099);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let samples = vec![
         PosSample {
             t_ms: 0.0,
@@ -3464,8 +3906,8 @@ async fn clip_gm_see_as_different_scene_not_clipped() {
         },
     ];
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: other_scene,
         start_server_ms: 1000.0,
@@ -3524,10 +3966,10 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
     let (room, gm_ctx, target_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
 
-    let mover_id = Uuid::from_u128(0xAABB);
+    let mover_id = crate::test_ids::test_uuid(0xAABB);
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
         mover: mover_id,
         scene: scene_id,
         start_server_ms: 1000.0,
@@ -3587,7 +4029,7 @@ async fn register_timeline(
         })
         .collect();
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0x7777),
+        request_id: crate::test_ids::test_uuid(0x7777),
         token_id: token,
         mover,
         scene,
@@ -3627,7 +4069,7 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
     let now = crate::ws::time::now_millis();
     register_timeline(
         &room,
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         obs_ctx.user_id,
         scene_id,
         now,
@@ -3644,9 +4086,9 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
     )
     .await;
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
-        mover: Uuid::from_u128(0xAABB),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: (now + 100) as f64,
         duration_ms: 400.0,
@@ -3713,7 +4155,7 @@ async fn clip_judges_a_frame_before_the_targets_own_move_from_its_start_never_it
     let now = crate::ws::time::now_millis();
     register_timeline(
         &room,
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         obs_ctx.user_id,
         scene_id,
         now + 10_000,
@@ -3730,9 +4172,9 @@ async fn clip_judges_a_frame_before_the_targets_own_move_from_its_start_never_it
     )
     .await;
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
-        mover: Uuid::from_u128(0xAABB),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: now as f64,
         duration_ms: 400.0,
@@ -3770,7 +4212,7 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
     let now = crate::ws::time::now_millis();
     register_timeline(
         &room,
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         obs_ctx.user_id,
         scene_id,
         now,
@@ -3781,9 +4223,9 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
     )
     .await;
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
-        mover: Uuid::from_u128(0xAABB),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: (now + 50) as f64,
         duration_ms: 400.0,
@@ -3839,15 +4281,15 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
 
     // The see-as target: a GM with no token/vision source in this scene at all.
     let target_ctx = PermissionContext {
-        user_id: Uuid::from_u128(0xFEED),
+        user_id: crate::test_ids::test_uuid(0xFEED),
         world_role: WorldRole::Gm,
     };
 
     // The target's own currently-registered move: non-zero progress, `mover_vision: None`
     // (the GM-mover shape `Room::execute_move` always stores).
     let target_frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0x8888),
-        token_id: Uuid::from_u128(0x9999),
+        request_id: crate::test_ids::test_uuid(0x8888),
+        token_id: crate::test_ids::test_uuid(0x9999),
         mover: target_ctx.user_id,
         scene: scene_id,
         start_server_ms: 0.0,
@@ -3864,7 +4306,7 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
     };
     let now = crate::ws::time::now_millis();
     room.register_stream_for_test(
-        Uuid::from_u128(0x9999),
+        crate::test_ids::test_uuid(0x9999),
         ActiveStream {
             mover: target_ctx.user_id,
             scene: scene_id,
@@ -3875,9 +4317,9 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
     .await;
 
     let frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(1),
-        token_id: Uuid::from_u128(2),
-        mover: Uuid::from_u128(0xAABB),
+        request_id: crate::test_ids::test_uuid(1),
+        token_id: crate::test_ids::test_uuid(2),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: now as f64,
         duration_ms: 400.0,
@@ -4090,9 +4532,9 @@ async fn e2e_replay_redacts_a_field_that_was_gm_only_at_commit_after_the_overrid
 #[tokio::test]
 async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-    let world = Uuid::from_u128(1);
-    let scene = Uuid::from_u128(10);
-    let user = Uuid::from_u128(20);
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
 
@@ -4157,4 +4599,23 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     assert_eq!(emitted.len(), 1);
     assert_eq!(emitted[0]["level"], json!("l2"));
     assert_eq!(emitted[0]["cells"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn ws_max_message_bytes_exceeds_the_largest_admissible_intent_and_stays_under_the_upload_limit() {
+    // The cap must admit the sizing assumption it was derived from -- MAX_INTENT_DOCS
+    // documents each at their full three-block size -- with room to spare for JSON
+    // structural overhead (which the derivation's own +64 KiB accounts for).
+    let largest_admissible_intent = MAX_INTENT_DOCS * 3 * MAX_DOCUMENT_BLOCK_BYTES;
+    assert!(
+        WS_MAX_MESSAGE_BYTES > largest_admissible_intent,
+        "cap {WS_MAX_MESSAGE_BYTES} must exceed the largest admissible intent payload {largest_admissible_intent}"
+    );
+    // A WS frame must never be a viable substitute for the HTTP asset-upload path --
+    // well below `config::Config::default().upload_max_bytes` (25 MiB).
+    let upload_max_bytes = crate::config::Config::default().upload_max_bytes as usize;
+    assert!(
+        WS_MAX_MESSAGE_BYTES < upload_max_bytes,
+        "cap {WS_MAX_MESSAGE_BYTES} must stay well below the HTTP upload limit {upload_max_bytes}"
+    );
 }

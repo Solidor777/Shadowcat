@@ -3,7 +3,7 @@ use crate::auth::role::ServerRole;
 use crate::data::validation;
 
 fn world() -> Uuid {
-    Uuid::from_u128(0x77)
+    crate::test_ids::test_uuid(0x77)
 }
 
 /// Extract the Create docs an empty world's seed pass produces.

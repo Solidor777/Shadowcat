@@ -302,8 +302,11 @@ async fn publish_hydrates_scene_ecs() {
     assert_eq!(room.scene().read().await.entity_count(), 0);
 
     // Publish a scene doc (a scene entity by doc_type, no parent FK needed).
-    let mut scene =
-        crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(20), "scene");
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        world_id,
+        crate::test_ids::test_uuid(20),
+        "scene",
+    );
     scene.owner = Some(ctx.user_id);
     room.publish(
         &repo,
@@ -531,8 +534,8 @@ async fn room_with_player_owned_token() -> PlaceHandle {
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD901);
-    let token_id = Uuid::from_u128(0xD902);
+    let scene_id = crate::test_ids::test_uuid(0xD901);
+    let token_id = crate::test_ids::test_uuid(0xD902);
 
     let mut scene = wdoc(world_id, scene_id, "scene");
     scene.owner = Some(gm_ctx.user_id);
@@ -594,9 +597,9 @@ async fn room_with_gm_and_blocking_wall() -> PlaceHandle {
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD910);
-    let token_id = Uuid::from_u128(0xD911);
-    let wall_id = Uuid::from_u128(0xD912);
+    let scene_id = crate::test_ids::test_uuid(0xD910);
+    let token_id = crate::test_ids::test_uuid(0xD911);
+    let wall_id = crate::test_ids::test_uuid(0xD912);
 
     let mut scene = wdoc(world_id, scene_id, "scene");
     scene.owner = Some(gm_ctx.user_id);
@@ -683,10 +686,10 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD920);
-    let ws_id = Uuid::from_u128(0xD921);
-    let light_id = Uuid::from_u128(0xD922);
-    let vision_token_id = Uuid::from_u128(0xD923);
+    let scene_id = crate::test_ids::test_uuid(0xD920);
+    let ws_id = crate::test_ids::test_uuid(0xD921);
+    let light_id = crate::test_ids::test_uuid(0xD922);
+    let vision_token_id = crate::test_ids::test_uuid(0xD923);
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm_ctx.user_id);
@@ -815,9 +818,9 @@ async fn room_with_gm_and_lit_corner() -> PlaceHandle {
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD930);
-    let ws_id = Uuid::from_u128(0xD931);
-    let light_id = Uuid::from_u128(0xD932);
+    let scene_id = crate::test_ids::test_uuid(0xD930);
+    let ws_id = crate::test_ids::test_uuid(0xD931);
+    let light_id = crate::test_ids::test_uuid(0xD932);
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm_ctx.user_id);
@@ -913,8 +916,8 @@ async fn room_with_player_create_and_unrestricted_scene() -> PlaceHandle {
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD940);
-    let ws_id = Uuid::from_u128(0xD941);
+    let scene_id = crate::test_ids::test_uuid(0xD940);
+    let ws_id = crate::test_ids::test_uuid(0xD941);
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm_ctx.user_id);
@@ -995,10 +998,10 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(0xD950);
-    let ws_id = Uuid::from_u128(0xD951);
-    let light_id = Uuid::from_u128(0xD952);
-    let vision_token_id = Uuid::from_u128(0xD953);
+    let scene_id = crate::test_ids::test_uuid(0xD950);
+    let ws_id = crate::test_ids::test_uuid(0xD951);
+    let light_id = crate::test_ids::test_uuid(0xD952);
+    let vision_token_id = crate::test_ids::test_uuid(0xD953);
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm_ctx.user_id);
@@ -1349,10 +1352,10 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
         .unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, light_id, ws_id) = (
-        Uuid::from_u128(10),
-        Uuid::from_u128(11),
-        Uuid::from_u128(12),
-        Uuid::from_u128(13),
+        crate::test_ids::test_uuid(10),
+        crate::test_ids::test_uuid(11),
+        crate::test_ids::test_uuid(12),
+        crate::test_ids::test_uuid(13),
     );
 
     // First registry: publish (→ DB) world-settings + scene + player-owned token + an enabled
@@ -1468,12 +1471,12 @@ async fn get_or_create_batched_query_handles_partial_doc_type_presence() {
     let room1 = reg1.get_or_create(&repo, world_id).await.unwrap().unwrap();
 
     // Only actor + world-settings exist; light-gradation/vision-modes absent.
-    let actor_id = Uuid::from_u128(30);
+    let actor_id = crate::test_ids::test_uuid(30);
     let mut actor = wdoc(world_id, actor_id, "actor");
     actor.owner = Some(gm.user_id);
     actor.engine = Some(json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],
@@ -1491,7 +1494,7 @@ async fn get_or_create_batched_query_handles_partial_doc_type_presence() {
         .await
         .unwrap();
 
-    let ws_id = Uuid::from_u128(31);
+    let ws_id = crate::test_ids::test_uuid(31);
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm.user_id);
     ws.system = json!({
@@ -1563,7 +1566,7 @@ async fn get_or_create_returns_none_for_missing_world() {
     let (repo, _world_id, _ctx) = repo_with_world().await;
     let reg = RoomRegistry::new();
     assert!(reg
-        .get_or_create(&repo, Uuid::from_u128(999))
+        .get_or_create(&repo, crate::test_ids::test_uuid(999))
         .await
         .unwrap()
         .is_none());
@@ -1702,10 +1705,10 @@ async fn movement_scene_with_speed(
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, ws_id, light_id) = (
-        Uuid::from_u128(0x5CE0),
-        Uuid::from_u128(0x5CE1),
-        Uuid::from_u128(0x5CE2),
-        Uuid::from_u128(0x5CE3),
+        crate::test_ids::test_uuid(0x5CE0),
+        crate::test_ids::test_uuid(0x5CE1),
+        crate::test_ids::test_uuid(0x5CE2),
+        crate::test_ids::test_uuid(0x5CE3),
     );
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
@@ -1817,8 +1820,11 @@ async fn commit_ops_writes_and_broadcasts_without_gating() {
     // Build a real create op — mirrors publish_hydrates_scene_ecs exactly so this
     // test exercises the ECS apply_op write path and commits a real document row,
     // not just the seq-bump + broadcast path.
-    let mut scene =
-        crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(20), "scene");
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        world_id,
+        crate::test_ids::test_uuid(20),
+        "scene",
+    );
     scene.owner = Some(ctx.user_id);
     let op = Operation::Create { doc: scene };
 
@@ -1884,10 +1890,10 @@ async fn movement_scene_with_wall() -> MovementHandle {
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, ws_id, wall_id) = (
-        Uuid::from_u128(0xFA11_0001),
-        Uuid::from_u128(0xFA11_0002),
-        Uuid::from_u128(0xFA11_0003),
-        Uuid::from_u128(0xFA11_0004),
+        crate::test_ids::test_uuid(0xFA11_0001),
+        crate::test_ids::test_uuid(0xFA11_0002),
+        crate::test_ids::test_uuid(0xFA11_0003),
+        crate::test_ids::test_uuid(0xFA11_0004),
     );
 
     // Unrestricted: only the wall gate applies, no lighting or mask required.
@@ -1998,7 +2004,7 @@ async fn execute_move_commits_the_stop_it_returns() {
                 token: h.token_id,
                 path: vec![h.start, h.lit_goal],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0001),
+                request_id: crate::test_ids::test_uuid(0xF00D_0001),
             },
         )
         .await
@@ -2027,9 +2033,9 @@ async fn movement_scene_with_second_scene(
     let h = movement_scene("visible", true).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_b, token_b, light_b) = (
-        Uuid::from_u128(0x5CEB_0001),
-        Uuid::from_u128(0x5CEB_0002),
-        Uuid::from_u128(0x5CEB_0003),
+        crate::test_ids::test_uuid(0x5CEB_0001),
+        crate::test_ids::test_uuid(0x5CEB_0002),
+        crate::test_ids::test_uuid(0x5CEB_0003),
     );
 
     let mut scene = wdoc(h.world_id, scene_b, "scene");
@@ -2115,7 +2121,7 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_unrestricted
                 token: h.token_id,
                 path: vec![h.start, far_dark],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0002),
+                request_id: crate::test_ids::test_uuid(0xF00D_0002),
             },
         )
         .await;
@@ -2148,7 +2154,7 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_visible() {
                 token: h.token_id,
                 path: vec![h.start, dark_in_a],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0003),
+                request_id: crate::test_ids::test_uuid(0xF00D_0003),
             },
         )
         .await;
@@ -2175,7 +2181,7 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_visible() {
                 token: h.token_id,
                 path: vec![h.start, dark_in_a],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0004),
+                request_id: crate::test_ids::test_uuid(0xF00D_0004),
             },
         )
         .await
@@ -2202,8 +2208,8 @@ async fn both_movement_gates_refuse_a_token_whose_parent_scene_has_no_document()
     use crate::data::document::DocRole;
     let h = movement_scene_with_wall().await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let dangling_id = Uuid::from_u128(0xDA46_3000);
-    let ghost_scene = Uuid::from_u128(0xDA46_4000);
+    let dangling_id = crate::test_ids::test_uuid(0xDA46_3000);
+    let ghost_scene = crate::test_ids::test_uuid(0xDA46_4000);
     let mut dangling = wdoc(h.world_id, dangling_id, "token");
     dangling.parent_id = Some(ghost_scene);
     dangling.owner = Some(h.player.user_id);
@@ -2231,7 +2237,7 @@ async fn both_movement_gates_refuse_a_token_whose_parent_scene_has_no_document()
                 token: dangling_id,
                 path: vec![(50.0, 50.0), (150.0, 50.0)],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0005),
+                request_id: crate::test_ids::test_uuid(0xF00D_0005),
             },
         )
         .await;
@@ -2294,7 +2300,7 @@ async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
                 token: h.token_id,
                 path: vec![h.start, far_dark],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0006),
+                request_id: crate::test_ids::test_uuid(0xF00D_0006),
             },
         )
         .await;
@@ -2338,7 +2344,7 @@ async fn execute_move_still_executes_a_request_naming_the_tokens_own_scene() {
                 token: h.token_id,
                 path: vec![h.start, h.lit_goal],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0007),
+                request_id: crate::test_ids::test_uuid(0xF00D_0007),
             },
         )
         .await
@@ -2358,7 +2364,7 @@ async fn execute_move_refuses_a_token_with_no_parent_scene() {
     use crate::data::document::DocRole;
     let h = movement_scene("visible", true).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let orphan_id = Uuid::from_u128(0x0FFA_1000);
+    let orphan_id = crate::test_ids::test_uuid(0x0FFA_1000);
     let mut orphan = wdoc(h.world_id, orphan_id, "token");
     orphan.parent_id = None;
     orphan.owner = Some(h.player.user_id);
@@ -2388,7 +2394,7 @@ async fn execute_move_refuses_a_token_with_no_parent_scene() {
                 token: orphan_id,
                 path: vec![(50.0, 50.0), (50.0, 150.0)],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0008),
+                request_id: crate::test_ids::test_uuid(0xF00D_0008),
             },
         )
         .await;
@@ -2412,8 +2418,8 @@ async fn execute_move_refuses_a_token_whose_parent_scene_does_not_exist() {
     use crate::data::document::DocRole;
     let h = movement_scene("visible", true).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let dangling_id = Uuid::from_u128(0xDA46_1000);
-    let ghost_scene = Uuid::from_u128(0xDA46_2000);
+    let dangling_id = crate::test_ids::test_uuid(0xDA46_1000);
+    let ghost_scene = crate::test_ids::test_uuid(0xDA46_2000);
     let mut dangling = wdoc(h.world_id, dangling_id, "token");
     dangling.parent_id = Some(ghost_scene);
     dangling.owner = Some(h.player.user_id);
@@ -2438,7 +2444,7 @@ async fn execute_move_refuses_a_token_whose_parent_scene_does_not_exist() {
                 token: dangling_id,
                 path: vec![(50.0, 50.0), (50.0, 150.0)],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0009),
+                request_id: crate::test_ids::test_uuid(0xF00D_0009),
             },
         )
         .await;
@@ -2470,7 +2476,7 @@ async fn client_update_with_posint_pre_image_after_execute_move_is_accepted() {
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0010),
+                request_id: crate::test_ids::test_uuid(0xF00D_0010),
             },
         )
         .await
@@ -2535,7 +2541,7 @@ async fn execute_move_rejects_a_moving_token() {
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0011),
+                request_id: crate::test_ids::test_uuid(0xF00D_0011),
             },
         )
         .await
@@ -2551,7 +2557,7 @@ async fn execute_move_rejects_a_moving_token() {
                 token: h.token_id,
                 path: vec![h.adj, h.adj2],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0012),
+                request_id: crate::test_ids::test_uuid(0xF00D_0012),
             },
         )
         .await;
@@ -2576,7 +2582,7 @@ async fn non_gm_mover_gets_progressive_sweep_in_unrestricted_scene() {
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0013),
+                request_id: crate::test_ids::test_uuid(0xF00D_0013),
             },
         )
         .await
@@ -2604,7 +2610,7 @@ async fn gm_mover_still_gets_no_sweep_in_unrestricted_scene() {
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0014),
+                request_id: crate::test_ids::test_uuid(0xF00D_0014),
             },
         )
         .await
@@ -2635,7 +2641,7 @@ async fn execute_move_truncates_at_a_wall_atomically() {
                 token: h.token_id,
                 path: vec![h.start, corner, beyond_wall],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0015),
+                request_id: crate::test_ids::test_uuid(0xF00D_0015),
             },
         )
         .await
@@ -2677,10 +2683,10 @@ async fn movement_scene_with_wall_across_the_first_step() -> MovementHandle {
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, ws_id, wall_id) = (
-        Uuid::from_u128(0xFA10_0001),
-        Uuid::from_u128(0xFA10_0002),
-        Uuid::from_u128(0xFA10_0003),
-        Uuid::from_u128(0xFA10_0004),
+        crate::test_ids::test_uuid(0xFA10_0001),
+        crate::test_ids::test_uuid(0xFA10_0002),
+        crate::test_ids::test_uuid(0xFA10_0003),
+        crate::test_ids::test_uuid(0xFA10_0004),
     );
 
     // Unrestricted: only the wall gate applies.
@@ -2782,7 +2788,7 @@ async fn execute_move_returns_a_zero_progress_frame_when_the_first_step_is_block
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now,
-                request_id: Uuid::from_u128(0xF00D_0021),
+                request_id: crate::test_ids::test_uuid(0xF00D_0021),
             },
         )
         .await
@@ -2802,7 +2808,7 @@ async fn execute_move_returns_a_zero_progress_frame_when_the_first_step_is_block
 async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_scene_and_expiry() {
     // Slow speed so the stream stays unexpired for the duration of the assertions.
     let h = movement_scene_with_speed("unrestricted", false, 0.5).await;
-    let req = Uuid::from_u128(0x5EED);
+    let req = crate::test_ids::test_uuid(0x5EED);
     let exec = h
         .room
         .execute_move(
@@ -2848,7 +2854,7 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
     assert!(Arc::ptr_eq(&in_scene[0].1, &exec.frame));
     assert!(h
         .room
-        .scene_streams(Uuid::from_u128(0xBAD), now)
+        .scene_streams(crate::test_ids::test_uuid(0xBAD), now)
         .await
         .is_empty());
     // concurrent_streams excludes every stream of the named MOVER, not just one token.
@@ -2867,7 +2873,7 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
     // A different scene id has no registered stream at all.
     assert!(h
         .room
-        .concurrent_streams(Uuid::from_u128(0xBAD), h.gm.user_id, now)
+        .concurrent_streams(crate::test_ids::test_uuid(0xBAD), h.gm.user_id, now)
         .await
         .is_empty());
     // Expiry: a `now` past end_ms hides it.
@@ -2899,10 +2905,10 @@ async fn execute_move_authoritative_field_arrests_a_region_the_players_route_nev
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let region_id = Uuid::from_u128(12);
-    let ws_id = Uuid::from_u128(13);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let region_id = crate::test_ids::test_uuid(12);
+    let ws_id = crate::test_ids::test_uuid(13);
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
     ws.owner = Some(gm.user_id);
@@ -2989,7 +2995,7 @@ async fn execute_move_authoritative_field_arrests_a_region_the_players_route_nev
                 token: token_id,
                 path: vec![(0.0, 0.0), (100.0, 0.0)],
                 ts: 100,
-                request_id: Uuid::from_u128(0xF00D_0016),
+                request_id: crate::test_ids::test_uuid(0xF00D_0016),
             },
         )
         .await
@@ -3040,7 +3046,7 @@ async fn execute_move_revealed_union_allows_explored_cell() {
                 token: h.token_id,
                 path: path.clone(),
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0017),
+                request_id: crate::test_ids::test_uuid(0xF00D_0017),
             },
         )
         .await
@@ -3086,10 +3092,10 @@ async fn movement_scene_continuous(restriction: &str, with_light: bool) -> Movem
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, ws_id, light_id) = (
-        Uuid::from_u128(0xC047_0000),
-        Uuid::from_u128(0xC047_0001),
-        Uuid::from_u128(0xC047_0002),
-        Uuid::from_u128(0xC047_0003),
+        crate::test_ids::test_uuid(0xC047_0000),
+        crate::test_ids::test_uuid(0xC047_0001),
+        crate::test_ids::test_uuid(0xC047_0002),
+        crate::test_ids::test_uuid(0xC047_0003),
     );
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
@@ -3212,7 +3218,7 @@ async fn execute_move_continuous_any_angle_route_commits_atomically() {
                 token: h.token_id,
                 path: vec![h.start, goal],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0018),
+                request_id: crate::test_ids::test_uuid(0xF00D_0018),
             },
         )
         .await
@@ -3256,7 +3262,7 @@ async fn execute_move_continuous_truncates_before_entering_unseen_space() {
                 token: h.token_id,
                 path: vec![h.start, goal],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0019),
+                request_id: crate::test_ids::test_uuid(0xF00D_0019),
             },
         )
         .await
@@ -3307,9 +3313,9 @@ async fn hex_move_scene() -> MovementHandle {
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (scene_id, token_id, ws_id) = (
-        Uuid::from_u128(0x4E60_0000),
-        Uuid::from_u128(0x4E60_0001),
-        Uuid::from_u128(0x4E60_0002),
+        crate::test_ids::test_uuid(0x4E60_0000),
+        crate::test_ids::test_uuid(0x4E60_0001),
+        crate::test_ids::test_uuid(0x4E60_0002),
     );
 
     let mut ws = wdoc(world_id, ws_id, "world-settings");
@@ -3416,7 +3422,7 @@ async fn a_hex_move_animates_at_the_grid_step_rate() {
                 token: h.token_id,
                 path: vec![h.start, dest],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(0xF00D_0020),
+                request_id: crate::test_ids::test_uuid(0xF00D_0020),
             },
         )
         .await
@@ -3458,8 +3464,11 @@ async fn resync_floor_fails_closed_for_a_user_who_never_established_one() {
 
     // Advance current_seq so `1` (the old unbounded default) and
     // `current_seq() + 1` (the fail-closed default) are distinguishable.
-    let mut scene =
-        crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(30), "scene");
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        world_id,
+        crate::test_ids::test_uuid(30),
+        "scene",
+    );
     scene.owner = Some(ctx.user_id);
     room.publish(
         &repo,
@@ -3491,8 +3500,11 @@ async fn resync_floor_only_ever_advances_across_repeated_cold_starts() {
     let first_floor = room.resync_floor(ctx.user_id).await;
 
     // Advance current_seq, then a second cold start (e.g. a reload / a second tab).
-    let mut scene =
-        crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(31), "scene");
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        world_id,
+        crate::test_ids::test_uuid(31),
+        "scene",
+    );
     scene.owner = Some(ctx.user_id);
     room.publish(
         &repo,
@@ -3576,7 +3588,7 @@ fn write_room_faulting_module(dir: &std::path::Path, id: &str, doc_type: &str) {
 /// no engine body) with an empty `system` band.
 fn room_item_doc(id: u128, world: Uuid) -> Document {
     Document {
-        id: Uuid::from_u128(id),
+        id: crate::test_ids::test_uuid(id),
         scope: crate::data::document::Scope::World { world_id: world },
         doc_type: "item".into(),
         schema_version: 1,

@@ -98,7 +98,7 @@ async fn a_negative_hp_actor_create_is_refused_a_non_negative_one_is_accepted() 
             "doc_type": "actor",
             "schema_version": 1,
             "engine": {
-                "displayName": "Goblin", "visual": { "kind": "image", "asset": "a.png" },
+                "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                 "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
                 "faction": null, "conditions": [], "prototype": true
             },
@@ -132,7 +132,7 @@ async fn a_negative_hp_actor_create_is_refused_a_non_negative_one_is_accepted() 
             "doc_type": "actor",
             "schema_version": 1,
             "engine": {
-                "displayName": "Goblin", "visual": { "kind": "image", "asset": "a.png" },
+                "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                 "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
                 "faction": null, "conditions": [], "prototype": true
             },
@@ -164,7 +164,7 @@ async fn a_negative_hp_actor_create_is_refused_a_non_negative_one_is_accepted() 
             "schema_version": 1,
             "name": "the \"hp\":-1 monster",
             "engine": {
-                "displayName": "Goblin", "visual": { "kind": "image", "asset": "a.png" },
+                "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                 "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
                 "faction": null, "conditions": [], "prototype": true
             },

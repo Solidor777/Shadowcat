@@ -1,11 +1,10 @@
 use super::*;
-use uuid::Uuid;
 
 fn doc_with_system(system: serde_json::Value) -> Document {
     Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: crate::data::document::Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "actor".into(),
         schema_version: 1,
@@ -324,7 +323,7 @@ fn validate_engine_tree_normalizes_actor_faction_to_explicit_null() {
     doc.doc_type = "actor".into();
     doc.engine = Some(serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],
@@ -349,7 +348,7 @@ fn validate_engine_tree_drops_unknown_keys_smuggled_into_a_tagged_enum() {
     doc.doc_type = "actor".into();
     doc.engine = Some(serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "a.png", "smuggled": "evil" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111", "smuggled": "evil" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -430,7 +429,7 @@ fn validate_engine_tree_normalizes_the_root_base_engine_band() {
     doc.doc_type = "actor".into();
     doc.engine = Some(serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -441,7 +440,7 @@ fn validate_engine_tree_normalizes_the_root_base_engine_band() {
         "name": "Old",
         "engine": {
             "displayName": "Goblin",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "conditions": [],
@@ -658,8 +657,8 @@ fn validate_engine_tree_rejects_a_stale_schema_root_base_engine() {
 fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
     // An embedded base record correlated to a LIVE child (by `sourceId` ==
     // the child's `source.id`) is normalized under the CHILD's doc_type.
-    let child_id = Uuid::from_u128(201);
-    let template_child_id = Uuid::from_u128(202);
+    let child_id = crate::test_ids::test_uuid(201);
+    let template_child_id = crate::test_ids::test_uuid(202);
     let mut child = doc_with_system(serde_json::json!({}));
     child.id = child_id;
     child.source = Some(crate::data::document::Source {
@@ -669,7 +668,7 @@ fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
     });
     child.engine = Some(serde_json::json!({
         "displayName": "Goblin",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -688,7 +687,7 @@ fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
                 "name": "Child",
                 "engine": {
                     "displayName": "Goblin",
-                    "visual": { "kind": "image", "asset": "a.png" },
+                    "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                     "size": { "w": 1.0, "h": 1.0 },
                     "shape": "square",
                     "conditions": [],
@@ -961,7 +960,7 @@ fn validate_containment_rejects_a_parented_combat_and_an_unparented_combatant() 
     let mut combat = crate::data::document::tests::sample_doc();
     combat.doc_type = "combat".into();
     combat.engine = crate::data::document::tests::default_test_engine("combat");
-    combat.parent_id = Some(uuid::Uuid::from_u128(5));
+    combat.parent_id = Some(crate::test_ids::test_uuid(5));
     assert!(validate_containment(&combat).is_err());
     combat.parent_id = None;
     assert!(validate_containment(&combat).is_ok());
@@ -971,7 +970,7 @@ fn validate_containment_rejects_a_parented_combat_and_an_unparented_combatant() 
     combatant.engine = crate::data::document::tests::default_test_engine("combatant");
     combatant.parent_id = None;
     assert!(validate_containment(&combatant).is_err());
-    combatant.parent_id = Some(uuid::Uuid::from_u128(5));
+    combatant.parent_id = Some(crate::test_ids::test_uuid(5));
     assert!(validate_containment(&combatant).is_ok());
 }
 
@@ -982,13 +981,13 @@ fn validate_containment_requires_a_parent_for_combat_history_and_forbids_embeddi
     history.engine = crate::data::document::tests::default_test_engine("combat-history");
     history.parent_id = None;
     assert!(validate_containment(&history).is_err());
-    history.parent_id = Some(uuid::Uuid::from_u128(5));
+    history.parent_id = Some(crate::test_ids::test_uuid(5));
     assert!(validate_containment(&history).is_ok());
 
     let mut child = crate::data::document::tests::sample_doc();
     child.doc_type = "combat-history".into();
     child.engine = crate::data::document::tests::default_test_engine("combat-history");
-    child.parent_id = Some(uuid::Uuid::from_u128(5));
+    child.parent_id = Some(crate::test_ids::test_uuid(5));
     let mut parent = crate::data::document::tests::sample_doc();
     parent.embedded.insert("combat-history".into(), vec![child]);
     assert!(validate_containment(&parent).is_err());
@@ -1001,7 +1000,7 @@ fn validate_containment_rejects_combat_combatant_and_note_as_embedded_children()
         child.doc_type = child_type.into();
         child.engine = crate::data::document::tests::default_test_engine(child_type);
         child.parent_id = if child_type == "combatant" {
-            Some(uuid::Uuid::from_u128(5))
+            Some(crate::test_ids::test_uuid(5))
         } else {
             None
         };

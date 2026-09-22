@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn document_carries_name_and_engine_and_rejects_modules_key() {
     let json = serde_json::json!({
-        "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+        "id": crate::test_ids::test_uuid(1), "scope": {"kind": "world", "world_id": crate::test_ids::test_uuid(9)},
         "doc_type": "token", "schema_version": 1,
         "name": "Goblin", "engine": {"x": 1.0},
         "system": {}, "created_at": 0, "updated_at": 0
@@ -14,7 +14,7 @@ fn document_carries_name_and_engine_and_rejects_modules_key() {
 
     // absent name/engine default to None (serde default)
     let bare = serde_json::json!({
-        "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+        "id": crate::test_ids::test_uuid(1), "scope": {"kind": "world", "world_id": crate::test_ids::test_uuid(9)},
         "doc_type": "note", "schema_version": 1, "system": {}, "created_at": 0, "updated_at": 0
     });
     let doc: Document = serde_json::from_value(bare).unwrap();
@@ -22,7 +22,7 @@ fn document_carries_name_and_engine_and_rejects_modules_key() {
 
     // Unknown root key `modules` is rejected: reserved for future module-scoped storage.
     let with_modules = serde_json::json!({
-        "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+        "id": crate::test_ids::test_uuid(1), "scope": {"kind": "world", "world_id": crate::test_ids::test_uuid(9)},
         "doc_type": "note", "schema_version": 1, "system": {}, "modules": {},
         "created_at": 0, "updated_at": 0
     });
@@ -162,20 +162,20 @@ fn role_has_checks_all_and_by_type() {
 /// tests that just need a well-formed baseline to mutate.
 pub(crate) fn sample_doc() -> Document {
     Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "actor".to_string(),
         schema_version: 1,
         name: None,
         source: Some(Source {
-            id: Uuid::from_u128(2),
+            id: crate::test_ids::test_uuid(2),
             pack: Some("dnd5e".into()),
             version: 3,
         }),
         base: None,
-        owner: Some(Uuid::from_u128(5)),
+        owner: Some(crate::test_ids::test_uuid(5)),
         permissions: PermissionSet::default(),
         embedded: BTreeMap::new(),
         parent_id: None,
@@ -232,10 +232,10 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         })),
         "template" => Some(serde_json::json!({
             "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
-            "color": "#f00"
+            "color": "#ff0000"
         })),
         "actor" => Some(serde_json::json!({
-            "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": "Test", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
             "faction": null, "conditions": [], "prototype": true
         })),
@@ -305,7 +305,7 @@ fn permissionset_default_role_is_none() {
 fn document_round_trips_base_snapshot_and_defaults_none() {
     // base defaults to None when absent (serde default).
     let bare = serde_json::json!({
-        "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
+        "id": crate::test_ids::test_uuid(1), "scope": {"kind": "world", "world_id": crate::test_ids::test_uuid(9)},
         "doc_type": "actor", "schema_version": 1, "system": {}, "created_at": 0, "updated_at": 0
     });
     let doc: Document = serde_json::from_value(bare).unwrap();

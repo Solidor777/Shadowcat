@@ -252,6 +252,19 @@ impl Harness {
     }
 }
 
+/// Deterministic v4-shaped document id for test fixtures: same low-order bytes as
+/// `Uuid::from_u128(n)`, with the version/variant nibbles forced to v4/RFC4122 so it satisfies
+/// `shadowcat::data::validation::validate_document_id`. Two distinct small `n` differ only in
+/// their low-order bytes, so this stays injective for every id this suite constructs. Not a real
+/// random id: only for document-id fixtures (correlation ids like `request_id`/`intent_id` are
+/// never validated this way and stay on plain `Uuid::from_u128`).
+pub fn test_doc_id(n: u128) -> Uuid {
+    let mut bytes = n.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
 /// An `Intent` frame keyed by `intent_n`, carrying `ops`.
 pub fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
     Message::Text(
@@ -296,7 +309,7 @@ fn default_engine_for(doc_type: &str) -> Option<serde_json::Value> {
             "color": "#f00"
         })),
         "actor" => Some(serde_json::json!({
-            "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": "Test", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
             "faction": null, "conditions": [], "prototype": true
         })),
@@ -322,11 +335,11 @@ pub fn create_doc_op(
     serde_json::json!({
         "op": "create",
         "doc": {
-            "id": Uuid::from_u128(id),
+            "id": test_doc_id(id),
             "scope": { "kind": "world", "world_id": world },
             "doc_type": doc_type,
             "schema_version": 1,
-            "parent_id": parent.map(Uuid::from_u128),
+            "parent_id": parent.map(test_doc_id),
             "engine": default_engine_for(doc_type),
             "system": {},
             "created_at": 0,
@@ -348,12 +361,12 @@ pub fn create_owned_token_op(
     serde_json::json!({
         "op": "create",
         "doc": {
-            "id": Uuid::from_u128(id),
+            "id": test_doc_id(id),
             "scope": { "kind": "world", "world_id": world },
             "doc_type": "token",
             "schema_version": 1,
             "owner": owner,
-            "parent_id": Uuid::from_u128(scene),
+            "parent_id": test_doc_id(scene),
             "engine": { "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0 },
             "system": { "x": x, "y": y, "w": 100, "h": 100 },
             "created_at": 0,
@@ -380,7 +393,7 @@ pub fn delete_doc(world: Uuid, id: u128) -> Message {
         serde_json::json!([{
             "op": "delete",
             "doc": {
-                "id": Uuid::from_u128(id),
+                "id": test_doc_id(id),
                 "scope": { "kind": "world", "world_id": world },
                 "doc_type": "scene",
                 "schema_version": 1,

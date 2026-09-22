@@ -58,13 +58,13 @@ fn chosen_vision_sample_is_none_on_empty() {
 // --- The clip fixture: one 100-unit square scene, the target's token at (50,50), a sight
 // wall at x=100 (y ±500). `lit: false` keeps the engine's lighting default (on, pitch dark).
 
-const WORLD: Uuid = Uuid::from_u128(0xC1);
-const SCENE: Uuid = Uuid::from_u128(0xC2);
-const TARGET: Uuid = Uuid::from_u128(0xC3);
-const TARGET_TOKEN: Uuid = Uuid::from_u128(0xC4);
-const STRANGER: Uuid = Uuid::from_u128(0xC5);
+const WORLD: Uuid = crate::test_ids::test_uuid(0xC1);
+const SCENE: Uuid = crate::test_ids::test_uuid(0xC2);
+const TARGET: Uuid = crate::test_ids::test_uuid(0xC3);
+const TARGET_TOKEN: Uuid = crate::test_ids::test_uuid(0xC4);
+const STRANGER: Uuid = crate::test_ids::test_uuid(0xC5);
 /// The stranger's token every clipped frame moves — the token creature senses may perceive.
-const MOVER_TOKEN: Uuid = Uuid::from_u128(0xC8);
+const MOVER_TOKEN: Uuid = crate::test_ids::test_uuid(0xC8);
 
 /// The scene ECS for a lit or dark walled scene. `vision` (an actor's `vision` assignment
 /// list, or `None` for a raw normal-vision token) is what makes the darkvision case buildable.
@@ -97,12 +97,12 @@ fn fixture_full(
     tok.parent_id = Some(SCENE);
     tok.owner = Some(TARGET);
     let mut tok_engine = crate::ws::test_support::token_engine(at.0, at.1);
-    let actor_id = Uuid::from_u128(0xC6);
+    let actor_id = crate::test_ids::test_uuid(0xC6);
     if vision.is_some() {
         tok_engine["actor_id"] = json!(actor_id.to_string());
     }
     tok.engine = Some(tok_engine);
-    let mut wall = world_scoped_doc(WORLD, Uuid::from_u128(0xC7), "wall");
+    let mut wall = world_scoped_doc(WORLD, crate::test_ids::test_uuid(0xC7), "wall");
     wall.parent_id = Some(SCENE);
     wall.engine = Some(json!({
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true
@@ -123,7 +123,7 @@ fn fixture_full(
         let mut actor = world_scoped_doc(WORLD, actor_id, "actor");
         actor.owner = Some(TARGET);
         actor.engine = Some(json!({
-            "displayName": "Watcher", "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": "Watcher", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
             "prototype": true, "vision": v,
         }));
@@ -228,7 +228,7 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
     let foreign = [InFlight {
         start_server_ms: 1100.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &own,
         light: None,
@@ -285,7 +285,7 @@ fn a_torch_whose_move_has_not_started_lights_from_its_first_sample() {
     // its move starts it stands — and shines — at its FIRST sample, so a bystander's sample at
     // t_abs=1000 next to that position is lit and admitted.
     let ecs = fixture(false, None);
-    let torch_token = Uuid::from_u128(0xC9);
+    let torch_token = crate::test_ids::test_uuid(0xC9);
     let dark = sight(&ecs, &[torch_token]);
     let torch_positions = vec![pos(0.0, 50.0, 60.0), pos(500.0, 350.0, 60.0)];
     let torch = vec![
@@ -332,7 +332,7 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
     let bearer = [InFlight {
         start_server_ms: 1000.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &samples,
         light: Some(&torch),
@@ -354,7 +354,7 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
     let bearer = [InFlight {
         start_server_ms: 1000.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &samples,
         light: Some(&faint),
@@ -396,7 +396,7 @@ fn another_movers_in_flight_torch_lights_a_bystander_per_instant() {
     // three cells east — the torch is composed in at its timeline position, never at its
     // committed (end-of-move) position.
     let ecs = fixture(false, None);
-    let torch_token = Uuid::from_u128(0xC9);
+    let torch_token = crate::test_ids::test_uuid(0xC9);
     let dark = sight(&ecs, &[torch_token]);
     let torch_positions = vec![pos(0.0, 50.0, 50.0), pos(500.0, 350.0, 50.0)];
     let torch = vec![
@@ -537,7 +537,7 @@ fn admit_light_samples_keeps_only_the_samples_whose_glow_reaches_the_line_of_sig
     let flight = [InFlight {
         start_server_ms: 0.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &positions,
         light: Some(&samples),
@@ -575,7 +575,7 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
     let flight = [InFlight {
         start_server_ms: 0.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &positions,
         light: Some(&blocked),
@@ -592,7 +592,7 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
     let flight = [InFlight {
         start_server_ms: 0.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: crate::test_ids::test_uuid(0xC8),
         mover_elevation: 0.0,
         positions: &positions,
         light: Some(&open),

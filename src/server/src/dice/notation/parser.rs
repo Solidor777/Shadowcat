@@ -293,9 +293,10 @@ impl P {
     /// (not yet consuming) the leading `Ident` and confirming it is immediately followed by `(`
     /// — the only place an `Ident` is recognized as a function name rather than a dice-group
     /// modifier keyword. `name` is the already-lowercased identifier text (the lexer lowercases
-    /// every `Ident` it emits). Checks the parsed argument count against `FnName::arity` before
-    /// returning, so an `Expr::Call` this parser produces always carries the exact argument
-    /// count its `name` requires.
+    /// every `Ident` it emits). Checks the parsed argument count against
+    /// `FnName::accepts_arg_count` before returning, so an `Expr::Call` this parser produces
+    /// always carries an argument count its `name` accepts (exact for a fixed-arity function,
+    /// at least the minimum for a variadic one such as `min`/`max`).
     fn fn_call(&mut self, name: String) -> Result<Expr, ParseError> {
         let fn_name = match name.as_str() {
             "floor" => FnName::Floor,
@@ -334,10 +335,15 @@ impl P {
                 )))
             }
         }
-        let expected = fn_name.arity();
-        if args.len() != expected {
+        let required = fn_name.arity();
+        if !fn_name.accepts_arg_count(args.len()) {
+            let qualifier = if matches!(fn_name, FnName::Min | FnName::Max) {
+                "at least "
+            } else {
+                ""
+            };
             return Err(ParseError::Unexpected(format!(
-                "function '{name}' expects {expected} argument(s), found {}",
+                "function '{name}' expects {qualifier}{required} argument(s), found {}",
                 args.len()
             )));
         }

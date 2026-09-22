@@ -252,12 +252,12 @@ async fn budget_scene(
 
     let wdoc = crate::data::document::tests::world_scoped_doc;
     let (combat_id, combatant_id, other_combatant, gm_token, gm_combatant, free_token) = (
-        Uuid::from_u128(0x5CE4),
-        Uuid::from_u128(0x5CE5),
-        Uuid::from_u128(0x5CE6),
-        Uuid::from_u128(0x5CE7),
-        Uuid::from_u128(0x5CE8),
-        Uuid::from_u128(0x5CE9),
+        crate::test_ids::test_uuid(0x5CE4),
+        crate::test_ids::test_uuid(0x5CE5),
+        crate::test_ids::test_uuid(0x5CE6),
+        crate::test_ids::test_uuid(0x5CE7),
+        crate::test_ids::test_uuid(0x5CE8),
+        crate::test_ids::test_uuid(0x5CE9),
     );
 
     let mut combat = wdoc(inner.world_id, combat_id, "combat");
@@ -378,7 +378,7 @@ async fn budget_scene(
 
     // The registry defining the `movement` binding the gate resolves against:
     // Tracked, max 30, no recoveries.
-    let registry_id = Uuid::from_u128(0x5CEA);
+    let registry_id = crate::test_ids::test_uuid(0x5CEA);
     let mut registry = wdoc(inner.world_id, registry_id, "resource-registry");
     registry.owner = Some(inner.gm.user_id);
     registry.engine = Some(json!({
@@ -932,11 +932,11 @@ async fn an_absent_resource_entry_reads_as_a_full_budget_and_materializes_on_spe
 async fn a_text_max_evaluated_over_the_linked_actor_gates_and_clamps_the_budget() {
     let h = budget_scene("hard", "spaces", None).await;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let actor_id = Uuid::from_u128(0x5CEB);
+    let actor_id = crate::test_ids::test_uuid(0x5CEB);
     let mut actor = wdoc(h.world_id, actor_id, "actor");
     actor.owner = Some(h.player.user_id);
     actor.engine = Some(serde_json::json!({
-        "displayName": "Runner", "visual": { "kind": "image", "asset": "a.png" },
+        "displayName": "Runner", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
         "prototype": false, "vision": null,
     }));
@@ -1073,12 +1073,12 @@ async fn a_token_that_is_not_a_combatant_moves_freely_during_combat() {
 async fn link_movement_actor(h: &BudgetHandle, movement: serde_json::Value) {
     use serde_json::json;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let actor_id = Uuid::from_u128(0x5CEB);
+    let actor_id = crate::test_ids::test_uuid(0x5CEB);
     let mut actor = wdoc(h.world_id, actor_id, "actor");
     actor.owner = Some(h.gm.user_id);
     actor.engine = Some(json!({
         "displayName": "Skyborn",
-        "visual": { "kind": "image", "asset": "a" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -1132,7 +1132,7 @@ async fn link_movement_actor(h: &BudgetHandle, movement: serde_json::Value) {
 async fn add_terrain_band(h: &BudgetHandle) {
     use serde_json::json;
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let mut region = wdoc(h.world_id, Uuid::from_u128(0x5CEC), "region");
+    let mut region = wdoc(h.world_id, crate::test_ids::test_uuid(0x5CEC), "region");
     region.parent_id = Some(h.scene_id);
     region.owner = Some(h.gm.user_id);
     region.engine = Some(json!({

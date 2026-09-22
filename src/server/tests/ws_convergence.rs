@@ -161,6 +161,18 @@ impl Harness {
     }
 }
 
+/// Deterministic v4-shaped document id for test fixtures: same low-order bytes as
+/// `Uuid::from_u128(n)`, with the version/variant nibbles forced to v4/RFC4122 so it satisfies
+/// `shadowcat::data::validation::validate_document_id`. Mirrors
+/// `shadowcat_test_support::test_doc_id`, restated locally since this file builds its own
+/// harness rather than depending on that crate.
+fn test_doc_id(n: u128) -> Uuid {
+    let mut bytes = n.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
 /// An `Intent` frame: correlation id from `intent_n`, carrying `ops`.
 fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
     Message::Text(
@@ -186,7 +198,7 @@ fn create_op(world: Uuid, doc_id: Uuid, system: serde_json::Value) -> serde_json
             // ingress gate. `system` above is `create_op`'s own parameter, the field callers vary.
             "engine": {
                 "displayName": "Test",
-                "visual": { "kind": "image", "asset": "a.png" },
+                "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                 "size": { "w": 1.0, "h": 1.0 },
                 "shape": "square",
                 "faction": null,
@@ -216,7 +228,7 @@ fn update_op(
 
 /// An intent that creates one distinct document, keyed by `n`.
 fn create_intent(world: Uuid, n: u64) -> Message {
-    let doc_id = Uuid::from_u128(1000 + n as u128);
+    let doc_id = test_doc_id(1000 + n as u128);
     intent_msg(
         n,
         serde_json::json!([create_op(world, doc_id, serde_json::json!({}))]),
@@ -396,7 +408,7 @@ async fn slow_reader_recovers_via_resync() {
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
     for n in 0..30u64 {
-        let doc_id = Uuid::from_u128(1000 + n as u128);
+        let doc_id = test_doc_id(1000 + n as u128);
         let op = create_op(h.world, doc_id, serde_json::json!({ "n": n }));
         pubc.send(intent_msg(n, serde_json::json!([op])))
             .await
@@ -660,7 +672,7 @@ async fn conflicting_same_field_update_is_rejected() {
     let mut ws = h.connect().await;
     let _ = ws.next().await; // Welcome
 
-    let doc_id = Uuid::from_u128(5000);
+    let doc_id = test_doc_id(5000);
     // Create a doc with hp=10 (seq 1).
     ws.send(intent_msg(
         1,
@@ -716,7 +728,7 @@ async fn player_write_to_gm_owned_doc_is_forbidden() {
     let _ = gm.next().await; // Welcome
 
     // GM creates a doc with default permissions (only GM may write).
-    let doc_id = Uuid::from_u128(6000);
+    let doc_id = test_doc_id(6000);
     gm.send(intent_msg(
         1,
         serde_json::json!([create_op(h.world, doc_id, serde_json::json!({ "hp": 1 }))]),
@@ -759,7 +771,7 @@ async fn gm_only_property_hidden_from_player() {
     let _ = gm.next().await; // Welcome
 
     // GM creates a player-observable doc whose /system/secret is GM-only.
-    let doc_id = Uuid::from_u128(7000);
+    let doc_id = test_doc_id(7000);
     let doc = serde_json::json!({
         "id": doc_id,
         "scope": { "kind": "world", "world_id": h.world },
@@ -774,7 +786,7 @@ async fn gm_only_property_hidden_from_player() {
         // ingress gate. `system` below is what this test exercises.
         "engine": {
             "displayName": "Test",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -833,7 +845,7 @@ async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
 
     // ScenePing is only relayed for a scene that exists in this world (M-security-7's
     // guard); the GM creates one first.
-    let scene_id = Uuid::from_u128(9001);
+    let scene_id = test_doc_id(9001);
     let scene_doc = serde_json::json!({
         "id": scene_id,
         "scope": { "kind": "world", "world_id": h.world },
@@ -891,9 +903,9 @@ async fn emote_relays_out_of_band_with_sender_stamped_and_drops_unauthorized() {
     // The GM creates the scene plus two tokens: one b effectively owns, one owned by
     // no one (a GM-only token). The emote relay authorizes on the TOKEN — effective
     // ownership plus membership in the named scene — so both fixtures are needed.
-    let scene_id = Uuid::from_u128(9002);
-    let b_token = Uuid::from_u128(9003);
-    let gm_token = Uuid::from_u128(9004);
+    let scene_id = test_doc_id(9002);
+    let b_token = test_doc_id(9003);
+    let gm_token = test_doc_id(9004);
     let scene_doc = serde_json::json!({
         "id": scene_id,
         "scope": { "kind": "world", "world_id": h.world },

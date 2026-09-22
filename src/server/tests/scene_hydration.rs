@@ -6,7 +6,7 @@ use shadowcat_test_support as common;
 use common::*;
 use futures_util::{SinkExt, StreamExt};
 use shadowcat::data::repository::Repository;
-use uuid::Uuid;
+use shadowcat_test_support::test_doc_id;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scene_delete_cascades_as_events() {
@@ -32,7 +32,7 @@ async fn scene_delete_cascades_as_events() {
     // Authoritative store empty for the scene's children.
     assert!(h
         .repo
-        .query_children(Uuid::from_u128(10))
+        .query_children(test_doc_id(10))
         .await
         .unwrap()
         .is_empty());

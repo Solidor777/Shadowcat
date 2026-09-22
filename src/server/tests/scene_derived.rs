@@ -99,7 +99,7 @@ async fn vision_emits_persistent_explored_for_a_player_across_reconnect() {
 }
 
 fn json_uuid(n: u128) -> serde_json::Value {
-    serde_json::Value::String(uuid::Uuid::from_u128(n).to_string())
+    serde_json::Value::String(shadowcat_test_support::test_doc_id(n).to_string())
 }
 
 /// A `create` op for a bright placed light at `(x, y)` in `scene` (brightRadius 3 cells, dim 6).
