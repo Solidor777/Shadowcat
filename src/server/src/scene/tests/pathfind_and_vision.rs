@@ -1577,6 +1577,64 @@ fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound
     );
 }
 
+/// One-way-wall parity between the rest polygon and the streamed re-raycast: the wall set
+/// `SightSources::los_at` re-raycasts through is the same `sight_wall_entries`-collected set
+/// (carrying `Seg::one_way`) the committed polygon was built from, so a one-way wall behaves
+/// identically in both reads — the streamed-vision parity pin for the one-way kernel change.
+#[test]
+fn one_way_wall_is_transparent_in_the_rest_polygon_and_the_streamed_recast_alike() {
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // Vertical wall x=100 spanning y±200: `(b - a) × (p - a)` = `-400 * (p.x - 100)`, so
+    // `blockingSide: 1.0` makes the x<100 side the solid one — the token at (50,50) is on the
+    // blocking side; a viewpoint at (150,50) is on the transparent side.
+    let wall = entity_doc_eng(
+        12,
+        10,
+        "wall",
+        json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                "blocksSight": true, "direction": { "blockingSide": 1.0 } }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+    // The rest read from the committed (blocking-side) viewpoint: (150,50) is occluded.
+    let rest = ecs
+        .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
+        .into_iter()
+        .find(|(sid, _, _)| *sid == scene)
+        .map(|(_, _, p)| p)
+        .expect("the owned token yields a polygon for its scene");
+    assert!(
+        !vision::point_in_poly(&rest, (150.0, 50.0)),
+        "from the blocking side the one-way wall occludes like any wall"
+    );
+    assert!(vision::point_in_poly(&rest, (50.0, 150.0)));
+
+    // The streamed re-raycast at the SAME viewpoint must agree vertex-for-vertex (identical
+    // wall set, identical one-way metadata).
+    let streamed_same = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+    assert_eq!(
+        streamed_same.first(),
+        Some(&rest),
+        "the streamed re-raycast must reuse the same one-way wall set as the rest polygon"
+    );
+
+    // Re-raycast from the transparent side: the wall is absent, the polygon extends past it.
+    let streamed_far = ecs.player_vision_polygons_at(user, scene, token_id, (150.0, 50.0));
+    assert!(
+        vision::point_in_poly(&streamed_far[0], (50.0, 50.0)),
+        "from the transparent side the streamed polygon sees straight through the wall"
+    );
+}
+
 /// Returns empty when the user owns no token in the scene, even when `moving_token`
 /// points to an existing token owned by another user.
 #[test]

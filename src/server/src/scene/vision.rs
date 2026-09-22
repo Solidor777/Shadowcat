@@ -15,18 +15,73 @@ pub type P = (f64, f64);
 
 /// An occluding segment.
 ///
+/// `one_way`/`limited` are the per-segment occlusion metadata `nearest_hit` consumes (the
+/// movement gate shares the `one_way` half through `Seg::transparent_from`): `one_way:
+/// Some(sign)` makes the wall solid only from the side where `(b - a) × (p - a)` carries the
+/// sign `sign` and transparent from the other (a one-way arrow slit); `limited: true` lets a
+/// sight ray cross this wall while the ray's `MAX_LIMITED_CROSSINGS` budget lasts ("see
+/// through one such wall, not two"). Both stay `None`/`false` for an ordinary wall and for
+/// every bound-box edge (`Rect::edges`), and every construction site spells them out — never
+/// a `..` rest-default — so a forgotten populate site fails to compile rather than silently
+/// reverting to symmetric.
+///
 /// # Examples
 ///
 /// ```
-/// let wall = shadowcat::scene::vision::Seg { a: (0.0, 0.0), b: (1.0, 0.0) };
+/// let wall = shadowcat::scene::vision::Seg {
+///     a: (0.0, 0.0),
+///     b: (1.0, 0.0),
+///     one_way: None,
+///     limited: false,
+/// };
 /// assert_eq!(wall.a, (0.0, 0.0));
 /// ```
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Seg {
     /// First endpoint, scene units.
     pub a: P,
     /// Second endpoint, scene units.
     pub b: P,
+    /// One-way sign: `Some(s)` makes the wall solid only from the side of the segment where
+    /// `(b - a) × (p - a)` has sign `s` (`s` is validated to `±1.0` at document ingress); the
+    /// wall is skipped entirely for a ray/step whose origin sits on the other side. `None` =
+    /// solid from both sides. Populated by the sight/movement collectors from
+    /// `WallEngine::direction`; the light collectors always pass `None` (light occlusion is
+    /// symmetric by design).
+    pub one_way: Option<f64>,
+    /// `true` = a sight ray may cross this wall once per ray while the
+    /// `MAX_LIMITED_CROSSINGS` budget lasts. Populated by the sight collector from
+    /// `WallEngine::sight_tier`; movement and light collectors always pass `false`.
+    pub limited: bool,
+}
+
+impl Seg {
+    /// Whether this segment is transparent to a sight ray or movement step whose ORIGIN is
+    /// `from` — the one cross-product side test every one-way consumer (`nearest_hit`,
+    /// `move_exec`'s per-step wall filter, `pathfinding::cell_enterable`) shares, so vision
+    /// and movement can never disagree about which side of a wall is solid. `true` iff
+    /// `one_way` is set AND `from` lies strictly on the non-blocking side (the cross product
+    /// `(b - a) × (from - a)` disagrees in sign with `one_way`). Fail-closed to `false`
+    /// (blocking) on the degenerate cases: a zero cross product puts `from` exactly ON the
+    /// wall's line (an ambiguous side must never open a sightline), and a non-finite cross
+    /// product would make every comparison false.
+    pub(crate) fn transparent_from(&self, from: P) -> bool {
+        let Some(sign) = self.one_way else {
+            return false;
+        };
+        let cross = (self.b.0 - self.a.0) * (from.1 - self.a.1)
+            - (self.b.1 - self.a.1) * (from.0 - self.a.0);
+        if cross == 0.0 || !cross.is_finite() {
+            return false;
+        }
+        // `sign` is ingress-validated to ±1.0 (`WallEngine::validate`); a stray non-unit
+        // value must fail CLOSED here too — `cross.signum() != 0.0` would otherwise read a
+        // stored `0.0` as transparent from BOTH sides.
+        if sign != 1.0 && sign != -1.0 {
+            return false;
+        }
+        cross.signum() != sign
+    }
 }
 
 /// An axis-aligned bound whose edges terminate rays that hit no wall.
@@ -69,17 +124,39 @@ fn wrap_angle(a: f64) -> f64 {
 }
 
 impl Rect {
-    /// The four boundary edges as occluder segments (ray termination).
+    /// The four boundary edges as occluder segments (ray termination). Bound edges are
+    /// always symmetric and immediate (`one_way: None`, `limited: false`) — a ray must
+    /// terminate at the bound regardless of any wall's authored one-way/limited behavior.
     fn edges(&self) -> [Seg; 4] {
         let tl = (self.minx, self.miny);
         let tr = (self.maxx, self.miny);
         let br = (self.maxx, self.maxy);
         let bl = (self.minx, self.maxy);
         [
-            Seg { a: tl, b: tr },
-            Seg { a: tr, b: br },
-            Seg { a: br, b: bl },
-            Seg { a: bl, b: tl },
+            Seg {
+                a: tl,
+                b: tr,
+                one_way: None,
+                limited: false,
+            },
+            Seg {
+                a: tr,
+                b: br,
+                one_way: None,
+                limited: false,
+            },
+            Seg {
+                a: br,
+                b: bl,
+                one_way: None,
+                limited: false,
+            },
+            Seg {
+                a: bl,
+                b: tl,
+                one_way: None,
+                limited: false,
+            },
         ]
     }
 }
@@ -94,7 +171,7 @@ impl Rect {
 /// ```
 /// use shadowcat::scene::vision::{bound_for, Seg};
 ///
-/// let wall = Seg { a: (2.0, 0.0), b: (2.0, 4.0) };
+/// let wall = Seg { a: (2.0, 0.0), b: (2.0, 4.0), one_way: None, limited: false };
 /// let bound = bound_for((0.0, 0.0), &[wall], 1.0);
 /// assert_eq!(bound.maxx, 3.0);
 /// assert_eq!(bound.miny, -1.0);
@@ -191,18 +268,44 @@ fn ray_segment(origin: P, dir: P, s: &Seg) -> Option<f64> {
     }
 }
 
+/// Per-ray allowance of `limited`-wall crossings: a sight ray may pass ONE such wall and
+/// stops at the next crossing of any wall ("see through one such wall, not two"). A
+/// compile-time constant, never user-configurable.
+pub(crate) const MAX_LIMITED_CROSSINGS: u8 = 1;
+
 /// Nearest occluder hit point along the ray, or `None` if it escapes (the bound box prevents
-/// this in practice).
+/// this in practice: `Rect::edges` are always symmetric and immediate, so the walk below
+/// always terminates there at the latest).
+///
+/// The walk: every hit is collected, sorted ascending by `t` (stable — ties keep the input
+/// order), then walked with a fresh per-ray `MAX_LIMITED_CROSSINGS` budget. A wall set
+/// carrying neither flag therefore returns the minimum-`t` hit, earliest in input order on
+/// ties. Per hit, in order:
+/// (a) a one-way wall whose transparent side faces `origin` (`Seg::transparent_from`) is
+/// skipped outright — the segment is absent FOR THIS RAY; (b) a `limited` wall is skipped
+/// while budget remains (the budget is spent, so a second `limited` wall on the same ray
+/// still stops it); (c) any other hit is the ray's terminus. The polygon's endpoint-angle
+/// sampling in `visibility_polygon` is unconditional, so a skipped `limited` wall's own
+/// endpoints are still angle-sampled as candidate vertices — the polygon boundary still bends
+/// at its edge when the wall is the far side of the visible region.
 fn nearest_hit(origin: P, dir: P, segs: &[Seg]) -> Option<P> {
-    let mut best: Option<f64> = None;
-    for s in segs {
-        if let Some(t) = ray_segment(origin, dir, s) {
-            if best.is_none_or(|b| t < b) {
-                best = Some(t);
-            }
+    let mut hits: Vec<(f64, &Seg)> = segs
+        .iter()
+        .filter_map(|s| ray_segment(origin, dir, s).map(|t| (t, s)))
+        .collect();
+    hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut budget = MAX_LIMITED_CROSSINGS;
+    for (t, s) in hits {
+        if s.transparent_from(origin) {
+            continue;
         }
+        if s.limited && budget > 0 {
+            budget -= 1;
+            continue;
+        }
+        return Some((origin.0 + t * dir.0, origin.1 + t * dir.1));
     }
-    best.map(|t| (origin.0 + t * dir.0, origin.1 + t * dir.1))
+    None
 }
 
 /// Even-odd ray-cast point-in-polygon. Source: standard CG (Shimrat 1962; de Berg et al.).

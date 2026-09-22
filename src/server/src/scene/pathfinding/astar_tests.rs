@@ -71,18 +71,26 @@ fn walled_off_goal_is_unreachable() {
         Seg {
             a: (3.0 * c, 3.0 * c),
             b: (4.0 * c, 3.0 * c),
+            one_way: None,
+            limited: false,
         },
         Seg {
             a: (3.0 * c, 4.0 * c),
             b: (4.0 * c, 4.0 * c),
+            one_way: None,
+            limited: false,
         },
         Seg {
             a: (3.0 * c, 3.0 * c),
             b: (3.0 * c, 4.0 * c),
+            one_way: None,
+            limited: false,
         },
         Seg {
             a: (4.0 * c, 3.0 * c),
             b: (4.0 * c, 4.0 * c),
+            one_way: None,
+            limited: false,
         },
     ];
     let shape = crate::scene::grid_shape::SquareGrid {
@@ -160,6 +168,8 @@ fn hex_scene_astar_finds_a_route_around_a_wall() {
     let walls = vec![Seg {
         a: (hx, -50.0),
         b: (hx, 50.0),
+        one_way: None,
+        limited: false,
     }];
     let mut g = open_hex(0.1);
     g.inputs.walls = &walls;

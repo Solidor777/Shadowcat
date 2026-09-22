@@ -166,6 +166,13 @@ pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: 
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
 /// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
 /// (arrest/terrain apply elsewhere — see this function's region-gate step).
+///
+/// One-way walls (`vision::Seg::one_way`) are filtered out of BOTH wall checks (1) and (3)
+/// when the step's origin — the from-cell CENTER, the router's analog of the executor's
+/// pre-step point — sits on the wall's transparent side (`vision::Seg::transparent_from`,
+/// the SAME predicate `move_exec` applies per dense step and `vision::nearest_hit` applies
+/// per ray). This is what keeps the GridStepped route⇔gate parity bidirectional across a
+/// one-way wall rather than the router refusing a step the gate would accept.
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -183,8 +190,11 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let ctr = grid.inputs.shape.cell_center(to);
     let a = grid.inputs.shape.cell_center(from);
 
-    // (1) Footprint disc vs every blocksMove wall.
+    // (1) Footprint disc vs every blocksMove wall, one-way-filtered from `a` (see the fn doc).
     for w in grid.inputs.walls {
+        if w.transparent_from(a) {
+            continue;
+        }
         if point_segment_distance(ctr, w.a, w.b) < r_scene {
             return false;
         }
@@ -219,8 +229,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             None => return false,
         }
     }
-    // (3) Center-to-center step clears every wall (reuses the segment-cross predicate).
+    // (3) Center-to-center step clears every wall (reuses the segment-cross predicate),
+    // one-way-filtered from `a` like check (1).
     for w in grid.inputs.walls {
+        if w.transparent_from(a) {
+            continue;
+        }
         if crate::scene::segments_cross(a, ctr, w.a, w.b) {
             return false;
         }

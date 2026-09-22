@@ -2,11 +2,19 @@
 import type { DoorState } from "./DoorState";
 import type { ElevationBand } from "./ElevationBand";
 import type { Seg } from "./Seg";
+import type { WallDirection } from "./WallDirection";
+import type { WallSightTier } from "./WallSightTier";
 
 /**
  * A wall's segment + sight/light/movement-blocking flags. Absent/false
  * flags exclude the wall from that gate, matching how each gate
  * (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
+ *
+ * Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
+ * `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
+ * segment only — sight and movement, never light/sound) and `sight_tier` (a sight-only
+ * partial-blocking tier — see `WallSightTier`). None of them changes the authored flags'
+ * meaning; they compose with `effective_flags`'s output at the collectors.
  *
  * # Examples
  *
@@ -20,6 +28,8 @@ import type { Seg } from "./Seg";
  *     blocks_move: Some(true),
  *     elevation: None,
  *     door: None,
+ *     direction: None,
+ *     sight_tier: None,
  * };
  * assert_eq!(wall.blocks_move, Some(true));
  * ```
@@ -54,4 +64,15 @@ elevation: ElevationBand | null,
  * The wall's door state; absent = not a door (an ordinary wall —
  * `effective_flags` applies the authored flags unchanged).
  */
-door: DoorState | null, };
+door: DoorState | null, 
+/**
+ * One-way direction; absent = solid from both sides. Read by the sight raycast and
+ * the movement gate only (never by light/sound occlusion) — see `WallDirection` for
+ * the sign convention.
+ */
+direction: WallDirection | null, 
+/**
+ * Partial-blocking sight tier; absent = the wall blocks sight immediately. Read by the
+ * sight raycast only (`vision::nearest_hit`'s crossing budget) — see `WallSightTier`.
+ */
+sightTier: WallSightTier | null, };

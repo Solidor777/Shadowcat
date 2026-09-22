@@ -1101,9 +1101,9 @@ struct LightingInputsSnapshot {
     /// Resolved scene lights minus the excluded emitters (empty under `all_bright`).
     lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands (empty under `all_bright`).
-    light_walls: Vec<elevation::BandedWall>,
+    light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
-    sight_walls: Vec<elevation::BandedWall>,
+    sight_walls: Vec<elevation::WallEntry>,
 }
 
 /// Whether the changes being mirrored have cleared the authoritative write path.
@@ -2479,11 +2479,18 @@ impl SceneEcs {
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
     /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
     /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
+    ///
+    /// The segment carries `vision::Seg::one_way` from `WallEngine::direction` (movement
+    /// honors a one-way wall, filtered per step against the mover's PRE-STEP position by
+    /// `move_exec::execute_move`/by `pathfinding::cell_enterable` from the from-cell center —
+    /// both through the shared `vision::Seg::transparent_from`). `limited` is always `false`
+    /// here: the partial-blocking tier is sight-only (`WallSightTier`), so a `Limited` wall
+    /// still fully blocks movement when its resolved `blocksMove` flag is set.
     pub(crate) fn move_wall_entries(
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
-    ) -> Vec<elevation::BandedWall> {
+    ) -> Vec<elevation::WallEntry> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -2498,13 +2505,15 @@ impl SceneEcs {
             if !engine_tier_visible(&w.doc, viewer) {
                 continue;
             }
-            out.push((
-                vision::Seg {
+            out.push(elevation::WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: wall.direction.map(|d| d.blocking_side),
+                    limited: false,
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         out
     }
@@ -3934,8 +3943,8 @@ impl SceneEcs {
     fn lighting_inputs_from(
         settings: &ResolvedScene,
         lights: Vec<lighting::Light>,
-        light_walls: &[elevation::BandedWall],
-        sight_walls: Vec<elevation::BandedWall>,
+        light_walls: &[elevation::WallEntry],
+        sight_walls: Vec<elevation::WallEntry>,
         extent: grid_shape::WorldExtent,
         cell: f64,
         world_units_per_cell: f64,
@@ -3961,7 +3970,7 @@ impl SceneEcs {
         let env_polys = if all_bright || settings.env_intensity <= 0.0 {
             Vec::new()
         } else {
-            let full: Vec<vision::Seg> = light_walls.iter().map(|(s, _)| *s).collect();
+            let full: Vec<vision::Seg> = light_walls.iter().map(|w| w.seg).collect();
             lighting::env_light_polys(extent, cell, &full)
         };
         LightingInputs {
@@ -4485,7 +4494,9 @@ impl SceneEcs {
     /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
     /// wall in `scene` whose elevation band contains `mover_elevation`
     /// (`elevation::walls_at_elevation` — the same band filter the production `move_walls`
-    /// applies). A no-op move (`a0 == a1`) never blocks.
+    /// applies), honoring a one-way wall only when its blocking side faces `a0`
+    /// (`vision::Seg::transparent_from` — the same pre-step-side filter `execute_move` applies
+    /// per step). A no-op move (`a0 == a1`) never blocks.
     ///
     /// This is the REFERENCE implementation of wall-crossing semantics — one home for it, per the
     /// module's own INVARIANT on `move_wall_entries`. `move_exec::execute_move`'s per-cell wall
@@ -4505,7 +4516,7 @@ impl SceneEcs {
         if a0 == a1 {
             return false;
         }
-        let mut banded: Vec<elevation::BandedWall> = Vec::new();
+        let mut banded: Vec<elevation::WallEntry> = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -4518,15 +4529,23 @@ impl SceneEcs {
             if !wall.effective_flags().blocks_move {
                 continue;
             }
-            banded.push((
-                vision::Seg {
+            banded.push(elevation::WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: wall.direction.map(|d| d.blocking_side),
+                    limited: false,
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         for w in elevation::walls_at_elevation(&banded, mover_elevation) {
+            // The one-way filter this reference owes the anti-drift pair: a wall whose
+            // transparent side faces the segment's START is absent for the crossing, exactly
+            // as `move_exec`'s per-step filter drops it against the pre-step point.
+            if w.transparent_from(a0) {
+                continue;
+            }
             if segments_cross(a0, a1, w.a, w.b) {
                 return true;
             }

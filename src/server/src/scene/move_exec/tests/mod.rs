@@ -2993,4 +2993,211 @@ fn entered_cells_exclude_a_cell_the_walk_was_stopped_before() {
     assert!(!out.arrested);
 }
 
+// --- One-way walls (`WallEngine.direction`) at the movement gate ---
+
+/// Scene with a `blocksMove` wall along the y=100 grid line spanning x∈[0,100], carrying
+/// `blockingSide: 1.0`: the cross product `(b - a) × (p - a)` is `100 * (p.y - 100)` there,
+/// positive ABOVE the wall, so the blocking side is the y>100 side — a mover below the wall
+/// crosses it freely, a mover above it is gated exactly as by an ordinary wall. Two tokens:
+/// `token_below` at cell (0,0)'s center (50,50) and `token_above` at cell (0,1)'s center
+/// (50,150). Returns `(ecs, scene, token_below, token_above)`.
+fn one_way_wall_scene() -> (SceneEcs, Uuid, Uuid, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let below_id = crate::test_ids::test_uuid(11);
+    let above_id = crate::test_ids::test_uuid(12);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc(
+                10,
+                0,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
+            ),
+            entity_doc(
+                11,
+                10,
+                "token",
+                json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+            entity_doc(
+                12,
+                10,
+                "token",
+                json!({ "x": 50.0, "y": 150.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+            entity_doc(
+                13,
+                10,
+                "wall",
+                json!({
+                    "seg": { "x1": 0.0, "y1": 100.0, "x2": 100.0, "y2": 100.0 },
+                    "blocksMove": true,
+                    "direction": { "blockingSide": 1.0 }
+                }),
+            ),
+        ],
+        0,
+    );
+    (ecs, scene_id, below_id, above_id)
+}
+
+/// Run one step through the gate in `one_way_wall_scene`'s scene. `!truncated` = the gate
+/// accepted the step.
+fn gate_admits_step(
+    ecs: &SceneEcs,
+    scene: Uuid,
+    token: Uuid,
+    from: (f64, f64),
+    to: (f64, f64),
+) -> bool {
+    let visible = visible_grid(3);
+    let out = execute_move(
+        ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        &[from, to],
+        false,
+        0.4,
+    )
+    .expect("a well-formed step is never rejected outright");
+    !out.truncated
+}
+
+#[test]
+fn execute_move_one_way_wall_permits_crossing_from_transparent_side() {
+    let (ecs, scene, below, _above) = one_way_wall_scene();
+    assert!(
+        gate_admits_step(&ecs, scene, below, (50.0, 50.0), (50.0, 150.0)),
+        "the mover starts on the transparent side: the wall is absent for this step"
+    );
+    // The same geometry with `direction` absent is the ordinary-wall behavior — pinned here
+    // so the permission above is attributable to the one-way sign and nothing else.
+    let (mut ecs2, scene2, below2, _above2) = one_way_wall_scene();
+    ecs2.apply_op(&crate::data::command::Operation::Update {
+        doc_id: crate::test_ids::test_uuid(13),
+        changes: vec![crate::data::command::FieldChange {
+            path: "/engine/direction".to_string(),
+            old: serde_json::json!({ "blockingSide": 1.0 }),
+            new: serde_json::Value::Null,
+            remove: true,
+        }],
+    });
+    assert!(
+        !gate_admits_step(&ecs2, scene2, below2, (50.0, 50.0), (50.0, 150.0)),
+        "with no direction the same wall blocks the same step"
+    );
+}
+
+#[test]
+fn execute_move_one_way_wall_blocks_crossing_from_solid_side() {
+    let (ecs, scene, _below, above) = one_way_wall_scene();
+    assert!(
+        !gate_admits_step(&ecs, scene, above, (50.0, 150.0), (50.0, 50.0)),
+        "the mover starts on the blocking side: the wall gates the step exactly as an ordinary wall"
+    );
+}
+
+#[test]
+fn route_admissible_iff_gate_admissible_holds_across_a_one_way_wall() {
+    // The GridStepped bidirectional parity, extended to a scene containing a one-way wall:
+    // the router's `cell_enterable` and the executor's per-step wall gate must answer the
+    // SAME way for a step across the wall in BOTH directions — this is the regression pin
+    // against the router dropping its half of the one-way filter.
+    let (ecs, scene, below, above) = one_way_wall_scene();
+    let walls = ecs.move_walls(scene, None, crate::scene::elevation::GROUND);
+    let shape = crate::scene::grid_shape::SquareGrid {
+        cell: FIXTURE_GRID_SIZE,
+        rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+    };
+    let path_grid = crate::scene::pathfinding::PathGrid {
+        inputs: crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.4,
+            cell: FIXTURE_GRID_SIZE,
+            walls: &walls,
+            mask: None,
+            regions: None,
+            shape: &shape,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
+        window: (-10, -10, 10, 10),
+    };
+    for (from_cell, to_cell, token, from_pos, to_pos) in [
+        ((0, 0), (0, 1), below, (50.0, 50.0), (50.0, 150.0)),
+        ((0, 1), (0, 0), above, (50.0, 150.0), (50.0, 50.0)),
+    ] {
+        let router_admits =
+            crate::scene::pathfinding::cell_enterable(&path_grid, from_cell, to_cell);
+        let gate_admits = gate_admits_step(&ecs, scene, token, from_pos, to_pos);
+        assert_eq!(
+            router_admits, gate_admits,
+            "route-admissible must equal gate-admissible for {from_cell:?} -> {to_cell:?}"
+        );
+    }
+}
+
+#[test]
+fn router_preview_never_offers_a_route_the_executor_would_reject_through_a_one_way_wall() {
+    // The route ⊆ gate-allowed direction through genuine routing: a route from ABOVE the
+    // one-way wall to below it must not be the straight line through the wall (the router's
+    // filter refuses that step, forcing a detour around the wall's end), and whatever route
+    // the router does offer must execute un-truncated.
+    let (ecs, scene, _below, above) = one_way_wall_scene();
+    let route = ecs
+        .pathfind(
+            crate::scene::RouteRequester {
+                user: crate::test_ids::test_uuid(9),
+                is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &WorldCapDefaults::default(),
+                explored: None,
+            },
+            scene,
+            (50.0, 150.0),
+            &[(50.0, 50.0)],
+            crate::scene::RouteMover {
+                footprint_radius: 0.4,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+                elevation: crate::scene::elevation::GROUND,
+            },
+        )
+        .expect("a detour around the wall's end exists");
+    assert!(
+        route.path.len() > 2,
+        "the router must not offer the straight line through the wall's blocking side, got {:?}",
+        route.path
+    );
+    let visible = visible_grid(3);
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        above,
+        &route.path,
+        false,
+        0.4,
+    )
+    .expect("the routed path is well-formed");
+    assert!(
+        !out.truncated,
+        "every route the router offers must survive the gate"
+    );
+}
+
 mod unified_cost;

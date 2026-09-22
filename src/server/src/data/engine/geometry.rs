@@ -109,6 +109,60 @@ pub enum DoorState {
     Locked,
 }
 
+/// A wall's one-way direction (`WallEngine::direction`): which side of the segment `a→b`
+/// the wall behaves as SOLID from, expressed as the sign of the standard 2D cross product
+/// `(b - a) × (p - a)` evaluated at the observation point `p`. `blocking_side: 1.0` puts the
+/// blocking side where that cross product is POSITIVE; `-1.0` puts it where the product is
+/// negative. From the transparent side the wall is absent for the sight raycast and the
+/// movement gate — the same one sign serves both, evaluated against a different "viewpoint"
+/// (the ray's origin for sight, the mover's pre-step position for movement; see
+/// `vision::Seg::transparent_from`), so the two gates cannot fork on which side is solid.
+/// Light and sound occlusion never read this field: they stay symmetric.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WallDirection;
+///
+/// let json = serde_json::json!({ "blockingSide": 1.0 });
+/// let dir: WallDirection = serde_json::from_value(json).unwrap();
+/// assert_eq!(dir.blocking_side, 1.0);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WallDirection {
+    /// The side the wall is solid from: exactly `1.0` or `-1.0`, enforced at ingress by
+    /// `WallEngine::validate` — any other value is meaningless to the cross-product side
+    /// test (a `0.0` would author a wall solid from NEITHER side) and is rejected rather
+    /// than silently normalized.
+    pub blocking_side: f64,
+}
+
+/// A wall's partial-blocking sight tier (`WallEngine::sight_tier`): `Limited` lets a sight
+/// ray cross ONE such wall and continue, stopping at the next crossing of any wall — `Limited`
+/// or ordinary — along that ray ("see through one such wall, not two"), implemented as
+/// `vision::nearest_hit`'s per-ray `MAX_LIMITED_CROSSINGS` budget. An enum with one variant
+/// rather than a bool, so a future tier is an additive variant rather than a breaking
+/// field-type change. Sight only: movement, light and sound never read this field.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WallSightTier;
+///
+/// let json = serde_json::to_value(WallSightTier::Limited).unwrap();
+/// assert_eq!(json, serde_json::json!("limited"));
+/// assert_eq!(serde_json::from_value::<WallSightTier>(json).unwrap(), WallSightTier::Limited);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum WallSightTier {
+    /// A sight ray crosses one `Limited` wall per ray; a second wall of any kind stops it.
+    Limited,
+}
+
 /// The door-resolved blocking flags of a `WallEngine` — the ONE resolver output
 /// every wall collector (`SceneEcs::sight_wall_entries`/`light_wall_entries`/
 /// `move_wall_entries`) reads, never the authored `blocks_*` fields directly.
@@ -137,6 +191,12 @@ pub struct EffectiveWallFlags {
 /// flags exclude the wall from that gate, matching how each gate
 /// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
 ///
+/// Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
+/// `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
+/// segment only — sight and movement, never light/sound) and `sight_tier` (a sight-only
+/// partial-blocking tier — see `WallSightTier`). None of them changes the authored flags'
+/// meaning; they compose with `effective_flags`'s output at the collectors.
+///
 /// # Examples
 ///
 /// ```
@@ -149,6 +209,8 @@ pub struct EffectiveWallFlags {
 ///     blocks_move: Some(true),
 ///     elevation: None,
 ///     door: None,
+///     direction: None,
+///     sight_tier: None,
 /// };
 /// assert_eq!(wall.blocks_move, Some(true));
 /// ```
@@ -179,6 +241,15 @@ pub struct WallEngine {
     /// `effective_flags` applies the authored flags unchanged).
     #[serde(default)]
     pub door: Option<DoorState>,
+    /// One-way direction; absent = solid from both sides. Read by the sight raycast and
+    /// the movement gate only (never by light/sound occlusion) — see `WallDirection` for
+    /// the sign convention.
+    #[serde(default)]
+    pub direction: Option<WallDirection>,
+    /// Partial-blocking sight tier; absent = the wall blocks sight immediately. Read by the
+    /// sight raycast only (`vision::nearest_hit`'s crossing budget) — see `WallSightTier`.
+    #[serde(default)]
+    pub sight_tier: Option<WallSightTier>,
 }
 
 impl WallEngine {
@@ -202,6 +273,8 @@ impl WallEngine {
     ///     blocks_move: Some(true),
     ///     elevation: None,
     ///     door: Some(DoorState::Open),
+    ///     direction: None,
+    ///     sight_tier: None,
     /// };
     /// assert!(!wall.effective_flags().blocks_move);
     /// wall.door = Some(DoorState::Closed);
@@ -220,6 +293,41 @@ impl WallEngine {
             blocks_sight: self.blocks_sight == Some(true),
             blocks_light: self.blocks_light == Some(true),
         }
+    }
+
+    /// Ingress validation beyond serde shape: a present `direction.blocking_side` must be
+    /// exactly `1.0` or `-1.0`. The cross-product side test
+    /// (`vision::Seg::transparent_from`) reads it as a sign, so any other value — `0.0`
+    /// above all, which would author a wall solid from NEITHER side — must fail closed at
+    /// ingress rather than be silently signum-normalized into an unintended
+    /// full-transparency wall.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::{Seg, WallDirection, WallEngine};
+    ///
+    /// let mut wall = WallEngine {
+    ///     seg: Seg { x1: 0.0, y1: 0.0, x2: 10.0, y2: 0.0 },
+    ///     blocks_sight: None,
+    ///     blocks_light: None,
+    ///     blocks_move: None,
+    ///     elevation: None,
+    ///     door: None,
+    ///     direction: Some(WallDirection { blocking_side: 1.0 }),
+    ///     sight_tier: None,
+    /// };
+    /// assert!(wall.validate().is_ok());
+    /// wall.direction = Some(WallDirection { blocking_side: 0.0 });
+    /// assert!(wall.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(d) = self.direction {
+            if d.blocking_side != 1.0 && d.blocking_side != -1.0 {
+                return Err("direction.blockingSide must be exactly 1.0 or -1.0".to_string());
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1624,6 +1624,8 @@ fn move_wall_entries_excludes_an_open_door() {
                 blocks_move: Some(true),
                 elevation: None,
                 door,
+                direction: None,
+                sight_tier: None,
             })
             .unwrap(),
         );

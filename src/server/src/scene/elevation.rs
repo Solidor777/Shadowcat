@@ -96,15 +96,26 @@ pub(crate) fn level_of(levels: &[eng::SceneLevel], elevation: f64) -> Option<&en
 /// and their elevation-filtered `_for` variants derive from — the wall SELECTION
 /// rule (doc_type, parent scene, the blocks flag) is stated once per collector, so
 /// an elevation edit and a flag edit reach every consumer through the same read.
-pub(crate) type BandedWall = (vision::Seg, Option<eng::ElevationBand>);
+///
+/// The segment itself carries the raycast-only occlusion metadata (`vision::Seg::one_way`/
+/// `vision::Seg::limited`): which collectors populate those fields (and from which
+/// `WallEngine` field) differs per gate — see each collector's own doc comment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WallEntry {
+    /// The wall's segment, carrying the one-way/limited occlusion metadata this gate
+    /// honors (`vision::Seg::transparent_from`, `vision::nearest_hit`'s crossing budget).
+    pub(crate) seg: vision::Seg,
+    /// The wall's elevation band; `None` = occludes every elevation.
+    pub(crate) elevation: Option<eng::ElevationBand>,
+}
 
 /// Filter a banded wall set to the segments occluding a source at `elevation`
 /// (`wall_occludes`).
-pub(crate) fn walls_at_elevation(walls: &[BandedWall], elevation: f64) -> Vec<vision::Seg> {
+pub(crate) fn walls_at_elevation(walls: &[WallEntry], elevation: f64) -> Vec<vision::Seg> {
     walls
         .iter()
-        .filter(|(_, band)| wall_occludes(band.as_ref(), elevation))
-        .map(|(s, _)| *s)
+        .filter(|w| wall_occludes(w.elevation.as_ref(), elevation))
+        .map(|w| w.seg)
         .collect()
 }
 
@@ -113,8 +124,12 @@ impl SceneEcs {
     /// behind `sight_walls`/`sight_walls_for`). The flag read goes through
     /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
     /// wall's door state — so an open door occludes nothing even when every authored flag
-    /// is set.
-    pub(crate) fn sight_wall_entries(&self, scene: Uuid) -> Vec<BandedWall> {
+    /// is set. The segment ALSO carries the sight gates' occlusion metadata:
+    /// `vision::Seg::one_way` from `WallEngine::direction` (a one-way wall occludes only
+    /// from its blocking side — `vision::Seg::transparent_from`) and
+    /// `vision::Seg::limited` from `WallEngine::sight_tier` (a sight ray crosses one such
+    /// wall per ray — `vision::MAX_LIMITED_CROSSINGS`).
+    pub(crate) fn sight_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -126,13 +141,15 @@ impl SceneEcs {
             if !wall.effective_flags().blocks_sight {
                 continue;
             }
-            out.push((
-                vision::Seg {
+            out.push(WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: wall.direction.map(|d| d.blocking_side),
+                    limited: wall.sight_tier == Some(eng::WallSightTier::Limited),
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         out
     }
@@ -141,8 +158,10 @@ impl SceneEcs {
     /// behind `light_walls`/`light_walls_for`). The flag read goes through
     /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
     /// wall's door state — so an open door stops no light even when every authored flag is
-    /// set.
-    pub(crate) fn light_wall_entries(&self, scene: Uuid) -> Vec<BandedWall> {
+    /// set. Light occlusion is SYMMETRIC and immediate by design: `one_way`/`limited` are
+    /// always `None`/`false` here regardless of the wall's authored `direction`/`sight_tier`
+    /// (those are sight/movement gates only — see `WallEngine::direction`'s own doc).
+    pub(crate) fn light_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -154,13 +173,15 @@ impl SceneEcs {
             if !wall.effective_flags().blocks_light {
                 continue;
             }
-            out.push((
-                vision::Seg {
+            out.push(WallEntry {
+                seg: vision::Seg {
                     a: (wall.seg.x1, wall.seg.y1),
                     b: (wall.seg.x2, wall.seg.y2),
+                    one_way: None,
+                    limited: false,
                 },
-                wall.elevation,
-            ));
+                elevation: wall.elevation,
+            });
         }
         out
     }
@@ -174,7 +195,7 @@ impl SceneEcs {
     pub(crate) fn sight_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         self.sight_wall_entries(scene)
             .into_iter()
-            .map(|(s, _)| s)
+            .map(|w| w.seg)
             .collect()
     }
 
@@ -195,7 +216,7 @@ impl SceneEcs {
     pub(crate) fn light_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
         self.light_wall_entries(scene)
             .into_iter()
-            .map(|(s, _)| s)
+            .map(|w| w.seg)
             .collect()
     }
 }

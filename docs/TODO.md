@@ -93,6 +93,10 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: One-way walls — a direction field on `WallEngine` tested by a cross-product side check
   inside `vision::visibility_polygon`'s ray-segment intersection and `move_exec`'s wall gate.
   Touches the fail-closed vision surface; needs its own security re-verification. (M)
+- TODO: Wall-view render treatment for one-way walls — a directional tick/shading on
+  `wall-view.ts` so a GM can see a wall's `blockingSide` orientation at a glance. Deferred out of
+  the one-way walls work as pure client-render polish; the data model and editor controls landed
+  without it. (S)
 - TODO: Independent `blocks_sound` on `WallEngine` with a `sound_wall_entries` accessor;
   `scene::audibility::compute_audibility` currently reuses `sight_wall_entries`, so sound
   occlusion is aliased onto sight-blocking walls. Default for existing walls: inherit

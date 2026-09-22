@@ -297,6 +297,8 @@ fn pathfind_reports_unreachable_when_route_exceeds_window_margin() {
     let walls = vec![Seg {
         a: (100.0, -200.0),
         b: (100.0, 300.0),
+        one_way: None,
+        limited: false,
     }];
     let start = (50.0, 50.0);
     let goal = (150.0, 50.0);

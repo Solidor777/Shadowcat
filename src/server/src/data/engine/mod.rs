@@ -34,7 +34,8 @@ pub use combat::{
 pub use geometry::{
     DoorState, DrawingEngine, DrawingShape, EffectiveWallFlags, ElevationBand, Fill,
     NoticeAudience, PortalTarget, RegionEngine, RegionShape, RegionTrigger, Seg, Stroke,
-    TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallEngine, MAX_TRIGGER_ID_CHARS,
+    TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
+    WallSightTier, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
@@ -277,7 +278,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("scene: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "wall" => round_trip::<WallEngine>(v, "wall"),
+        "wall" => {
+            let typed: WallEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("wall: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("wall: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "region" => {
             let typed: RegionEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("region: {e}")))?;

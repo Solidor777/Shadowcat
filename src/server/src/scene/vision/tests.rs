@@ -9,6 +9,16 @@ fn bound() -> Rect {
     }
 }
 
+/// An ordinary (two-sided, immediate) wall segment: no one-way sign, no limited tier.
+fn wall_seg(a: P, b: P) -> Seg {
+    Seg {
+        a,
+        b,
+        one_way: None,
+        limited: false,
+    }
+}
+
 #[test]
 fn point_segment_distance_degenerate_segment_uses_geometry_scale_epsilon() {
     // A segment with near-zero (but not exactly zero) length, below the plain
@@ -37,10 +47,7 @@ fn open_scene_sees_the_whole_bound() {
 #[test]
 fn a_wall_casts_an_occlusion_shadow() {
     // Viewpoint at origin; a vertical wall at x=10 spanning y∈[-5,5] (subtends ±~26.6°).
-    let wall = [Seg {
-        a: (10.0, -5.0),
-        b: (10.0, 5.0),
-    }];
+    let wall = [wall_seg((10.0, -5.0), (10.0, 5.0))];
     let poly = visibility_polygon((0.0, 0.0), &wall, bound());
     assert!(
         point_in_poly(&poly, (5.0, 0.0)),
@@ -61,14 +68,8 @@ fn a_wall_entirely_outside_bound_does_not_affect_the_polygon() {
     // Same occluding wall as `a_wall_casts_an_occlusion_shadow`, plus a second wall whose whole
     // bbox lies past `bound`'s edge (bound spans ±100) — the pre-filter must drop it, and the
     // polygon must be byte-for-byte identical to the no-extra-wall case.
-    let near_wall = Seg {
-        a: (10.0, -5.0),
-        b: (10.0, 5.0),
-    };
-    let outside_wall = Seg {
-        a: (500.0, -5.0),
-        b: (500.0, 5.0),
-    };
+    let near_wall = wall_seg((10.0, -5.0), (10.0, 5.0));
+    let outside_wall = wall_seg((500.0, -5.0), (500.0, 5.0));
     let baseline = visibility_polygon((0.0, 0.0), &[near_wall], bound());
     let with_outside_wall = visibility_polygon((0.0, 0.0), &[near_wall, outside_wall], bound());
     assert_eq!(
@@ -83,10 +84,7 @@ fn a_wall_straddling_bounds_edge_still_cuts_the_polygon() {
     // wall (x∈[100,105]) lies outside `bound` while the other half (x∈[95,100]) is inside. The
     // pre-filter must keep this wall (its bbox overlaps `bound`), so the in-bound portion still
     // occludes what's directly behind it.
-    let straddling_wall = Seg {
-        a: (95.0, -5.0),
-        b: (105.0, -5.0),
-    };
+    let straddling_wall = wall_seg((95.0, -5.0), (105.0, -5.0));
     let poly = visibility_polygon((0.0, 0.0), &[straddling_wall], bound());
     assert!(
         point_in_poly(&poly, (0.0, 50.0)),
@@ -106,22 +104,10 @@ fn enclosing_room_limits_vision_to_inside() {
     // A 4-wall room around the origin; a point outside a wall is not visible.
     let r = 20.0;
     let walls = [
-        Seg {
-            a: (-r, -r),
-            b: (r, -r),
-        },
-        Seg {
-            a: (r, -r),
-            b: (r, r),
-        },
-        Seg {
-            a: (r, r),
-            b: (-r, r),
-        },
-        Seg {
-            a: (-r, r),
-            b: (-r, -r),
-        },
+        wall_seg((-r, -r), (r, -r)),
+        wall_seg((r, -r), (r, r)),
+        wall_seg((r, r), (-r, r)),
+        wall_seg((-r, r), (-r, -r)),
     ];
     let poly = visibility_polygon((0.0, 0.0), &walls, bound());
     assert!(
@@ -139,10 +125,7 @@ fn wall_straddling_the_minus_x_seam_has_no_spurious_hole() {
     // A wall crossing the -x axis from the viewpoint exercises the atan2 ±π seam where the
     // ±EPS nudges wrap. The shadow behind it must be occluded and the front visible, with
     // no sliver hole punched at the seam (which would leak occluded geometry).
-    let wall = [Seg {
-        a: (-10.0, -5.0),
-        b: (-10.0, 5.0),
-    }];
+    let wall = [wall_seg((-10.0, -5.0), (-10.0, 5.0))];
     let poly = visibility_polygon((0.0, 0.0), &wall, bound());
     assert!(
         point_in_poly(&poly, (-5.0, 0.0)),
@@ -158,20 +141,14 @@ fn wall_straddling_the_minus_x_seam_has_no_spurious_hole() {
 fn viewpoint_on_a_wall_endpoint_does_not_panic() {
     // Degenerate: the viewpoint coincides with a wall endpoint (atan2(0,0)=0). Must yield a
     // finite polygon (under-reveal is acceptable; a panic or NaN vertex is not).
-    let wall = [Seg {
-        a: (0.0, 0.0),
-        b: (20.0, 0.0),
-    }];
+    let wall = [wall_seg((0.0, 0.0), (20.0, 0.0))];
     let poly = visibility_polygon((0.0, 0.0), &wall, bound());
     assert!(poly.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
 }
 
 #[test]
 fn bound_for_expands_around_walls_and_viewpoint() {
-    let walls = [Seg {
-        a: (0.0, 0.0),
-        b: (40.0, 0.0),
-    }];
+    let walls = [wall_seg((0.0, 0.0), (40.0, 0.0))];
     let b = bound_for((10.0, 10.0), &walls, 5.0);
     assert!(b.minx <= -5.0 && b.maxx >= 45.0 && b.maxy >= 15.0);
 }
@@ -222,10 +199,7 @@ fn bound_for_scene_unions_the_envelopes_minimum_and_a_refused_one_cannot_shrink_
     // never substituted for the wall-derived one. Its corners are the ORIGIN, though, so it is
     // not inert — which takes two arms to state, because a wall-derived bound that already
     // spans the origin cannot tell "untouched" from "clamped to the origin".
-    let walls = [Seg {
-        a: (-500.0, -500.0),
-        b: (500.0, 500.0),
-    }];
+    let walls = [wall_seg((-500.0, -500.0), (500.0, 500.0))];
     let wall_only = bound_for(vp, &walls, margin);
     assert!(
         wall_only.minx < 0.0 && wall_only.miny < 0.0,
@@ -245,10 +219,7 @@ fn bound_for_scene_unions_the_envelopes_minimum_and_a_refused_one_cannot_shrink_
     // origin IS moved, its low edges landing on the refused envelope's own corners rather than
     // on the wall-derived values. This is the arm a union that skipped a zero-area envelope
     // would fail while every other assertion here still passed.
-    let far_walls = [Seg {
-        a: (1000.0, 1000.0),
-        b: (2000.0, 2000.0),
-    }];
+    let far_walls = [wall_seg((1000.0, 1000.0), (2000.0, 2000.0))];
     let far_vp = (1500.0, 1500.0);
     let far_wall_only = bound_for(far_vp, &far_walls, margin);
     assert!(
@@ -278,4 +249,156 @@ fn point_segment_distance_endpoints_midpoint_and_perpendicular() {
     assert!(point_segment_distance((7.0, 0.0), a, b) < 1e-9);
     // Degenerate segment (a == b) → distance to the point.
     assert!((point_segment_distance((3.0, 4.0), (0.0, 0.0), (0.0, 0.0)) - 5.0).abs() < 1e-9);
+}
+
+// --- One-way walls + the limited sight tier (`Seg::one_way`/`Seg::limited`) ---
+//
+// Shared geometry for the battery: a vertical wall on the y-axis, `a=(0,-10)`,
+// `b=(0,10)`. The cross product `(b - a) × (p - a)` evaluates to `-20 * p.x`, so with
+// `one_way: Some(1.0)` the BLOCKING side is `x < 0` (cross positive) and the transparent
+// side is `x > 0`.
+
+/// The fixture one-way wall of this battery: solid from `x < 0`, transparent from `x > 0`.
+fn one_way_wall() -> Seg {
+    Seg {
+        a: (0.0, -10.0),
+        b: (0.0, 10.0),
+        one_way: Some(1.0),
+        limited: false,
+    }
+}
+
+#[test]
+fn nearest_hit_treats_one_way_wall_as_transparent_from_its_open_side() {
+    let bound = bound();
+    let mut segs = vec![one_way_wall()];
+    segs.extend(bound.edges());
+    // A ray from the transparent side (x > 0) aimed at the wall must NOT terminate there:
+    // it crosses the wall and ends on the far bound edge.
+    let hit =
+        nearest_hit((5.0, 0.0), (-1.0, 0.0), &segs).expect("the bound always terminates a ray");
+    assert!(
+        (hit.0 - -100.0).abs() < 1e-9 && hit.1.abs() < 1e-9,
+        "transparent from the open side: the ray must reach the bound at (-100, 0), got {hit:?}"
+    );
+}
+
+#[test]
+fn nearest_hit_treats_one_way_wall_as_blocking_from_its_solid_side() {
+    let bound = bound();
+    let mut segs = vec![one_way_wall()];
+    segs.extend(bound.edges());
+    // A ray from the blocking side (x < 0) aimed at the wall terminates ON the wall.
+    let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &segs).expect("the wall terminates the ray");
+    assert!(
+        hit.0.abs() < 1e-9 && hit.1.abs() < 1e-9,
+        "blocking from the solid side: the ray must stop at the wall (0, 0), got {hit:?}"
+    );
+}
+
+#[test]
+fn nearest_hit_degenerate_cross_product_fails_closed_to_blocking() {
+    // Origin exactly ON the wall's line: the cross product is 0, an ambiguous side that must
+    // read as BLOCKING — the same reading as a wall with no one-way sign — never transparent.
+    let wall = one_way_wall();
+    assert!(
+        !wall.transparent_from((0.0, 5.0)),
+        "an origin on the wall's own line must fail closed to blocking"
+    );
+    let hit = nearest_hit((0.0, 5.0), (1.0, 0.0), &[wall])
+        .expect("a blocking wall terminates the ray at t=0");
+    assert!(
+        hit.0.abs() < 1e-9 && (hit.1 - 5.0).abs() < 1e-9,
+        "the degenerate side case must terminate ON the wall, got {hit:?}"
+    );
+}
+
+#[test]
+fn transparent_from_fails_closed_on_a_non_unit_sign_or_non_finite_cross() {
+    // `WallEngine::validate` keeps a non-unit sign out at ingress; the runtime predicate must
+    // still fail CLOSED (blocking) if one ever reaches it — `cross.signum() != 0.0` would
+    // otherwise read a stored 0.0 as transparent from both sides.
+    let mut wall = one_way_wall();
+    wall.one_way = Some(0.0);
+    assert!(!wall.transparent_from((-5.0, 0.0)));
+    assert!(!wall.transparent_from((5.0, 0.0)));
+    // A non-finite origin (a NaN cross product) likewise blocks.
+    assert!(!one_way_wall().transparent_from((f64::NAN, 0.0)));
+}
+
+#[test]
+fn nearest_hit_limited_wall_lets_a_ray_cross_exactly_one_then_stops_at_a_second() {
+    // Two parallel limited walls at x=0 and x=10, approached from x<0: the ray spends its
+    // single crossing budget on the first and the second stops it.
+    let first = Seg {
+        a: (0.0, -10.0),
+        b: (0.0, 10.0),
+        one_way: None,
+        limited: true,
+    };
+    let second = Seg {
+        a: (10.0, -10.0),
+        b: (10.0, 10.0),
+        one_way: None,
+        limited: true,
+    };
+    let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[first, second])
+        .expect("the second limited wall terminates the ray");
+    assert!(
+        (hit.0 - 10.0).abs() < 1e-9 && hit.1.abs() < 1e-9,
+        "one crossing is free, the second limited wall stops the ray at (10, 0), got {hit:?}"
+    );
+    // A single limited wall alone is fully see-through: the ray reaches the bound.
+    let bound = bound();
+    let mut segs = vec![first];
+    segs.extend(bound.edges());
+    let through = nearest_hit((-5.0, 0.0), (1.0, 0.0), &segs).expect("the bound terminates");
+    assert!(
+        (through.0 - 100.0).abs() < 1e-9 && through.1.abs() < 1e-9,
+        "one limited wall is crossed outright: the ray must reach the bound at (100, 0), got {through:?}"
+    );
+}
+
+#[test]
+fn nearest_hit_limited_wall_still_stops_at_an_ordinary_wall_after_one_limited_crossing() {
+    // A limited wall followed by an ORDINARY wall: the ordinary wall stops the ray (the
+    // budget does not apply to it — it was never eligible for skipping in the first place).
+    let limited = Seg {
+        a: (0.0, -10.0),
+        b: (0.0, 10.0),
+        one_way: None,
+        limited: true,
+    };
+    let ordinary = wall_seg((10.0, -10.0), (10.0, 10.0));
+    let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[limited, ordinary])
+        .expect("the ordinary wall terminates the ray");
+    assert!(
+        (hit.0 - 10.0).abs() < 1e-9 && hit.1.abs() < 1e-9,
+        "an ordinary wall stops the ray after one limited crossing, got {hit:?}"
+    );
+    // Ordinary FIRST: the ray stops immediately and the limited wall behind it is irrelevant.
+    let limited_behind = Seg {
+        a: (10.0, -10.0),
+        b: (10.0, 10.0),
+        one_way: None,
+        limited: true,
+    };
+    let ordinary_first = wall_seg((0.0, -10.0), (0.0, 10.0));
+    let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[ordinary_first, limited_behind])
+        .expect("the ordinary wall terminates the ray");
+    assert!(
+        hit.0.abs() < 1e-9 && hit.1.abs() < 1e-9,
+        "an ordinary wall in front stops the ray at (0, 0), got {hit:?}"
+    );
+}
+
+#[test]
+fn visibility_polygon_bound_edges_are_never_one_way_or_limited() {
+    // Positive control: `Rect::edges` terminate every ray unconditionally, so a bound edge
+    // must never carry either skip behavior — a ray that escapes past every wall still stops
+    // at the bound (this is what makes `nearest_hit`'s walk total).
+    for edge in bound().edges() {
+        assert_eq!(edge.one_way, None, "bound edges are never one-way");
+        assert!(!edge.limited, "bound edges are never limited");
+    }
 }

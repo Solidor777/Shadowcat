@@ -38,6 +38,8 @@ fn step_crossing_a_blocks_move_wall_is_not_enterable() {
     let walls = vec![Seg {
         a: (100.0, 0.0),
         b: (100.0, 200.0),
+        one_way: None,
+        limited: false,
     }];
     let g = grid(&walls, None, 0.2);
     assert!(
@@ -55,10 +57,14 @@ fn footprint_disc_too_wide_for_a_gap_is_not_enterable() {
         Seg {
             a: (100.0, 0.0),
             b: (100.0, 200.0),
+            one_way: None,
+            limited: false,
         },
         Seg {
             a: (200.0, 0.0),
             b: (200.0, 200.0),
+            one_way: None,
+            limited: false,
         },
     ];
     let wide = grid(&walls, None, 0.7);
@@ -168,6 +174,47 @@ fn cell_outside_window_is_not_enterable() {
     assert!(
         !cell_enterable(&g, (2, 2), (3, 2)),
         "outside the search window"
+    );
+}
+
+#[test]
+fn cell_enterable_respects_one_way_wall_direction() {
+    // A one-way wall on the x=100 grid line spanning y∈[0,200], `one_way: Some(1.0)`:
+    // `(b - a) × (p - a)` = `-200 * (p.x - 100)`, so the blocking side is x<100 (cross
+    // positive) and the transparent side is x>100. The (0,0)->(1,0) step starts at (50,50)
+    // (blocking side) and must refuse; the reverse (1,0)->(0,0) step starts at (150,50)
+    // (transparent side) and must pass BOTH wall checks' filters — at footprint 0.6 the
+    // destination disc reaches 60 units out to the wall's 50, so the disc check alone would
+    // block without the filter, pinning that check (1) honors the direction too.
+    let one_way = Seg {
+        a: (100.0, 0.0),
+        b: (100.0, 200.0),
+        one_way: Some(1.0),
+        limited: false,
+    };
+    let walls = vec![one_way];
+    let g = grid(&walls, None, 0.6);
+    assert!(
+        !cell_enterable(&g, (0, 0), (1, 0)),
+        "a step starting on the wall's blocking side is refused"
+    );
+    assert!(
+        cell_enterable(&g, (1, 0), (0, 0)),
+        "a step starting on the wall's transparent side crosses freely"
+    );
+    // The same wall with `one_way: None` refuses both directions — the permission above is
+    // attributable to the sign, not the geometry. Every field is spelled out (never a
+    // rest-spread): a future `Seg` field must not be silently inherited by this control.
+    let two_sided = vec![Seg {
+        a: (100.0, 0.0),
+        b: (100.0, 200.0),
+        one_way: None,
+        limited: false,
+    }];
+    let g2 = grid(&two_sided, None, 0.6);
+    assert!(
+        !cell_enterable(&g2, (1, 0), (0, 0)),
+        "with no one-way sign the same step is refused"
     );
 }
 

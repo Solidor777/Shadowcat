@@ -689,6 +689,44 @@
           />
           {t("tools.blocksLight")}
         </label>
+        <!-- One-way walls: `direction` carries the sign naming the SOLID side of the segment
+             (`WallDirection.blockingSide`, ±1 — the cross-product convention is documented on
+             that type). The checkbox writes `{ blockingSide: 1 }` / removes the field; the flip
+             button negates the stored sign. Sight and movement only — light/sound stay
+             symmetric. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-one-way"
+            checked={eng.direction != null}
+            onchange={(e) =>
+              editSelected("/engine/direction", eng.direction ?? null, e.currentTarget.checked ? { blockingSide: 1 } : null)}
+          />
+          {t("tools.wallOneWay")}
+        </label>
+        {#if eng.direction}
+          <button
+            type="button"
+            class="tool"
+            data-testid="wall-flip-side"
+            onclick={() =>
+              editSelected("/engine/direction", eng.direction ?? null, { blockingSide: -(eng.direction?.blockingSide ?? 1) })}
+          >
+            {t("tools.wallFlipSide")}
+          </button>
+        {/if}
+        <!-- `sightTier: "limited"`: a sight ray may cross this one wall and stops at the next
+             crossing ("see through one such wall, not two"). Sight only. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-limited"
+            checked={eng.sightTier === "limited"}
+            onchange={(e) =>
+              editSelected("/engine/sightTier", eng.sightTier ?? null, e.currentTarget.checked ? "limited" : null)}
+          />
+          {t("tools.wallLimited")}
+        </label>
         <!-- The door state: `none` (an ordinary wall — writes `null`, removing the door) or
              `closed`/`open`/`locked`. This select is the GM's authoring surface (and the ONLY
              way onto or off `locked`); the player-facing flip is the select tool's

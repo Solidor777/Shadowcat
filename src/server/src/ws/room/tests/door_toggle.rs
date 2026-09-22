@@ -240,10 +240,12 @@ async fn toggle_door_succeeds_when_in_reach_visible_and_wall_visible() {
             .await
             .move_wall_entries(h.scene_id, None)
             .iter()
-            .any(|(s, _)| *s
+            .any(|w| w.seg
                 == crate::scene::vision::Seg {
                     a: (NEAR_SEG.0, NEAR_SEG.1),
                     b: (NEAR_SEG.2, NEAR_SEG.3),
+                    one_way: None,
+                    limited: false,
                 }),
         "an open door must drop out of the movement wall set"
     );

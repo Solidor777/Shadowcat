@@ -232,12 +232,15 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
 }
 
 /// Anti-drift check: `blocks_move` (the reference implementation) must agree with the
-/// production traversal path (`move_walls(scene, None, mover_elevation)` filtered by
-/// `segments_cross`, as used by `move_exec`'s per-cell wall gate) on every segment tried here,
-/// evaluated against BOTH scenes in the fixture and at BOTH an elevation inside the banded
-/// wall's band and one outside it — including the case where a segment would cross a wall that
-/// belongs to the OTHER scene. A mutation of either `blocks_move`'s or `move_walls`'s wall
-/// filter is expected to fail this test.
+/// production traversal path (`move_walls(scene, None, mover_elevation)`, filtered against the
+/// segment's START by `vision::Seg::transparent_from` — a one-way wall whose transparent side
+/// faces the mover is absent for the step — then tested by `segments_cross`, exactly as
+/// `move_exec`'s per-cell wall gate composes them) on every segment tried here, evaluated
+/// against BOTH scenes in the fixture, at BOTH an elevation inside the banded wall's band and
+/// one outside it, and in BOTH directions across the one-way wall — including the case where a
+/// segment would cross a wall that belongs to the OTHER scene. A mutation of either
+/// `blocks_move`'s or `move_walls`'s wall filter — including dropping the one-way filter from
+/// exactly one side of this pair — is expected to fail this test.
 #[test]
 fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     let scene = crate::test_ids::test_uuid(10);
@@ -249,6 +252,13 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         "elevation": { "bottom": 10.0, "top": 20.0 },
     });
     let other_scene_wall = json!({ "seg": {"x1":20,"y1":30,"x2":30,"y2":20}, "blocksMove": true });
+    // A one-way wall on y=10 spanning x∈[30,40]: `(b - a) × (p - a)` = `10 * (p.y - 10)`, so
+    // `blockingSide: 1.0` makes the y>10 side the solid one — a segment crossing it upward
+    // (starting below, y<10) is unblocked, the same segment starting above is stopped.
+    let one_way_blocking = json!({
+        "seg": {"x1":30,"y1":10,"x2":40,"y2":10}, "blocksMove": true,
+        "direction": { "blockingSide": 1.0 },
+    });
 
     let ecs = SceneEcs::from_documents(
         vec![
@@ -257,6 +267,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
             entity_doc_eng(12, 10, "wall", blocking),
             entity_doc_eng(13, 10, "wall", non_blocking),
             entity_doc_eng(14, 10, "wall", banded_blocking),
+            entity_doc_eng(15, 10, "wall", one_way_blocking),
             entity_doc_eng(24, 20, "wall", other_scene_wall),
         ],
         0,
@@ -268,6 +279,8 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         ((0.0, 5.0), (5.0, 5.0)),     // crosses the scene-10 non-blocking wall only
         ((20.0, 20.0), (30.0, 30.0)), // would cross the OTHER scene's wall, not scene 10's
         ((0.0, 20.0), (20.0, 0.0)),   // crosses the scene-10 banded wall only
+        ((35.0, 5.0), (35.0, 15.0)),  // crosses the one-way wall from its transparent side
+        ((35.0, 15.0), (35.0, 5.0)),  // crosses the one-way wall from its blocking side
     ];
     // `elevation::GROUND` is outside the banded wall's `[10, 20]` band; `15.0` is inside it.
     for mover_elevation in [elevation::GROUND, 15.0] {
@@ -276,7 +289,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
                 let production = ecs
                     .move_walls(s, None, mover_elevation)
                     .iter()
-                    .any(|w| segments_cross(a0, a1, w.a, w.b));
+                    .any(|w| !w.transparent_from(a0) && segments_cross(a0, a1, w.a, w.b));
                 assert_eq!(
                     ecs.blocks_move(s, a0, a1, mover_elevation),
                     production,
@@ -288,6 +301,11 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     // The band itself decides: the banded wall blocks only inside its band.
     assert!(ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), 15.0));
     assert!(!ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), elevation::GROUND));
+    // The one-way wall's direction decides: open from the transparent side, stopped from the
+    // blocking side. These absolute pins keep the pair honest — an agreement-only check would
+    // still pass with the filter missing from BOTH sides.
+    assert!(!ecs.blocks_move(scene, (35.0, 5.0), (35.0, 15.0), elevation::GROUND));
+    assert!(ecs.blocks_move(scene, (35.0, 15.0), (35.0, 5.0), elevation::GROUND));
 }
 
 #[test]

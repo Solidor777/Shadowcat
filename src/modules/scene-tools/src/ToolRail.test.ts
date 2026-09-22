@@ -584,6 +584,55 @@ test("the wall editor's door select dispatches /engine/door with the raw stored 
   });
 });
 
+test("the wall editor's one-way and limited controls dispatch /engine/direction and /engine/sightTier with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+
+  // The fixture wall carries no `direction`: the checkbox reads unchecked, and enabling it
+  // writes `{ blockingSide: 1 }` with the raw ABSENT value (null) as old, per the OCC
+  // convention.
+  const oneWay = screen.getByTestId("wall-one-way") as HTMLInputElement;
+  expect(oneWay.checked).toBe(false);
+  expect(screen.queryByTestId("wall-flip-side")).toBeNull();
+  await fireEvent.click(oneWay);
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/direction", old: null, new: { blockingSide: 1 } }],
+  });
+
+  // With a direction stored, the flip button negates the sign, carrying the raw stored
+  // object as old. Flush the store commit's re-render first (the same settle discipline the
+  // door-select case above needs).
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 1,
+    ops: [{
+      op: "update", doc_id: wallId,
+      changes: [{ path: "/engine/direction", old: null, new: { blockingSide: 1 } }],
+    }],
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  await fireEvent.click(screen.getByTestId("wall-flip-side"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/direction", old: { blockingSide: 1 }, new: { blockingSide: -1 } }],
+  });
+
+  // The limited-sight checkbox writes the tier's wire spelling, raw-null as old.
+  await fireEvent.click(screen.getByTestId("wall-limited"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/sightTier", old: null, new: "limited" }],
+  });
+});
+
 test("Escape clears the open editor", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });

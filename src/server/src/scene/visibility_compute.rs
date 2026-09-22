@@ -32,7 +32,7 @@ pub(crate) struct LightingInputs {
     /// `blocksSight` wall segments with their elevation bands (the LOS raycast input —
     /// each vision source filters them at its own elevation through
     /// `elevation::walls_at_elevation` before raycasting).
-    pub(crate) sight_walls: Vec<elevation::BandedWall>,
+    pub(crate) sight_walls: Vec<elevation::WallEntry>,
 }
 
 impl LightingInputs {
@@ -178,9 +178,9 @@ pub(crate) struct VisibilityInputsSnapshot {
     /// Resolved scene lights.
     pub(crate) lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands.
-    pub(crate) light_walls: Vec<elevation::BandedWall>,
+    pub(crate) light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
-    pub(crate) sight_walls: Vec<elevation::BandedWall>,
+    pub(crate) sight_walls: Vec<elevation::WallEntry>,
 }
 
 /// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the

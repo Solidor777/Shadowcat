@@ -31,6 +31,16 @@ fn test_grid() -> crate::scene::grid_shape::SquareGrid {
         rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
     }
 }
+/// An ordinary (two-sided, immediately-blocking) wall segment fixture: no one-way sign, no
+/// limited tier.
+fn wall_seg(a: (f64, f64), b: (f64, f64)) -> Seg {
+    Seg {
+        a,
+        b,
+        one_way: None,
+        limited: false,
+    }
+}
 fn terrain_on(x0: f64, y0: f64, x1: f64, y1: f64, mult: f64) -> RegionField {
     let mut b = RegionField::builder();
     b.add(
@@ -245,10 +255,7 @@ fn los_smooth_refuses_shortcut_across_a_wall() {
     // Vertical wall x=150, y in [80,200]. Shortcut (50,50)->(250,150) crosses it at (150,100);
     // the horizontal first leg at y=50 passes below the wall (y=50 < 80), so the middle vertex
     // is retained.
-    let wall = Seg {
-        a: (150.0, 80.0),
-        b: (150.0, 200.0),
-    };
+    let wall = wall_seg((150.0, 80.0), (150.0, 200.0));
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
         &crate::scene::pathfinding::PathInputs {
@@ -436,10 +443,7 @@ fn negative_or_non_finite_footprint_fails_closed() {
 #[test]
 fn over_cap_obstacle_count_fails_closed() {
     let walls: Vec<Seg> = (0..(MAX_NAVMESH_OBSTACLE_SEGMENTS + 1))
-        .map(|i| Seg {
-            a: (i as f64, 0.0),
-            b: (i as f64, 1.0),
-        })
+        .map(|i| wall_seg((i as f64, 0.0), (i as f64, 1.0)))
         .collect();
     assert!(build_navmesh(origin_extent(1_000_000.0, 10_000.0), 40.0, &walls).is_none());
 }
@@ -451,10 +455,7 @@ fn empty_scene_builds_a_navmesh() {
 
 #[test]
 fn a_malformed_wall_segment_is_skipped_not_fatal() {
-    let walls = vec![Seg {
-        a: (f64::NAN, 0.0),
-        b: (10.0, 10.0),
-    }];
+    let walls = vec![wall_seg((f64::NAN, 0.0), (10.0, 10.0))];
     assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
 }
 
@@ -475,10 +476,7 @@ fn oversized_footprint_scene_fails_closed_not_panic() {
     // endpoints are ordinary, yet a footprint distance of `64.0 * 1e37` overflows `f32::MAX`
     // and would saturate the buffered ring's vertices to infinity on cast, panicking inside
     // `spade`.
-    let walls = vec![Seg {
-        a: (0.0, 0.0),
-        b: (1.0, 1.0),
-    }];
+    let walls = vec![wall_seg((0.0, 0.0), (1.0, 1.0))];
     assert!(build_navmesh(
         origin_extent(1e14, 1e14),
         crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e37,
@@ -497,10 +495,7 @@ fn a_footprint_buffer_that_collapses_a_wall_to_nothing_fails_the_whole_build() {
     // An ordinary 10 × 10 domain, bisected by the wall (5,0)-(5,10); the footprint distance is
     // `MAX_FOOTPRINT_CELLS` (64.0, within the caller's cap) at a cell size of 1e9, giving
     // 6.4e10 — a ratio to the wall's own length (10) of 6.4e9, past the collapse threshold.
-    let walls = vec![Seg {
-        a: (5.0, 0.0),
-        b: (5.0, 10.0),
-    }];
+    let walls = vec![wall_seg((5.0, 0.0), (5.0, 10.0))];
     assert!(
         build_navmesh(
             origin_extent(10.0, 10.0),
@@ -517,10 +512,7 @@ fn a_footprint_buffer_that_collapses_a_wall_to_nothing_fails_the_whole_build() {
 fn zero_length_wall_segment_is_a_degenerate_noop_not_a_hard_failure() {
     // `seg.a == seg.b` is genuinely degenerate input (not a numerical-precision collapse of a
     // real wall) — an empty buffer result for it must not trigger the hard-failure path.
-    let walls = vec![Seg {
-        a: (5.0, 5.0),
-        b: (5.0, 5.0),
-    }];
+    let walls = vec![wall_seg((5.0, 5.0), (5.0, 5.0))];
     assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
 }
 
@@ -530,10 +522,7 @@ fn ordinary_wall_and_footprint_build_successfully() {
     // single ordinary interior wall) must build a valid mesh, and the wall's obstacle
     // ring must actually be present in the resulting mesh (distinguishing "built successfully"
     // from "built successfully but the wall silently vanished").
-    let walls = vec![Seg {
-        a: (5.0, 0.0),
-        b: (5.0, 10.0),
-    }];
+    let walls = vec![wall_seg((5.0, 0.0), (5.0, 10.0))];
     let with_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &walls)
         .expect("an ordinary wall + footprint must build a navmesh");
     let without_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &[])
@@ -554,14 +543,8 @@ fn an_oversized_wall_segment_is_skipped_not_fatal_or_panicking() {
     // would saturate to f32::INFINITY on cast; it must be skipped like a malformed segment,
     // while the rest of the scene's geometry (here, none) still builds a valid mesh.
     let walls = vec![
-        Seg {
-            a: (1e70, 0.0),
-            b: (10.0, 10.0),
-        },
-        Seg {
-            a: (5.0, 5.0),
-            b: (20.0, 20.0),
-        },
+        wall_seg((1e70, 0.0), (10.0, 10.0)),
+        wall_seg((5.0, 5.0), (20.0, 20.0)),
     ];
     let mesh = build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls);
     assert!(
@@ -596,10 +579,7 @@ fn straight_route_cost_is_euclidean() {
 fn a_wall_in_the_direct_path_forces_a_detour() {
     // A vertical wall from (500,0) to (500,600) blocks the direct horizontal line at y=50,
     // forcing the route to detour around its bottom end (600 < 1000 scene height).
-    let walls = vec![Seg {
-        a: (500.0, 0.0),
-        b: (500.0, 600.0),
-    }];
+    let walls = vec![wall_seg((500.0, 0.0), (500.0, 600.0))];
     let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &walls).unwrap();
     let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
     assert!(
@@ -776,10 +756,7 @@ fn clip_with_a_mask_excluding_the_whole_corridor_confines_the_route_to_that_cell
 #[test]
 fn clip_truncates_a_chord_that_crosses_a_wall() {
     // A wall directly bisecting the straight line from (50,50) to (950,50) at x=500.
-    let walls = vec![crate::scene::vision::Seg {
-        a: (500.0, -100.0),
-        b: (500.0, 200.0),
-    }];
+    let walls = vec![wall_seg((500.0, -100.0), (500.0, 200.0))];
     let outcome = crate::scene::pathfinding::PathOutcome {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
@@ -869,14 +846,8 @@ fn clip_skips_a_non_finite_wall_without_hiding_a_crossing_against_other_walls() 
     // blind the crossing check against an OTHER, well-formed wall that genuinely bisects the
     // route.
     let walls = vec![
-        crate::scene::vision::Seg {
-            a: (f64::NAN, -100.0),
-            b: (f64::NAN, 200.0),
-        },
-        crate::scene::vision::Seg {
-            a: (500.0, -100.0),
-            b: (500.0, 200.0),
-        },
+        wall_seg((f64::NAN, -100.0), (f64::NAN, 200.0)),
+        wall_seg((500.0, -100.0), (500.0, 200.0)),
     ];
     let outcome = crate::scene::pathfinding::PathOutcome {
         path: vec![(50.0, 50.0), (950.0, 50.0)],

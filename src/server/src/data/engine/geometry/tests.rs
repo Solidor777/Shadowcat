@@ -16,6 +16,8 @@ fn wall(door: Option<DoorState>) -> WallEngine {
         blocks_move: Some(true),
         elevation: None,
         door,
+        direction: None,
+        sight_tier: None,
     }
 }
 
@@ -101,4 +103,91 @@ fn door_absent_resolves_authored_flags_unchanged() {
     assert!(!flags.blocks_move);
     assert!(flags.blocks_sight);
     assert!(flags.blocks_light);
+}
+
+#[test]
+fn direction_and_sight_tier_deserialize_absent_as_none() {
+    // The migration-freedom contract for both fields: a stored document written
+    // before they existed carries neither key and must deserialize with both `None`.
+    let body = serde_json::json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
+        "blocksSight": true,
+    });
+    let parsed: WallEngine =
+        serde_json::from_value(body).expect("a pre-direction stored wall deserializes unchanged");
+    assert_eq!(parsed.direction, None);
+    assert_eq!(parsed.sight_tier, None);
+    assert!(parsed.validate().is_ok());
+}
+
+#[test]
+fn direction_and_sight_tier_round_trip_their_wire_names() {
+    // The wire spellings are camelCase (`blockingSide`, `sightTier`) and the tier is the
+    // snake_case variant name — pin both, since the client authors these payloads by key.
+    let mut w = wall(None);
+    w.direction = Some(WallDirection {
+        blocking_side: -1.0,
+    });
+    w.sight_tier = Some(WallSightTier::Limited);
+    let json = serde_json::to_value(&w).unwrap();
+    assert_eq!(
+        json["direction"],
+        serde_json::json!({ "blockingSide": -1.0 })
+    );
+    assert_eq!(json["sightTier"], serde_json::json!("limited"));
+    let back: WallEngine = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        back.direction,
+        Some(WallDirection {
+            blocking_side: -1.0
+        })
+    );
+    assert_eq!(back.sight_tier, Some(WallSightTier::Limited));
+    assert!(back.validate().is_ok());
+}
+
+#[test]
+fn wall_validate_accepts_absent_direction_and_unit_signs_only() {
+    assert!(
+        wall(None).validate().is_ok(),
+        "no direction: nothing to validate"
+    );
+    for sign in [1.0, -1.0] {
+        let mut w = wall(None);
+        w.direction = Some(WallDirection {
+            blocking_side: sign,
+        });
+        assert!(w.validate().is_ok(), "blocking_side {sign} must pass");
+    }
+    for bad in [0.0, 2.0, -0.5, f64::NAN, f64::INFINITY] {
+        let mut w = wall(None);
+        w.direction = Some(WallDirection { blocking_side: bad });
+        assert!(
+            w.validate().is_err(),
+            "blocking_side {bad} must be rejected: the side test reads it as a sign"
+        );
+    }
+}
+
+#[test]
+fn wall_validate_rejects_a_non_unit_blocking_side_at_ingress() {
+    // The `normalize_engine` wiring is the real ingress chokepoint: a `blockingSide`
+    // outside {-1.0, 1.0} must fail the whole write, not just the typed validate.
+    let body = serde_json::json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
+        "direction": { "blockingSide": 0.0 },
+    });
+    assert!(
+        crate::data::engine::normalize_engine_opt("wall", Some(&body)).is_err(),
+        "a zero blocking_side must be rejected at ingress, never normalized"
+    );
+    let good = serde_json::json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
+        "direction": { "blockingSide": 1.0 },
+        "sightTier": "limited",
+    });
+    assert!(
+        crate::data::engine::normalize_engine_opt("wall", Some(&good)).is_ok(),
+        "a unit sign and a known tier pass ingress"
+    );
 }

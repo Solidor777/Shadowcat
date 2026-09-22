@@ -106,10 +106,14 @@ fn segment_occluded_agrees_with_the_sight_primitive() {
     let crossing = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, 5.0),
+        one_way: None,
+        limited: false,
     };
     let clear = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, -1.0),
+        one_way: None,
+        limited: false,
     };
     for (listener, emitter, wall) in [
         ((0.0, 0.0), (10.0, 0.0), crossing),

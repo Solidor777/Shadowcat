@@ -8,7 +8,10 @@
 //! `pathfinding::cell_enterable` uses for routing:
 //! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
 //!   `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
-//!   (`ecs.move_walls(scene, None, mover_elevation)`) — both are
+//!   (`ecs.move_walls(scene, None, mover_elevation)`), minus per step any one-way wall whose
+//!   transparent side faces the pre-step point (`vision::Seg::transparent_from` — the shared
+//!   predicate the sight raycast and the router read, so the three never disagree on which
+//!   side of a wall is solid) — both checks are
 //!   required; the disc test alone lets a wall between two adjacent cell centers become
 //!   permeable at the default 0.4-cell footprint,
 //! - the caller-supplied `visible` mask (skipped for `Unrestricted`) over
@@ -514,12 +517,21 @@ pub(crate) fn execute_move(
         // The disc alone is insufficient — at a 0.4-cell footprint a wall midway between
         // adjacent cell centers sits 0.5 cell away and would pass, making walls permeable on
         // the sole remaining check.
+        //
+        // One-way walls (`vision::Seg::one_way`, populated by `move_wall_entries` from
+        // `WallEngine::direction`) are filtered out of BOTH checks for this step when the
+        // PRE-STEP point `prev` sits on the wall's transparent side
+        // (`vision::Seg::transparent_from` — the same cross-product predicate the sight
+        // raycast applies to the ray origin): a mover may walk IN across the transparent
+        // side and is then gated from the blocking side exactly as by an ordinary wall.
         if check_walls {
             let disc_blocked = gate_walls
                 .iter()
+                .filter(|w| !w.transparent_from(prev))
                 .any(|w| crate::scene::vision::point_segment_distance(next, w.a, w.b) < r_scene);
             let crossed = gate_walls
                 .iter()
+                .filter(|w| !w.transparent_from(prev))
                 .any(|w| crate::scene::segments_cross(prev, next, w.a, w.b));
             if disc_blocked || crossed {
                 stopped_early = true;

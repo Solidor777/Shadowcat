@@ -35,6 +35,8 @@ fn scene_with_door_walls(doors: &[Option<eng::DoorState>]) -> (SceneEcs, Uuid) {
                 blocks_move: Some(true),
                 elevation: None,
                 door: *door,
+                direction: None,
+                sight_tier: None,
             })
             .unwrap(),
         );
@@ -71,6 +73,83 @@ fn light_wall_entries_excludes_an_open_door() {
         2,
         "an open door resolves blocks_light to false and leaves the light set"
     );
+}
+
+/// A scene (id 10) with one all-flags wall carrying the given direction/sight tier.
+/// Returns the ECS and the scene id.
+fn scene_with_directed_wall(
+    direction: Option<f64>,
+    sight_tier: Option<eng::WallSightTier>,
+) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut wall = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        Uuid::new_v4(),
+        "wall",
+    );
+    wall.parent_id = Some(scene_id);
+    wall.engine = Some(
+        serde_json::to_value(eng::WallEngine {
+            seg: eng::Seg {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+            },
+            blocks_sight: Some(true),
+            blocks_light: Some(true),
+            blocks_move: Some(true),
+            elevation: None,
+            door: None,
+            direction: direction.map(|blocking_side| eng::WallDirection { blocking_side }),
+            sight_tier,
+        })
+        .unwrap(),
+    );
+    (SceneEcs::from_documents(vec![scene, wall], 0), scene_id)
+}
+
+#[test]
+fn sight_wall_entries_carries_the_one_way_sign_and_limited_tier() {
+    // The sight collector populates BOTH occlusion-metadata fields — the raycast reads
+    // them, so they must survive collection.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.sight_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, Some(1.0));
+    assert!(entries[0].seg.limited);
+}
+
+#[test]
+fn move_wall_entries_carry_the_one_way_sign_but_never_the_limited_tier() {
+    // Movement honors a one-way wall (`Seg::transparent_from` per step) but the partial-
+    // blocking tier is sight-only: `limited` must NOT leak into the routing set.
+    let (ecs, scene) = scene_with_directed_wall(Some(-1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.move_wall_entries(scene, None);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, Some(-1.0));
+    assert!(
+        !entries[0].seg.limited,
+        "a Limited wall still fully blocks movement when blocksMove is set"
+    );
+}
+
+#[test]
+fn light_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
+    // Light occlusion is symmetric and immediate by design: neither field propagates.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.light_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, None);
+    assert!(!entries[0].seg.limited);
 }
 
 #[test]
