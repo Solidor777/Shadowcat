@@ -1,6 +1,78 @@
 use super::*;
 use crate::data::engine::ElevationBand;
 
+/// A scene (id 10, square grid) plus, per entry in `doors`, one
+/// all-flags-authored wall carrying that door state — `None` = a doorless wall.
+/// Returns the ECS and the scene id.
+fn scene_with_door_walls(doors: &[Option<eng::DoorState>]) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut docs = vec![scene];
+    for door in doors {
+        let mut wall = crate::data::document::tests::world_scoped_doc(
+            crate::test_ids::test_uuid(9),
+            Uuid::new_v4(),
+            "wall",
+        );
+        wall.parent_id = Some(scene_id);
+        wall.engine = Some(
+            serde_json::to_value(eng::WallEngine {
+                seg: eng::Seg {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 10.0,
+                    y2: 0.0,
+                },
+                blocks_sight: Some(true),
+                blocks_light: Some(true),
+                blocks_move: Some(true),
+                elevation: None,
+                door: *door,
+            })
+            .unwrap(),
+        );
+        docs.push(wall);
+    }
+    (SceneEcs::from_documents(docs, 0), scene_id)
+}
+
+#[test]
+fn sight_wall_entries_excludes_an_open_door() {
+    // One open door, one closed door, one doorless wall — every one with all
+    // authored flags true: the open door drops out, the other two stay.
+    let (ecs, scene) = scene_with_door_walls(&[
+        Some(eng::DoorState::Open),
+        Some(eng::DoorState::Closed),
+        None,
+    ]);
+    assert_eq!(
+        ecs.sight_wall_entries(scene).len(),
+        2,
+        "an open door resolves blocks_sight to false and leaves the sight set"
+    );
+}
+
+#[test]
+fn light_wall_entries_excludes_an_open_door() {
+    let (ecs, scene) = scene_with_door_walls(&[
+        Some(eng::DoorState::Open),
+        Some(eng::DoorState::Locked),
+        None,
+    ]);
+    assert_eq!(
+        ecs.light_wall_entries(scene).len(),
+        2,
+        "an open door resolves blocks_light to false and leaves the light set"
+    );
+}
+
 #[test]
 fn elevation_or_ground_defaults_and_clamps() {
     assert_eq!(elevation_or_ground(None), GROUND);

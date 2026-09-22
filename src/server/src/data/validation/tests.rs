@@ -385,15 +385,16 @@ fn small_base_passes() {
 /// A complete, valid `MergeBase` value for a wall-engine document; the
 /// embedded collection carries one record keyed by `child_source_id`. The
 /// root engine is the NORMALIZED `WallEngine` form (the optional `blocks_*`
-/// fields materialize as explicit nulls through `normalize_engine_opt`'s
-/// re-serialization), so a valid snapshot survives the walk untouched.
+/// and `door` fields materialize as explicit nulls through
+/// `normalize_engine_opt`'s re-serialization), so a valid snapshot survives
+/// the walk untouched.
 fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
     serde_json::json!({
         "name": "Old",
         "engine": {
             "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
             "blocksSight": null, "blocksLight": null, "blocksMove": null,
-            "elevation": null
+            "elevation": null, "door": null
         },
         "system": { "hp": 1 },
         "embedded": {

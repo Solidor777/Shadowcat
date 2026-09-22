@@ -309,7 +309,15 @@ request_id: string,
 /**
  * The committed command's sequence number — matches the broadcast `Event`'s `seq`.
  */
-seq: bigint, } | { "type": "move_stream", 
+seq: bigint, } | { "type": "door_toggle_error", 
+/**
+ * The refused toggle's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned — see the variant doc).
+ */
+message: string, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */

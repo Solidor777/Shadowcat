@@ -110,7 +110,10 @@ pub(crate) fn walls_at_elevation(walls: &[BandedWall], elevation: f64) -> Vec<vi
 
 impl SceneEcs {
     /// The scene's `blocksSight` walls with their elevation bands (the shared collector
-    /// behind `sight_walls`/`sight_walls_for`).
+    /// behind `sight_walls`/`sight_walls_for`). The flag read goes through
+    /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
+    /// wall's door state — so an open door occludes nothing even when every authored flag
+    /// is set.
     pub(crate) fn sight_wall_entries(&self, scene: Uuid) -> Vec<BandedWall> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
@@ -120,7 +123,7 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_sight != Some(true) {
+            if !wall.effective_flags().blocks_sight {
                 continue;
             }
             out.push((
@@ -135,7 +138,10 @@ impl SceneEcs {
     }
 
     /// The scene's `blocksLight` walls with their elevation bands (the shared collector
-    /// behind `light_walls`/`light_walls_for`).
+    /// behind `light_walls`/`light_walls_for`). The flag read goes through
+    /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
+    /// wall's door state — so an open door stops no light even when every authored flag is
+    /// set.
     pub(crate) fn light_wall_entries(&self, scene: Uuid) -> Vec<BandedWall> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
@@ -145,7 +151,7 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_light != Some(true) {
+            if !wall.effective_flags().blocks_light {
                 continue;
             }
             out.push((

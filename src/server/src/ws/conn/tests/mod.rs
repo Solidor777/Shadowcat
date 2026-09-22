@@ -11,6 +11,8 @@ use crate::ws::test_support::{token_engine, ws_engine};
 
 /// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
 mod combat_intents;
+/// `handle_toggle_door`'s reply shape (asymmetric success / correlated uniform refusal).
+mod door_toggle;
 /// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
 mod mover_light;
 mod senses;

@@ -542,6 +542,48 @@ test("selecting a wall with the select tool opens the flag editor; a flag toggle
   });
 });
 
+test("the wall editor's door select dispatches /engine/door with the raw stored value as old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+
+  // The fixture wall carries no door: the select reads "none".
+  const wallId = docs.query("wall")[0].id;
+  const select = screen.getByTestId("wall-door") as HTMLSelectElement;
+  expect(select.value).toBe("none");
+
+  // Authoring a closed door: old is the raw ABSENT value (null), per the OCC convention.
+  await fireEvent.change(select, { target: { value: "closed" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/door", old: null, new: "closed" }],
+  });
+
+  // Selecting "none" removes the door (writes null with the raw stored value as old).
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 1,
+    ops: [{
+      op: "update", doc_id: wallId,
+      changes: [{ path: "/engine/door", old: null, new: "closed" }],
+    }],
+  });
+  // Let the store commit's re-render flush BEFORE the next change event, so the controlled
+  // select value ("closed" now) settles before the event's own value assignment — otherwise
+  // the flush lands between assignment and dispatch and the handler reads the stale value.
+  await new Promise((r) => setTimeout(r, 0));
+  await fireEvent.change(screen.getByTestId("wall-door"), { target: { value: "none" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/door", old: "closed", new: null }],
+  });
+});
+
 test("Escape clears the open editor", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });

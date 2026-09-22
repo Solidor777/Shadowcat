@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { FalloffCurve, RejectReason } from "@shadowcat/types";
+import type { DoorState, FalloffCurve, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -538,6 +538,22 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** In-flight door toggles, keyed by request_id — the same asymmetric settle shape as
+   * `chatPending` (ONLY a rejection replies, as a `door_toggle_error` frame; success is the
+   * broadcast Event echo, which carries no `request_id` correlation), kept as its own map so
+   * the two families' error frames never cross-correlate. */
+  private doorPending = new Map<
+    string,
+    {
+      /** Resolves (void) once the silence window elapses with no `door_toggle_error`. */
+      resolve: () => void;
+      /** Rejects with the server's reason on a correlated `door_toggle_error`, or on
+       * disconnect. */
+      reject: (e: Error) => void;
+      /** The silence-window timeout handle that resolves success-assumed. */
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   /** In-flight merge intents (`MergePull`/`MergePush`/`MergeRevert`), keyed by request_id. Unlike
    * `combatPending`/`chatPending`, a merge intent's reply IS a correlated frame carrying real
    * payload (`ServerMsg::MergeResult`'s `outcome`) — the same one-shot request/reply shape as
@@ -736,6 +752,12 @@ export class WsClient {
       p.reject(new Error(reason));
     }
     this.chatPending.clear();
+    // Door toggles share the chat-op settle shape; same cleanup rule.
+    for (const p of this.doorPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.doorPending.clear();
     // Combat intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
     for (const p of this.combatPending.values()) {
@@ -1145,6 +1167,18 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.chatPending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "door_toggle_error": {
+        // A rejected door toggle: reject the correlated request so the clicking user gets
+        // the toast (the wording is already the role-appropriate one — uniform for a
+        // non-GM, diagnostic for a GM — applied server-side by `door_toggle_wire_message`).
+        const p = this.doorPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.doorPending.delete(msg.request_id);
           p.reject(new Error(msg.message));
         }
         break;
@@ -1767,6 +1801,69 @@ export class WsClient {
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
     });
+    return p;
+  }
+
+  /** Register a correlated door toggle: resolves (success-assumed) when no
+   * `door_toggle_error` arrives within the window, rejects with the server's reason when one
+   * does — the same asymmetric settle shape as `trackChatOp` (success is the broadcast Event
+   * echo, which carries no `request_id` correlation).
+   * @param request_id The toggle's correlation id (already sent on the wire by the caller).
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no error; rejects immediately
+   * if a matching `door_toggle_error` arrives first.
+   * @example
+   * ```
+   * // called from toggleDoor; not part of the public API
+   * declare const request_id: string;
+   * const p = this.trackDoorToggle(request_id);
+   * ```
+   */
+  private trackDoorToggle(request_id: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.doorPending.delete(request_id);
+        resolve();
+      }, CHAT_ERROR_WINDOW_MS);
+      // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
+      // call reaches it where present without taking a `@types/node` dependency.
+      (
+        timer as unknown as {
+          /** Node-only: detach the timer from keeping the event loop alive. */
+          unref?: () => void;
+        }
+      ).unref?.();
+      this.doorPending.set(request_id, { resolve, reject, timer });
+    });
+  }
+
+  /** Request a door toggle on the named wall. Resolves/rejects like `sendChatMessage`:
+   * silence-based success, a correlated `door_toggle_error` rejects with the server's reason
+   * (uniform "door rejected" for a non-GM — the refusal class is deliberately not
+   * disclosed). The server authorizes positionally (reach + visibility, or GM standing); the
+   * client-side reach pre-check in the scene-tools select tool is advisory UX only, never
+   * the authority.
+   * @param sceneId The scene the wall is on (checked server-side against the wall's own
+   * parent, never trusted to select).
+   * @param wallId The wall whose door state flips.
+   * @param to The target state (`closed`/`open`; `locked` is GM-only).
+   * @returns Resolves (void) once the toggle is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.toggleDoor("scene-1", "wall-1", "open");
+   * ```
+   */
+  toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackDoorToggle(request_id);
+    this.send({ type: "toggle_door", request_id, scene_id: sceneId, wall_id: wallId, to });
     return p;
   }
 

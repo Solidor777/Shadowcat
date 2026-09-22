@@ -14,6 +14,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+#[cfg(test)]
+mod tests;
+
 /// A line segment in scene units (the scene's continuous coordinate space,
 /// not grid cells).
 ///
@@ -75,6 +78,61 @@ pub struct ElevationBand {
     pub top: Option<f64>,
 }
 
+/// A wall's door state (`WallEngine::door`): whether the segment is a door at
+/// all, and when it is, whether it stands closed or open. `Closed` and `Locked`
+/// both apply the wall's authored `blocks_*` flags unchanged — `Locked` differs
+/// from `Closed` only in who may flip it (a non-GM's `ClientMsg::ToggleDoor`
+/// may flip `Closed`↔`Open` only, never onto or off `Locked`; see
+/// `ws::room::Room::toggle_door`), never in what it blocks. `Open` resolves
+/// every blocking flag to `false` through `WallEngine::effective_flags` — an
+/// open door is a HOLE, not merely a wall with one axis un-blocked.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DoorState;
+///
+/// let json = serde_json::to_value(DoorState::Open).unwrap();
+/// assert_eq!(json, serde_json::json!("open"));
+/// assert_eq!(serde_json::from_value::<DoorState>(json).unwrap(), DoorState::Open);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum DoorState {
+    /// Shut but unlatched: a token's owner standing near and in sight of the
+    /// door may open it.
+    Closed,
+    /// Open: the wall blocks nothing until shut again.
+    Open,
+    /// Locked: blocks exactly like `Closed`, but only a GM may change the state.
+    Locked,
+}
+
+/// The door-resolved blocking flags of a `WallEngine` — the ONE resolver output
+/// every wall collector (`SceneEcs::sight_wall_entries`/`light_wall_entries`/
+/// `move_wall_entries`) reads, never the authored `blocks_*` fields directly.
+/// Returned as one struct so no caller can read two of the three flags and
+/// silently mis-derive the third.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::EffectiveWallFlags;
+///
+/// let flags = EffectiveWallFlags { blocks_move: true, blocks_sight: false, blocks_light: true };
+/// assert!(flags.blocks_move);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveWallFlags {
+    /// Whether the wall blocks token movement.
+    pub blocks_move: bool,
+    /// Whether the wall occludes vision rays.
+    pub blocks_sight: bool,
+    /// Whether the wall occludes light propagation.
+    pub blocks_light: bool,
+}
+
 /// A wall's segment + sight/light/movement-blocking flags. Absent/false
 /// flags exclude the wall from that gate, matching how each gate
 /// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
@@ -90,6 +148,7 @@ pub struct ElevationBand {
 ///     blocks_light: Some(true),
 ///     blocks_move: Some(true),
 ///     elevation: None,
+///     door: None,
 /// };
 /// assert_eq!(wall.blocks_move, Some(true));
 /// ```
@@ -116,6 +175,52 @@ pub struct WallEngine {
     /// and `SceneEcs::move_wall_entries`.
     #[serde(default)]
     pub elevation: Option<ElevationBand>,
+    /// The wall's door state; absent = not a door (an ordinary wall —
+    /// `effective_flags` applies the authored flags unchanged).
+    #[serde(default)]
+    pub door: Option<DoorState>,
+}
+
+impl WallEngine {
+    /// Resolve the wall's effective blocking flags through its door state: an
+    /// `Open` door makes the wall fully passable/see-through/light-through
+    /// regardless of the authored flags; every other state (no door, `Closed`,
+    /// `Locked`) applies the authored flags unchanged (each `Option<bool>` read
+    /// as `== Some(true)`, matching every collector's convention). This is the
+    /// ONE resolver over authored flags + door state — never a second copy of
+    /// the flags at a read site.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::{DoorState, Seg, WallEngine};
+    ///
+    /// let mut wall = WallEngine {
+    ///     seg: Seg { x1: 0.0, y1: 0.0, x2: 10.0, y2: 0.0 },
+    ///     blocks_sight: Some(true),
+    ///     blocks_light: Some(true),
+    ///     blocks_move: Some(true),
+    ///     elevation: None,
+    ///     door: Some(DoorState::Open),
+    /// };
+    /// assert!(!wall.effective_flags().blocks_move);
+    /// wall.door = Some(DoorState::Closed);
+    /// assert!(wall.effective_flags().blocks_move);
+    /// ```
+    pub fn effective_flags(&self) -> EffectiveWallFlags {
+        if self.door == Some(DoorState::Open) {
+            return EffectiveWallFlags {
+                blocks_move: false,
+                blocks_sight: false,
+                blocks_light: false,
+            };
+        }
+        EffectiveWallFlags {
+            blocks_move: self.blocks_move == Some(true),
+            blocks_sight: self.blocks_sight == Some(true),
+            blocks_light: self.blocks_light == Some(true),
+        }
+    }
 }
 
 /// A region's vector geometry. `points` layout by

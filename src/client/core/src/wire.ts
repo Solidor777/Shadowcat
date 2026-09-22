@@ -31,7 +31,7 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
-import type { CombatsPayload } from "@shadowcat/types";
+import type { CombatsPayload, DoorState } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -1084,6 +1084,19 @@ export type ServerMsg =
       seq: number;
     }
   | {
+      /** A `toggle_door` request was rejected. Addressed to the originating connection only;
+       * never broadcast. For a non-GM caller `message` is ONE uniform wording ("door
+       * rejected") across every refusal reason — a distinguishable wording would disclose
+       * whether the wall exists, is near, is visible, or is locked to a caller with no right
+       * to learn any of it; a GM caller may receive a variant-specific diagnostic instead.
+       * Success is confirmed by the broadcast `event` echo of the wall's update. */
+      type: "door_toggle_error";
+      /** The refused toggle's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+    }
+  | {
       /** The outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`.
        * Addressed to the originating connection only; never broadcast — a merge that
        * committed additionally arrives as the ordinary broadcast `event` echo. */
@@ -1330,6 +1343,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("combat_result"),
     request_id: z.string(),
     seq: int,
+  }),
+  z.object({
+    type: z.literal("door_toggle_error"),
+    request_id: z.string(),
+    message: z.string(),
   }),
   z.object({
     type: z.literal("move_stream"),
@@ -1957,6 +1975,24 @@ export type ClientMsg =
       sound?: string;
       /** Elevation the effect plays at. */
       elevation?: number;
+    }
+  | {
+      /** A door-toggle request: flip the named wall's `door` state between `closed` and
+       * `open`. The server authorizes it positionally (a non-GM must effectively control a
+       * token near the door and able to see its cells, and must hold engine-tier visibility
+       * on the wall document); `scene_id` is checked against the wall's derived parent, never
+       * trusted to select. Success is confirmed by the broadcast `event` echo of the wall's
+       * update; a rejection replies `door_toggle_error` correlated by `request_id` (the
+       * asymmetric reply protocol `send_message` established). */
+      type: "toggle_door";
+      /** Correlation token for `door_toggle_error`. */
+      request_id: string;
+      /** Scene the wall is expected to be on; checked, not selected. */
+      scene_id: string;
+      /** The wall whose door state flips. */
+      wall_id: string;
+      /** The target state; a non-GM may name `closed`/`open` only. */
+      to: DoorState;
     };
 
 /**

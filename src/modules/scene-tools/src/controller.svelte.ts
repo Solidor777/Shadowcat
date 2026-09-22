@@ -3,10 +3,10 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
-import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt } from "./hit-test";
+import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
 
 /** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
  * `ElevationBand`, whose `bottom`/`top` are independently nullable to express an unbounded
@@ -86,6 +86,18 @@ export interface ToolContext {
     tokenId: string,
     path: [number, number][],
   ) => Promise<MoveStream>;
+  /** Request a door toggle on the named wall (from `AppContext.toggleDoor`) — the select
+   * tool's click-to-toggle affordance. The server is the authority (reach + visibility, or
+   * GM standing); the controller's own reach pre-check is advisory UX only, sparing an
+   * obviously-doomed request. When absent (older host or not connected), clicking a door is a
+   * no-op. */
+  toggleDoor?: (sceneId: string, wallId: string, to: DoorState) => Promise<void>;
+  /** Surface a user-visible toast (from `AppContext.notify`) — a refused or unusable door
+   * toggle is feedback the clicking player genuinely needs, never a silent swallow. */
+  notify?: (message: string, level?: NotificationLevel) => void;
+  /** The current user's id (from `AppContext.selfId`) — the door-toggle advisory reach
+   * pre-check resolves "tokens the clicker controls" through it (`ownerFloorApplies`). */
+  selfId?: string;
   /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
   viewedSceneId?: () => string | null;
   /** The server's resolved token footprints (from `ctx.footprints`). The hit-test, the selection
@@ -138,8 +150,8 @@ export type HostToolContext = { [K in keyof ToolContext & keyof AppContext]-?: T
  * rather than default when a scene has no live document (`Room::publish`).
  * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
  * `documents`.
- * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
- * viewed and none exists.
+ * @returns The resolved scene id + grid size + grid kind + distance scale, or `null` when no
+ * scene is viewed and none exists.
  * @example
  * ```
  * declare const ctx: ToolContext;
@@ -153,6 +165,10 @@ function activeScene(ctx: ToolContext): {
   /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`; the
    * circumradius on hex). */
   size: number;
+  /** The grid kind (`"square"` when absent, else as authored — `"hex"`), matching
+   * `SceneEngine.grid.kind`. Read by the door-toggle advisory reach check, which converts
+   * cell distances through the kind's world-unit cell span. */
+  kind: string;
   /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
   perCell: number;
   /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
@@ -166,6 +182,8 @@ function activeScene(ctx: ToolContext): {
     grid?: {
       /** Grid cell size in pixels; falls back to 100 when absent. */
       size?: number;
+      /** The grid kind; falls back to `"square"` when absent. */
+      kind?: string;
       /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
       distance?: {
         /** Distance-per-cell scale numerator. */
@@ -177,7 +195,7 @@ function activeScene(ctx: ToolContext): {
   } | undefined)?.grid;
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
-  return { id: scene.id, size, perCell, unit };
+  return { id: scene.id, size, kind: grid?.kind ?? "square", perCell, unit };
 }
 
 /** Format a whole-cell distance as the measure tool's shared distance label:
@@ -1642,6 +1660,109 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
  * independent of this window. */
 const DRAG_THROTTLE_MS = 50;
 
+/** The reach radius for the click-to-toggle advisory pre-check, in world units: the server's
+ * reach constant (1.5 cells — `DOOR_REACH_CELLS`, `Room::toggle_door`'s clause 2) converted
+ * through the grid's world-unit cell span: the cell size on square, `size·√3` (the axial
+ * neighbor distance — `HexGrid::world_units_per_cell`) on hex. Advisory UX only: the server
+ * re-checks reach authoritatively; this mirror exists to spare an obviously-doomed request,
+ * never to grant anything.
+ * @param scene The active scene's grid geometry (per `activeScene`).
+ * @param scene.size The grid cell size in world units.
+ * @param scene.kind The grid kind (`"square"` or `"hex"`).
+ * @returns The advisory reach radius in scene units.
+ * @example
+ * ```
+ * declare const scene: { size: number; kind: string };
+ * const reach = doorReachWorldUnits(scene);
+ * ```
+ */
+function doorReachWorldUnits(scene: {
+  /** Grid cell size in world units (the axial circumradius-derived span on hex). */
+  size: number;
+  /** The grid kind (`"square"` or `"hex"`), per `activeScene`. */
+  kind: string;
+}): number {
+  return 1.5 * (scene.kind === "hex" ? scene.size * Math.sqrt(3) : scene.size);
+}
+
+/** The select tool's click-to-toggle affordance: a click landing on a wall whose `engine.door`
+ * is `closed`/`open` sends `ClientMsg::ToggleDoor` through `ctx.toggleDoor` with the opposite
+ * state. A `locked` door sends nothing (the server refuses a non-GM's flip in either
+ * direction, and a GM unlocks through the wall editor's door select instead) but still earns a
+ * toast — the player who clicked needs the feedback. A doorless wall (or one whose engine band
+ * the clicker cannot read — a `gm_only` wall arrives with it nulled) is inert. For a non-GM an
+ * advisory pre-check suppresses the request when none of the clicker's own effectively-owned
+ * tokens are within reach (`doorReachWorldUnits`) — the server's gate is the authority; this
+ * only spares the round trip. A refusal surfaces as a toast via `ctx.notify`, never silently.
+ * @param ctx The tool context (documents, role, selfId, toggleDoor, notify, t).
+ * @param scene The active scene (per `activeScene`).
+ * @param scene.id The scene's document id.
+ * @param scene.size The grid cell size in world units.
+ * @param scene.kind The grid kind (`"square"` or `"hex"`).
+ * @param wallId The wall the click landed on (`topWallAt`).
+ * @example
+ * ```
+ * // private helper; called from makeSelectMoveTool's pointerdown (no token hit)
+ * declare const ctx: ToolContext;
+ * toggleDoorAt(ctx, { id: "s1", size: 100, kind: "square" }, "wall-1");
+ * ```
+ */
+function toggleDoorAt(ctx: ToolContext, scene: {
+  /** The scene's document id. */
+  id: string;
+  /** Grid cell size in world units. */
+  size: number;
+  /** The grid kind (`"square"` or `"hex"`), per `activeScene`. */
+  kind: string;
+}, wallId: string): void {
+  const eng = ctx.documents.get(wallId)?.engine as WallEngine | undefined;
+  const door = eng?.door;
+  if (door === "locked") {
+    ctx.notify?.(ctx.t("tools.doorLocked"));
+    return;
+  }
+  if (!eng || (door !== "closed" && door !== "open")) return;
+  if (ctx.role !== "gm") {
+    const seg = eng.seg;
+    const reach = doorReachWorldUnits(scene);
+    const inReach = ctx
+      .documents
+      .query("token")
+      .filter(
+        (t) =>
+          t.parent_id === scene.id &&
+          ctx.selfId !== undefined &&
+          ownerFloorApplies(t, ctx.selfId, ctx.documents),
+      )
+      .some((t) => {
+        const te = t.engine as {
+          /** Token center x in scene coords; absent ⇒ not a position the check can use. */
+          x?: number;
+          /** Token center y in scene coords; absent ⇒ not a position the check can use. */
+          y?: number;
+        } | undefined;
+        if (typeof te?.x !== "number" || typeof te.y !== "number") return false;
+        return (
+          pointSegDistance(
+            { x: te.x, y: te.y },
+            { x: seg.x1, y: seg.y1 },
+            { x: seg.x2, y: seg.y2 },
+          ) <= reach
+        );
+      });
+    if (!inReach) {
+      ctx.notify?.(ctx.t("tools.doorToggleOutOfReach"));
+      return;
+    }
+  }
+  const to: DoorState = door === "closed" ? "open" : "closed";
+  void ctx.toggleDoor?.(scene.id, wallId, to).catch(() => {
+    // The refusal class is deliberately uniform for a non-GM (the server discloses nothing
+    // more specific); the toast is the one piece of feedback the clicker genuinely needs.
+    ctx.notify?.(ctx.t("tools.doorToggleNotVisible"));
+  });
+}
+
 /** Pick a token on pointerdown and drag the whole selection. Clicking an unselected token
  * replaces the selection with just it; Shift toggles it in/out. Dragging moves every selected
  * token by the same delta (each token's own target independently snapped via `ctx.scene.snap`),
@@ -1654,9 +1775,12 @@ const DRAG_THROTTLE_MS = 50;
  * truncation can land the token short of, or not at, where it was released). Empty space clears
  * the selection and yields the gesture to the camera. The selection itself is signified on the
  * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
- * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
- * picks a light marker, wall segment, or region/drawing/template shape into
- * `controller.editingEntity` (the rail editor's selection source); a token hit clears it.
+ * `tokenSelection` state), never by a tool overlay. An empty-space click landing on a wall whose
+ * `engine.door` stands `closed`/`open` fires the click-to-toggle (`toggleDoorAt` — every role,
+ * the tool every role has active by default; the server authorizes positionally). For a GM, an
+ * empty-space click additionally picks a light marker, wall segment, or region/drawing/template
+ * shape into `controller.editingEntity` (the rail editor's selection source); a token hit
+ * clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
  * @param controller Receives the scene-entity editing selection (`editingEntity`).
@@ -1782,17 +1906,23 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
     onPointerDown(p: Point, ev: PointerEvent): boolean {
       const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
+        // Door click-to-toggle: EVERY role gets it (the wall's own pick), independent of the
+        // GM-only editing selection below — the server's `Room::toggle_door` gate is the
+        // authority; `toggleDoorAt`'s own pre-check is advisory UX only. The light-over-wall
+        // precedence mirrors the editing pick's, so a click on a light marker standing on a
+        // door never also flips it.
+        const scene = activeScene(ctx);
+        const inScene = (docType: string) =>
+          scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
+        const lightHit = topLightAt(inScene("light"), p);
+        const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
+        if (wallHit && scene) toggleDoorAt(ctx, scene, wallHit);
         // GM-only scene-entity editing: a click that hits no token picks a light marker, then a
         // wall segment, then a region/drawing/template shape, into the shared editing selection
         // the rail editor reads. Every write path is GM-gated (the server rejects a non-GM's
         // document write regardless; this branch only decides which editor opens, and a player
         // gets no editor affordance).
         if (ctx.role === "gm") {
-          const scene = activeScene(ctx);
-          const inScene = (docType: string) =>
-            scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
-          const lightHit = topLightAt(inScene("light"), p);
-          const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
           const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p) : null;
           const drawingHit = !lightHit && !wallHit && !regionHit ? topDrawingAt(inScene("drawing"), p) : null;
           const templateHit =

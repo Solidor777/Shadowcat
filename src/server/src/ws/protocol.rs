@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
-use crate::data::engine::AudioChannel;
+use crate::data::engine::{AudioChannel, DoorState};
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
@@ -450,6 +450,30 @@ pub enum ClientMsg {
         #[serde(default)]
         #[ts(optional)]
         elevation: Option<f64>,
+    },
+    /// A door-toggle request: flip the named wall's `WallEngine::door` between
+    /// `Closed` and `Open`. Handled by `ws::room::Room::toggle_door`, which authorizes the
+    /// request itself (a non-GM must effectively control a token PHYSICALLY NEAR the door
+    /// and able to see its cells, and must hold engine-tier visibility on the wall document
+    /// itself; a GM bypasses those positional clauses) and commits the write under
+    /// `WriteOrigin::DoorToggle`, so `apply_intent` needs no exemption for it. `scene_id` is
+    /// carried for the SAME redundant-defense-in-depth reason `MoveRequest` carries one: the
+    /// AUTHORITATIVE scene is derived from the wall document's own `parent_id`, never trusted
+    /// from the request, and a mismatch is refused. A rejection replies `DoorToggleError`,
+    /// correlated by `request_id`; success is confirmed by the broadcast `Event` echo of the
+    /// wall's Update (the same asymmetric reply protocol as `SendMessage`).
+    ToggleDoor {
+        /// Correlation token for `DoorToggleError`.
+        request_id: Uuid,
+        /// Scene the wall is expected to be on; checked against the wall's derived
+        /// `parent_id`, never used to select anything.
+        scene_id: Uuid,
+        /// The wall whose door state flips.
+        wall_id: Uuid,
+        /// The target state. A non-GM may name `Closed`/`Open` only (never `Locked`, and a
+        /// wall currently `Locked` refuses a non-GM in either direction); a GM may also
+        /// set/clear `Locked`.
+        to: DoorState,
     },
 }
 
@@ -1293,6 +1317,19 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// The committed command's sequence number — matches the broadcast `Event`'s `seq`.
         seq: i64,
+    },
+    /// A `ToggleDoor` request was rejected. Addressed to the originating connection only;
+    /// never broadcast. For a non-GM caller `message` is ONE uniform wording ("door
+    /// rejected") across every refusal reason — a distinguishable wording would disclose
+    /// whether the wall exists, is near, is visible, or is locked to a caller with no right
+    /// to learn any of it (mirroring `CombatError`'s own uniform-wording discipline); a GM
+    /// caller may receive a variant-specific diagnostic instead. Success is confirmed by the
+    /// broadcast `Event` echo of the wall's Update.
+    DoorToggleError {
+        /// The refused toggle's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned — see the variant doc).
+        message: String,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory, `mover_vision` and `mover_light`; observers receive only the position samples

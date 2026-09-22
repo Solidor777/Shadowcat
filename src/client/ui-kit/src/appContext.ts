@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -294,6 +294,14 @@ export interface AppContext {
     tokenId: string,
     path: [number, number][],
   ) => Promise<MoveStream>;
+  /** Request a door toggle on the named wall (`closed`↔`open`; `locked` is GM-only). The
+   * server authorizes positionally (an effectively-controlled token near and in sight of the
+   * door, plus engine-tier visibility on the wall document — or GM standing); the client's
+   * own reach pre-check is advisory UX only. Resolution is silence-based like the chat ops:
+   * the broadcast Event echo confirms success; only a rejection replies (a correlated
+   * `door_toggle_error`, which rejects this promise with the server's player-presentable
+   * reason). */
+  toggleDoor: (sceneId: string, wallId: string, to: DoorState) => Promise<void>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: {
     /** Scene the ping was placed on. */

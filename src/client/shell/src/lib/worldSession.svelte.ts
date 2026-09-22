@@ -73,7 +73,7 @@ import {
   type PlaylistEngine,
   type HookFaultPayload,
 } from "@shadowcat/core";
-import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
+import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
 import type { HooksEmitApi } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
@@ -1175,6 +1175,27 @@ export class WorldSession {
   deleteChatMessage(messageId: string): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.deleteChatMessage(messageId);
+  }
+
+  /** Request a door toggle on the named wall. Thin delegate to `WsClient.toggleDoor`; rejects
+   * immediately when there is no live transport. Resolution is silence-based like the chat
+   * ops (the server confirms via the broadcast Event echo of the wall's update; only a
+   * rejection replies, as a correlated `door_toggle_error`).
+   * @param sceneId The scene the wall is on (checked server-side against the wall's own
+   * parent, never trusted to select).
+   * @param wallId The wall whose door state flips.
+   * @param to The target state (`closed`/`open`; `locked` is GM-only).
+   * @returns Resolves (void) once the toggle is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.toggleDoor("s1", "wall-1", "open");
+   * ```
+   */
+  toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.toggleDoor(sceneId, wallId, to);
   }
 
   /** GM-only roll correction. Resolves/rejects with the correlated outcome.

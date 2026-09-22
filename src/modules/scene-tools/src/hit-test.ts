@@ -101,7 +101,7 @@ const WALL_PICK_TOLERANCE = 8;
  * pointSegDistance({ x: 5, y: 5 }, { x: 0, y: 0 }, { x: 10, y: 0 }); // 5
  * ```
  */
-function pointSegDistance(p: Point, a: Point, b: Point): number {
+export function pointSegDistance(p: Point, a: Point, b: Point): number {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
   const len2 = abx * abx + aby * aby;

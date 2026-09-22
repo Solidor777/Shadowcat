@@ -1603,6 +1603,48 @@ fn move_walls_keeps_a_blocks_sight_false_wall_for_a_player() {
     );
 }
 
+#[test]
+fn move_wall_entries_excludes_an_open_door() {
+    // Three walls, every authored flag true: an OPEN door drops out of the
+    // routing set (the resolver makes it a hole); a CLOSED door and a doorless
+    // wall stay.
+    let (mut ecs, scene) = scene_with_grid(100.0);
+    let door_wall = |door: Option<eng::DoorState>| {
+        let mut w = wall_doc_eng(scene, (100.0, 0.0), (100.0, 200.0));
+        w.engine = Some(
+            serde_json::to_value(eng::WallEngine {
+                seg: eng::Seg {
+                    x1: 100.0,
+                    y1: 0.0,
+                    x2: 100.0,
+                    y2: 200.0,
+                },
+                blocks_sight: Some(true),
+                blocks_light: Some(true),
+                blocks_move: Some(true),
+                elevation: None,
+                door,
+            })
+            .unwrap(),
+        );
+        w
+    };
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(Some(eng::DoorState::Open)),
+    });
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(Some(eng::DoorState::Closed)),
+    });
+    ecs.apply_op(&Operation::Create {
+        doc: door_wall(None),
+    });
+    assert_eq!(
+        ecs.move_wall_entries(scene, None).len(),
+        2,
+        "an open door resolves blocks_move to false and leaves the routing set"
+    );
+}
+
 /// Anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
 /// must-NOT-converge constraint, so it gets a test rather than only a doc comment.
 #[test]

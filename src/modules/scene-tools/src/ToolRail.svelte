@@ -46,6 +46,9 @@
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
+    toggleDoor: ctx.toggleDoor,
+    notify: ctx.notify,
+    selfId: ctx.selfId,
     combat: ctx.combat,
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
@@ -685,6 +688,25 @@
             onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight ?? null, e.currentTarget.checked)}
           />
           {t("tools.blocksLight")}
+        </label>
+        <!-- The door state: `none` (an ordinary wall — writes `null`, removing the door) or
+             `closed`/`open`/`locked`. This select is the GM's authoring surface (and the ONLY
+             way onto or off `locked`); the player-facing flip is the select tool's
+             click-to-toggle (`toggleDoorAt`), which never routes through this editor. -->
+        <label>
+          {t("tools.doorToggle")}
+          <select
+            data-testid="wall-door"
+            aria-label={t("tools.doorToggle")}
+            value={eng.door ?? "none"}
+            onchange={(e) =>
+              editSelected("/engine/door", eng.door ?? null, e.currentTarget.value === "none" ? null : e.currentTarget.value)}
+          >
+            <option value="none">—</option>
+            <option value="closed">closed</option>
+            <option value="open">open</option>
+            <option value="locked">locked</option>
+          </select>
         </label>
         <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
              unbounded (stored as an absent band, which occludes every elevation). -->

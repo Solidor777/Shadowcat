@@ -332,3 +332,126 @@ test("a non-GM click on a wall or light opens NO editor selection", () => {
   expect(tool.onPointerDown({ x: 200, y: 700 }, noShift)).toBe(false);
   expect(controller.editingEntity).toBeNull();
 });
+
+// --- Door click-to-toggle (`ClientMsg::ToggleDoor` via `ctx.toggleDoor`, never an Update op) ---
+
+/** A ToolContext driving the select/move tool over one scene with one door wall (segment
+ * (0,700)-(400,700)) and optionally one token owned by the clicker ("u1"), plus recording
+ * stubs for the `toggleDoor` seam and `notify` toasts. The wall sits at y=700: a token at
+ * (100,650) is 50 world units from it (in reach: ≤ 1.5 × the 100-unit cell); a token at
+ * (100,100) is 600 units out (beyond reach). */
+function doorHarness(opts: {
+  role: "gm" | "player";
+  door: "closed" | "open" | "locked" | null;
+  tokenAt?: { x: number; y: number };
+  toggleDoorRejects?: boolean;
+}) {
+  const docs = new DocumentStore();
+  const ops: WireOperation[] = [
+    { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
+    {
+      op: "create",
+      doc: buildSceneEntityDoc("w1", "s1", "wall", {
+        seg: { x1: 0, y1: 700, x2: 400, y2: 700 },
+        blocksSight: true, blocksMove: true, blocksLight: true,
+        ...(opts.door ? { door: opts.door } : {}),
+      }, "wall-1"),
+    },
+  ];
+  if (opts.tokenAt) {
+    const tok = buildTokenDoc("w1", "s1", {
+      x: opts.tokenAt.x, y: opts.tokenAt.y, w: 100, h: 100, rotation: 0,
+      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
+    }, "tok1");
+    tok.owner = "u1";
+    ops.push({ op: "create", doc: tok });
+  }
+  docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
+
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({}));
+  const toggles: { scene: string; wall: string; to: string }[] = [];
+  const notes: string[] = [];
+  const dispatched: WireOperation[] = [];
+  const ctx: ToolContext = {
+    scene: bridge,
+    dispatchIntent: (o) => dispatched.push(...o),
+    documents: docs,
+    assets: new AssetResolver(),
+    world: "w1",
+    role: opts.role,
+    sendPing: () => {},
+    t: (k) => k,
+    tokenSelection: new TokenSelection(),
+    selfId: "u1",
+    toggleDoor: (scene, wall, to) => {
+      toggles.push({ scene, wall, to });
+      return opts.toggleDoorRejects ? Promise.reject(new Error("door rejected")) : Promise.resolve();
+    },
+    notify: (m) => {
+      notes.push(m);
+    },
+  };
+  const controller = new ToolController(ctx);
+  const tool = makeSelectMoveTool(ctx, controller);
+  return { tool, toggles, notes, dispatched, controller };
+}
+
+test("a non-GM click on a closed door sends a ToggleDoor through the seam (never an Update intent)", () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 650 } });
+  expect(h.tool.onPointerDown({ x: 300, y: 700 }, noShift)).toBe(false);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "open" }]);
+  expect(h.dispatched).toEqual([]); // no document write — a dedicated correlated request
+  expect(h.controller.editingEntity).toBeNull(); // the editor pick stays GM-only
+});
+
+test("a non-GM click on an open door toggles it closed", () => {
+  const h = doorHarness({ role: "player", door: "open", tokenAt: { x: 100, y: 650 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "closed" }]);
+});
+
+test("a rejected door toggle surfaces as a notify toast, never silently swallowed", async () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 650 }, toggleDoorRejects: true });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toHaveLength(1); // the request WAS sent
+  await flush(); // the rejection lands asynchronously
+  expect(h.notes).toEqual(["tools.doorToggleNotVisible"]);
+});
+
+test("clicking a locked door sends nothing (any role) and toasts the locked hint", () => {
+  const h = doorHarness({ role: "player", door: "locked", tokenAt: { x: 100, y: 650 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.dispatched).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorLocked"]);
+});
+
+test("a non-GM with no owned token within reach sends nothing and toasts out-of-reach", () => {
+  const h = doorHarness({ role: "player", door: "closed", tokenAt: { x: 100, y: 100 } });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorToggleOutOfReach"]);
+});
+
+test("a non-GM with no token at all sends nothing and toasts out-of-reach", () => {
+  const h = doorHarness({ role: "player", door: "closed" });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual(["tools.doorToggleOutOfReach"]);
+});
+
+test("a GM click on a door toggles it (no advisory pre-check) AND selects the wall for editing", () => {
+  const h = doorHarness({ role: "gm", door: "closed" });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([{ scene: "s1", wall: "wall-1", to: "open" }]);
+  expect(h.controller.editingEntity).toEqual({ kind: "wall", id: "wall-1" });
+});
+
+test("a click on a doorless wall sends no toggle (a GM still gets the editor pick)", () => {
+  const h = doorHarness({ role: "gm", door: null });
+  h.tool.onPointerDown({ x: 300, y: 700 }, noShift);
+  expect(h.toggles).toEqual([]);
+  expect(h.notes).toEqual([]);
+  expect(h.controller.editingEntity).toEqual({ kind: "wall", id: "wall-1" });
+});

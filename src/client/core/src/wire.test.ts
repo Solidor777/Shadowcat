@@ -621,6 +621,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
     combat_result: { type: "combat_result", request_id: "r", seq: 1 },
+    door_toggle_error: { type: "door_toggle_error", request_id: "r", message: "x" },
     merge_result: {
       type: "merge_result",
       request_id: "r",

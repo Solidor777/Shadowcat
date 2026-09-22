@@ -795,6 +795,32 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::ToggleDoor { request_id, scene_id, wall_id, to }) => {
+                                    // The door toggle's gate + commit live in `Room::toggle_door`
+                                    // (the `SceneEcs` read-guard scope every positional query
+                                    // needs). Reply shape mirrors `handle_move_request`:
+                                    // `None` on success (the broadcast Event echo of the wall's
+                                    // Update is the confirmation); a rejection is a correlated
+                                    // `DoorToggleError` to this connection only, never broadcast.
+                                    if let Some(err_frame) = handle_toggle_door(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        crate::ws::room::ToggleDoorInputs {
+                                            request_id,
+                                            scene_id,
+                                            wall_id,
+                                            to,
+                                            ts: now_millis(),
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
                                     // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
                                     // the message doc, and publish. Success is confirmed by the broadcast
@@ -1515,6 +1541,29 @@ async fn handle_move_request(
         Err(_) => Some(ServerMsg::MoveError {
             request_id,
             message: "move rejected".into(),
+        }),
+    }
+}
+
+/// Resolve and apply a door-toggle request (`ClientMsg::ToggleDoor`). The gate + commit live
+/// in `Room::toggle_door`; this wrapper owns only the reply shape: on success, NOTHING is
+/// returned to the requester's `etx` — the broadcast `Event` echo of the wall's Update is the
+/// confirmation (the chat-ops asymmetric pattern, mirrored from `SendMessage`); on rejection,
+/// a `DoorToggleError` to this connection only, whose message is role-conditioned through
+/// `door_toggle_wire_message` (uniform "door rejected" for a non-GM — the variant itself would
+/// disclose wall existence/reach/visibility/lock state the requester may not learn).
+async fn handle_toggle_door(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    req: crate::ws::room::ToggleDoorInputs,
+) -> Option<ServerMsg> {
+    let request_id = req.request_id;
+    match room.toggle_door(repo, ctx, req).await {
+        Ok(()) => None,
+        Err(e) => Some(ServerMsg::DoorToggleError {
+            request_id,
+            message: crate::ws::room::door_toggle_wire_message(&e, ctx.world_role),
         }),
     }
 }

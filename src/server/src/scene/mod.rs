@@ -1230,8 +1230,9 @@ fn engine_geometry_visible_to(doc: &Document, access: &crate::data::permission::
 /// access via `permission::resolve_access` + `effective_owner(doc, None)` — the no-actor-join
 /// form, exact for any doc type that never carries an actor link (wall, region) — and defers the
 /// tier decision itself to `engine_tier_visible_to`. `move_walls` and `region_field` both call
-/// this rather than keep a private copy.
-fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
+/// this rather than keep a private copy, and `ws::room::Room::toggle_door`'s hidden-door refusal
+/// reaches it for the same wall-document decision.
+pub(crate) fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     let Some(user) = viewer else {
         return true;
     };
@@ -1333,7 +1334,7 @@ impl SceneEcs {
     /// hook, is what makes the cache correct). Callers MUST pass the document's OWN id (`doc.id`,
     /// or the equivalent `self.index`/`self.actors` key it was looked up under) so a stale cache
     /// entry can never be read under a DIFFERENT document's id.
-    fn engine_as_cached<T>(&self, id: Uuid, doc: &Document) -> Option<T>
+    pub(crate) fn engine_as_cached<T>(&self, id: Uuid, doc: &Document) -> Option<T>
     where
         T: serde::de::DeserializeOwned + Clone + Send + 'static,
     {
@@ -2471,6 +2472,9 @@ impl SceneEcs {
     /// INVARIANT: same wall filter as `blocks_move` (doc_type "wall", parent = scene,
     /// `engine.blocksMove == true`, endpoints at `engine.seg.{x1,y1,x2,y2}`) — any divergence
     /// would allow the pathfinder to route through walls the movement gate would then reject.
+    /// The flag read goes through `WallEngine::effective_flags` — the ONE resolver over the
+    /// authored flags and the wall's door state — so an open door never blocks movement even
+    /// when every authored flag is set.
     ///
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
     /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
@@ -2488,7 +2492,7 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_move != Some(true) {
+            if !wall.effective_flags().blocks_move {
                 continue;
             }
             if !engine_tier_visible(&w.doc, viewer) {
@@ -3080,6 +3084,34 @@ impl SceneEcs {
         }
         let scene = ent.doc.parent_id?;
         Some((scene, self.token_effective_owner(&ent.doc)))
+    }
+
+    /// Every token entity parented to `scene` — the raw enumeration behind a per-token
+    /// qualification scan, with NO filtering beyond doc_type/parent_id: ownership, distance, and
+    /// visibility are the CALLER's concern (the same separation `audibility`'s emitter loop
+    /// keeps between "which tokens exist here" and "does this one qualify").
+    /// `ws::room::Room::toggle_door` enumerates the scene's tokens this way before filtering to
+    /// the requester's own via `token_scene_and_effective_owner`.
+    pub(crate) fn scene_token_ids(&self, scene: Uuid) -> Vec<Uuid> {
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type == "token" && e.doc.parent_id == Some(scene) {
+                out.push(e.doc.id);
+            }
+        }
+        out
+    }
+
+    /// The full mirrored document of the scene entity `id` (any doc_type the ECS hydrates:
+    /// scenes and anything parented to one), CLONED, or `None` when no such entity exists.
+    /// Read-only: the ECS is a derived read-model, never a write target, and the clone cannot
+    /// alias it. `ws::room::Room::toggle_door` reads a wall's stored document this way (its
+    /// `/engine/door` state, its segment, and its `permissions.property_overrides` for the
+    /// `engine_tier_visible` decision).
+    pub(crate) fn scene_entity_doc(&self, id: Uuid) -> Option<Document> {
+        let &e = self.index.get(&id)?;
+        let ent = self.world.get::<&SceneEntity>(e).ok()?;
+        Some(ent.doc.clone())
     }
 
     /// The token's effective vision assignments — the ONE linked/instanced/override precedence
@@ -4481,7 +4513,9 @@ impl SceneEcs {
             let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
                 continue;
             };
-            if wall.blocks_move != Some(true) {
+            // The ONE resolver over authored flags + door state — `move_wall_entries`'s
+            // production read — so the anti-drift pair cannot disagree on a door.
+            if !wall.effective_flags().blocks_move {
                 continue;
             }
             banded.push((

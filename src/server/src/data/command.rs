@@ -336,7 +336,10 @@ impl Command {
 /// transport handler, never derivable from any wire frame — skips the same
 /// per-op capability gates (the handler enforces GM-only before constructing
 /// an op) and is the ONLY origin permitted to `Update` the `audio-state`
-/// singleton (its Create/Delete stay reserved to `ConfigSeed`).
+/// singleton (its Create/Delete stay reserved to `ConfigSeed`). `DoorToggle`
+/// — set ONLY by `ws::room::Room::toggle_door`, never derivable from any wire
+/// frame — skips the same per-op capability gates (the handler enforces reach +
+/// visibility, or GM standing, before constructing the op).
 ///
 /// # Examples
 ///
@@ -390,6 +393,12 @@ pub enum WriteOrigin {
     /// `WriteOrigin::ConfigSeed` (the world-seed path creates it once; the transport handler
     /// never creates or deletes one, only updates the existing singleton).
     AudioTransport,
+    /// Server-authored door-toggle write: per-op capability gates are skipped (the
+    /// `ClientMsg::ToggleDoor` handler, `ws::room::Room::toggle_door`, already enforces
+    /// reach + visibility on the requesting token — or GM standing — before ever
+    /// constructing the op); scope, size, engine, containment, singleton, schema and OCC
+    /// checks all run; never derivable from a wire frame.
+    DoorToggle,
 }
 
 impl WriteOrigin {
@@ -405,6 +414,7 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::CombatTransition.is_server_authored());
     /// assert!(WriteOrigin::TemplateMerge.is_server_authored());
     /// assert!(WriteOrigin::AudioTransport.is_server_authored());
+    /// assert!(WriteOrigin::DoorToggle.is_server_authored());
     /// ```
     pub fn is_server_authored(&self) -> bool {
         matches!(
@@ -415,6 +425,7 @@ impl WriteOrigin {
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
+                | WriteOrigin::DoorToggle
         )
     }
 
@@ -436,6 +447,7 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::ConfigSeed.skips_capability_gates());
     /// assert!(WriteOrigin::TemplateMerge.skips_capability_gates());
     /// assert!(WriteOrigin::AudioTransport.skips_capability_gates());
+    /// assert!(WriteOrigin::DoorToggle.skips_capability_gates());
     /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
     /// ```
     pub fn skips_capability_gates(&self) -> bool {
@@ -446,6 +458,7 @@ impl WriteOrigin {
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
+                | WriteOrigin::DoorToggle
         )
     }
 }

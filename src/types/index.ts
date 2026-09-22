@@ -125,6 +125,7 @@ export type { VisionMode } from "./generated/engine/VisionMode";
 export type { Perception } from "./generated/engine/Perception";
 export type { VisionModesEngine } from "./generated/engine/VisionModesEngine";
 export type { WallEngine } from "./generated/engine/WallEngine";
+export type { DoorState } from "./generated/engine/DoorState";
 export type { ElevationBand } from "./generated/engine/ElevationBand";
 export type { Seg } from "./generated/engine/Seg";
 export type { RegionEngine } from "./generated/engine/RegionEngine";

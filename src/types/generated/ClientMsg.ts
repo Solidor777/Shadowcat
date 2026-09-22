@@ -6,6 +6,7 @@ import type { CombatRollEntry } from "./CombatRollEntry";
 import type { Operation } from "./Operation";
 import type { ResourceOp } from "./ResourceOp";
 import type { WireRecalcOp } from "./WireRecalcOp";
+import type { DoorState } from "./engine/DoorState";
 
 /**
  * Client -> server frames.
@@ -409,4 +410,23 @@ sound?: string,
 /**
  * Elevation the effect plays at; the render layer filters by the viewed level.
  */
-elevation?: number, };
+elevation?: number, } | { "type": "toggle_door", 
+/**
+ * Correlation token for `DoorToggleError`.
+ */
+request_id: string, 
+/**
+ * Scene the wall is expected to be on; checked against the wall's derived
+ * `parent_id`, never used to select anything.
+ */
+scene_id: string, 
+/**
+ * The wall whose door state flips.
+ */
+wall_id: string, 
+/**
+ * The target state. A non-GM may name `Closed`/`Open` only (never `Locked`, and a
+ * wall currently `Locked` refuses a non-GM in either direction); a GM may also
+ * set/clear `Locked`.
+ */
+to: DoorState, };

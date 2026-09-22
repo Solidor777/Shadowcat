@@ -3544,6 +3544,9 @@ async fn resync_floors_are_independent_per_user() {
 
 /// GM audio-transport handling and the activeScene ambience swap.
 mod audio_transport;
+/// `Room::toggle_door` — the door-toggle gate, its GM bypass, and the
+/// role-conditioned refusal-wording discipline.
+mod door_toggle;
 mod movement_budget;
 
 /// `MoveStream.mover_light` computation: presence, sampling, suppression.

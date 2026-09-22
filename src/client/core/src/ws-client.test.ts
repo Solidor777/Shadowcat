@@ -1490,6 +1490,73 @@ describe("WsClient", () => {
     await expect(p).rejects.toThrow(/too quickly/i);
   });
 
+  it("toggleDoor sends a toggle_door frame (not an intent) and rejects on a correlated door_toggle_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.toggleDoor("s1", "wall-1", "open");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "toggle_door")!);
+    expect(frame).toMatchObject({
+      type: "toggle_door",
+      scene_id: "s1",
+      wall_id: "wall-1",
+      to: "open",
+    });
+    expect(typeof frame.request_id).toBe("string");
+    // No document-write intent is involved — the door flip is a dedicated correlated request,
+    // never an Operation::Update.
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    onMessage(
+      JSON.stringify({
+        type: "door_toggle_error",
+        request_id: frame.request_id,
+        message: "door rejected",
+      }),
+    );
+    await expect(p).rejects.toThrow(/door rejected/);
+  });
+
+  it("a door_toggle_error for an unknown request id settles nothing", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.toggleDoor("s1", "wall-1", "closed");
+    // An uncorrelated error frame must not reject the in-flight toggle.
+    onMessage(
+      JSON.stringify({
+        type: "door_toggle_error",
+        request_id: crypto.randomUUID(),
+        message: "door rejected",
+      }),
+    );
+    let settled: string | null = null;
+    void p.then(
+      () => (settled = "resolved"),
+      () => (settled = "rejected"),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBeNull();
+    // Cleanup: stop rejects the still-pending toggle so the test leaves nothing dangling.
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
+  });
+
   describe("Hello / seedWatermark", () => {
     it("sends Hello{last_seq: null} as the first frame on a first socket open", async () => {
       const sent: string[] = [];

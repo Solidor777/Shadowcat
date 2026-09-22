@@ -71,6 +71,7 @@ import type {
   Fill,
   WallEngine,
   Seg,
+  DoorState,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
@@ -170,6 +171,7 @@ export type {
   Fill,
   WallEngine,
   Seg,
+  DoorState,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
@@ -927,7 +929,7 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
  *
  * const engine: WallEngine = {
  *   seg: { x1: 0, y1: 0, x2: 10, y2: 0 },
- *   blocksSight: true, blocksLight: true, blocksMove: true, elevation: null,
+ *   blocksSight: true, blocksLight: true, blocksMove: true, elevation: null, door: null,
  * };
  * const wall = buildSceneEntityDoc("world-1", "scene-1", "wall", engine);
  * wall.doc_type; // "wall"

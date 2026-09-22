@@ -835,3 +835,43 @@ fn welcome_carries_caps_role_and_requirements() {
     assert!(json.get("role_capabilities").is_some());
     assert_eq!(json["server_version"], "0.0.0-test");
 }
+
+#[test]
+fn toggle_door_frames_round_trip_snake_case() {
+    // The intent: `{"type":"toggle_door", request_id, scene_id, wall_id, to}` with the
+    // `DoorState` spelled snake_case.
+    let m = ClientMsg::ToggleDoor {
+        request_id: Uuid::from_u128(1),
+        scene_id: Uuid::from_u128(2),
+        wall_id: Uuid::from_u128(3),
+        to: crate::data::engine::DoorState::Open,
+    };
+    let v = serde_json::to_value(&m).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "type": "toggle_door",
+            "request_id": Uuid::from_u128(1),
+            "scene_id": Uuid::from_u128(2),
+            "wall_id": Uuid::from_u128(3),
+            "to": "open",
+        })
+    );
+    assert!(matches!(
+        serde_json::from_value::<ClientMsg>(v).unwrap(),
+        ClientMsg::ToggleDoor {
+            to: crate::data::engine::DoorState::Open,
+            ..
+        }
+    ));
+
+    // The refusal: sender-only, correlated by request_id, one message string.
+    let e = ServerMsg::DoorToggleError {
+        request_id: Uuid::nil(),
+        message: "door rejected".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&e).unwrap()["type"],
+        "door_toggle_error"
+    );
+}

@@ -82,6 +82,96 @@ pub(crate) struct MoveRequestInputs {
     pub request_id: Uuid,
 }
 
+/// Grouped inputs to `Room::toggle_door` (mirroring `MoveRequestInputs`).
+pub(crate) struct ToggleDoorInputs {
+    /// Correlates a rejection's `ServerMsg::DoorToggleError` with the originating
+    /// `ClientMsg::ToggleDoor` (success is the broadcast `Event` echo).
+    pub request_id: Uuid,
+    /// The scene the request names — checked for agreement against the wall's own derived
+    /// `parent_id` (`Room::toggle_door`'s derive-from-the-document rule), never used to
+    /// select anything.
+    pub scene_id: Uuid,
+    /// The wall whose door state flips.
+    pub wall_id: Uuid,
+    /// The target state.
+    pub to: eng::DoorState,
+    /// Server-authoritative commit timestamp.
+    pub ts: i64,
+}
+
+/// How far a token may stand from a door and still flip it, in CELLS (converted to world
+/// units at the gate via `GridShape::world_units_per_cell`). On a unit square grid, a token
+/// standing in a cell DIAGONALLY adjacent to the door's own cell has its center up to
+/// √2 ≈ 1.41 cells from a wall segment sitting at the shared cell boundary; 1.5 is the
+/// smallest round number clearing that worst case, so a token in any of the 8 cells
+/// surrounding the door's cell can always reach it while a token two cells away (minimum
+/// distance 2.0) never can.
+pub(crate) const DOOR_REACH_CELLS: f64 = 1.5;
+
+/// Why a `ClientMsg::ToggleDoor` was refused. `Display` yields ONE wording for every variant
+/// ("door rejected") — the wire message for a NON-GM caller, because a distinguishable wording
+/// would disclose something about the wall/token/scene the requester has no right to learn
+/// (does this wall exist, is my token close enough, can I see it, is it secretly `gm_only`,
+/// is it locked). A GM caller may instead receive the variant-specific diagnostic text
+/// (`door_toggle_wire_message`), mirroring the role-conditioned disclosure discipline
+/// `combat::CombatError` already establishes: the role decides disclosure, never the variant.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DoorToggleError {
+    /// No scene-hydrated wall document by that id (including a doc of another type).
+    #[error("door rejected")]
+    UnknownWall,
+    /// The request's `scene_id` disagrees with the wall's derived parent scene (or the wall's
+    /// scene has no live scene document).
+    #[error("door rejected")]
+    SceneMismatch,
+    /// The requester effectively controls no token parented to the wall's scene.
+    #[error("door rejected")]
+    NoOwnedToken,
+    /// The nearest owned token is farther than `DOOR_REACH_CELLS` from the door's segment.
+    #[error("door rejected")]
+    OutOfReach,
+    /// The door segment's cells fall outside the requester's visible-cell set.
+    #[error("door rejected")]
+    NotVisible,
+    /// The requester holds no engine-tier visibility on the wall document itself (a `gm_only`
+    /// wall) — geometric adjacency and sight do not imply this (the visibility raycast is
+    /// deliberately permission-blind), which is exactly why the check exists.
+    #[error("door rejected")]
+    WallNotVisible,
+    /// The flip would move onto or off `Locked` (or the wall has no door state at all) — a
+    /// non-GM may only flip `Closed`↔`Open`.
+    #[error("door rejected")]
+    Locked,
+    /// An authority input or the commit itself failed (repository/serialization).
+    #[error("door rejected")]
+    Data(#[from] DataError),
+}
+
+/// The error-to-wire conversion `ws::conn`'s `handle_toggle_door` applies: the caller's ROLE
+/// decides disclosure, never the variant — a non-GM gets the uniform `Display` wording
+/// (`DoorToggleError`'s own discipline), a GM gets the variant-specific diagnostic (the same
+/// GM-only-reachable distinction `CombatRewind`'s wording precedent establishes). Takes the
+/// role as an argument because the error value itself carries no role.
+pub(crate) fn door_toggle_wire_message(
+    err: &DoorToggleError,
+    world_role: crate::data::document::WorldRole,
+) -> String {
+    if world_role != crate::data::document::WorldRole::Gm {
+        return err.to_string();
+    }
+    match err {
+        DoorToggleError::UnknownWall => "no such wall",
+        DoorToggleError::SceneMismatch => "the wall is not on that scene",
+        DoorToggleError::NoOwnedToken => "you control no token in that scene",
+        DoorToggleError::OutOfReach => "no token you control is within reach of the door",
+        DoorToggleError::NotVisible => "your token cannot see the door",
+        DoorToggleError::WallNotVisible => "the wall is hidden from you",
+        DoorToggleError::Locked => "the door is locked",
+        DoorToggleError::Data(_) => "internal error",
+    }
+    .to_string()
+}
+
 /// The mover's turn-budget state in the token's scene's active combat, built by
 /// `budget_gate_for_token` under the caller's scene read guard. Absent (`None` at the call
 /// site) means no gate applies at all — no active combat on the scene, or the token names no
@@ -1957,6 +2047,221 @@ impl Room {
             duration_ms,
             frame,
         })
+    }
+
+    /// Flip a wall's door state (`ClientMsg::ToggleDoor`): the ONE positional
+    /// authorization + commit path for a non-GM door interaction.
+    ///
+    /// # Authorization (load-bearing)
+    ///
+    /// A GM bypasses the positional clauses entirely — matching the documented GM exemption
+    /// from every other gameplay gate in this subsystem (`execute_move`'s walls/mask/
+    /// impassable/arrest/footprint) — and may additionally set/clear `Locked`. A non-GM is
+    /// admitted only when EVERY one of these holds:
+    ///
+    /// 1. the requester effectively controls at least one token parented to the wall's scene
+    ///    (`SceneEcs::token_scene_and_effective_owner` — the SAME effective-ownership rule
+    ///    `token_emote_permitted`/`handle_pathfind`'s token gate use, never a forked check);
+    /// 2. that token's position is within `DOOR_REACH_CELLS` (converted to world units via
+    ///    `GridShape::world_units_per_cell`) of the door segment (`vision::point_segment_distance`,
+    ///    the same primitive the footprint-clearance wall check uses);
+    /// 3. the token's current visible-cell set (`SceneEcs::visible_cells_cached`, the SAME mask
+    ///    the movement gate reads) intersects the door segment's own supercover cells
+    ///    (`GridShape::line_traversal`, the same primitive `move_exec`'s wall-crossing test
+    ///    uses — never a single-midpoint approximation that could misjudge a wall spanning a
+    ///    cell boundary);
+    /// 4. the requester holds engine-tier visibility on the WALL DOCUMENT ITSELF
+    ///    (`engine_tier_visible(&wall_doc, Some(user))` — the same per-requester authority
+    ///    `move_wall_entries`/`region_field` apply). This clause is NOT implied by clause 3:
+    ///    `visible_cells_cached`'s raycast is DELIBERATELY permission-blind (a `gm_only` wall
+    ///    still occludes sight for someone who may not know it exists), so a token can be
+    ///    geometrically adjacent to and "in sight of" a hidden door's cells while the requester
+    ///    has no right to know that door exists. Without this clause a non-GM could toggle —
+    ///    and thereby discover the existence and state of — a door the GM authored as hidden.
+    /// 5. the wall's CURRENT stored `door` is `Closed`/`Open` (never `Locked`, never absent)
+    ///    and `to` is `Closed`/`Open` (never `Locked`) — the "never onto or off `Locked`"
+    ///    constraint, enforced here on the handler's own read of the current document.
+    ///
+    /// `scene_id` is NOT trusted and selects nothing: the authoritative scene is DERIVED from
+    /// the wall document's own `parent_id`, and a `scene_id` that disagrees is refused —
+    /// `execute_move`'s derive-from-the-document invariant applied to a wall instead of a token.
+    ///
+    /// # Critical section
+    ///
+    /// `publish_guard` is held across the whole validate→commit body (mirrors `execute_move`):
+    /// the state read, the gate decision, and the commit serialize against every other write,
+    /// so two simultaneous toggles resolve sequentially (the second reads the first's committed
+    /// state) instead of double-writing from a shared stale pre-image. The scene read guard is
+    /// scoped and dropped before the commit (a read guard is never held across an await).
+    ///
+    /// # Commit shape
+    ///
+    /// One `Operation::Update` of `/engine/door` via `commit_ops_locked` under
+    /// `WriteOrigin::DoorToggle` — the write reaches `apply_intent` already vetted, so
+    /// `authorize_update_change` needs NO exemption of any kind (a positional authorization
+    /// cannot be expressed as a `FieldChange` classifier: it sees a document id and old/new
+    /// values, never where the actor stands or what they can see). The committed Event echo is
+    /// the success confirmation; only a rejection produces a dedicated frame
+    /// (`ServerMsg::DoorToggleError`, built by `ws::conn`'s handler wrapper).
+    pub(crate) async fn toggle_door(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        req: ToggleDoorInputs,
+    ) -> Result<(), DoorToggleError> {
+        let ToggleDoorInputs {
+            scene_id,
+            wall_id,
+            to,
+            ts,
+            ..
+        } = req;
+        let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+
+        let _guard = self.publish_guard.lock().await;
+
+        // The world capability defaults feed clause 3's `visible_cells_cached` (its
+        // observer-vision source admission reads them under the scene read guard, and a read
+        // guard is never held across an await, so the fetch happens first) — the same call
+        // `execute_move` makes for its own mask. A GM skips the positional clauses and never
+        // needs it. Fails closed: an unresolvable authority input refuses the toggle rather
+        // than guessing at it.
+        let world_defaults = if is_gm {
+            None
+        } else {
+            Some(repo.world_cap_defaults(self.world_id).await?)
+        };
+
+        // The OCC pre-image for the committed write, captured under the same read guard as
+        // the gate inputs so both read one consistent ECS snapshot.
+        let old_door;
+        {
+            let ecs = self.scene.read().await;
+
+            // Step 1: the wall must exist as a scene-hydrated wall document; its scene is
+            // DERIVED from its own `parent_id`, and the request's `scene_id` must agree.
+            let wall_doc = ecs
+                .scene_entity_doc(wall_id)
+                .filter(|d| d.doc_type == "wall")
+                .ok_or(DoorToggleError::UnknownWall)?;
+            let wall_scene = wall_doc.parent_id.ok_or(DoorToggleError::UnknownWall)?;
+            if wall_scene != scene_id {
+                return Err(DoorToggleError::SceneMismatch);
+            }
+            let wall = ecs
+                .engine_as_cached::<eng::WallEngine>(wall_id, &wall_doc)
+                .ok_or(DoorToggleError::UnknownWall)?;
+
+            // Fail-closed on a missing scene document (an absent `scene_grid_sizes` entry
+            // means the scene is gone) — never a synthesized grid.
+            let cell = *ecs
+                .scene_grid_sizes()
+                .get(&wall_scene)
+                .ok_or(DoorToggleError::SceneMismatch)?;
+            let shape = ecs.resolve_grid_shape(wall_scene, cell);
+
+            if !is_gm {
+                let user = ctx.user_id;
+                // Fetched above for every non-GM, so this is always `Some` here; a miss fails
+                // closed rather than guessing at the authority input.
+                let Some(defaults) = world_defaults.as_ref() else {
+                    return Err(DoorToggleError::Data(DataError::OpFailed(
+                        "world defaults unresolved for a non-GM door toggle".into(),
+                    )));
+                };
+                let seg_a = (wall.seg.x1, wall.seg.y1);
+                let seg_b = (wall.seg.x2, wall.seg.y2);
+
+                // Clauses 1+2: the requester's nearest effectively-owned token in the scene,
+                // and its reach. The scan pattern is the same one `compute_audibility`'s
+                // emitter loop shaped: enumerate the scene's tokens
+                // (`SceneEcs::scene_token_ids`), filter to the requester's own via the shared
+                // effective-ownership rule, take the nearest to the segment.
+                let mut nearest: Option<(Uuid, f64)> = None;
+                for token in ecs.scene_token_ids(wall_scene) {
+                    if ecs.token_scene_and_effective_owner(token) != Some((wall_scene, Some(user)))
+                    {
+                        continue;
+                    }
+                    let Some(pos) = ecs.token_position(token) else {
+                        continue;
+                    };
+                    let d = crate::scene::vision::point_segment_distance(pos, seg_a, seg_b);
+                    if nearest.is_none_or(|(_, best)| d < best) {
+                        nearest = Some((token, d));
+                    }
+                }
+                let Some((mover, dist)) = nearest else {
+                    return Err(DoorToggleError::NoOwnedToken);
+                };
+                if dist > DOOR_REACH_CELLS * shape.world_units_per_cell() {
+                    return Err(DoorToggleError::OutOfReach);
+                }
+
+                // Clause 3: the door segment's own supercover cells must intersect the
+                // requester's visible-cell set — the SAME mask the movement gate reads,
+                // level-scoped to the nearest token's floor exactly as a move of that token
+                // would be.
+                let lenient = ecs.resolve_scene(wall_scene).partial_cell_leniency;
+                let visible = ecs.visible_cells_cached(
+                    user,
+                    ctx.world_role,
+                    defaults,
+                    wall_scene,
+                    lenient,
+                    ecs.token_mover_elevation(mover),
+                );
+                let door_in_sight = shape
+                    .line_traversal(seg_a, seg_b, cell)
+                    .is_some_and(|cells| cells.iter().any(|c| visible.contains(c)));
+                if !door_in_sight {
+                    return Err(DoorToggleError::NotVisible);
+                }
+
+                // Clause 4: engine-tier visibility on the wall DOCUMENT — the one clause that
+                // reads the wall's own declared visibility tier rather than a geometric
+                // consequence of it (see the method doc for why clause 3 cannot imply it).
+                if !crate::scene::engine_tier_visible(&wall_doc, Some(user)) {
+                    return Err(DoorToggleError::WallNotVisible);
+                }
+
+                // Clause 5: the state machine — flip `Closed`↔`Open` only, never onto or off
+                // `Locked`, and a doorless wall has nothing to flip.
+                let flippable = matches!(
+                    wall.door,
+                    Some(eng::DoorState::Closed) | Some(eng::DoorState::Open)
+                );
+                let admitted_target = matches!(to, eng::DoorState::Closed | eng::DoorState::Open);
+                if !flippable || !admitted_target {
+                    return Err(DoorToggleError::Locked);
+                }
+            }
+
+            old_door = wall_doc
+                .engine
+                .as_ref()
+                .and_then(|e| e.get("door").cloned())
+                .unwrap_or(serde_json::Value::Null);
+        } // scene read guard dropped — commit_ops_locked takes the write guard itself
+
+        let new_door = serde_json::to_value(to).map_err(DataError::from)?;
+        self.commit_ops_locked(
+            repo,
+            ctx,
+            vec![Operation::Update {
+                doc_id: wall_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/door".into(),
+                    old: old_door,
+                    new: new_door,
+                }],
+            }],
+            ts,
+            WriteOrigin::DoorToggle,
+        )
+        .await?;
+        Ok(())
     }
 
     /// Fire the region triggers a token report sets off: every enabled trigger-bearing region

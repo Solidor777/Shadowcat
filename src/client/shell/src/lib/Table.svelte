@@ -134,6 +134,7 @@
     sendEmote: (token, emote) => session.sendEmote(token, emote),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
+    toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),
     onPing: (cb) => session.onPing(cb),
     onEmote: (cb) => session.onEmote(cb),
     onMoveOutcome: (cb) => session.onMoveOutcome(cb),
