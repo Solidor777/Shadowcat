@@ -7,6 +7,7 @@ import { vfxAnchorZIndex } from "./vfx-view";
 import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import { TextureCacheManager } from "./texture-cache";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -76,6 +77,12 @@ interface TokenNode {
      * `tickTokenAnimations`. */
     elapsedMs: number;
   } | null;
+  /** Texture-cache urls currently acquired on this node's behalf (see `TextureCacheManager`) —
+   * one url for an image visual, one for an animated sheet (its frame slices share the sheet's
+   * single GPU allocation), or one per frame for an animated `"frames"` source. Diffed against
+   * the next resolved set on every visual swap so only the urls actually still in use stay
+   * referenced; released wholesale on `removeToken`. */
+  textureUrls: string[];
   /** The generated-visual frame Graphics, present only while the last-applied visual was
    * `kind:"generated"` (created by `ensureGeneratedFrame`, torn down by
    * `updateTokenGeneratedFrame` on a swap away): the `background` fill under the art, the `mask`
@@ -139,28 +146,55 @@ interface VfxRenderNode {
    * repeat call for a node the caller chooses not to remove immediately). Reset to `false`
    * whenever `setVfx` loads a new `sourceKey`. */
   completedFired: boolean;
+  /** Texture-cache urls currently acquired on this node's behalf — the SAME bookkeeping
+   * `TokenNode.textureUrls`/background art use (see `TextureCacheManager`), so a VFX one-shot's
+   * texture counts against the GPU texture budget and is unloaded once no live node references
+   * it. One url for a sheet source (the atlas image shared by every frame slice), one per frame
+   * for a `"frames"` source. Reconciled by `applyNodeTextures` on every load completion; released
+   * wholesale by `removeVfx`. */
+  textureUrls: string[];
 }
 
-/** Every image load in this backend goes through this one seam. The asset serve URLs
- * (`/api/assets/<uuid>[?variant=…]`) carry no file extension, so Pixi's default parser
- * DISCOVERY — which tests a URL's extension — finds no parser for them and never even
- * fetches (the "could not be loaded as we don't know how to parse it" warning, and the
- * load resolves `null`); the explicit `parser: "loadTextures"` override bypasses that
- * extension gate (the served bytes' own content decides the decode, exactly as it does for
- * an `.webp`-suffixed URL).
- * @param url The serve URL to load as a texture.
- * @returns The loaded `Texture` (or `null` when the load produced nothing).
+/** Approximate GPU-resident byte size of a decoded texture, RGBA8: `width * height * 4`. Floors
+ * each dimension at 1 so a degenerate 0-size texture (e.g. `Texture.EMPTY` in a test double)
+ * still contributes a nonzero, budget-comparable estimate rather than silently vanishing from
+ * the cache's own bookkeeping. A non-finite dimension (e.g. `NaN`) also floors to 1 rather than
+ * propagating through `Math.max` — `Math.max(1, NaN)` is `NaN`, which would poison
+ * `TextureCacheManager.totalBytes()`'s running sum for every entry summed alongside it, not just
+ * this one.
+ * @param texture The loaded texture to estimate.
+ * @returns The approximate byte size.
  * @example
  * ```
  * // module-private helper; not exported from @shadowcat/render
- * await loadAssetTexture("/api/assets/00000000-0000-0000-0000-000000000001?variant=sheet");
+ * declare const t: Texture;
+ * estimateTextureBytes(t);
  * ```
  */
-function loadAssetTexture(url: string): Promise<Texture | null> {
-  // A load that produced nothing resolves `null` (the caller's "no art" path) rather than
-  // rejecting — the same contract the extension gate produced for every load.
-  return Assets.load<Texture>({ src: url, parser: "loadTextures" }).catch(() => null);
+function estimateTextureBytes(texture: Texture): number {
+  const w = Number.isFinite(texture.width) ? Math.max(1, texture.width) : 1;
+  const h = Number.isFinite(texture.height) ? Math.max(1, texture.height) : 1;
+  return w * h * 4;
 }
+
+/** One loaded texture paired with the url it came from — the shape `loadAnimatedTextures` and
+ * `applyNodeTextures` pass between them to feed the texture-cache without re-deriving a url
+ * from an already-loaded `Texture` (which carries none). */
+interface LoadedTextureEntry {
+  /** The serve url the texture was loaded from. */
+  url: string;
+  /** The loaded texture. */
+  texture: Texture;
+}
+
+/** How often `tickTokenAnimations` runs a texture-cache sweep, ms — throttled well below the
+ * per-frame tick rate so a real session (running this call ~60x/s) doesn't re-walk the cache
+ * every frame for a budget that rarely needs re-evaluating. */
+const TEXTURE_SWEEP_INTERVAL_MS = 5_000;
+/** How long an unreferenced texture source may sit idle before the sweep evicts it regardless
+ * of budget (a scene visited once, then not revisited, eventually frees its art even while
+ * plenty of budget remains). */
+const TEXTURE_TTL_MS = 5 * 60_000;
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
@@ -337,6 +371,22 @@ export class PixiBackend implements DisplayBackend {
   private viewportWidth = 0;
   /** See `viewportWidth`'s doc. */
   private viewportHeight = 0;
+  /** The texture-cache url currently acquired for `background`, or `null` before the first
+   * successful background load / after a clear — mirrors `TokenNode.textureUrls` for the one
+   * background sprite this backend carries. */
+  private backgroundTextureUrl: string | null = null;
+  /** Tracks approximate byte size, last-use, and live-reference count per texture source (see
+   * `TextureCacheManager`); `tickTokenAnimations` sweeps it periodically against
+   * `textureBudgetBytes`. */
+  private readonly textureCache = new TextureCacheManager();
+  /** The current GPU texture-cache byte budget, set via `setTextureBudget` — `Infinity` (never
+   * evicts on budget, only on TTL) until a caller sets one, so a backend constructed without a
+   * `RenderEngine` wiring one in (e.g. a bare test double) never surprises a caller with
+   * eviction it didn't ask for. */
+  private textureBudgetBytes = Infinity;
+  /** Accumulated ms since the last texture-cache sweep — throttles the sweep to
+   * `TEXTURE_SWEEP_INTERVAL_MS` even though `tickTokenAnimations` itself runs every frame. */
+  private textureSweepAccumMs = 0;
 
   /** Wire this backend to a running Pixi `Application`: parents the `world` container (which
    * every layer/camera transform lives under) onto the stage, and adds the cross-fade sprites
@@ -368,6 +418,45 @@ export class PixiBackend implements DisplayBackend {
     this.fogBlendFrom.visible = false;
     this.fogBlendTo.visible = false;
     this.app.stage.addChild(this.fogBlendFrom, this.fogBlendTo);
+  }
+
+  /** Every image load in this backend goes through this one seam — the SOLE loader, and the
+   * SOLE place a loaded texture is told to `TextureCacheManager`. Registration happens here,
+   * at load completion, REGARDLESS of what the caller does with the result: a caller that keeps
+   * the texture still `acquire`s it afterward (through `applyNodeTextures`) exactly as before,
+   * but a caller that discards it (lost a supersession race, or never wanted it in the first
+   * place) needs no bespoke per-site bookkeeping — the texture is already evictable the moment
+   * this resolves. This is what makes the eviction-accounting duty a property of the LOADER, not
+   * of every current and future CALLER's failure path (see `TextureCacheManager.register`'s doc
+   * for why a load already tracked is left untouched). `beginLoad`/`endLoad` bracket the await so
+   * `sweep` can never unload a texture a still-outstanding load of the same url is about to
+   * display, closing the window between this registration and a winning caller's later
+   * `acquire`. The asset serve URLs (`/api/assets/<uuid>[?variant=…]`) carry no file extension,
+   * so Pixi's default parser DISCOVERY — which tests a URL's extension — finds no parser for them
+   * and never even fetches (the "could not be loaded as we don't know how to parse it" warning,
+   * and the load resolves `null`); the explicit `parser: "loadTextures"` override bypasses that
+   * extension gate (the served bytes' own content decides the decode, exactly as it does for an
+   * `.webp`-suffixed URL).
+   * @param url The serve URL to load as a texture.
+   * @returns The loaded `Texture` (or `null` when the load produced nothing).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const backend: PixiBackend;
+   * await (backend as unknown as { loadAssetTexture(u: string): Promise<unknown> }).loadAssetTexture("/api/assets/00000000-0000-0000-0000-000000000001?variant=sheet");
+   * ```
+   */
+  private async loadAssetTexture(url: string): Promise<Texture | null> {
+    this.textureCache.beginLoad(url);
+    try {
+      // A load that produced nothing resolves `null` (the caller's "no art" path) rather than
+      // rejecting — the same contract the extension gate produced for every load.
+      const texture = await Assets.load<Texture>({ src: url, parser: "loadTextures" }).catch(() => null);
+      if (texture !== null) this.textureCache.register(url, estimateTextureBytes(texture), Date.now());
+      return texture;
+    } finally {
+      this.textureCache.endLoad(url);
+    }
   }
 
   /** `DisplayBackend.ensureLayers`: create any layer Containers named in `orderedIds` that don't
@@ -467,6 +556,10 @@ export class PixiBackend implements DisplayBackend {
       this.background?.destroy();
       this.background = null;
       this.backgroundUrl = null;
+      if (this.backgroundTextureUrl !== null) {
+        this.textureCache.release(this.backgroundTextureUrl, Date.now());
+        this.backgroundTextureUrl = null;
+      }
       return;
     }
     if (spec.url === this.backgroundUrl) return; // steady-state no-op
@@ -475,12 +568,24 @@ export class PixiBackend implements DisplayBackend {
     // the SAME url (set X → set Y → set X) would both pass a URL check and the
     // earlier one would flash a stale sprite. The token admits only the latest.
     const token = ++this.loadSeq;
-    void loadAssetTexture(spec.url).then((texture) => {
-      if (texture === null || token !== this.loadSeq) return; // no art, or superseded by a newer set/clear/destroy
+    void this.loadAssetTexture(spec.url).then((texture) => {
+      if (texture === null) return; // no art
+      if (token !== this.loadSeq) {
+        // Lost the stale-guard race (superseded by a newer set/clear/destroy): `loadAssetTexture`
+        // already registered this url with `TextureCacheManager` at refCount 0 on load
+        // completion, so it is already evictable — nothing further to do here.
+        return;
+      }
       this.background?.destroy();
       const sprite = new Sprite(texture);
       this.background = sprite;
       this.layers.get("background")?.addChild(sprite);
+      const now = Date.now();
+      if (this.backgroundTextureUrl !== null && this.backgroundTextureUrl !== spec.url) {
+        this.textureCache.release(this.backgroundTextureUrl, now);
+      }
+      this.textureCache.acquire(spec.url, estimateTextureBytes(texture), now);
+      this.backgroundTextureUrl = spec.url;
     });
   }
 
@@ -751,7 +856,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "" };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "", textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -797,8 +902,17 @@ export class PixiBackend implements DisplayBackend {
       node.anim = null;
       const sprite = node.visual;
       const url = art.url;
-      void loadAssetTexture(url).then((texture) => {
-        if (texture !== null && this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
+      void this.loadAssetTexture(url).then((texture) => {
+        if (texture === null) return; // no art
+        if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) {
+          sprite.texture = texture;
+          this.applyNodeTextures(node, [{ url, texture }]);
+          return;
+        }
+        // Lost the stale-guard race (the node was swapped/removed, or a newer load for this
+        // same visual slot already won): `loadAssetTexture` already registered this url with
+        // `TextureCacheManager` at refCount 0 on load completion, so it is already evictable —
+        // nothing further to do here.
       });
     } else {
       if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
@@ -806,11 +920,19 @@ export class PixiBackend implements DisplayBackend {
       sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
       node.anim = { fps: art.fps, loop: art.loop, frameCount: 1, elapsedMs: 0 };
       const source = art.source;
-      void this.loadAnimatedTextures(source).then((textures) => {
-        if (this.tokens.get(id) !== node || node.visual !== sprite || node.sourceKey !== key || textures.length === 0) return;
-        sprite.textures = textures;
-        sprite.gotoAndStop(0);
-        node.anim = { fps: art.fps, loop: art.loop, frameCount: textures.length, elapsedMs: 0 };
+      void this.loadAnimatedTextures(source).then(({ textures, cacheEntries }) => {
+        if (textures.length === 0) return; // no art
+        if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) {
+          sprite.textures = textures;
+          sprite.gotoAndStop(0);
+          node.anim = { fps: art.fps, loop: art.loop, frameCount: textures.length, elapsedMs: 0 };
+          this.applyNodeTextures(node, cacheEntries);
+          return;
+        }
+        // Lost the stale-guard race (the node was swapped/removed, or a newer load for this
+        // same visual slot already won): every entry's url was already registered with
+        // `TextureCacheManager` at refCount 0 by `loadAssetTexture`/`loadAnimatedTextures` on
+        // load completion, so each is already evictable — nothing further to do here.
       });
     }
     node.visual.width = tokenSpec.w;
@@ -919,23 +1041,40 @@ export class PixiBackend implements DisplayBackend {
    * (`updateTokenVisual`) treats an empty result as "load produced nothing" and leaves `node.anim`
    * at its placeholder state.
    * @param source The resolved animated source (already asset-id-resolved to serve URLs).
-   * @returns The ordered animation-frame textures, or `[]` on a degenerate/empty source.
+   * @returns The ordered animation-frame textures plus the texture-cache tracking entries for
+   * whichever url(s) actually backed them (`[]`/`[]` on a degenerate/empty source) — a
+   * `"frames"` source tracks one entry per loaded frame url; a `"sheet"` source tracks ONE
+   * entry keyed by the sheet's own url, since every frame slice shares that one GPU allocation
+   * and double-counting it per slice would wildly overstate the cache's real footprint.
    * @example
    * ```
    * // private method; not part of the public API
-   * await this.loadAnimatedTextures({ type: "frames", urls: [] }); // []
+   * await this.loadAnimatedTextures({ type: "frames", urls: [] }); // { textures: [], cacheEntries: [] }
    * ```
    */
-  private async loadAnimatedTextures(source: ResolvedAnimatedSource): Promise<Texture[]> {
+  private async loadAnimatedTextures(
+    source: ResolvedAnimatedSource,
+  ): Promise<{
+    /** The ordered animation-frame textures. */
+    textures: Texture[];
+    /** The texture-cache tracking entries for whichever url(s) actually backed them. */
+    cacheEntries: LoadedTextureEntry[];
+  }> {
     if (source.type === "frames") {
-      if (source.urls.length === 0) return [];
-      return (await Promise.all(source.urls.map((url) => loadAssetTexture(url)))).filter(
-        (t): t is Texture => t !== null,
+      if (source.urls.length === 0) return { textures: [], cacheEntries: [] };
+      const loaded = await Promise.all(
+        source.urls.map(async (url) => ({ url, texture: await this.loadAssetTexture(url) })),
       );
+      const cacheEntries = loaded.filter(
+        (e): e is LoadedTextureEntry => e.texture !== null,
+      );
+      return { textures: cacheEntries.map((e) => e.texture), cacheEntries };
     }
-    if (!Number.isInteger(source.rows) || source.rows <= 0 || !Number.isInteger(source.cols) || source.cols <= 0) return [];
-    const sheet = await loadAssetTexture(source.url);
-    if (sheet === null) return [];
+    if (!Number.isInteger(source.rows) || source.rows <= 0 || !Number.isInteger(source.cols) || source.cols <= 0) {
+      return { textures: [], cacheEntries: [] };
+    }
+    const sheet = await this.loadAssetTexture(source.url);
+    if (sheet === null) return { textures: [], cacheEntries: [] };
     const frameW = sheet.width / source.cols;
     const frameH = sheet.height / source.rows;
     const total = source.count !== undefined ? Math.min(source.count, source.rows * source.cols) : source.rows * source.cols;
@@ -945,7 +1084,51 @@ export class PixiBackend implements DisplayBackend {
       const row = Math.floor(i / source.cols);
       frames.push(new Texture({ source: sheet.source, frame: new Rectangle(col * frameW, row * frameH, frameW, frameH) }));
     }
-    return frames;
+    return { textures: frames, cacheEntries: [{ url: source.url, texture: sheet }] };
+  }
+
+  /** Reconciles a node's currently-acquired texture-cache urls against `entries`: releases
+   * any of `node.textureUrls` absent from `entries` (a visual swap to a different source),
+   * acquires every entry (a new reference, or a refreshed size/last-use for one the node already
+   * holds), and records the resulting set on `node.textureUrls`. Shared by the image and
+   * animated branches of `updateTokenVisual` AND by `setVfx`'s two source branches, so tokens,
+   * background art, and VFX nodes all feed the SAME cache instance.
+   * @param node The render node (a `TokenNode` or `VfxRenderNode`) whose texture references to
+   * reconcile — only its `textureUrls` field is read/written.
+   * @param node.textureUrls The node's currently-acquired texture-cache urls, read and then
+   * replaced with the reconciled set.
+   * @param entries The urls (and their loaded textures) the node's visual now displays.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const texture: Texture;
+   * this.applyNodeTextures(node, [{ url: "/api/assets/1", texture }]);
+   * ```
+   */
+  private applyNodeTextures(node: {
+    /** The node's currently-acquired texture-cache urls, read and then replaced with the
+     * reconciled set (see `TokenNode.textureUrls`/`VfxRenderNode.textureUrls`, whichever kind of
+     * node this call is reconciling). */
+    textureUrls: string[];
+  }, entries: LoadedTextureEntry[]): void {
+    const now = Date.now();
+    // A url this node already holds a reference for (e.g. a reload triggered by `fps`/`loop`
+    // alone, or an image A→B→A cycle landing back on A) must be TOUCHED, not re-acquired —
+    // acquiring it again would increment the ref count with no matching release (this node's
+    // one visual slot can only ever hold one live reference to a given url at a time), leaving
+    // that url permanently over-referenced and never evictable.
+    const already = new Set(node.textureUrls);
+    const nextUrls = entries.map((e) => e.url);
+    const keep = new Set(nextUrls);
+    for (const prior of node.textureUrls) {
+      if (!keep.has(prior)) this.textureCache.release(prior, now);
+    }
+    for (const e of entries) {
+      if (already.has(e.url)) this.textureCache.touch(e.url, now);
+      else this.textureCache.acquire(e.url, estimateTextureBytes(e.texture), now);
+    }
+    node.textureUrls = nextUrls;
   }
 
   /** Redraw `node.border`: clears it first, then strokes an ellipse (`shape:"circle"`) or rect
@@ -1099,6 +1282,8 @@ export class PixiBackend implements DisplayBackend {
     node.fx?.destroy();
     node.container.destroy({ children: true });
     this.tokens.delete(id);
+    const now = Date.now();
+    for (const url of node.textureUrls) this.textureCache.release(url, now);
   }
 
   /** `DisplayBackend.tickTokenAnimations`: advance every token's `AnimatedSprite` by `dtMs`. Skips
@@ -1125,6 +1310,34 @@ export class PixiBackend implements DisplayBackend {
       const frame = computeAnimatedFrame(node.anim.elapsedMs, node.anim.fps, node.anim.frameCount, node.anim.loop);
       if (node.visual.currentFrame !== frame) node.visual.gotoAndStop(frame);
     }
+    this.textureSweepAccumMs += dtMs;
+    if (this.textureSweepAccumMs < TEXTURE_SWEEP_INTERVAL_MS) return;
+    this.textureSweepAccumMs = 0;
+    this.textureCache.sweep(Date.now(), this.textureBudgetBytes, TEXTURE_TTL_MS, (url) => {
+      void Assets.unload(url).catch(() => {
+        // A texture already unloaded/never registered with Assets (e.g. a test double's stub
+        // url) is not a real failure — the cache's own bookkeeping has already forgotten it
+        // either way, mirroring `loadAssetTexture`'s own fail-quiet contract.
+      });
+    });
+  }
+
+  /** `DisplayBackend.setTextureBudget`: sets the GPU texture-cache byte budget the next sweep
+   * (driven off `tickTokenAnimations`) evicts against. Takes effect on the NEXT sweep, not
+   * immediately — this mirrors every other budget knob in this backend (`setFrameCap`/
+   * `setRenderScale` apply their own effect synchronously because they touch the renderer
+   * directly, but a texture sweep is a periodic pass by design, see `TEXTURE_SWEEP_INTERVAL_MS`).
+   * @param bytes The new byte budget.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setTextureBudget(256 * 1024 * 1024);
+   * ```
+   */
+  setTextureBudget(bytes: number): void {
+    this.textureBudgetBytes = bytes;
   }
 
   /** `DisplayBackend.setVfx`: upsert a VFX render node. Creates the container/sprite on first
@@ -1158,7 +1371,7 @@ export class PixiBackend implements DisplayBackend {
       visual.autoUpdate = false;
       container.addChild(visual);
       this.layers.get("vfx")?.addChild(container);
-      node = { container, visual, anim: { frameMs: [], loop: spec.loop, elapsedMs: 0, frameCount: null }, sourceKey: null, completedFired: false };
+      node = { container, visual, anim: { frameMs: [], loop: spec.loop, elapsedMs: 0, frameCount: null }, sourceKey: null, completedFired: false, textureUrls: [] };
       this.vfxNodes.set(id, node);
     }
     // (Re)parent + re-order unconditionally: a node pushed before `ensureLayers` ran finds its
@@ -1202,13 +1415,17 @@ export class PixiBackend implements DisplayBackend {
     if ("imageUrl" in spec.source) {
       const { imageUrl, sheetUrl, animation } = spec.source;
       void Promise.all([
-        loadAssetTexture(imageUrl),
+        this.loadAssetTexture(imageUrl),
         fetch(sheetUrl).then((r) => {
           if (!r.ok) throw new Error(`vfx sidecar fetch failed: ${r.status}`);
           return r.json();
         }),
       ])
         .then(([texture, json]) => {
+          // Lost the stale-guard race (the node was swapped/removed, or a newer load for this
+          // same source key already won): `loadAssetTexture` already registered `imageUrl` with
+          // `TextureCacheManager` at refCount 0 on load completion, so it is already evictable —
+          // nothing further to do here.
           if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return undefined;
           if (texture === null) {
             fail();
@@ -1216,6 +1433,7 @@ export class PixiBackend implements DisplayBackend {
           }
           const sheet = new Spritesheet(texture, json);
           return sheet.parse().then(() => {
+            // Same stale-guard reasoning as above, past the async `sheet.parse()` await.
             if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
             const textures = sheet.animations[animation] ?? [];
             if (textures.length === 0) {
@@ -1224,6 +1442,9 @@ export class PixiBackend implements DisplayBackend {
             }
             sprite.textures = textures;
             sprite.gotoAndStop(spec.startAtEnd ? textures.length - 1 : 0);
+            // One cache entry for the whole atlas (every frame slice shares its single GPU
+            // allocation) — the same convention `loadAnimatedTextures`'s `"sheet"` branch uses.
+            this.applyNodeTextures(node, [{ url: imageUrl, texture }]);
             // Per-frame durations, when the sidecar declares them (the TexturePacker
             // `frames[key].duration` convention, in ms); absent entries fall back to
             // `computeVfxFrame`'s uniform 100ms default.
@@ -1245,7 +1466,16 @@ export class PixiBackend implements DisplayBackend {
         .catch(fail);
     } else {
       const source = spec.source;
-      void this.loadAnimatedTextures(source).then((textures) => {
+      // A VFX one-shot/emitter's texture is registered with `TextureCacheManager` by
+      // `loadAnimatedTextures`'s own `loadAssetTexture` calls the moment each load resolves
+      // (loader-owned registration, not a per-site duty) — a node that KEEPS the result then
+      // `acquire`s it via `applyNodeTextures` below, exactly as token/background art does, so it
+      // counts against the GPU texture budget for as long as this node references it;
+      // `removeVfx`/`tickVfx`'s completion path releases it (never merely destroys the display
+      // node, which would leave the PixiJS `Assets` cache holding the texture GPU-resident for
+      // the tab's life). A node that loses the stale-guard race below simply returns: the loader
+      // already made every entry's url evictable, so no per-site acquire/release is needed here.
+      void this.loadAnimatedTextures(source).then(({ textures, cacheEntries }) => {
         if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
         if (textures.length === 0) {
           fail();
@@ -1253,6 +1483,7 @@ export class PixiBackend implements DisplayBackend {
         }
         sprite.textures = textures;
         sprite.gotoAndStop(spec.startAtEnd ? textures.length - 1 : 0);
+        this.applyNodeTextures(node, cacheEntries);
         const frameMs = source.type === "sheet" ? (source.frameMs ?? []) : [];
         const total = Array.from({ length: textures.length }, (_, i) => frameMs[i] ?? 100).reduce((a, b) => a + b, 0);
         node.anim = {
@@ -1266,7 +1497,9 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
-  /** `DisplayBackend.removeVfx`: destroy a VFX render node and drop it from `this.vfxNodes`. A
+  /** `DisplayBackend.removeVfx`: destroy a VFX render node, release its texture-cache
+   * references (see `VfxRenderNode.textureUrls`'s doc — a node's texture stays GPU-resident
+   * until this call releases it, mirroring `removeToken`), and drop it from `this.vfxNodes`. A
    * no-op for an unknown `id`.
    * @param id The VFX node id to remove.
    * @example
@@ -1282,6 +1515,8 @@ export class PixiBackend implements DisplayBackend {
     if (!node) return;
     node.container.destroy({ children: true });
     this.vfxNodes.delete(id);
+    const now = Date.now();
+    for (const url of node.textureUrls) this.textureCache.release(url, now);
   }
 
   /** `DisplayBackend.tickVfx`: advance every VFX node's `AnimatedSprite` by `dtMs` via

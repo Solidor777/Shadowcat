@@ -34,6 +34,12 @@ export interface PerformanceSettings {
   /** Honour `prefers-reduced-motion`: token tweens and sample playback snap to their end pose
    * immediately; light/vision sweep cross-fades apply the incoming sample in one step. */
   reducedMotion: boolean;
+  /** Approximate GPU-resident texture-cache budget, bytes — `@shadowcat/render`'s
+   * `TextureCacheManager` evicts least-recently-used, unreferenced texture sources once
+   * `totalBytes()` exceeds this (multi-scene GM roam otherwise keeps every visited scene's art
+   * GPU-resident for the tab's life). Preset-derived only today; not user-editable through
+   * `PerformanceEditor` (see that component's doc). */
+  textureBudgetBytes: number;
 }
 
 /** A named budget, or `"auto"` (resolved from `DeviceSignals` via `resolveAuto`) or `"custom"`
@@ -62,14 +68,17 @@ export const PRESETS: Record<Exclude<PerformancePreset, "auto" | "custom">, Perf
   mobile: {
     fpsCap: 30, renderScale: 0.75, antialias: false, tokenFx: false, lighting: "static",
     vfx: false, dice3d: false, spatialAudio: true, idleSkip: true, reducedMotion: false,
+    textureBudgetBytes: 128 * 1024 * 1024,
   },
   balanced: {
     fpsCap: 60, renderScale: 1, antialias: true, tokenFx: true, lighting: "full",
     vfx: true, dice3d: true, spatialAudio: true, idleSkip: true, reducedMotion: false,
+    textureBudgetBytes: 512 * 1024 * 1024,
   },
   quality: {
     fpsCap: "uncapped", renderScale: 1, antialias: true, tokenFx: true, lighting: "full",
     vfx: true, dice3d: true, spatialAudio: true, idleSkip: true, reducedMotion: false,
+    textureBudgetBytes: 1024 * 1024 * 1024,
   },
 };
 
@@ -148,6 +157,9 @@ function sanitizeOverrides(value: unknown): Partial<PerformanceSettings> {
   if (typeof src.spatialAudio === "boolean") out.spatialAudio = src.spatialAudio;
   if (typeof src.idleSkip === "boolean") out.idleSkip = src.idleSkip;
   if (typeof src.reducedMotion === "boolean") out.reducedMotion = src.reducedMotion;
+  if (typeof src.textureBudgetBytes === "number" && Number.isFinite(src.textureBudgetBytes) && src.textureBudgetBytes > 0) {
+    out.textureBudgetBytes = src.textureBudgetBytes;
+  }
   return out;
 }
 

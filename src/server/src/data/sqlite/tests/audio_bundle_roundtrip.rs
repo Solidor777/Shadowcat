@@ -15,7 +15,7 @@ use crate::data::world_seed::missing_config_ops;
 fn playlist_engine() -> PlaylistEngine {
     PlaylistEngine {
         tracks: vec![PlaylistTrack {
-            asset: "tavern-loop".into(),
+            asset: "11111111-1111-1111-1111-111111111111".into(),
             name: Some("Tavern".into()),
             gain: 0.8,
             loop_: true,

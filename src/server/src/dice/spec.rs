@@ -301,9 +301,9 @@ pub enum BinOp {
 }
 
 /// A math function name recognized by the `factor := ... | fn_call` grammar production.
-/// Fixed arity per variant (`FnName::arity`): `Floor`/`Ceil`/`Round`/`Abs` take exactly 1
-/// argument, `Min`/`Max` take exactly 2 — checked at parse time
-/// (`dice::notation::parser::P::fn_call`), never at evaluation.
+/// `Floor`/`Ceil`/`Round`/`Abs` take EXACTLY 1 argument; `Min`/`Max` are variadic and take AT
+/// LEAST 2 — checked at parse time (`dice::notation::parser::P::fn_call` via
+/// `FnName::accepts_arg_count`), never at evaluation.
 ///
 /// # Examples
 ///
@@ -311,6 +311,7 @@ pub enum BinOp {
 /// use shadowcat::dice::spec::FnName;
 /// assert_eq!(FnName::Abs.arity(), 1);
 /// assert_eq!(FnName::Max.arity(), 2);
+/// assert!(FnName::Max.accepts_arg_count(4));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnName {
@@ -332,9 +333,11 @@ pub enum FnName {
 }
 
 impl FnName {
-    /// The fixed argument count this function requires.
-    /// `dice::notation::parser` checks a call's actual argument count against this at parse
-    /// time; `Expr::Call` itself carries no arity guarantee once constructed.
+    /// The MINIMUM argument count this function requires. For `Floor`/`Ceil`/`Round`/`Abs`
+    /// this is also the maximum (exact arity); for `Min`/`Max` it is a floor only — see
+    /// `accepts_arg_count` for the full admissibility rule
+    /// `dice::notation::parser` checks against at parse time. `Expr::Call` itself carries no
+    /// arity guarantee once constructed.
     ///
     /// # Examples
     ///
@@ -347,6 +350,27 @@ impl FnName {
         match self {
             FnName::Floor | FnName::Ceil | FnName::Round | FnName::Abs => 1,
             FnName::Min | FnName::Max => 2,
+        }
+    }
+
+    /// Whether `count` arguments are admissible for this function. `Floor`/`Ceil`/`Round`/
+    /// `Abs` require EXACTLY `arity()`; `Min`/`Max` are variadic and require AT LEAST
+    /// `arity()` — the sole admissibility check `dice::notation::parser::P::fn_call` applies,
+    /// so a fixed-arity/variadic decision made here is never re-decided at the call site.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::FnName;
+    /// assert!(!FnName::Floor.accepts_arg_count(2));
+    /// assert!(FnName::Min.accepts_arg_count(2));
+    /// assert!(FnName::Min.accepts_arg_count(5));
+    /// assert!(!FnName::Min.accepts_arg_count(1));
+    /// ```
+    pub fn accepts_arg_count(self, count: usize) -> bool {
+        match self {
+            FnName::Floor | FnName::Ceil | FnName::Round | FnName::Abs => count == self.arity(),
+            FnName::Min | FnName::Max => count >= self.arity(),
         }
     }
 }
@@ -413,7 +437,7 @@ pub enum Expr {
         /// Which function.
         name: FnName,
         /// Evaluated argument expressions, left-to-right; length is checked against
-        /// `name.arity()` at parse time.
+        /// `name.accepts_arg_count()` at parse time.
         args: Vec<Expr>,
     },
 }

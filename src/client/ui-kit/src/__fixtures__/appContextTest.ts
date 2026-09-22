@@ -77,6 +77,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     notify: over.notify ?? (() => {}),
     members: over.members ?? new Map(),
     t: over.t ?? ((k: string) => k),
+    plural: over.plural ?? ((k: string) => k),
+    compare: over.compare ?? ((a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)),
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),
     subscribeScene: over.subscribeScene ?? (() => ({ unsubscribe() {} })),
     dispatchIntent: over.dispatchIntent ?? (() => {}),
@@ -125,8 +127,12 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       serverNow: () => 0,
       transport: () => {},
       listenAs: () => {},
+      preload: () => {},
     },
     vfx: over.vfx ?? { play: () => {}, onVfx: () => () => {} },
+    // Identity passthrough (no listener, no cancellation): a test opting into pre-send
+    // interception overrides this with its own emitter.
+    hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,

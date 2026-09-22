@@ -18,10 +18,10 @@ fn hydrate_counts_scene_entities_only() {
 
 #[test]
 fn a_combatant_hydrates_as_an_inert_scene_entity() {
-    let scene_id = Uuid::from_u128(1);
-    let combat_id = Uuid::from_u128(2);
+    let scene_id = crate::test_ids::test_uuid(1);
+    let combat_id = crate::test_ids::test_uuid(2);
     let mut combatant = crate::data::document::tests::sample_doc();
-    combatant.id = Uuid::from_u128(3);
+    combatant.id = crate::test_ids::test_uuid(3);
     combatant.doc_type = "combatant".into();
     combatant.parent_id = Some(combat_id);
     combatant.engine = crate::data::document::tests::default_test_engine("combatant");
@@ -35,7 +35,7 @@ fn a_combatant_hydrates_as_an_inert_scene_entity() {
 
 #[test]
 fn resolve_grid_shape_selects_hex_grid_for_hex_kind_scenes() {
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -58,7 +58,7 @@ fn resolve_grid_shape_selects_hex_grid_for_hex_kind_scenes() {
 
 #[test]
 fn resolve_grid_shape_falls_back_to_square_grid_for_unrecognized_kind() {
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -87,7 +87,7 @@ fn engine_as_cache_invalidates_on_engine_mutation() {
         ],
         0,
     );
-    let wall_id = Uuid::from_u128(12);
+    let wall_id = crate::test_ids::test_uuid(12);
     let doc1 = {
         let e = ecs.index[&wall_id];
         ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone()
@@ -126,7 +126,7 @@ fn apply_op_create_update_delete() {
     });
     assert_eq!(ecs.entity_count(), 1);
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(11),
+        doc_id: crate::test_ids::test_uuid(11),
         changes: vec![crate::data::command::FieldChange {
             remove: false,
             path: "/system/x".into(),
@@ -134,7 +134,7 @@ fn apply_op_create_update_delete() {
             new: json!(5),
         }],
     });
-    let e = ecs.index[&Uuid::from_u128(11)];
+    let e = ecs.index[&crate::test_ids::test_uuid(11)];
     let comp = ecs.world.get::<&SceneEntity>(e).unwrap();
     assert_eq!(comp.doc.system["x"], json!(5));
     drop(comp);
@@ -186,8 +186,8 @@ fn segments_cross_truth_table() {
 
 #[test]
 fn blocks_move_geometry_scene_scoping_and_filters() {
-    let scene = Uuid::from_u128(10);
-    let other = Uuid::from_u128(20);
+    let scene = crate::test_ids::test_uuid(10);
+    let other = crate::test_ids::test_uuid(20);
     let cross = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
 
     // Scene 10 has one crossing blocksMove wall.
@@ -240,8 +240,8 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
 /// filter is expected to fail this test.
 #[test]
 fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
-    let scene = Uuid::from_u128(10);
-    let other_scene = Uuid::from_u128(20);
+    let scene = crate::test_ids::test_uuid(10);
+    let other_scene = crate::test_ids::test_uuid(20);
     let blocking = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
     let non_blocking = json!({ "seg": {"x1":0,"y1":0,"x2":0,"y2":20}, "blocksMove": false });
     let banded_blocking = json!({
@@ -304,7 +304,7 @@ fn token_move_uses_post_image_resisting_forged_bypasses() {
         ],
         0,
     );
-    let id = Uuid::from_u128(11);
+    let id = crate::test_ids::test_uuid(11);
     // A normal two-axis move.
     let (s, a0, a1) = ecs
         .token_move(
@@ -312,7 +312,7 @@ fn token_move_uses_post_image_resisting_forged_bypasses() {
             &[fc("/engine/x", json!(10)), fc("/engine/y", json!(10))],
         )
         .unwrap();
-    assert_eq!(s, Uuid::from_u128(10));
+    assert_eq!(s, crate::test_ids::test_uuid(10));
     assert_eq!(a0, (0.0, 0.0));
     assert_eq!(a1, (10.0, 10.0));
     // Bypass A: a wholesale `/engine` write — the post-image reads the new x/y.
@@ -339,13 +339,15 @@ fn token_move_uses_post_image_resisting_forged_bypasses() {
         "/system writes are not position and must not move the gate's post-image"
     );
     // A non-token id resolves to nothing.
-    assert!(ecs.token_move(Uuid::from_u128(99), &[]).is_none());
+    assert!(ecs
+        .token_move(crate::test_ids::test_uuid(99), &[])
+        .is_none());
 }
 
 #[test]
 fn vision_channel_is_per_recipient() {
     use crate::data::document::WorldRole;
-    let player = Uuid::from_u128(7);
+    let player = crate::test_ids::test_uuid(7);
     let mut token = entity_doc_eng(
         11,
         10,
@@ -367,7 +369,7 @@ fn vision_channel_is_per_recipient() {
         0,
     );
     let gm = PermissionContext {
-        user_id: Uuid::from_u128(1),
+        user_id: crate::test_ids::test_uuid(1),
         world_role: WorldRole::Gm,
     };
     let pl = PermissionContext {
@@ -375,7 +377,7 @@ fn vision_channel_is_per_recipient() {
         world_role: WorldRole::Player,
     };
     let other = PermissionContext {
-        user_id: Uuid::from_u128(9),
+        user_id: crate::test_ids::test_uuid(9),
         world_role: WorldRole::Player,
     };
 
@@ -389,7 +391,10 @@ fn vision_channel_is_per_recipient() {
     let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
-    assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
+    assert_eq!(
+        pv["polygons"][0]["scene"],
+        json!(crate::test_ids::test_uuid(10))
+    );
     assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
     // A player who controls no token gets empty polygons → full fog (never see-all).
     let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default(), None).unwrap();
@@ -403,7 +408,7 @@ fn vision_channel_is_per_recipient() {
 fn vision_payload_carries_lit_mask_for_players_not_gm() {
     use crate::data::document::WorldRole;
     use serde_json::json;
-    let player = Uuid::from_u128(7);
+    let player = crate::test_ids::test_uuid(7);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -430,7 +435,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         .as_array()
         .expect("lit present for masked payload");
     assert_eq!(lit.len(), 1);
-    assert_eq!(lit[0]["scene"], json!(Uuid::from_u128(10)));
+    assert_eq!(lit[0]["scene"], json!(crate::test_ids::test_uuid(10)));
     let cells = lit[0]["cells"].as_array().unwrap();
     assert!(!cells.is_empty());
     assert_eq!(
@@ -450,7 +455,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
 
     // GM payload is unchanged — no lit key or bands key.
     let gm = PermissionContext {
-        user_id: Uuid::from_u128(1),
+        user_id: crate::test_ids::test_uuid(1),
         world_role: WorldRole::Gm,
     };
     let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default(), None).unwrap();
@@ -464,7 +469,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
 fn vision_payload_resolves_render_hint_index() {
     use crate::data::document::WorldRole;
     use serde_json::json;
-    let player = Uuid::from_u128(7);
+    let player = crate::test_ids::test_uuid(7);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -500,7 +505,7 @@ fn vision_payload_resolves_render_hint_index() {
 #[test]
 fn resolvers_layer_world_then_scene_and_fail_closed() {
     use serde_json::json;
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
 
     // No config docs → built-in defaults (lighting on, environmentLight, env intensity 0).
@@ -581,13 +586,13 @@ fn pathfind_refuses_a_scene_with_no_document() {
     let ecs = SceneEcs::new();
     let out = ecs.pathfind(
         RouteRequester {
-            user: Uuid::from_u128(7),
+            user: crate::test_ids::test_uuid(7),
             is_gm: true,
             world_role: WorldRole::Gm,
             world_defaults: &no_world_grants(),
             explored: None,
         },
-        Uuid::from_u128(404),
+        crate::test_ids::test_uuid(404),
         (50.0, 50.0),
         &[(450.0, 50.0)],
         crate::scene::RouteMover {
@@ -610,8 +615,8 @@ fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
     // `token_effective_owner` (never a raw `doc.owner` read) and must be scoped to the
     // named scene, or a player is either locked out of a scene they hold an
     // actor-inherited token in, or admitted to one they hold nothing in.
-    let player = Uuid::from_u128(7);
-    let stranger = Uuid::from_u128(8);
+    let player = crate::test_ids::test_uuid(7);
+    let stranger = crate::test_ids::test_uuid(8);
     let mut actor = entity_doc_top_eng(200, "actor", actor_body(json!([])));
     actor.owner = Some(player);
 
@@ -621,7 +626,7 @@ fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
         10,
         "token",
         json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     // Scene 20 holds only a token nobody in this test owns.
     let unowned = entity_doc_eng(
@@ -643,15 +648,15 @@ fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
     ecs.set_actors(vec![actor.clone()]);
 
     assert!(
-        ecs.user_owns_token_in_scene(player, Uuid::from_u128(10)),
+        ecs.user_owns_token_in_scene(player, crate::test_ids::test_uuid(10)),
         "an actor-inherited owner controls a token in scene 10"
     );
     assert!(
-        !ecs.user_owns_token_in_scene(player, Uuid::from_u128(20)),
+        !ecs.user_owns_token_in_scene(player, crate::test_ids::test_uuid(20)),
         "presence is scene-scoped: scene 20 holds no token of theirs"
     );
     assert!(
-        !ecs.user_owns_token_in_scene(stranger, Uuid::from_u128(10)),
+        !ecs.user_owns_token_in_scene(stranger, crate::test_ids::test_uuid(10)),
         "a stranger controls nothing"
     );
 
@@ -660,10 +665,10 @@ fn user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped() {
     reassigned.owner = Some(stranger);
     ecs.set_actors(vec![reassigned]);
     assert!(
-        !ecs.user_owns_token_in_scene(player, Uuid::from_u128(10)),
+        !ecs.user_owns_token_in_scene(player, crate::test_ids::test_uuid(10)),
         "presence follows the actor live — nothing is stamped on the token"
     );
-    assert!(ecs.user_owns_token_in_scene(stranger, Uuid::from_u128(10)));
+    assert!(ecs.user_owns_token_in_scene(stranger, crate::test_ids::test_uuid(10)));
 }
 
 /// The derived ECS must reach the SAME document state the authoritative store
@@ -680,10 +685,10 @@ fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new()
     use crate::data::command::FieldChange;
     use serde_json::json;
 
-    let p = Uuid::from_u128(7); // owns actor A
-    let q = Uuid::from_u128(8); // owns actor B — the injected target
-    let a_id = Uuid::from_u128(200);
-    let b_id = Uuid::from_u128(201);
+    let p = crate::test_ids::test_uuid(7); // owns actor A
+    let q = crate::test_ids::test_uuid(8); // owns actor B — the injected target
+    let a_id = crate::test_ids::test_uuid(200);
+    let b_id = crate::test_ids::test_uuid(201);
     let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
     actor_a.owner = Some(p);
     let mut actor_b = entity_doc_top_eng(201, "actor", actor_body(json!([])));
@@ -768,10 +773,10 @@ fn ecs_and_db_agree_when_a_set_change_relinks_a_token() {
     use crate::data::command::FieldChange;
     use serde_json::json;
 
-    let p = Uuid::from_u128(7);
-    let q = Uuid::from_u128(8);
-    let a_id = Uuid::from_u128(200);
-    let b_id = Uuid::from_u128(201);
+    let p = crate::test_ids::test_uuid(7);
+    let q = crate::test_ids::test_uuid(8);
+    let a_id = crate::test_ids::test_uuid(200);
+    let b_id = crate::test_ids::test_uuid(201);
     let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
     actor_a.owner = Some(p);
     let mut actor_b = entity_doc_top_eng(201, "actor", actor_body(json!([])));
@@ -821,9 +826,9 @@ fn ecs_actor_index_honors_a_remove_change_on_owner() {
     use crate::data::command::FieldChange;
     use serde_json::json;
 
-    let p = Uuid::from_u128(7);
-    let q = Uuid::from_u128(8);
-    let a_id = Uuid::from_u128(200);
+    let p = crate::test_ids::test_uuid(7);
+    let q = crate::test_ids::test_uuid(8);
+    let a_id = crate::test_ids::test_uuid(200);
     let mut actor_a = entity_doc_top_eng(200, "actor", actor_body(json!([])));
     actor_a.owner = Some(p);
     let token = entity_doc_eng(
@@ -969,7 +974,7 @@ fn config_singleton_mirror_honors_a_remove_change() {
 
     // A vision-modes doc with two modes; the change removes one of them while
     // naming a replacement in `new` (the value an unconditional set would land).
-    let vm_id = Uuid::from_u128(300);
+    let vm_id = crate::test_ids::test_uuid(300);
     let mut vm = doc(300, None, "vision-modes");
     vm.engine = Some(json!({ "modes": {
         "darkvision": { "id": "darkvision", "name": "Darkvision",
@@ -1085,8 +1090,8 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
     // Vision/mask ownership MUST be the same rule the write-authz path uses
     // (`permission::effective_owner`), or a player could move a token that
     // contributes no vision — or see through one they cannot move.
-    let player = Uuid::from_u128(7);
-    let other = Uuid::from_u128(8);
+    let player = crate::test_ids::test_uuid(7);
+    let other = crate::test_ids::test_uuid(8);
     let mut actor = entity_doc_top_eng(200, "actor", actor_body(json!([])));
     actor.owner = Some(player);
 
@@ -1096,7 +1101,7 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         10,
         "token",
         json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     // Linked to the SAME actor but overridden to `other`: the override wins.
     let mut overridden = entity_doc_eng(
@@ -1104,7 +1109,7 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         10,
         "token",
         json!({ "x": 200.0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     overridden.owner = Some(other);
     // Linked to an actor that does not exist: fails closed to no owner.
@@ -1113,7 +1118,7 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         10,
         "token",
         json!({ "x": 400.0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(999).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(999).to_string() }),
     );
 
     let mut ecs = SceneEcs::from_documents(
@@ -1157,8 +1162,12 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         1
     );
     assert!(
-        ecs.player_vision_polygons(Uuid::from_u128(99), WorldRole::Player, &no_world_grants())
-            .is_empty(),
+        ecs.player_vision_polygons(
+            crate::test_ids::test_uuid(99),
+            WorldRole::Player,
+            &no_world_grants()
+        )
+        .is_empty(),
         "a stranger owns nothing"
     );
 
@@ -1198,7 +1207,7 @@ fn token_vision_floors_resolve_through_actor_join() {
         10,
         "token",
         json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     let floors = ecs.token_vision_floors(&linked);
     assert_eq!(floors.len(), 1);
@@ -1225,7 +1234,7 @@ fn token_vision_floors_resolve_through_actor_join() {
         10,
         "token",
         json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string(),
+                "actor_id": crate::test_ids::test_uuid(200).to_string(),
                 "overrides": { "vision": [] } }),
     );
     assert_eq!(
@@ -1257,7 +1266,7 @@ fn token_vision_floors_resolve_through_actor_join() {
         10,
         "token",
         json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(999).to_string(),
+                "actor_id": crate::test_ids::test_uuid(999).to_string(),
                 "overrides": { "vision": [{ "mode": "darkvision", "range": 9 }] } }),
     );
     assert_eq!(ecs.token_vision_floors(&dangling), vec![(0.34, 0.0, None)]);
@@ -1268,7 +1277,7 @@ fn token_vision_floors_resolve_through_actor_join() {
 fn actor_body_shaped(shape: &str, w: f64, h: f64) -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": w, "h": h },
         "shape": shape,
         "conditions": [],
@@ -1285,7 +1294,7 @@ fn scene_with_linked_token_sized(shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid
 
 /// `scene_with_linked_token_sized` generalized to an explicit `grid.kind`.
 fn scene_with_linked_token_sized_kind(kind: &str, shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid) {
-    let token_id = Uuid::from_u128(11);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut ecs = SceneEcs::from_documents(
         vec![
             entity_doc_top_eng(
@@ -1298,7 +1307,7 @@ fn scene_with_linked_token_sized_kind(kind: &str, shape: &str, w: f64, h: f64) -
                 10,
                 "token",
                 json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                        "actor_id": Uuid::from_u128(200).to_string() }),
+                        "actor_id": crate::test_ids::test_uuid(200).to_string() }),
             ),
         ],
         0,
@@ -1313,7 +1322,7 @@ fn scene_with_linked_token_sized_kind(kind: &str, shape: &str, w: f64, h: f64) -
 
 /// A hydrated ECS with one raw (actorless) token (id 12) — no `actor_id`, no embedded actor.
 fn scene_with_raw_token_no_actor() -> (SceneEcs, Uuid) {
-    let token_id = Uuid::from_u128(12);
+    let token_id = crate::test_ids::test_uuid(12);
     let ecs = SceneEcs::from_documents(
         vec![
             doc(10, None, "scene"),
@@ -1332,7 +1341,7 @@ fn scene_with_raw_token_no_actor() -> (SceneEcs, Uuid) {
 /// A hydrated ECS with one LINKED token (id 11) referencing a "square" 1x1 actor (id 200),
 /// with a per-token `overrides.size` of the caller's `shape`/`(w, h)`.
 fn scene_with_linked_token_overriding_size(shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid) {
-    let token_id = Uuid::from_u128(11);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut ecs = SceneEcs::from_documents(
         vec![
             doc(10, None, "scene"),
@@ -1341,7 +1350,7 @@ fn scene_with_linked_token_overriding_size(shape: &str, w: f64, h: f64) -> (Scen
                 10,
                 "token",
                 json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                        "actor_id": Uuid::from_u128(200).to_string(),
+                        "actor_id": crate::test_ids::test_uuid(200).to_string(),
                         "overrides": { "shape": shape, "size": { "w": w, "h": h } } }),
             ),
         ],
@@ -1358,7 +1367,7 @@ fn scene_with_linked_token_overriding_size(shape: &str, w: f64, h: f64) -> (Scen
 /// The scene id every `scene_with_linked_token_sized*`/`scene_with_raw_token_no_actor`
 /// fixture in this block builds its scene document at — read once rather than restated at
 /// every `resolve_token_footprint` call site below.
-const FOOTPRINT_TEST_SCENE: Uuid = Uuid::from_u128(10);
+const FOOTPRINT_TEST_SCENE: Uuid = crate::test_ids::test_uuid(10);
 
 #[test]
 fn footprint_radius_on_square_is_the_conservative_enclosure_of_the_authored_block() {
@@ -1457,7 +1466,7 @@ fn footprint_radius_admits_a_token_exactly_at_the_bound() {
 /// A GM context, for the footprint-payload tests that are not about the read filter.
 fn footprint_gm_ctx() -> PermissionContext {
     PermissionContext {
-        user_id: Uuid::from_u128(1),
+        user_id: crate::test_ids::test_uuid(1),
         world_role: crate::data::document::WorldRole::Gm,
     }
 }
@@ -1467,7 +1476,7 @@ fn footprint_gm_ctx() -> PermissionContext {
 /// measures nothing.
 fn footprint_player_ctx() -> PermissionContext {
     PermissionContext {
-        user_id: Uuid::from_u128(77),
+        user_id: crate::test_ids::test_uuid(77),
         world_role: crate::data::document::WorldRole::Player,
     }
 }
@@ -1503,7 +1512,7 @@ fn linked_token_doc(id: u128, scene: u128, actor: u128) -> Document {
         scene,
         "token",
         json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(actor).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(actor).to_string() }),
     )
 }
 
@@ -1638,8 +1647,8 @@ fn footprints_payload_omits_a_token_no_actor_sizes() {
 
 #[test]
 fn footprints_payload_withholds_a_token_the_recipient_cannot_read() {
-    let scene = Uuid::from_u128(10);
-    let open_token = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let open_token = crate::test_ids::test_uuid(12);
     let mut ecs = SceneEcs::from_documents(
         vec![
             // Readable, so the scene entry survives its own READ gate and the token gate is
@@ -1675,8 +1684,8 @@ fn footprints_payload_withholds_a_token_the_recipient_cannot_read() {
 
 #[test]
 fn footprints_payload_withholds_a_scene_entry_the_recipient_cannot_read() {
-    let open_scene = Uuid::from_u128(10);
-    let secret_scene = Uuid::from_u128(20);
+    let open_scene = crate::test_ids::test_uuid(10);
+    let secret_scene = crate::test_ids::test_uuid(20);
     let mut secret = entity_doc_top_eng(
         20,
         "scene",
@@ -1695,7 +1704,7 @@ fn footprints_payload_withholds_a_scene_entry_the_recipient_cannot_read() {
                 20,
                 "token",
                 json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                        "actor_id": Uuid::from_u128(200).to_string() }),
+                        "actor_id": crate::test_ids::test_uuid(200).to_string() }),
             ),
         ],
         0,
@@ -1736,8 +1745,8 @@ fn footprints_payload_withholds_a_scene_entry_the_recipient_cannot_read() {
 
 #[test]
 fn footprints_payload_withholds_a_scene_whose_engine_band_the_recipient_may_not_see() {
-    let open_scene = Uuid::from_u128(10);
-    let banded_scene = Uuid::from_u128(20);
+    let open_scene = crate::test_ids::test_uuid(10);
+    let banded_scene = crate::test_ids::test_uuid(20);
     let ecs = SceneEcs::from_documents(
         vec![
             readable_scene_doc(10, scene_body("square")),
@@ -1768,8 +1777,8 @@ fn footprints_payload_withholds_a_scene_whose_engine_band_the_recipient_may_not_
 
 #[test]
 fn footprints_payload_withholds_a_token_whose_engine_band_the_recipient_may_not_see() {
-    let scene = Uuid::from_u128(10);
-    let open_token = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let open_token = crate::test_ids::test_uuid(12);
     let mut ecs = SceneEcs::from_documents(
         vec![
             readable_scene_doc(10, scene_body("square")),
@@ -1802,8 +1811,8 @@ fn footprints_payload_withholds_a_token_whose_engine_band_the_recipient_may_not_
 
 #[test]
 fn footprints_payload_withholds_a_token_whose_actors_engine_band_the_recipient_may_not_see() {
-    let scene = Uuid::from_u128(10);
-    let open_token = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let open_token = crate::test_ids::test_uuid(12);
     let mut ecs = SceneEcs::from_documents(
         vec![
             readable_scene_doc(10, scene_body("square")),
@@ -1843,8 +1852,8 @@ fn footprints_payload_withholds_a_token_whose_actors_engine_band_the_recipient_m
 
 #[test]
 fn footprints_payload_withholds_a_token_whose_actor_document_the_recipient_may_not_read() {
-    let scene = Uuid::from_u128(10);
-    let open_token = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let open_token = crate::test_ids::test_uuid(12);
     let mut ecs = SceneEcs::from_documents(
         vec![
             readable_scene_doc(10, scene_body("square")),
@@ -1880,8 +1889,8 @@ fn footprints_payload_withholds_a_token_whose_actor_document_the_recipient_may_n
 
 #[test]
 fn footprints_payload_withholds_a_token_whose_embedded_actors_band_the_recipient_may_not_see() {
-    let scene = Uuid::from_u128(10);
-    let open_token = Uuid::from_u128(12);
+    let scene = crate::test_ids::test_uuid(10);
+    let open_token = crate::test_ids::test_uuid(12);
     let ecs = SceneEcs::from_documents(
         vec![
             readable_scene_doc(10, scene_body("square")),
@@ -1922,7 +1931,7 @@ fn footprints_payload_withholds_a_token_whose_embedded_actors_band_the_recipient
 #[test]
 fn light_and_blockslight_wall_accessors_filter_by_scene() {
     use serde_json::json;
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let ecs = SceneEcs::from_documents(
         vec![
             doc(10, None, "scene"),
@@ -1964,7 +1973,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
 
     // Cross-scene isolation: a second scene (id 20) with its own enabled light and a
     // blocksLight:true wall must NOT appear in scene 10's results.
-    let scene2 = Uuid::from_u128(20);
+    let scene2 = crate::test_ids::test_uuid(20);
     let ecs2 = SceneEcs::from_documents(
         vec![
             doc(10, None, "scene"),
@@ -2004,7 +2013,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
     assert_eq!(ecs2.scene_lights(scene).len(), 1);
     assert_eq!(ecs2.light_walls(scene).len(), 1);
     // The second scene (id 30 via Uuid) has its own light and wall.
-    let scene3 = Uuid::from_u128(30);
+    let scene3 = crate::test_ids::test_uuid(30);
     assert_eq!(ecs2.scene_lights(scene3).len(), 1);
     assert_eq!(ecs2.light_walls(scene3).len(), 1);
     // Cross-check: scene 10's light is NOT scene2's light and vice-versa.
@@ -2028,8 +2037,8 @@ fn parse_hex_color_handles_6_and_3_digit() {
 #[test]
 fn lit_mask_gates_los_by_illumination_and_darkvision() {
     use serde_json::json;
-    let player = Uuid::from_u128(7);
-    let scene = Uuid::from_u128(10);
+    let player = crate::test_ids::test_uuid(7);
+    let scene = crate::test_ids::test_uuid(10);
 
     // A normal-vision token at origin in a walled-open scene. lightingEnabled defaults true,
     // environmentLight, env intensity 0 → with NO lights the scene is dark → normal vision sees
@@ -2143,7 +2152,7 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
 #[test]
 fn lit_mask_tags_darkvision_only_cells_with_hint() {
     use serde_json::json;
-    let player = Uuid::from_u128(7);
+    let player = crate::test_ids::test_uuid(7);
     // Dark scene (no lights, environmentLight, lighting on) → only darkvision admits cells.
     let mut tok = entity_doc_eng(
         11,
@@ -2181,7 +2190,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
     );
 
     // Bright cell under a light, seen by normal vision → no hint (normal floor suppresses it).
-    let player2 = Uuid::from_u128(8);
+    let player2 = crate::test_ids::test_uuid(8);
     let mut tok2 = entity_doc_eng(
         12,
         10,
@@ -2239,7 +2248,7 @@ fn config_and_actor_side_tables_track_ops() {
         "actor",
         json!({ "vision": [] }),
     )]);
-    assert!(ecs.actor(&Uuid::from_u128(200)).is_some());
+    assert!(ecs.actor(&crate::test_ids::test_uuid(200)).is_some());
 
     // A live Create of a vision-modes doc lands in the side table.
     ecs.apply_op(&Operation::Create {
@@ -2251,11 +2260,14 @@ fn config_and_actor_side_tables_track_ops() {
     ecs.apply_op(&Operation::Create {
         doc: doc(110, None, "world-settings"),
     });
-    assert_eq!(ecs.world_settings_doc().unwrap().id, Uuid::from_u128(110));
+    assert_eq!(
+        ecs.world_settings_doc().unwrap().id,
+        crate::test_ids::test_uuid(110)
+    );
 
     // A field Update to the current world-settings singleton (id 110) is mirrored.
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(110),
+        doc_id: crate::test_ids::test_uuid(110),
         changes: vec![crate::data::command::FieldChange {
             remove: false,
             path: "/system/scene/lightingEnabled".into(),
@@ -2275,7 +2287,7 @@ fn config_and_actor_side_tables_track_ops() {
     ecs.apply_op(&Operation::Delete {
         doc: doc(200, None, "actor"),
     });
-    assert!(ecs.actor(&Uuid::from_u128(200)).is_none());
+    assert!(ecs.actor(&crate::test_ids::test_uuid(200)).is_none());
 }
 
 #[test]
@@ -2361,24 +2373,24 @@ fn token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_ra
 
 #[test]
 fn apply_op_move_reparents_a_token_between_scenes() {
-    let user = Uuid::from_u128(77);
+    let user = crate::test_ids::test_uuid(77);
     let mut tok = doc(30, Some(1), "token");
     tok.owner = Some(user);
     let mut ecs =
         SceneEcs::from_documents(vec![doc(1, None, "scene"), doc(2, None, "scene"), tok], 0);
-    assert!(ecs.user_owns_token_in_scene(user, Uuid::from_u128(1)));
-    assert!(!ecs.user_owns_token_in_scene(user, Uuid::from_u128(2)));
+    assert!(ecs.user_owns_token_in_scene(user, crate::test_ids::test_uuid(1)));
+    assert!(!ecs.user_owns_token_in_scene(user, crate::test_ids::test_uuid(2)));
 
     ecs.apply_op(&Operation::Move {
-        doc_id: Uuid::from_u128(30),
-        parent_id: Some(Uuid::from_u128(2)),
-        old_parent_id: Some(Uuid::from_u128(1)),
+        doc_id: crate::test_ids::test_uuid(30),
+        parent_id: Some(crate::test_ids::test_uuid(2)),
+        old_parent_id: Some(crate::test_ids::test_uuid(1)),
     });
 
     // Membership is derived from the doc's own parent_id: the source scene
     // forgets the token, the destination gains it.
-    assert!(!ecs.user_owns_token_in_scene(user, Uuid::from_u128(1)));
-    assert!(ecs.user_owns_token_in_scene(user, Uuid::from_u128(2)));
+    assert!(!ecs.user_owns_token_in_scene(user, crate::test_ids::test_uuid(1)));
+    assert!(ecs.user_owns_token_in_scene(user, crate::test_ids::test_uuid(2)));
 }
 
 #[test]
@@ -2388,9 +2400,9 @@ fn apply_op_move_to_top_level_despawns_the_scene_entity() {
     assert_eq!(ecs.entity_count(), 2);
 
     ecs.apply_op(&Operation::Move {
-        doc_id: Uuid::from_u128(30),
+        doc_id: crate::test_ids::test_uuid(30),
         parent_id: None,
-        old_parent_id: Some(Uuid::from_u128(1)),
+        old_parent_id: Some(crate::test_ids::test_uuid(1)),
     });
 
     // A parentless non-scene doc is no scene entity; it leaves the runtime.
@@ -2404,8 +2416,8 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
         vec![doc(10, None, "scene"), doc(11, None, "scene"), region],
         0,
     );
-    let s10 = Uuid::from_u128(10);
-    let s11 = Uuid::from_u128(11);
+    let s10 = crate::test_ids::test_uuid(10);
+    let s11 = crate::test_ids::test_uuid(11);
     assert!(ecs
         .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
@@ -2416,7 +2428,7 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
         .has_terrain_or_impassable());
 
     ecs.apply_op(&Operation::Move {
-        doc_id: Uuid::from_u128(20),
+        doc_id: crate::test_ids::test_uuid(20),
         parent_id: Some(s11),
         old_parent_id: Some(s10),
     });
@@ -2450,7 +2462,7 @@ fn footprints_payload_tags_each_token_with_its_resolved_level() {
         10,
         "token",
         json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "elevation": 15.0, "actor_id": Uuid::from_u128(200).to_string() }),
+                "elevation": 15.0, "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     let mut ecs = SceneEcs::from_documents(vec![scene, token], 0);
     ecs.set_actors(vec![entity_doc_top_eng(

@@ -664,7 +664,9 @@ async fn serve_variant_thumb_is_webp_and_regenerates_when_missing() {
     let dir = h.assets_dir.join(h.world.to_string());
     let thumb = dir.join(format!("{id}.thumb.webp"));
     assert!(thumb.exists());
-    std::fs::remove_file(&thumb).unwrap();
+    // Renamed rather than deleted (stays inside the harness's own assets dir) --
+    // simulates the derivative being missing without a permanent-delete call.
+    std::fs::rename(&thumb, thumb.with_extension("removed")).unwrap();
 
     let res = h
         .client
@@ -1018,7 +1020,12 @@ async fn serve_never_lets_a_browser_render_a_stored_type_as_a_document() {
         .await
         .unwrap();
     assert_eq!(res.headers()["content-type"], "text/html");
-    assert_eq!(res.headers()["content-disposition"], "attachment");
+    // `serve` now reuses `mutate::attachment_disposition` for its non-inline branch, so the
+    // downloaded file names itself after the upload rather than a bare "attachment".
+    assert_eq!(
+        res.headers()["content-disposition"],
+        "attachment; filename=\"page.html\""
+    );
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
     // SVG can carry script when navigated to: attachment as well.
     let svg: serde_json::Value = h
@@ -1041,5 +1048,8 @@ async fn serve_never_lets_a_browser_render_a_stored_type_as_a_document() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.headers()["content-disposition"], "attachment");
+    assert_eq!(
+        res.headers()["content-disposition"],
+        "attachment; filename=\"i.svg\""
+    );
 }

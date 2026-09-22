@@ -30,19 +30,32 @@ export interface Notification {
 /** A `subscribe()` callback, invoked with no arguments on any push/dismiss. */
 export type NotificationListener = () => void;
 
+/** The most `Notification`s `NotificationCenter.items` ever exposes at once — a host rendering
+ * unboundedly many toasts degrades to an unreadable stack. Excess pushes queue FIFO and surface
+ * as each visible notification dismisses (auto or manual), never dropped. */
+export const MAX_VISIBLE_NOTIFICATIONS = 5;
+
 /** Framework-neutral notification center: an ordered list of active notifications plus
  * `subscribe`/snapshot reactivity (mirrors `I18n`/`ContributionRegistry`) so any framework
- * (Svelte via `createSubscriber`, Vue, …) can read `items` reactively. */
+ * (Svelte via `createSubscriber`, Vue, …) can read `items` reactively. Caps the VISIBLE set at
+ * `MAX_VISIBLE_NOTIFICATIONS`; a push beyond the cap queues FIFO and is promoted to visible as
+ * a visible notification dismisses — `items` never exposes a queued entry, so a consumer keying
+ * behaviour off "is this notification visible" (e.g. auto-dismiss timing) needs no separate
+ * check. */
 export class NotificationCenter {
-  /** Active notifications, oldest first. */
+  /** Visible notifications, oldest first — exactly what `items` exposes. */
   #items: Notification[] = [];
+  /** Notifications pushed beyond the visible cap, oldest first; promoted into `#items` FIFO as
+   * a visible slot frees up. */
+  #queue: Notification[] = [];
   /** Counter backing the next `push`-assigned id. */
   #nextId = 0;
   /** Subscribers notified on every push/dismiss. */
   #listeners = new Set<NotificationListener>();
 
-  /** Every currently active notification, oldest first.
-   * @returns The active notification list. */
+  /** Every currently VISIBLE notification, oldest first — never includes a queued (over-cap)
+   * notification.
+   * @returns The visible notification list. */
   get items(): readonly Notification[] {
     return this.#items;
   }
@@ -65,15 +78,22 @@ export class NotificationCenter {
    */
   push(level: NotificationLevel, message: string, action?: Notification["action"]): string {
     const id = `n${this.#nextId++}`;
-    // A NEW array, never an in-place push: `items` is read through a reference-equality
-    // reactive bridge (`activeNotifications()` in a `$derived`), which observes a changed
-    // reference and nothing else — `dismiss` replaces the array for the same reason.
-    this.#items = [...this.#items, { id, level, message, ...(action ? { action } : {}) }];
+    const notification: Notification = { id, level, message, ...(action ? { action } : {}) };
+    if (this.#items.length < MAX_VISIBLE_NOTIFICATIONS) {
+      // A NEW array, never an in-place push: `items` is read through a reference-equality
+      // reactive bridge (`activeNotifications()` in a `$derived`), which observes a changed
+      // reference and nothing else — `dismiss` replaces the array for the same reason.
+      this.#items = [...this.#items, notification];
+    } else {
+      this.#queue = [...this.#queue, notification];
+    }
     this.#emit();
     return id;
   }
 
-  /** Removes a notification by id; a no-op if `id` is not currently active.
+  /** Removes a notification by id, whether currently visible or still queued; a no-op if `id`
+   * matches neither. Dismissing a VISIBLE notification promotes the oldest queued one (if any)
+   * into the freed slot in the same update.
    * @param id The notification id, as returned by `push`.
    * @example
    * ```ts
@@ -85,9 +105,21 @@ export class NotificationCenter {
    * ```
    */
   dismiss(id: string): void {
-    const before = this.#items.length;
+    const beforeVisible = this.#items.length;
     this.#items = this.#items.filter((n) => n.id !== id);
-    if (this.#items.length !== before) this.#emit();
+    if (this.#items.length !== beforeVisible) {
+      // A visible slot freed up: promote the oldest queued notification, if any.
+      if (this.#queue.length > 0) {
+        const [next, ...rest] = this.#queue;
+        this.#items = [...this.#items, next];
+        this.#queue = rest;
+      }
+      this.#emit();
+      return;
+    }
+    const beforeQueued = this.#queue.length;
+    this.#queue = this.#queue.filter((n) => n.id !== id);
+    if (this.#queue.length !== beforeQueued) this.#emit();
   }
 
   /** Notifies `listener` on every push/dismiss.

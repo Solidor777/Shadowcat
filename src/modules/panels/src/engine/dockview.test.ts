@@ -729,6 +729,125 @@ test("dimension changes synchronously triggered from inside apply() are NOT emit
   expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
 });
 
+test("apply() clamps a persisted floating rect entirely outside the current container back into view", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  host.getBoundingClientRect = () => domRectOf(0, 0, 800, 600);
+
+  const addPanelSpy = vi.spyOn(engine.debugApi!, "addPanel");
+  let layout = defaultLayout([{ id: "chat" }]);
+  // Persisted from a much wider viewport (or the container has since shrunk) — this rect has
+  // no overlap with the current 800x600 container at all.
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 5000, y: 20, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  expect(addPanelSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "chat", floating: { x: 0, y: 0, width: 200, height: 150 } }),
+  );
+});
+
+test("apply() leaves an in-bounds floating rect untouched (same values, not a clamped substitute)", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  host.getBoundingClientRect = () => domRectOf(0, 0, 800, 600);
+
+  const addPanelSpy = vi.spyOn(engine.debugApi!, "addPanel");
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  expect(addPanelSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "chat", floating: { x: 10, y: 10, width: 200, height: 150 } }),
+  );
+});
+
+test("apply() re-clamps an already-floating panel once the container shrinks so its persisted rect goes entirely off-screen", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  host.getBoundingClientRect = () => domRectOf(0, 0, 1400, 900);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 1000, y: 50, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const entry = floatingEntryOf(engine.debugApi!, "chat");
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(1000, 50, 200, 150);
+  const positionSpy = vi.spyOn(entry, "position");
+
+  // The viewport shrinks (a window resize) — the SAME persisted rect (unchanged in the tree)
+  // is now entirely outside the container's current bounds.
+  host.getBoundingClientRect = () => domRectOf(0, 0, 700, 900);
+  engine.apply(layout.expanded, new Map());
+
+  expect(positionSpy).toHaveBeenCalledWith({ left: 0, top: 0, width: 200, height: 150 });
+});
+
+test("apply() sizes the re-clamp container from the host, not dockview's own root element", () => {
+  // dockview assigns its OWN root (`component.element`) a fixed placeholder size at
+  // construction and only corrects it once its internal ResizeObserver first fires — measured
+  // in a real browser as a container read stuck at exactly 100x100 across dozens of reconciles
+  // right after a page load/reload, long enough to permanently mis-clamp a legitimately
+  // in-bounds floating panel. `#floatingContainerSize` reads `#host` (the caller-supplied,
+  // ordinarily-laid-out container) instead precisely to avoid this — a small `component.element`
+  // read must never drive the clamp.
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  host.getBoundingClientRect = () => domRectOf(0, 0, 1200, 800);
+  (
+    engine.debugApi as unknown as { component: { element: HTMLElement } }
+  ).component.element.getBoundingClientRect = () => domRectOf(0, 0, 100, 100);
+
+  const addPanelSpy = vi.spyOn(engine.debugApi!, "addPanel");
+  let layout = defaultLayout([{ id: "chat" }]);
+  // Well within the host's real 1200x800 box, but entirely outside a 100x100 misread.
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 400, y: 300, w: 368, h: 280 } });
+  engine.apply(layout.expanded, new Map());
+
+  expect(addPanelSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "chat", floating: { x: 400, y: 300, width: 368, height: 280 } }),
+  );
+});
+
+test("apply() never clamps against an unmeasurable (zero-area) container — the degenerate-bounds check has one owner", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+  // A degenerate (zero-area) host read — mirrors the headless-DOM screen-read case
+  // `clampScreenRectToAvailable` already treats as "unknown", not "zero-sized".
+  host.getBoundingClientRect = () => domRectOf(0, 0, 0, 0);
+
+  const addPanelSpy = vi.spyOn(engine.debugApi!, "addPanel");
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 5000, y: 20, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  // With an unmeasurable container, the rect passes through UNCHANGED — the container-size
+  // resolver alone decides "unmeasurable", so clamping code has no second degenerate-bounds
+  // check of its own to (dis)agree with it.
+  expect(addPanelSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "chat", floating: { x: 5000, y: 20, width: 200, height: 150 } }),
+  );
+});
+
 test("a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
@@ -756,6 +875,45 @@ test("a live drag/resize of an already-floating panel emits a resizeFloating op 
   await Promise.resolve();
   await Promise.resolve();
 
+  expect(ops).toContainEqual({ op: "resizeFloating", id: "chat", rect: { x: 50, y: 60, w: 220, h: 160 } });
+});
+
+test("a live drag/resize's emitted rect is computed against the host's origin, not dockview's own root element", async () => {
+  // Same placeholder-vs-real-container class `#floatingContainerSize` was fixed for
+  // (`#floatingOverlayRect` reads `#host` for the same reason) — pinned here by giving the
+  // host and dockview's own root DIFFERENT origins and asserting the emitted op reflects the
+  // host's.
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // The host sits at a real page offset (100, 50); dockview's OWN root element is stubbed to
+  // the WRONG (0, 0) origin dockview-core's own placeholder carries before its internal
+  // ResizeObserver first corrects it.
+  host.getBoundingClientRect = () => domRectOf(100, 50, 1200, 800);
+  (
+    engine.debugApi as unknown as { component: { element: HTMLElement } }
+  ).component.element.getBoundingClientRect = () => domRectOf(0, 0, 100, 100);
+
+  const overlayEl = floatingEntryOf(engine.debugApi!, "chat").overlay.element;
+  overlayEl.getBoundingClientRect = () => domRectOf(150, 110, 220, 160);
+
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Relative to the host's real (100, 50) origin: x=150-100=50, y=110-50=60. Reading
+  // `component.element`'s wrong (0, 0) origin instead would compute x=150, y=110.
   expect(ops).toContainEqual({ op: "resizeFloating", id: "chat", rect: { x: 50, y: 60, w: 220, h: 160 } });
 });
 

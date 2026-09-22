@@ -34,7 +34,7 @@ fn region_minimal_body_is_valid() {
 #[test]
 fn light_minimal_body_is_valid() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
+        "x": 0.0, "y": 0.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_ok());
 }
@@ -52,7 +52,7 @@ fn drawing_minimal_body_is_valid() {
 fn template_minimal_body_is_valid() {
     let v = json!({
         "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
-        "color": "#f00"
+        "color": "#ff0000"
     });
     assert!(validate_engine("template", Some(&v)).is_ok());
 }
@@ -60,7 +60,7 @@ fn template_minimal_body_is_valid() {
 #[test]
 fn actor_minimal_body_is_valid() {
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true
     });
@@ -70,12 +70,12 @@ fn actor_minimal_body_is_valid() {
 #[test]
 fn actor_with_emissions_is_valid() {
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true,
         "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true },
-        "sound": { "asset": "a1", "radius": 5.0, "volume": 0.8, "loop": true, "enabled": true },
-        "vfx": { "asset": "a2", "anchor": "above", "loop": false, "enabled": true }
+        "sound": { "asset": "44444444-4444-4444-4444-444444444444", "radius": 5.0, "volume": 0.8, "loop": true, "enabled": true },
+        "vfx": { "asset": "55555555-5555-5555-5555-555555555555", "anchor": "above", "loop": false, "enabled": true }
     });
     assert!(validate_engine("actor", Some(&v)).is_ok());
 }
@@ -83,7 +83,7 @@ fn actor_with_emissions_is_valid() {
 #[test]
 fn actor_with_malformed_emission_is_rejected() {
     let base = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true
     });
@@ -92,8 +92,7 @@ fn actor_with_malformed_emission_is_rejected() {
         json!({ "color": "orange", "opacity": 0.4, "radius": 2.0, "enabled": true });
     assert!(validate_engine("actor", Some(&bad_color)).is_err());
     let mut bad_radius = base.clone();
-    bad_radius["sound"] =
-        json!({ "asset": "a1", "radius": -1.0, "volume": 0.8, "loop": true, "enabled": true });
+    bad_radius["sound"] = json!({ "asset": "44444444-4444-4444-4444-444444444444", "radius": -1.0, "volume": 0.8, "loop": true, "enabled": true });
     assert!(validate_engine("actor", Some(&bad_radius)).is_err());
     let mut bad_asset = base.clone();
     bad_asset["vfx"] = json!({ "asset": "", "anchor": "token", "loop": true, "enabled": true });
@@ -273,7 +272,7 @@ fn token_and_light_elevation_absent_default_to_none() {
     assert_eq!(t.elevation, None);
     let l: LightEngine = serde_json::from_value(json!({
         "x": 0.0, "y": 0.0,
-        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
+        "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     }))
     .unwrap();
     assert_eq!(l.elevation, None);
@@ -291,7 +290,7 @@ fn region_unknown_field_is_rejected() {
 #[test]
 fn light_unknown_field_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }, "bogus": 1
+        "x": 0.0, "y": 0.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }, "bogus": 1
     });
     assert!(validate_engine("light", Some(&v)).is_err());
 }
@@ -308,7 +307,7 @@ fn drawing_unknown_field_is_rejected() {
 fn template_unknown_field_is_rejected() {
     let v = json!({
         "shape": { "kind": "cone", "x": 0.0, "y": 0.0, "size": 5.0, "direction": 0.0 },
-        "color": "#f00", "bogus": 1
+        "color": "#ff0000", "bogus": 1
     });
     assert!(validate_engine("template", Some(&v)).is_err());
 }
@@ -316,7 +315,7 @@ fn template_unknown_field_is_rejected() {
 #[test]
 fn actor_unknown_field_is_rejected() {
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true, "bogus": 1
     });
@@ -326,7 +325,7 @@ fn actor_unknown_field_is_rejected() {
 #[test]
 fn actor_missing_display_name_is_rejected() {
     let v = json!({
-        "visual": { "kind": "image", "asset": "a" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true
     });
@@ -336,7 +335,7 @@ fn actor_missing_display_name_is_rejected() {
 #[test]
 fn actor_missing_conditions_is_rejected() {
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "prototype": true
     });
@@ -349,7 +348,7 @@ fn actor_missing_faction_key_accepted_as_none() {
     // of `#[serde(default)]` — pins the true ingress contract on
     // `ActorEngine.faction` (see its doc comment).
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "conditions": [], "prototype": true
     });
@@ -362,7 +361,7 @@ fn actor_missing_faction_key_accepted_as_none() {
 fn actor_movement_absent_defaults_to_empty_and_round_trips() {
     // `movement` is `#[serde(default)]`: a body written before the key existed still decodes.
     let absent = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true
     });
@@ -371,7 +370,7 @@ fn actor_movement_absent_defaults_to_empty_and_round_trips() {
 
     // Tags (reserved and unknown alike) are carried verbatim as inert vocabulary.
     let tagged = json!({
-        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true,
         "movement": ["incorporeal", "ethereal-step"]
@@ -381,7 +380,7 @@ fn actor_movement_absent_defaults_to_empty_and_round_trips() {
     assert_eq!(engine.movement, vec!["incorporeal", "ethereal-step"]);
     // A non-string tag is malformed input — fail closed at ingress.
     let garbled = json!({
-        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true,
         "movement": [7]
@@ -415,7 +414,7 @@ fn faction_movement_absent_defaults_to_empty() {
     // A faction body written before `movement` existed still decodes; the seed
     // factions carry no tags.
     let f: Faction = serde_json::from_value(json!({
-        "name": "Skyborn", "color": "#88c", "stance": "neutral"
+        "name": "Skyborn", "color": "#8888cc", "stance": "neutral"
     }))
     .unwrap();
     assert_eq!(f.movement, Vec::<String>::new());
@@ -523,7 +522,7 @@ fn region_wrong_typed_field_is_rejected() {
 #[test]
 fn light_wrong_typed_intensity_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": "1", "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
+        "x": 0.0, "y": 0.0, "emission": { "color": "#ffffff", "intensity": "1", "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_err());
 }
@@ -534,11 +533,11 @@ fn light_emission_radii_are_finite_non_negative_and_capped_at_every_carrier() {
     // carried emission, and a token override — radii in cells, bounded by the shared cell cap
     // `MAX_FOOTPRINT_CELLS`; a negative radius is refused; the cap itself is admitted.
     let cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
-    let emission = |bright: f64, dim: f64| json!({ "color": "#fff", "intensity": 1.0, "brightRadius": bright, "dimRadius": dim, "enabled": true });
+    let emission = |bright: f64, dim: f64| json!({ "color": "#ffffff", "intensity": 1.0, "brightRadius": bright, "dimRadius": dim, "enabled": true });
     let light = |e: serde_json::Value| json!({ "x": 0.0, "y": 0.0, "emission": e });
     let actor = |e: serde_json::Value| {
         json!({
-            "displayName": "A", "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": "A", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
             "prototype": true, "light": e
         })
@@ -564,7 +563,7 @@ fn light_position_and_elevation_must_be_finite() {
         y: 0.0,
         elevation: Some(1.0),
         emission: LightEmission {
-            color: "#fff".into(),
+            color: "#ffffff".into(),
             intensity: 1.0,
             bright_radius: 1.0,
             dim_radius: 2.0,
@@ -588,18 +587,38 @@ fn light_position_and_elevation_must_be_finite() {
 }
 
 #[test]
+fn light_emission_rejects_a_malformed_color() {
+    let mut bad = LightEngine {
+        x: 0.0,
+        y: 0.0,
+        elevation: None,
+        emission: LightEmission {
+            color: "not-a-color".into(),
+            intensity: 1.0,
+            bright_radius: 1.0,
+            dim_radius: 2.0,
+            falloff: None,
+            enabled: true,
+        },
+    };
+    assert!(bad.validate().is_err());
+    bad.emission.color = "#ffffff".into();
+    assert!(bad.validate().is_ok());
+}
+
+#[test]
 fn light_falloff_curve_is_a_closed_enum() {
     for curve in ["linear", "quadratic", "none"] {
         let v = json!({
             "x": 0.0, "y": 0.0,
-            "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+            "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
                 "falloff": { "curve": curve }, "enabled": true }
         });
         assert!(validate_engine("light", Some(&v)).is_ok(), "curve {curve}");
     }
     let v = json!({
         "x": 0.0, "y": 0.0,
-        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+        "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
             "falloff": { "curve": "cubic" }, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_err());
@@ -612,7 +631,7 @@ fn actor_and_token_override_carried_light_bodies_are_valid() {
         "enabled": true
     });
     let actor = json!({
-        "displayName": "Torchbearer", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Torchbearer", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": true,
         "light": emission
@@ -647,7 +666,7 @@ fn template_wrong_typed_field_is_rejected() {
 #[test]
 fn actor_wrong_typed_field_is_rejected() {
     let v = json!({
-        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
         "faction": null, "conditions": [], "prototype": "true"
     });
@@ -746,8 +765,10 @@ fn engine_doc_type_missing_engine_is_rejected() {
 
 #[test]
 fn token_visual_image_round_trips() {
-    let v: TokenVisual =
-        serde_json::from_value(json!({ "kind": "image", "asset": "a.png" })).unwrap();
+    let v: TokenVisual = serde_json::from_value(
+        json!({ "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" }),
+    )
+    .unwrap();
     assert!(matches!(v, TokenVisual::Image { .. }));
     assert_eq!(serde_json::to_value(&v).unwrap()["kind"], "image");
 }
@@ -789,7 +810,7 @@ fn animated_source_frames_round_trips() {
 #[test]
 fn animated_source_sheet_round_trips() {
     let src: AnimatedSource =
-        serde_json::from_value(json!({ "type": "sheet", "asset": "s.png", "rows": 2, "cols": 3 }))
+        serde_json::from_value(json!({ "type": "sheet", "asset": "33333333-3333-3333-3333-333333333333", "rows": 2, "cols": 3 }))
             .unwrap();
     assert!(matches!(src, AnimatedSource::Sheet { .. }));
 }
@@ -798,7 +819,7 @@ fn animated_source_sheet_round_trips() {
 fn render_visual_generated_round_trips() {
     let src = json!({
         "kind": "generated",
-        "art": { "kind": "image", "asset": "a.png" },
+        "art": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "crop": "circle",
         "border": { "color": "#ff8800", "width": 0.06 },
         "background": { "color": "#102030" }
@@ -837,7 +858,7 @@ fn token_visual_generated_round_trips() {
     // shape `RenderVisual::Generated` carries per-face).
     let src = json!({
         "kind": "generated",
-        "art": { "kind": "image", "asset": "a.png" },
+        "art": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "crop": "circle",
         "border": null,
         "background": { "color": "#102030" }
@@ -865,7 +886,7 @@ fn generated_crop_literal_set_deserializes() {
 fn shape_literal_set_deserializes() {
     for shape in ["square", "circle"] {
         let v = json!({
-            "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+            "displayName": "Goblin", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": shape,
             "faction": null, "conditions": [], "prototype": true
         });
@@ -1002,8 +1023,8 @@ fn scene_without_combat_key_reads_as_unset() {
 #[test]
 fn engine_of_defaults_on_absent_or_malformed() {
     let doc = crate::data::document::tests::world_scoped_doc(
-        uuid::Uuid::from_u128(1),
-        uuid::Uuid::from_u128(2),
+        crate::test_ids::test_uuid(1),
+        crate::test_ids::test_uuid(2),
         "world-settings",
     );
     let ws: WorldSettingsEngine = engine_of(&doc);
@@ -1681,7 +1702,7 @@ fn search_text_is_registered_for_every_engine_doc_type() {
 fn search_text_actor_contributes_display_name_not_visual_kind() {
     let v = json!({
         "displayName": "Gandalf the Grey",
-        "visual": { "kind": "image", "asset": "a" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "circle",
         "faction": null,
@@ -1940,7 +1961,7 @@ fn scene_levels_minimal_body_is_valid() {
         "grid": { "kind": "square", "size": 100.0 }, "background": null,
         "levels": [
             { "id": "ground", "name": "Ground Floor", "bottom": 0.0, "top": 10.0 },
-            { "id": "upper", "name": "Upper Floor", "bottom": 10.0, "top": 20.0, "background": "asset-1" }
+            { "id": "upper", "name": "Upper Floor", "bottom": 10.0, "top": 20.0, "background": "11111111-1111-1111-1111-111111111111" }
         ]
     });
     assert!(validate_engine("scene", Some(&v)).is_ok());
@@ -2036,6 +2057,24 @@ fn scene_levels_validate_rejects_an_invalid_band_and_empty_background() {
     assert!(scene_with_levels(vec![blank]).validate().is_err());
 }
 
+#[test]
+fn scene_level_background_must_be_a_valid_asset_ref() {
+    let mut level = test_level("ground", 0.0, 10.0);
+    level.background = Some("not-a-uuid".into());
+    assert!(scene_with_levels(vec![level.clone()]).validate().is_err());
+    level.background = Some("11111111-1111-1111-1111-111111111111".into());
+    assert!(scene_with_levels(vec![level]).validate().is_ok());
+}
+
+#[test]
+fn scene_background_must_be_a_valid_asset_ref() {
+    let mut scene = scene_with_levels(vec![]);
+    scene.background = Some("not-a-uuid".into());
+    assert!(scene.validate().is_err());
+    scene.background = Some("11111111-1111-1111-1111-111111111111".into());
+    assert!(scene.validate().is_ok());
+}
+
 // --- PortalTarget / TriggerEffect::Teleport validation ---
 
 /// A minimal same-scene teleport target (`scene: None`); the fields are the caller's.
@@ -2071,7 +2110,7 @@ fn portal_target_rejects_a_non_finite_elevation_and_an_empty_vfx() {
     let mut t = portal_target(0.0, 0.0);
     t.vfx = Some(String::new());
     assert!(t.validate().is_err());
-    t.vfx = Some("asset-1".to_string());
+    t.vfx = Some("11111111-1111-1111-1111-111111111111".to_string());
     assert!(t.validate().is_ok());
 }
 
@@ -2110,7 +2149,7 @@ fn teleport_effect_round_trips_through_the_engine_wire_shape() {
         "behavior": "terrain", "cost": 1.0, "enabled": true,
         "triggers": [
             { "on": "enter", "effect": { "type": "teleport",
-                "target": { "scene": null, "x": 10.0, "y": 20.0, "elevation": 15.0, "vfx": "asset-1" } } }
+                "target": { "scene": null, "x": 10.0, "y": 20.0, "elevation": 15.0, "vfx": "11111111-1111-1111-1111-111111111111" } } }
         ]
     });
     assert!(validate_engine("region", Some(&v)).is_ok());
@@ -2118,5 +2157,8 @@ fn teleport_effect_round_trips_through_the_engine_wire_shape() {
     assert_eq!(n["triggers"][0]["effect"]["type"], "teleport");
     assert_eq!(n["triggers"][0]["effect"]["target"]["x"], 10.0);
     assert_eq!(n["triggers"][0]["effect"]["target"]["elevation"], 15.0);
-    assert_eq!(n["triggers"][0]["effect"]["target"]["vfx"], "asset-1");
+    assert_eq!(
+        n["triggers"][0]["effect"]["target"]["vfx"],
+        "11111111-1111-1111-1111-111111111111"
+    );
 }

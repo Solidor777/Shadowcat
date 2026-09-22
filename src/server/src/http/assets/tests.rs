@@ -32,7 +32,7 @@ fn detects_supported_image_signatures_and_rejects_others() {
 #[test]
 fn rate_limiter_trips_after_per_min_then_window_slides() {
     let rl = UploadRateLimiter::new();
-    let u = Uuid::from_u128(1);
+    let u = crate::test_ids::test_uuid(1);
     assert!(rl.check(u, 1_000, 2));
     assert!(rl.check(u, 1_500, 2));
     assert!(!rl.check(u, 1_800, 2)); // 3rd within the window → rejected
@@ -250,6 +250,100 @@ async fn serve_variant_sheet_is_not_found_without_the_sibling() {
     )
     .await;
     assert!(matches!(bad, Err(AppError::BadRequest(_))), "{bad:?}");
+}
+
+#[tokio::test]
+async fn serve_canonical_sets_no_cache_control_on_200_and_304() {
+    // The request URL carries no asset version (`/api/assets/{uuid}` is unversioned), so
+    // `serve` must emit `Cache-Control: no-cache` rather than an `immutable` cap — every use
+    // revalidates through the existing `If-None-Match` path instead of trusting heuristic
+    // freshness to bypass the ETag.
+    let f = SheetFixture::new().await;
+    let user = crate::auth::session::AuthUser {
+        id: f.gm,
+        username: "gm".into(),
+        role: crate::auth::role::ServerRole::User,
+    };
+    let res = serve(
+        State(f.state.clone()),
+        user.clone(),
+        Path(f.asset),
+        Query(ServeQuery { variant: None }),
+        HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-cache"
+    );
+    let etag = res.headers().get(header::ETAG).unwrap().clone();
+
+    let mut revalidate = HeaderMap::new();
+    revalidate.insert(header::IF_NONE_MATCH, etag);
+    let res = serve(
+        State(f.state.clone()),
+        user,
+        Path(f.asset),
+        Query(ServeQuery { variant: None }),
+        revalidate,
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-cache"
+    );
+}
+
+#[tokio::test]
+async fn serve_attachment_branch_reuses_attachment_disposition_for_filename() {
+    // `serve`'s non-inline branch must build its `Content-Disposition` through the same
+    // `attachment_disposition` helper `mutate::original` uses, including its quote/backslash/
+    // CRLF sanitization — never a bare "attachment" with no filename.
+    let f = SheetFixture::new().await;
+    let pdf = Uuid::new_v4();
+    f.state
+        .repo
+        .insert_asset(&crate::data::asset::Asset {
+            id: pdf,
+            world_id: f.world,
+            storage_key: format!("{}/{pdf}", f.world),
+            original_name: "notes\".pdf".into(),
+            content_type: "application/pdf".into(),
+            byte_size: 3,
+            created_by: Some(f.gm),
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("application/pdf", 3),
+        })
+        .await
+        .unwrap();
+    let dir_path = f.state.config.assets_path().join(f.world.to_string());
+    std::fs::write(dir_path.join(pdf.to_string()), b"pdf").unwrap();
+    let user = crate::auth::session::AuthUser {
+        id: f.gm,
+        username: "gm".into(),
+        role: crate::auth::role::ServerRole::User,
+    };
+    let res = serve(
+        State(f.state.clone()),
+        user,
+        Path(pdf),
+        Query(ServeQuery { variant: None }),
+        HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        res.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+        &attachment_disposition("notes\".pdf")
+    );
 }
 
 #[tokio::test]

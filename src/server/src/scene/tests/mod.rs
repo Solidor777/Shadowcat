@@ -17,9 +17,12 @@ pub(super) fn no_world_grants() -> WorldCapDefaults {
 
 /// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 pub(super) fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
-    d.parent_id = parent.map(Uuid::from_u128);
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        ty,
+    );
+    d.parent_id = parent.map(crate::test_ids::test_uuid);
     d
 }
 
@@ -68,7 +71,7 @@ pub(super) fn entity_doc_top_eng(id: u128, ty: &str, body: serde_json::Value) ->
 pub(super) fn actor_body(vision: serde_json::Value) -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],
@@ -96,8 +99,8 @@ pub(super) fn fc(path: &str, new: serde_json::Value) -> crate::data::command::Fi
 impl SceneEcs {
     pub(crate) fn set_world_settings_for_test(&mut self, json_engine: serde_json::Value) {
         let mut d = crate::data::document::tests::world_scoped_doc(
-            Uuid::from_u128(9),
-            Uuid::from_u128(100),
+            crate::test_ids::test_uuid(9),
+            crate::test_ids::test_uuid(100),
             "world-settings",
         );
         d.engine = Some(json_engine);
@@ -108,8 +111,8 @@ impl SceneEcs {
     /// `set_world_settings_for_test`'s shape for the `system-defaults` singleton side-table.
     pub(crate) fn set_system_defaults_for_test(&mut self, json_engine: serde_json::Value) {
         let mut d = crate::data::document::tests::world_scoped_doc(
-            Uuid::from_u128(9),
-            Uuid::from_u128(101),
+            crate::test_ids::test_uuid(9),
+            crate::test_ids::test_uuid(101),
             "system-defaults",
         );
         d.engine = Some(json_engine);
@@ -117,8 +120,11 @@ impl SceneEcs {
     }
 
     pub(crate) fn insert_scene_for_test(&mut self, scene_id: Uuid, json_engine: serde_json::Value) {
-        let mut d =
-            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene");
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            crate::test_ids::test_uuid(9),
+            scene_id,
+            "scene",
+        );
         d.engine = Some(json_engine);
         // Remove stale entity if re-inserting.
         if let Some(old_e) = self.index.remove(&scene_id) {
@@ -147,8 +153,8 @@ pub(super) fn ws_body(patches: &[(&str, serde_json::Value)]) -> serde_json::Valu
 /// enabled white light at (50, 50) with bright=3 / dim=6 cells. The token has normal vision
 /// (default), so cells within the lit radius are visible. Returns `(ecs, user, scene_id)`.
 pub(super) fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -227,8 +233,11 @@ pub(super) fn mask_cells(
 
 /// A `wall` doc parented to `scene`, blocksMove+blocksSight+blocksLight all true.
 pub(super) fn wall_doc_eng(scene: Uuid, a: (f64, f64), b: (f64, f64)) -> Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::new_v4(), "wall");
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        Uuid::new_v4(),
+        "wall",
+    );
     d.parent_id = Some(scene);
     d.engine = Some(json!({
         "seg": { "x1": a.0, "y1": a.1, "x2": b.0, "y2": b.1 },

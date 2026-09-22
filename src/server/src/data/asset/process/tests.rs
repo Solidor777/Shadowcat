@@ -365,8 +365,10 @@ fn write_derivatives_regenerates_from_canonical() {
     .unwrap();
     let thumb = derivative_path(&staged, Variant::Thumb);
     let preview = derivative_path(&staged, Variant::Preview);
-    std::fs::remove_file(&thumb).unwrap();
-    std::fs::remove_file(&preview).unwrap();
+    // Renamed rather than deleted (both stay inside `dir`, cleaned up by its own drop) --
+    // simulates the derivative being absent without a permanent-delete call.
+    std::fs::rename(&thumb, thumb.with_extension("removed")).unwrap();
+    std::fs::rename(&preview, preview.with_extension("removed")).unwrap();
 
     write_derivatives(&staged).unwrap();
     assert_eq!(webp_dims(&thumb), (128, 32));

@@ -559,6 +559,22 @@ export class MockBackend implements DisplayBackend {
   setRenderScale(scale: number): void {
     this.renderScale = scale;
   }
+  /** Last `setTextureBudget` value, recorded verbatim; `null` before the first call. */
+  textureBudgetBytes: number | null = null;
+  /** `DisplayBackend.setTextureBudget`: records `bytes` verbatim into `this.textureBudgetBytes`
+   * — this mock tracks no textures at all, so there is nothing to sweep.
+   * @param bytes The new byte budget.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setTextureBudget(128 * 1024 * 1024);
+   * ```
+   */
+  setTextureBudget(bytes: number): void {
+    this.textureBudgetBytes = bytes;
+  }
   /** `DisplayBackend.render`: increments `this.renderCount`.
    * @example
    * ```ts

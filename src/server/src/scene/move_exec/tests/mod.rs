@@ -7,9 +7,12 @@ use serde_json::json;
 // --- Fixture helpers (mirrors `scene::mod`'s test `doc` helper verbatim) ---
 
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> crate::data::document::Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
-    d.parent_id = parent.map(Uuid::from_u128);
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        ty,
+    );
+    d.parent_id = parent.map(crate::test_ids::test_uuid);
     d
 }
 
@@ -31,8 +34,8 @@ fn entity_doc(
 
 /// Scene with a token at (0,0), no walls, cell=100.
 fn clear_scene() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -69,8 +72,8 @@ fn visible_grid(range: i32) -> BTreeSet<(i32, i32)> {
 /// Wall segment: x1=50,y1=100,x2=150,y2=100 — horizontal wall at y=100
 /// crossing any vertical move between y<100 and y>100 in the x=[50,150] band.
 fn walled_scene() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     // Wall segment perpendicular to the (100,0)→(100,100) step: a horizontal
     // line at y=50 that the vertical segment from (100,0) to (100,100) crosses.
     let ecs = SceneEcs::from_documents(
@@ -479,7 +482,7 @@ fn rejects_empty_path() {
 fn rejects_unknown_token() {
     let (ecs, scene, _token) = clear_scene();
     let v: BTreeSet<(i32, i32)> = BTreeSet::new();
-    let unknown = Uuid::from_u128(999);
+    let unknown = crate::test_ids::test_uuid(999);
     assert!(matches!(
         execute_move(
             &ecs,
@@ -551,8 +554,8 @@ fn region_doc(
 
 #[test]
 fn impassable_region_stops_before_entry_like_a_wall() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -609,8 +612,8 @@ fn impassable_region_stops_before_entry_like_a_wall() {
 /// reach now matches the wall gate's `point_segment_distance` reach at the identical anchor.
 #[test]
 fn continuous_axis_aligned_move_mask_gate_reaches_the_same_boundary_point_the_wall_gate_does() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -665,8 +668,8 @@ fn continuous_axis_aligned_move_mask_gate_reaches_the_same_boundary_point_the_wa
 
 #[test]
 fn arrest_region_stops_at_entry_including_final_step() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -716,8 +719,8 @@ fn arrest_region_stops_at_entry_including_final_step() {
 
 #[test]
 fn terrain_region_accumulates_weighted_cost() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -775,8 +778,8 @@ fn impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell() {
     let c10 = hex.cell_center((1, 0)); // (50·√3, 0) ≈ (86.6, 0)
     let pad = hex.size / 2.0;
 
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -872,8 +875,8 @@ fn arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask() {
     let c30 = hex.cell_center((3, 0)); // (150·√3, 0) ≈ (259.8, 0)
     let pad = hex.size / 2.0;
 
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -961,8 +964,8 @@ fn arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask() {
 fn authoritative_field_springs_a_secret_region_a_player_was_routed_through() {
     // A gm_only impassable region: move_exec must still enforce it (it always uses the
     // authoritative field), even though a player's pathfind field never saw it.
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut secret = region_doc(12, 10, "impassable", 1.0, (50.0, 0.0, 150.0, 100.0));
     secret
         .permissions
@@ -1025,8 +1028,8 @@ fn empty_mask() -> BTreeSet<(i32, i32)> {
 /// Token committed at (50,50); a `blocksMove` wall crosses the path's first step
 /// (50,50)->(150,50) at x=100, spanning y∈[0,100].
 fn scene_with_wall_across_the_path() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1060,8 +1063,8 @@ fn scene_with_wall_across_the_path() -> (SceneEcs, Uuid, Uuid) {
 /// arrest region covers [200,300)x[0,100), so a straight path through both crosses the
 /// impassable cell first, then the arrest cell.
 fn scene_with_impassable_then_arrest_region() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1087,8 +1090,8 @@ fn scene_with_impassable_then_arrest_region() -> (SceneEcs, Uuid, Uuid) {
 /// Token committed at (50,50); a terrain region with multiplier 3 covers the cell entered
 /// by the step (50,50)->(150,50).
 fn scene_with_terrain_multiplier_3() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1277,8 +1280,8 @@ fn continuous_any_angle_path_reaches_goal_when_fully_visible() {
 
 #[test]
 fn continuous_path_truncates_at_a_wall_crossed_mid_segment() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     // Vertical wall at x=250, spanning y in [-50,50] — crosses a horizontal move at y=0.
     let ecs = SceneEcs::from_documents(
         vec![
@@ -1339,8 +1342,8 @@ fn continuous_path_truncates_at_a_wall_crossed_mid_segment() {
 
 #[test]
 fn continuous_path_stops_before_entering_an_impassable_region_mid_segment() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1387,8 +1390,8 @@ fn continuous_path_stops_before_entering_an_impassable_region_mid_segment() {
 
 #[test]
 fn continuous_path_arrest_stops_at_entry_mid_segment_not_before() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1438,8 +1441,8 @@ fn execute_move_handles_an_any_angle_weighted_continuous_polyline() {
     // A continuous (any-angle) route whose vertices are > 1 cell apart, crossing a terrain
     // cell (mult 3) and stopping at an arrest cell. Proves gate_walk gates + accrues
     // terrain cost + arrests on a continuous polyline with no executor change.
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -1500,8 +1503,8 @@ fn scene_with_wall_and_region(
     region: Option<(&str, f64, f64, f64, f64, f64)>,
     secret_region: bool,
 ) -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut docs = vec![
         entity_doc(
             10,
@@ -2011,8 +2014,8 @@ fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
 
 /// Hex scene on `FIXTURE_GRID_SIZE` with a token at axial (0,0), no walls.
 fn hex_clear_scene() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(20);
-    let token_id = Uuid::from_u128(21);
+    let scene_id = crate::test_ids::test_uuid(20);
+    let token_id = crate::test_ids::test_uuid(21);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -2036,8 +2039,8 @@ fn hex_clear_scene() -> (SceneEcs, Uuid, Uuid) {
 
 /// Hex scene on `FIXTURE_GRID_SIZE` with a vertical `blocksMove` wall at `wall_x`.
 fn hex_walled_scene(wall_x: f64) -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(20);
-    let token_id = Uuid::from_u128(21);
+    let scene_id = crate::test_ids::test_uuid(20);
+    let token_id = crate::test_ids::test_uuid(21);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -2158,7 +2161,7 @@ fn entity_doc_top(id: u128, ty: &str, body: serde_json::Value) -> crate::data::d
 fn actor_body_shaped(shape: &str, w: f64, h: f64) -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": w, "h": h },
         "shape": shape,
         "conditions": [],
@@ -2175,7 +2178,7 @@ fn actor_body_shaped_with_vision(
 ) -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": w, "h": h },
         "shape": shape,
         "conditions": [],
@@ -2231,9 +2234,9 @@ fn scene_with_narrow_gap_and_wide_token(
     kind: &str,
     model: MovementModel,
 ) -> (SceneEcs, Uuid, Uuid, Uuid, (f64, f64), (f64, f64)) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let user = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let user = crate::test_ids::test_uuid(1);
     let model_str = match model {
         MovementModel::GridStepped => "grid-stepped",
         MovementModel::Continuous => "continuous",
@@ -2263,7 +2266,7 @@ fn scene_with_narrow_gap_and_wide_token(
         10,
         "token",
         json!({ "x": start.0, "y": start.1, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     tok.owner = Some(user);
     let wall = |id: u128, x1: f64, y1: f64, x2: f64, y2: f64| {
@@ -2311,9 +2314,9 @@ fn scene_with_narrow_gap_and_wide_token(
 /// different route, which the test cannot distinguish from a gate/router disagreement). The
 /// token carries no actor, so `resolve_token_footprint` falls back to the 0.4 default.
 fn scene_with_wall_between_adjacent_cells_and_default_footprint() -> (SceneEcs, Uuid, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let user = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let user = crate::test_ids::test_uuid(1);
     let mut tok = entity_doc(
         11,
         10,
@@ -2346,9 +2349,9 @@ fn scene_with_wall_between_adjacent_cells_and_default_footprint() -> (SceneEcs, 
 /// row (2,0) (2.0 cells away) — every one of which the 0.6-radius footprint disc at (1,0)
 /// overlaps, so each is a candidate the mask must include for the move to succeed.
 fn scene_with_lit_center_line_only() -> (SceneEcs, Uuid, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let user = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let user = crate::test_ids::test_uuid(1);
     let mut tok = entity_doc(
         11,
         10,
@@ -2385,9 +2388,9 @@ fn scene_with_lit_center_line_only() -> (SceneEcs, Uuid, Uuid, Uuid) {
 /// `is_gm`-free counterpart of the wall/region fixtures, for tests that need admissible
 /// footprint movement with nothing else in play.
 fn scene_with_open_lit_area() -> (SceneEcs, Uuid, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let user = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let user = crate::test_ids::test_uuid(1);
     let mut tok = entity_doc(
         11,
         10,
@@ -2412,15 +2415,15 @@ fn scene_with_open_lit_area() -> (SceneEcs, Uuid, Uuid, Uuid) {
 /// footprint disc at (1,0) overlaps (so it must stay in the mask, hence no vision override:
 /// unlimited range) but the mover's CENTER never enters. Arrest must not spring here.
 fn scene_with_arrest_cell_beside_the_path_and_wide_token() -> (SceneEcs, Uuid, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
-    let user = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
+    let user = crate::test_ids::test_uuid(1);
     let mut tok = entity_doc(
         11,
         10,
         "token",
         json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(200).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(200).to_string() }),
     );
     tok.owner = Some(user);
     let scene = entity_doc(
@@ -2918,8 +2921,8 @@ fn entered_cells_reports_a_revisit_as_a_second_entry() {
 
 #[test]
 fn entered_cells_include_the_arrest_cell_and_set_the_arrest_flag() {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(

@@ -73,7 +73,7 @@ fn aura() -> AuraEmission {
 
 fn sound() -> SoundEmission {
     SoundEmission {
-        asset: "a1".to_string(),
+        asset: "44444444-4444-4444-4444-444444444444".to_string(),
         radius: 5.0,
         volume: 0.8,
         loop_: true,
@@ -83,7 +83,7 @@ fn sound() -> SoundEmission {
 
 fn vfx() -> VfxEmission {
     VfxEmission {
-        asset: "a2".to_string(),
+        asset: "55555555-5555-5555-5555-555555555555".to_string(),
         anchor: VfxAnchor::Token,
         loop_: true,
         enabled: true,
@@ -176,7 +176,7 @@ fn emission_asset_must_be_non_empty() {
 fn actor_engine_validate_covers_only_emissions() {
     let engine: ActorEngine = serde_json::from_value(serde_json::json!({
         "displayName": "G",
-        "visual": { "kind": "image", "asset": "img" },
+        "visual": { "kind": "image", "asset": "66666666-6666-6666-6666-666666666666" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -191,7 +191,7 @@ fn actor_engine_validate_covers_only_emissions() {
     );
     let clean: ActorEngine = serde_json::from_value(serde_json::json!({
         "displayName": "G",
-        "visual": { "kind": "image", "asset": "img" },
+        "visual": { "kind": "image", "asset": "66666666-6666-6666-6666-666666666666" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,

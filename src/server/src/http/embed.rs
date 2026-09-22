@@ -12,7 +12,20 @@ use axum::response::{IntoResponse, Response};
 #[folder = "../../dist/"]
 struct StaticAssets;
 
-/// Serve an embedded asset by request path; `/` maps to `index.html`.
+/// True when `path` lives under the content-hashed `assets/` directory `vite.config.ts`'s
+/// `rollupOptions.output.entryFileNames` writes every non-runtime build chunk to
+/// (`assets/[name]-[hash].js`, and Vite's default asset naming for images/CSS matches the same
+/// convention) — a changed file gets a brand-new URL there, so it alone is safe to cache
+/// `immutable`. Root files (`index.html`, `popout.html`, favicons) and the deliberately
+/// STABLE-named `runtime/*.js` chunks (referenced by filename from `index.html`'s import map at
+/// build time) are excluded: their URL never changes when their content does.
+fn is_hashed_asset_path(path: &str) -> bool {
+    path.starts_with("assets/")
+}
+
+/// Serve an embedded asset by request path; `/` maps to `index.html`. Sets `Cache-Control`
+/// per `is_hashed_asset_path`: `public, max-age=31536000, immutable` under `assets/`, `no-cache`
+/// everywhere else so a client always revalidates a root file or runtime chunk with the server.
 ///
 /// # Examples
 ///
@@ -33,7 +46,19 @@ pub async fn static_handler(uri: Uri) -> Response {
     match StaticAssets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            let cache_control = if is_hashed_asset_path(path) {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref()),
+                    (header::CACHE_CONTROL, cache_control),
+                ],
+                content.data,
+            )
+                .into_response()
         }
         None => StatusCode::NOT_FOUND.into_response(),
     }

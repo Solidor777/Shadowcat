@@ -5,9 +5,9 @@ use uuid::Uuid;
 
 fn minimal_document() -> Document {
     Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "actor".into(),
         schema_version: 1,
@@ -64,7 +64,7 @@ fn sample_data(world: Uuid) -> WorldExportData {
 #[test]
 fn write_bundle_with_no_assets_produces_a_readable_manifest_entry() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(42);
+    let world = crate::test_ids::test_uuid(42);
     let data = sample_data(world);
 
     let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
@@ -82,8 +82,8 @@ fn write_bundle_with_no_assets_produces_a_readable_manifest_entry() {
 #[test]
 fn write_bundle_streams_asset_bytes_from_disk() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(7);
-    let asset_id = Uuid::from_u128(100);
+    let world = crate::test_ids::test_uuid(7);
+    let asset_id = crate::test_ids::test_uuid(100);
     let asset_dir = tmp.path().join(world.to_string());
     std::fs::create_dir_all(&asset_dir).unwrap();
     std::fs::write(asset_dir.join(asset_id.to_string()), b"PNGDATA").unwrap();
@@ -118,11 +118,11 @@ fn write_bundle_streams_asset_bytes_from_disk() {
 #[test]
 fn write_bundle_missing_asset_file_errors() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(8);
+    let world = crate::test_ids::test_uuid(8);
     let mut data = sample_data(world);
     data.assets
         .push(crate::data::world_bundle::ExportedAssetRow {
-            id: Uuid::from_u128(200),
+            id: crate::test_ids::test_uuid(200),
             original_name: "missing.png".to_string(),
             content_type: "image/png".to_string(),
             byte_size: 1,
@@ -141,8 +141,8 @@ fn write_bundle_missing_asset_file_errors() {
 #[test]
 fn read_bundle_round_trips_write_bundle_output() {
     let export_tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(55);
-    let asset_id = Uuid::from_u128(555);
+    let world = crate::test_ids::test_uuid(55);
+    let asset_id = crate::test_ids::test_uuid(555);
     let asset_dir = export_tmp.path().join(world.to_string());
     std::fs::create_dir_all(&asset_dir).unwrap();
     std::fs::write(asset_dir.join(asset_id.to_string()), b"BYTES").unwrap();
@@ -187,7 +187,7 @@ fn read_bundle_round_trips_write_bundle_output() {
 #[test]
 fn read_bundle_rejects_row_count_mismatch() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(66);
+    let world = crate::test_ids::test_uuid(66);
     let mut data = sample_data(world);
     // Lie about the document count the manifest promises.
     data.manifest.row_counts.insert("documents".to_string(), 2);
@@ -211,7 +211,7 @@ fn read_bundle_rejects_row_count_mismatch() {
 #[test]
 fn read_bundle_rejects_unsupported_schema_version() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(77);
+    let world = crate::test_ids::test_uuid(77);
     let mut data = sample_data(world);
     data.manifest.schema_version = BUNDLE_SCHEMA_VERSION + 1;
 
@@ -250,8 +250,8 @@ fn read_bundle_rejects_archive_not_starting_with_manifest() {
 #[test]
 fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(88);
-    let asset_id = Uuid::from_u128(888);
+    let world = crate::test_ids::test_uuid(88);
+    let asset_id = crate::test_ids::test_uuid(888);
 
     let mut row_counts = std::collections::BTreeMap::new();
     for table in [
@@ -322,7 +322,7 @@ fn a_pre_pipeline_asset_row_deserializes_with_defaults() {
     // The row shape a bundle written before the pipeline carries: no folder,
     // tags, or metadata keys at all.
     let legacy = serde_json::json!({
-        "id": Uuid::from_u128(100),
+        "id": crate::test_ids::test_uuid(100),
         "original_name": "token.png",
         "content_type": "image/png",
         "byte_size": 7,
@@ -338,7 +338,7 @@ fn a_pre_pipeline_asset_row_deserializes_with_defaults() {
     assert!(!row.meta.original_retained);
     // A row with only SOME metadata keys also fills the rest from defaults.
     let partial = serde_json::json!({
-        "id": Uuid::from_u128(101),
+        "id": crate::test_ids::test_uuid(101),
         "original_name": "x.png",
         "content_type": "image/webp",
         "byte_size": 7,
@@ -355,8 +355,8 @@ fn a_pre_pipeline_asset_row_deserializes_with_defaults() {
 #[test]
 fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let tmp = tempfile::tempdir().unwrap();
-    let world = Uuid::from_u128(7);
-    let asset_id = Uuid::from_u128(100);
+    let world = crate::test_ids::test_uuid(7);
+    let asset_id = crate::test_ids::test_uuid(100);
     let asset_dir = tmp.path().join(world.to_string());
     std::fs::create_dir_all(&asset_dir).unwrap();
     std::fs::write(asset_dir.join(asset_id.to_string()), b"WEBP").unwrap();

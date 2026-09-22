@@ -294,8 +294,22 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("light: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
-        "template" => round_trip::<TemplateEngine>(v, "template"),
+        "drawing" => {
+            let typed: DrawingEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("drawing: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("drawing: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "template" => {
+            let typed: TemplateEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("template: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("template: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "actor" => {
             let typed: ActorEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("actor: {e}")))?;
@@ -332,7 +346,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("channel-registry: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
+        "faction-registry" => {
+            let typed: FactionRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("faction-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("faction-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "condition-registry" => {
             let typed: ConditionRegistryEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("condition-registry: {e}")))?;

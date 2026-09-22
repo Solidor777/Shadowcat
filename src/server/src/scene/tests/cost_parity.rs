@@ -9,7 +9,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
     for rule in ["chebyshev", "manhattan", "euclidean", "alternating"] {
         let mut ecs = SceneEcs::new();
         ecs.set_world_settings_for_test(ws_body(&[("/pathfinding/diagonalRule", json!(rule))]));
-        let scene_id = Uuid::from_u128(1);
+        let scene_id = crate::test_ids::test_uuid(1);
         ecs.insert_scene_for_test(
             scene_id,
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -24,7 +24,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
         ecs.apply_op(&Operation::Create { doc: token });
         let region = region_doc(3, 1, "terrain", 2.0, (200.0, 0.0, 400.0, 400.0));
         ecs.apply_op(&Operation::Create { doc: region });
-        let gm = Uuid::from_u128(9);
+        let gm = crate::test_ids::test_uuid(9);
         let route = ecs
             .pathfind(
                 RouteRequester {
@@ -56,7 +56,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                 traits: MoveTraits::default(),
                 mover_elevation: elevation::GROUND,
             },
-            Uuid::from_u128(2),
+            crate::test_ids::test_uuid(2),
             &route.path,
             true,
             0.4,
@@ -75,7 +75,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
 fn continuous_smoothed_preview_cost_equals_executor_cost() {
     let mut ecs = SceneEcs::new();
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
-    let scene_id = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -96,7 +96,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
     let route = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(9),
+                user: crate::test_ids::test_uuid(9),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
@@ -124,7 +124,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
             traits: MoveTraits::default(),
             mover_elevation: elevation::GROUND,
         },
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(2),
         &route.path,
         true,
         0.4,
@@ -154,7 +154,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
         "/pathfinding/diagonalRule",
         json!("chebyshev"),
     )]));
-    let scene_id = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -173,7 +173,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
     });
     let grants = no_world_grants();
     let requester = || RouteRequester {
-        user: Uuid::from_u128(9),
+        user: crate::test_ids::test_uuid(9),
         is_gm: true,
         world_role: WorldRole::Gm,
         world_defaults: &grants,
@@ -228,7 +228,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             traits: EXEMPT_TRAITS,
             mover_elevation: elevation::GROUND,
         },
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(2),
         &route.path,
         true,
         0.4,
@@ -256,7 +256,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
     // be indistinguishable from an always-weighted one.
     let mut ecs = SceneEcs::new();
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
-    let scene_id = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -277,7 +277,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
     let route = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(9),
+                user: crate::test_ids::test_uuid(9),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
@@ -321,7 +321,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             traits: EXEMPT_TRAITS,
             mover_elevation: elevation::GROUND,
         },
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(2),
         &route.path,
         true,
         0.4,
@@ -342,7 +342,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
     // and execution agree.
     let mut ecs = SceneEcs::new();
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
-    let scene_id = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -363,7 +363,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
     let route = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(9),
+                user: crate::test_ids::test_uuid(9),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
@@ -396,7 +396,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             traits: EXEMPT_TRAITS,
             mover_elevation: elevation::GROUND,
         },
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(2),
         &route.path,
         true,
         0.4,
@@ -419,7 +419,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
     // executor reproduces it exactly (the tail/transition pricing reads the same flag).
     let mut ecs = SceneEcs::new();
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
-    let scene_id = Uuid::from_u128(1);
+    let scene_id = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -442,7 +442,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
     });
     let grants = no_world_grants();
     let requester = || RouteRequester {
-        user: Uuid::from_u128(9),
+        user: crate::test_ids::test_uuid(9),
         is_gm: true,
         world_role: WorldRole::Gm,
         world_defaults: &grants,
@@ -516,7 +516,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             traits: EXEMPT_TRAITS,
             mover_elevation: elevation::GROUND,
         },
-        Uuid::from_u128(2),
+        crate::test_ids::test_uuid(2),
         &route.path,
         true,
         0.4,

@@ -5,6 +5,7 @@
   import {
     folderChildren,
     buildFolderDoc,
+    appendFolderSortKey,
     isDescendantOrSelf,
     ASSET_FOLDER_DOC_TYPE,
   } from "./folderOps";
@@ -60,8 +61,9 @@
     const name = createDraft.trim();
     createDraft = "";
     if (!name) return;
+    const sort = appendFolderSortKey(folders, selectedFolder);
     ctx.dispatchIntent([
-      { op: "create", doc: buildFolderDoc(ctx.world, name, selectedFolder) },
+      { op: "create", doc: buildFolderDoc(ctx.world, name, selectedFolder, sort) },
     ]);
   }
 
@@ -164,7 +166,7 @@
   >{t("assetBrowser.allAssets")}</button>
 
   {#snippet nodes(parent: string | null, depth: number)}
-    {#each folderChildren(folders, parent) as f (f.id)}
+    {#each folderChildren(folders, parent, ctx.compare) as f (f.id)}
       <div class="row" style:padding-left="{depth * 0.75}rem">
         <button
           type="button"

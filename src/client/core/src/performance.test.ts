@@ -36,6 +36,32 @@ describe("resolveAuto", () => {
   });
 });
 
+describe("textureBudgetBytes", () => {
+  it("is smaller on mobile than on balanced/quality (a floor on GPU memory, not a ceiling raise)", () => {
+    expect(PRESETS.mobile.textureBudgetBytes).toBeLessThan(PRESETS.balanced.textureBudgetBytes);
+    expect(PRESETS.mobile.textureBudgetBytes).toBeLessThan(PRESETS.quality.textureBudgetBytes);
+  });
+
+  it("is a positive finite byte count on every preset", () => {
+    for (const preset of Object.values(PRESETS)) {
+      expect(preset.textureBudgetBytes).toBeGreaterThan(0);
+      expect(Number.isFinite(preset.textureBudgetBytes)).toBe(true);
+    }
+  });
+
+  it("survives a parsePersisted/serializePersisted round trip as a custom override", () => {
+    const p: PersistedPerformance = { preset: "custom", overrides: { textureBudgetBytes: 123_456_789 } };
+    expect(parsePersisted(serializePersisted(p))).toEqual(p);
+  });
+
+  it("sanitizeOverrides drops a non-finite or non-positive textureBudgetBytes", () => {
+    expect(parsePersisted(JSON.stringify({ preset: "custom", overrides: { textureBudgetBytes: -1 } })).overrides)
+      .toEqual({});
+    expect(parsePersisted(JSON.stringify({ preset: "custom", overrides: { textureBudgetBytes: Number.NaN } })).overrides)
+      .toEqual({});
+  });
+});
+
 describe("parsePersisted", () => {
   it("returns the auto default for null", () => {
     expect(parsePersisted(null)).toEqual({ preset: "auto", overrides: {} });

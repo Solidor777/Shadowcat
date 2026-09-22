@@ -697,3 +697,27 @@ async fn enabled_modules_a_batch_with_one_bad_id_rejects_the_whole_batch() {
         "a valid id in a rejected batch must not partially apply"
     );
 }
+
+#[tokio::test]
+async fn enabled_modules_aggregates_every_bad_entrys_failure_into_one_response() {
+    let dir = tempfile::tempdir().unwrap();
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let resp = gm
+        .put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([
+            {"id":"ghost-one","validators_enabled":false},
+            {"id":"ghost-two","validators_enabled":false},
+        ]))
+        .await;
+    resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let body: serde_json::Value = resp.json();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ghost-one"),
+        "response must report the first bad entry: {message}"
+    );
+    assert!(
+        message.contains("ghost-two"),
+        "response must report the second bad entry too, not just the first: {message}"
+    );
+}

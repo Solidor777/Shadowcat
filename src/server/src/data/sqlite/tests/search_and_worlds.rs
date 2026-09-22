@@ -958,7 +958,9 @@ async fn members_carry_world_role() {
     r.add_member(w.id, u, WorldRole::Gm).await.unwrap();
     assert_eq!(r.member_role(w.id, u).await.unwrap(), Some(WorldRole::Gm));
     assert_eq!(
-        r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(),
+        r.member_role(w.id, crate::test_ids::test_uuid(123))
+            .await
+            .unwrap(),
         None
     );
 }
@@ -976,7 +978,9 @@ async fn world_owned_seats_creator_as_gm() {
         Some(WorldRole::Gm)
     );
     assert_eq!(
-        r.member_role(w.id, Uuid::from_u128(123)).await.unwrap(),
+        r.member_role(w.id, crate::test_ids::test_uuid(123))
+            .await
+            .unwrap(),
         None
     );
 }
@@ -1099,7 +1103,10 @@ async fn export_world_rows_carries_manifest_watermark_and_row_counts() {
 #[tokio::test]
 async fn export_world_rows_not_found_for_unknown_world() {
     let r = repo().await;
-    let err = r.export_world_rows(Uuid::from_u128(999)).await.unwrap_err();
+    let err = r
+        .export_world_rows(crate::test_ids::test_uuid(999))
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::NotFound));
 }
 
@@ -1430,7 +1437,7 @@ async fn import_world_rejects_duplicate_singleton_document_before_writing_any_ro
     // hand-assembled or corrupted bundle could carry — nothing in
     // `read_bundle` rejects this, so `import_world` itself must.
     let mut dup = export_data.documents[0].clone();
-    dup.document.id = Uuid::from_u128(31);
+    dup.document.id = crate::test_ids::test_uuid(31);
     export_data.documents.push(dup);
     export_data
         .manifest
@@ -1655,6 +1662,78 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
     assert_eq!(doc_count, 0);
 }
 
+/// `import_world` runs `validate_document_id_tree` over every row (a bundle is untrusted
+/// input, same posture as a live Create/Update) -- a row whose document carries a v1-shaped
+/// (time-based) id is rejected before anything is written, mirroring the wire-level Create
+/// rejection `tests/document_id_and_name_ingress.rs` pins for a live connection.
+#[tokio::test]
+async fn import_world_rejects_a_document_with_a_non_v4_v7_id() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm9", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("W9", gm, 0).await.unwrap();
+    let mut doc = world_doc(15, w.id, serde_json::json!({}));
+    // v1 (time-based, MAC-embedding): version nibble 0x1, RFC4122 variant.
+    doc.id = Uuid::from_bytes([
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x81, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11,
+    ]);
+
+    let export_data = WorldExportData {
+        manifest: BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            world_id: w.id,
+            world_name: "W9".to_string(),
+            world_seq: w.seq,
+            world_created_at: w.created_at,
+            world_updated_at: w.updated_at,
+            exported_at_unix_ms: 0,
+            row_counts: std::collections::BTreeMap::new(),
+        },
+        documents: vec![ExportedDocumentRow {
+            document: doc,
+            owner_username: None,
+            seq: 1,
+            created_seq: 1,
+        }],
+        events: vec![],
+        members: vec![],
+        invites: vec![],
+        assets: vec![],
+        fog: vec![],
+        settings: vec![],
+    };
+
+    let target = repo().await;
+    let import_data = crate::data::world_bundle::WorldImportData {
+        manifest: export_data.manifest.clone(),
+        documents: export_data.documents.clone(),
+        events: export_data.events.clone(),
+        members: export_data.members.clone(),
+        invites: export_data.invites.clone(),
+        assets: export_data.assets.clone(),
+        fog: export_data.fog.clone(),
+        settings: export_data.settings.clone(),
+        staged_assets: Vec::new(),
+        staged_siblings: vec![],
+    };
+
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(
+        matches!(err, DataError::OpFailed(ref m) if m.contains("v4 or v7")),
+        "a bundle row with a non-v4/v7 id must be rejected, got {err:?}"
+    );
+
+    let doc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE world_id = ?")
+        .bind(w.id.to_string())
+        .fetch_one(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(doc_count, 0, "a rejected import writes nothing");
+}
+
 #[tokio::test]
 async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_orig() {
     let src = repo().await;
@@ -1877,8 +1956,8 @@ fn placement_import_data(
 #[tokio::test]
 async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
     let world_id = Uuid::new_v4();
-    let a_id = Uuid::from_u128(101);
-    let b_id = Uuid::from_u128(102);
+    let a_id = crate::test_ids::test_uuid(101);
+    let b_id = crate::test_ids::test_uuid(102);
     let a = note_doc(101, world_id, "a", Some(b_id));
     let b = note_doc(102, world_id, "b", Some(a_id));
 
@@ -1905,7 +1984,7 @@ async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
 #[tokio::test]
 async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
     let world_id = Uuid::new_v4();
-    let dup_id = Uuid::from_u128(108);
+    let dup_id = crate::test_ids::test_uuid(108);
     let first = note_doc(108, world_id, "first", None);
     let second = note_doc(108, world_id, "second", None);
     let child = note_doc(109, world_id, "child", Some(dup_id));
@@ -1941,7 +2020,7 @@ async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
 #[tokio::test]
 async fn import_world_rejects_a_self_parented_note() {
     let world_id = Uuid::new_v4();
-    let note_id = Uuid::from_u128(103);
+    let note_id = crate::test_ids::test_uuid(103);
     let note = note_doc(103, world_id, "self", Some(note_id));
 
     let target = repo().await;
@@ -2026,12 +2105,12 @@ async fn import_world_rejects_a_parented_combat_document() {
 #[tokio::test]
 async fn import_world_accepts_a_child_note_sorting_before_its_parent() {
     let world_id = Uuid::new_v4();
-    // `Uuid::from_u128` orders lexicographically by value, so the child
+    // `test_uuid` preserves `from_u128`'s ordering by value for small n, so the child
     // (lower id) is placed FIRST in the `documents` list below — exactly
     // the ordering `export_world_rows`'s `ORDER BY documents.id` produces
     // for a real export where the child happened to receive a lower id.
-    let child_id = Uuid::from_u128(1);
-    let parent_id = Uuid::from_u128(2);
+    let child_id = crate::test_ids::test_uuid(1);
+    let parent_id = crate::test_ids::test_uuid(2);
     let parent = note_doc(2, world_id, "parent", None);
     let child = note_doc(1, world_id, "child", Some(parent_id));
     assert!(child.id < parent.id, "child must sort before its parent");
@@ -2059,7 +2138,7 @@ async fn import_world_accepts_a_child_note_sorting_before_its_parent() {
 #[tokio::test]
 async fn import_world_accepts_a_valid_asset_folder_tree() {
     let world_id = Uuid::new_v4();
-    let root_id = Uuid::from_u128(3);
+    let root_id = crate::test_ids::test_uuid(3);
     let root = folder_doc(3, world_id, "Root", None);
     let child = folder_doc(4, world_id, "Child", Some(root_id));
     let child_id = child.id;
@@ -2396,7 +2475,7 @@ async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
     );
     // And the imported document is live (the import itself was not blocked).
     assert!(target
-        .get_document(Uuid::from_u128(33))
+        .get_document(crate::test_ids::test_uuid(33))
         .await
         .unwrap()
         .is_some());

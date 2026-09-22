@@ -71,7 +71,7 @@ fn rebuild(prev: &CombatSnapshot, docs: HashMap<Uuid, Document>) -> CombatSnapsh
 }
 
 fn running_with_history() -> (CombatSnapshot, Uuid) {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host = actor_with_effect(0x1A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
@@ -95,7 +95,7 @@ fn start_and_each_advance_append_a_record_and_move_the_cursor() {
     );
     let (_, h) = snap2.history.as_ref().unwrap();
     assert_eq!((h.records.len(), h.cursor), (2, 1));
-    assert_eq!(h.records[1].turn, Uuid::from_u128(11));
+    assert_eq!(h.records[1].turn, crate::test_ids::test_uuid(11));
     assert_eq!(h.records[1].effects.len(), 1);
 }
 
@@ -105,7 +105,7 @@ fn start_and_each_advance_append_a_record_and_move_the_cursor() {
 /// the second reaches the actor's turn that preceded it.
 #[test]
 fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), None);
     let host = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
@@ -125,7 +125,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
             &s1,
             &resource(
                 &s1,
-                Uuid::from_u128(10),
+                crate::test_ids::test_uuid(10),
                 "movement",
                 ResourceOp::Delta { amount: -20.0 },
             )
@@ -139,30 +139,30 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     assert!(
         s2.combatants
             .iter()
-            .all(|c| c.doc.id != Uuid::from_u128(11)),
+            .all(|c| c.doc.id != crate::test_ids::test_uuid(11)),
         "event deleted"
     );
     // First rewind: back to the EVENT's own auto-resolved boundary.
     let s3 = rebuild(&s2, apply(&s2, &rewind(&s2, 0).unwrap()));
     assert_eq!(
         (s3.engine.round, s3.engine.turn),
-        (1, Some(Uuid::from_u128(11))),
+        (1, Some(crate::test_ids::test_uuid(11))),
         "the intermediate record captured at the event's own turn boundary"
     );
     assert!(
         s3.combatants
             .iter()
-            .any(|x| x.doc.id == Uuid::from_u128(11)),
+            .any(|x| x.doc.id == crate::test_ids::test_uuid(11)),
         "event re-created"
     );
     assert!(
-        s3.engine.order.contains(&Uuid::from_u128(11)),
+        s3.engine.order.contains(&crate::test_ids::test_uuid(11)),
         "the re-created event is reachable from order again"
     );
     assert_eq!(
         s3.combatants
             .iter()
-            .find(|x| x.doc.id == Uuid::from_u128(10))
+            .find(|x| x.doc.id == crate::test_ids::test_uuid(10))
             .unwrap()
             .engine
             .resources["movement"]
@@ -173,13 +173,13 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
 
     // Second rewind: back to the actor's own turn, before the advance ran.
     let docs = apply(&s3, &rewind(&s3, 0).unwrap());
-    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let a: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         a.resources["movement"].current, 30.0,
         "boundary value restored, not the spent one"
     );
     let e: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
+        docs[&crate::test_ids::test_uuid(0x1A)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
@@ -187,7 +187,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     .unwrap();
     assert!(e.active && e.duration.unwrap().remaining == Some(1));
     let c: CombatEngine = engine_of(&docs, combat);
-    assert_eq!((c.round, c.turn), (1, Some(Uuid::from_u128(10))));
+    assert_eq!((c.round, c.turn), (1, Some(crate::test_ids::test_uuid(10))));
     let h: CombatHistoryEngine = engine_of(&docs, s3.history.as_ref().unwrap().0.id);
     assert_eq!(
         (h.records.len(), h.cursor),
@@ -204,7 +204,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
 /// never a silent clamp of the clock to some other turn.
 #[test]
 fn rewind_restore_off_refuses_a_boundary_whose_turn_was_deleted() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), None);
     let host = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
@@ -230,14 +230,14 @@ fn rewind_restore_off_refuses_a_boundary_whose_turn_was_deleted() {
         apply(&s1, &advance(&s1, WORLD, Uuid::nil(), 0).unwrap()),
     );
     assert!(
-        !s2.engine.order.contains(&Uuid::from_u128(11)),
+        !s2.engine.order.contains(&crate::test_ids::test_uuid(11)),
         "the exhausted event left the order"
     );
     {
         let (_, h) = s2.history.as_ref().unwrap();
         assert_eq!(
             h.records[h.cursor as usize - 1].turn,
-            Uuid::from_u128(11),
+            crate::test_ids::test_uuid(11),
             "the boundary one step back is the deleted event's own turn"
         );
     }
@@ -254,8 +254,8 @@ fn rewind_restore_off_refuses_a_boundary_whose_turn_was_deleted() {
     s2.combat.engine = Some(serde_json::to_value(&s2.engine).unwrap());
     let docs = apply(&s2, &rewind(&s2, 0).unwrap());
     let c: CombatEngine = engine_of(&docs, combat);
-    assert_eq!(c.turn, Some(Uuid::from_u128(11)));
-    assert!(c.order.contains(&Uuid::from_u128(11)));
+    assert_eq!(c.turn, Some(crate::test_ids::test_uuid(11)));
+    assert!(c.order.contains(&crate::test_ids::test_uuid(11)));
 }
 
 #[test]
@@ -279,7 +279,7 @@ fn rewind_restore_off_moves_only_the_clock() {
             &s2,
             &resource(
                 &s2,
-                Uuid::from_u128(11),
+                crate::test_ids::test_uuid(11),
                 "movement",
                 ResourceOp::Delta { amount: -20.0 },
             )
@@ -289,10 +289,11 @@ fn rewind_restore_off_moves_only_the_clock() {
     let docs = apply(&s2, &rewind(&s2, 0).unwrap());
     assert_eq!(
         engine_of::<CombatEngine>(&docs, combat).turn,
-        Some(Uuid::from_u128(10))
+        Some(crate::test_ids::test_uuid(10))
     );
     assert_eq!(
-        engine_of::<CombatantEngine>(&docs, Uuid::from_u128(11)).resources["movement"].current,
+        engine_of::<CombatantEngine>(&docs, crate::test_ids::test_uuid(11)).resources["movement"]
+            .current,
         10.0,
         "not restored"
     );
@@ -319,7 +320,7 @@ fn forward_restore_keeps_the_future_and_fast_forwards_when_nothing_changed() {
     let docs = apply(&s1, &ops);
     assert_eq!(
         engine_of::<CombatEngine>(&docs, combat).turn,
-        Some(Uuid::from_u128(11))
+        Some(crate::test_ids::test_uuid(11))
     );
     assert_eq!(
         engine_of::<CombatHistoryEngine>(&docs, s1.history.as_ref().unwrap().0.id).cursor,
@@ -343,7 +344,7 @@ fn forward_restore_discards_the_future_when_a_combatant_changed() {
             &s1,
             &resource(
                 &s1,
-                Uuid::from_u128(10),
+                crate::test_ids::test_uuid(10),
                 "movement",
                 ResourceOp::Delta { amount: -5.0 },
             )

@@ -26,14 +26,14 @@ fn scene_doc(id: u128) -> Document {
     )
 }
 
-/// A scene-parented token LINKED to actor `Uuid::from_u128(actor_id)` at `(x, y)`.
+/// A scene-parented token LINKED to actor `crate::test_ids::test_uuid(actor_id)` at `(x, y)`.
 fn linked_token(id: u128, scene: u128, actor_id: u128, x: f64, y: f64) -> Document {
     entity_doc_eng(
         id,
         scene,
         "token",
         json!({ "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(actor_id).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(actor_id).to_string() }),
     )
 }
 
@@ -80,7 +80,7 @@ fn audibility_with_no_tokens_anywhere_is_an_empty_scenes_list() {
 /// emitter in each (both 200 world units from their listener — one third of the 600-unit
 /// radius).
 fn two_scene_fixture() -> (SceneEcs, Uuid) {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = SceneEcs::from_documents(
         vec![
             readable(scene_doc(10)),
@@ -111,19 +111,19 @@ fn audibility_payload_carries_one_slice_per_tokened_visible_scene() {
     let a = payload
         .scenes
         .iter()
-        .find(|s| s.scene == Uuid::from_u128(10))
+        .find(|s| s.scene == crate::test_ids::test_uuid(10))
         .expect("scene A's slice");
     let b = payload
         .scenes
         .iter()
-        .find(|s| s.scene == Uuid::from_u128(20))
+        .find(|s| s.scene == crate::test_ids::test_uuid(20))
         .expect("scene B's slice");
-    assert_eq!(a.listener, Some(Uuid::from_u128(11)));
-    assert_eq!(b.listener, Some(Uuid::from_u128(21)));
+    assert_eq!(a.listener, Some(crate::test_ids::test_uuid(11)));
+    assert_eq!(b.listener, Some(crate::test_ids::test_uuid(21)));
     assert_eq!(a.emitters.len(), 1);
     assert_eq!(b.emitters.len(), 1);
-    assert_eq!(a.emitters[0].token, Uuid::from_u128(12));
-    assert_eq!(b.emitters[0].token, Uuid::from_u128(22));
+    assert_eq!(a.emitters[0].token, crate::test_ids::test_uuid(12));
+    assert_eq!(b.emitters[0].token, crate::test_ids::test_uuid(22));
     // Same geometry in both: gain folds volume * falloff(1/3) = 0.8 * 8/9, pan = 1/3.
     for slice in [a, b] {
         assert!((slice.emitters[0].gain - 0.8 * 8.0 / 9.0).abs() < 1e-9);
@@ -136,37 +136,45 @@ fn listen_as_overrides_the_listener_per_scene_independently() {
     let (ecs, user) = two_scene_fixture();
     // An override naming a READABLE (not owned) token of scene A: scene A listens as the
     // override, scene B still resolves its own owned-token fallback.
-    let mut override_token = owned_token(13, 10, 100.0, 50.0, Uuid::from_u128(99));
+    let mut override_token = owned_token(13, 10, 100.0, 50.0, crate::test_ids::test_uuid(99));
     override_token = readable(override_token);
     let mut ecs = ecs;
     ecs.apply_op(&Operation::Create {
         doc: override_token,
     });
 
-    let first = audibility_payload(&ecs, &player_ctx_of(user), Some(Uuid::from_u128(13)));
+    let first = audibility_payload(
+        &ecs,
+        &player_ctx_of(user),
+        Some(crate::test_ids::test_uuid(13)),
+    );
     let a = first
         .scenes
         .iter()
-        .find(|s| s.scene == Uuid::from_u128(10))
+        .find(|s| s.scene == crate::test_ids::test_uuid(10))
         .expect("scene A's slice");
     let b = first
         .scenes
         .iter()
-        .find(|s| s.scene == Uuid::from_u128(20))
+        .find(|s| s.scene == crate::test_ids::test_uuid(20))
         .expect("scene B's slice");
     assert_eq!(
         a.listener,
-        Some(Uuid::from_u128(13)),
+        Some(crate::test_ids::test_uuid(13)),
         "the override decides scene A's listener"
     );
     assert_eq!(
         b.listener,
-        Some(Uuid::from_u128(21)),
+        Some(crate::test_ids::test_uuid(21)),
         "scene B keeps its owned-token fallback"
     );
 
     // Honored across a re-computed call: the same override yields the identical payload.
-    let second = audibility_payload(&ecs, &player_ctx_of(user), Some(Uuid::from_u128(13)));
+    let second = audibility_payload(
+        &ecs,
+        &player_ctx_of(user),
+        Some(crate::test_ids::test_uuid(13)),
+    );
     assert_eq!(
         first, second,
         "a recompute with an unchanged override is stable"
@@ -189,7 +197,7 @@ fn an_unrelated_channel_still_returns_none() {
 /// The hidden-scene fixture: scene 10 visible to the player, scene 20 (holding tokens, with an
 /// emitter) denied to them via `DocRole::None`.
 fn hidden_scene_fixture() -> (SceneEcs, Uuid) {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let hidden_scene = scene_doc(20); // DocRole::None: the player cannot see this scene at all
     let mut ecs = SceneEcs::from_documents(
         vec![
@@ -218,7 +226,7 @@ fn audibility_never_discloses_a_scene_the_recipient_cannot_see() {
         1,
         "scene B holds tokens yet is withheld from a player who cannot see the scene document"
     );
-    assert_eq!(payload.scenes[0].scene, Uuid::from_u128(10));
+    assert_eq!(payload.scenes[0].scene, crate::test_ids::test_uuid(10));
 }
 
 #[test]
@@ -237,7 +245,7 @@ fn audibility_and_footprints_agree_on_scene_visibility() {
         "both channels withhold exactly the same scenes"
     );
 
-    let gm = gm_ctx_of(Uuid::from_u128(1));
+    let gm = gm_ctx_of(crate::test_ids::test_uuid(1));
     let gm_footprints = ecs.resolved_footprints(&gm, &no_world_grants());
     let gm_audibility = audibility_payload(&ecs, &gm, None);
     let gm_fp: Vec<Uuid> = gm_footprints.scenes.iter().map(|s| s.scene).collect();
@@ -265,7 +273,7 @@ fn player_ctx_of(user: Uuid) -> PermissionContext {
 
 /// A `WorldRole::Player` context for a fresh user id.
 fn player_ctx() -> PermissionContext {
-    player_ctx_of(Uuid::from_u128(7))
+    player_ctx_of(crate::test_ids::test_uuid(7))
 }
 
 /// A `WorldRole::Gm` context for `user`.

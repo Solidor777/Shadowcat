@@ -37,9 +37,12 @@ const FIXTURE_GRID_SIZE: f64 = 100.0;
 // --- Local fixture builders (this module cannot reach `mod tests`'s private helpers) ---
 
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
-    d.parent_id = parent.map(Uuid::from_u128);
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        ty,
+    );
+    d.parent_id = parent.map(crate::test_ids::test_uuid);
     d
 }
 
@@ -165,8 +168,8 @@ fn astar_route_parity_all_diagonal_rules_pins_full_path_and_cost() {
 // -------------------------------------------------------------------------------------------
 
 fn clear_scene() -> (SceneEcs, Uuid, Uuid) {
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let ecs = SceneEcs::from_documents(
         vec![
             entity_doc(
@@ -315,7 +318,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
         let (ecs, scene, token) = clear_scene();
         let world_defaults = WorldCapDefaults::default();
         let req = || crate::scene::RouteRequester {
-            user: Uuid::from_u128(7),
+            user: crate::test_ids::test_uuid(7),
             is_gm: true,
             world_role: WorldRole::Gm,
             world_defaults: &world_defaults,
@@ -395,8 +398,8 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
 // -------------------------------------------------------------------------------------------
 
 fn two_source_open_scene() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut source_a = entity_doc(
         11,
         10,
@@ -528,8 +531,8 @@ fn rasterize_parity_polygon_pins_full_cell_vec() {
 // -------------------------------------------------------------------------------------------
 
 fn lenient_corner_open_scene() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut source = entity_doc(
         11,
         10,

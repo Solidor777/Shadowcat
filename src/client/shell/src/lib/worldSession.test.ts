@@ -16,6 +16,7 @@ import {
   COMBAT_SERVICE,
   grantAuthor,
   buildNoteDoc,
+  buildPlaylistDoc,
   type Connect,
   type WireDocument,
   type Module,
@@ -2141,6 +2142,86 @@ describe("WorldSession.audio", () => {
     applyState.mockClear();
     session.documents.seedDocuments([doc as never]);
     expect(applyState).toHaveBeenCalledWith({ playing: [], shuffleSeed: 0 });
+    session.leave();
+  });
+
+  /** A minimal `audio-state` document naming one playing entry, for the next-track preload
+   * tests below. */
+  function audioStateDoc(entry: { playlist: string | null; trackIndex: number }) {
+    return {
+      ...buildWorldSettingsDoc("w1", {}),
+      doc_type: "audio-state",
+      name: null,
+      engine: {
+        playing: [{
+          id: "p1",
+          playlist: entry.playlist,
+          trackIndex: entry.trackIndex,
+          asset: "a1",
+          channel: "music",
+          gain: 1,
+          loop: false,
+          startedAt: 0,
+          pausedAt: null,
+        }],
+        shuffleSeed: 0,
+      },
+    };
+  }
+
+  test("a playing entry with no matching playlist doc issues no preload", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    // `vi.spyOn` on an already-spied method returns the SAME mock (this file sets no
+    // `restoreMocks`/`clearMocks`), so a prior test's recorded calls survive here unless
+    // cleared — the same reason the pre-existing `applyState` test above calls `mockClear()`.
+    const preload = vi.spyOn(AudioEngine.prototype, "preload").mockImplementation(() => {});
+    preload.mockClear();
+    const session = audioSession();
+    await session.enter("w1");
+    session.documents.seedDocuments([audioStateDoc({ playlist: "missing-playlist", trackIndex: 0 }) as never]);
+    expect(preload).not.toHaveBeenCalled();
+    session.leave();
+  });
+
+  test("the playing entry's trackIndex reaches resolveNextTrackAsset and its result reaches AudioEngine.preload", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const preload = vi.spyOn(AudioEngine.prototype, "preload").mockImplementation(() => {});
+    preload.mockClear();
+    const session = audioSession();
+    await session.enter("w1");
+    const playlist = buildPlaylistDoc(
+      "w1",
+      "Playlist",
+      {
+        tracks: [
+          { asset: "a1", name: null, gain: 1, loop: false },
+          { asset: "a2", name: null, gain: 1, loop: false },
+        ],
+        mode: "loop_all",
+        channel: "music",
+        fadeMs: 0,
+      },
+      { id: "pl1" },
+    );
+    session.documents.seedDocuments([playlist, audioStateDoc({ playlist: "pl1", trackIndex: 0 }) as never]);
+    expect(preload).toHaveBeenCalledWith("a2");
+    session.leave();
+  });
+
+  test("a null resolveNextTrackAsset result (e.g. a single-mode playlist) issues no AudioEngine.preload call", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const preload = vi.spyOn(AudioEngine.prototype, "preload").mockImplementation(() => {});
+    preload.mockClear();
+    const session = audioSession();
+    await session.enter("w1");
+    const playlist = buildPlaylistDoc(
+      "w1",
+      "Playlist",
+      { tracks: [{ asset: "a1", name: null, gain: 1, loop: false }], mode: "single", channel: "music", fadeMs: 0 },
+      { id: "pl1" },
+    );
+    session.documents.seedDocuments([playlist, audioStateDoc({ playlist: "pl1", trackIndex: 0 }) as never]);
+    expect(preload).not.toHaveBeenCalled();
     session.leave();
   });
 

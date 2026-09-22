@@ -14,7 +14,7 @@ import type { AudioChannel } from "./AudioChannel";
  *     id: Uuid::new_v4(),
  *     playlist: None,
  *     track_index: 0,
- *     asset: "a1".into(),
+ *     asset: "22222222-2222-2222-2222-222222222222".into(),
  *     channel: AudioChannel::Sfx,
  *     gain: 1.0,
  *     loop_: false,

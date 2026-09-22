@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { NotificationCenter } from "./notifications";
+import { NotificationCenter, MAX_VISIBLE_NOTIFICATIONS } from "./notifications";
 
 describe("NotificationCenter", () => {
   it("push adds a notification, items reflects it, and subscribe fires", () => {
@@ -46,6 +46,61 @@ describe("NotificationCenter", () => {
     const plain = center.push("info", "Plain.");
     expect(center.items[1]).toEqual({ id: plain, level: "info", message: "Plain." });
     expect(center.items[1].action).toBeUndefined();
+  });
+});
+
+describe("NotificationCenter visible-concurrency cap", () => {
+  it("queues a push beyond the visible cap, and items exposes only the visible set", () => {
+    const center = new NotificationCenter();
+    const ids = Array.from({ length: MAX_VISIBLE_NOTIFICATIONS + 2 }, (_, i) =>
+      center.push("info", `n${i}`),
+    );
+    expect(center.items).toHaveLength(MAX_VISIBLE_NOTIFICATIONS);
+    expect(center.items.map((n) => n.id)).toEqual(ids.slice(0, MAX_VISIBLE_NOTIFICATIONS));
+  });
+
+  it("dismissing a visible notification promotes the oldest queued one, FIFO", () => {
+    const center = new NotificationCenter();
+    const ids = Array.from({ length: MAX_VISIBLE_NOTIFICATIONS + 2 }, (_, i) =>
+      center.push("info", `n${i}`),
+    );
+    center.dismiss(ids[0]);
+    expect(center.items.map((n) => n.id)).toEqual([
+      ...ids.slice(1, MAX_VISIBLE_NOTIFICATIONS),
+      ids[MAX_VISIBLE_NOTIFICATIONS],
+    ]);
+    center.dismiss(ids[1]);
+    expect(center.items.map((n) => n.id)).toEqual([
+      ...ids.slice(2, MAX_VISIBLE_NOTIFICATIONS),
+      ids[MAX_VISIBLE_NOTIFICATIONS],
+      ids[MAX_VISIBLE_NOTIFICATIONS + 1],
+    ]);
+  });
+
+  it("dismissing a queued (not yet visible) notification removes it from the queue without affecting items", () => {
+    const center = new NotificationCenter();
+    const ids = Array.from({ length: MAX_VISIBLE_NOTIFICATIONS + 2 }, (_, i) =>
+      center.push("info", `n${i}`),
+    );
+    const visibleBefore = center.items.map((n) => n.id);
+    center.dismiss(ids[MAX_VISIBLE_NOTIFICATIONS]); // queued, not visible
+    expect(center.items.map((n) => n.id)).toEqual(visibleBefore);
+    // The remaining queued entry still promotes correctly once a slot frees up.
+    center.dismiss(ids[0]);
+    expect(center.items.map((n) => n.id)).toEqual([
+      ...ids.slice(1, MAX_VISIBLE_NOTIFICATIONS),
+      ids[MAX_VISIBLE_NOTIFICATIONS + 1],
+    ]);
+  });
+
+  it("dismissing an unknown id when a queue exists is a no-op (no promotion, no notify)", () => {
+    const center = new NotificationCenter();
+    Array.from({ length: MAX_VISIBLE_NOTIFICATIONS + 1 }, (_, i) => center.push("info", `n${i}`));
+    const listener = vi.fn();
+    center.subscribe(listener);
+    center.dismiss("does-not-exist");
+    expect(listener).not.toHaveBeenCalled();
+    expect(center.items).toHaveLength(MAX_VISIBLE_NOTIFICATIONS);
   });
 });
 

@@ -113,7 +113,9 @@ pub async fn original(
 /// `Content-Disposition: attachment; filename="<name>"`. The display name is
 /// quoted; a quote, backslash or line break inside it would break the header
 /// grammar (or inject a second header), so those are stripped, not escaped.
-fn attachment_disposition(original_name: &str) -> String {
+/// Shared with `assets::serve`'s non-inline branch — the ONE function either reads for this
+/// header, never a bare `"attachment"` restated at the second call site.
+pub(super) fn attachment_disposition(original_name: &str) -> String {
     let filename: String = original_name
         .chars()
         .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))

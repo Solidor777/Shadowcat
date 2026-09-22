@@ -102,6 +102,49 @@ function clampScreenRectToAvailable(rect: ScreenRect): ScreenRect {
   return { left, top, width, height };
 }
 
+/** Clamps a floating panel's HOST-RELATIVE rect (see `Rect`'s own doc comment) against the
+ * panel host's CURRENT container size, but ONLY when the rect has no overlap with the
+ * container at all — a rect persisted from a wider viewport, or a container that shrank since
+ * (a window resize, a mobile rotation), can otherwise strand a floating panel somewhere the
+ * user can never reach or drag back. A rect with ANY overlap is returned unchanged: `Rect`'s own
+ * contract permits a panel dragged legitimately PARTWAY off-screen, and a continuous re-clamp on
+ * every reconcile must never undo that deliberate placement.
+ * INVARIANT: an unmeasurable (zero-area) container is `#floatingContainerSize`'s OWN
+ * degenerate-bounds guard, decided there and there alone (that resolver returns `null`, and its
+ * one caller skips this function entirely) — `containerW`/`containerH` here are always positive.
+ * This function carries no degenerate-bounds check of its own, so the decision has exactly one
+ * owner; do not reintroduce one here.
+ * @param rect The floating panel's host-relative rect, as read from the layout tree.
+ * @param containerW The panel host's current content width, in CSS px; always positive (see
+ * `#floatingContainerSize`).
+ * @param containerH The panel host's current content height, in CSS px; always positive.
+ * @returns `rect` unchanged when it already overlaps the container, otherwise a same-sized rect
+ * pinned to the container's top-left-most reachable slot.
+ * @example
+ * ```
+ * // private function; not part of the public API — used by apply()'s floating loop
+ * declare const rect: import("../layout/tree").Rect;
+ * clampFloatingRectToContainer(rect, 1200, 800);
+ * ```
+ */
+function clampFloatingRectToContainer(rect: Rect, containerW: number, containerH: number): Rect {
+  const entirelyOffscreen =
+    rect.x + rect.w <= 0 || rect.x >= containerW || rect.y + rect.h <= 0 || rect.y >= containerH;
+  if (!entirelyOffscreen) return rect;
+  const w = Math.min(Math.max(rect.w, 1), containerW);
+  const h = Math.min(Math.max(rect.h, 1), containerH);
+  return { x: 0, y: 0, w, h };
+}
+
+/** The dockview root element's current measurable content box — `#floatingContainerSize`'s
+ * return shape. */
+interface FloatingContainerSize {
+  /** Current content width, in CSS px. */
+  w: number;
+  /** Current content height, in CSS px. */
+  h: number;
+}
+
 /** Content renderer that adopts an externally-owned element (a panel slot,
  * or the shared stage element) into dockview's panel content container.
  * `resolve` is called once, lazily, at `init()` — matching every other
@@ -578,6 +621,10 @@ interface DockviewComponentAccess {
 export class DockviewEngine implements EngineAdapter {
   /** The live dockview API; `null` before `init` runs or after `destroy`. */
   #api: DockviewApi | null = null;
+  /** The container element `init` was given — the app's own page-layout element dockview
+   * mounts into, `null` before `init` runs or after `destroy`. `#floatingContainerSize` reads
+   * ITS box rather than `component.element`'s (see that method's own doc for why). */
+  #host: HTMLElement | null = null;
   /** Subscribers registered via `onOp`. */
   #opListeners = new Set<(op: LayoutOp) => void>();
   /** Every dockview subscription this engine owns, disposed in bulk by `destroy`. */
@@ -804,6 +851,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
+    this.#host = host;
     host.classList.add("sc-dockview-root");
 
     const api = createDockview(host, {
@@ -2011,12 +2059,23 @@ export class DockviewEngine implements EngineAdapter {
         });
       }
 
+      // Read ONCE per reconcile (same host container for every floating panel this pass
+      // touches) — the CURRENT viewport `clampFloatingRectToContainer` re-clamps every
+      // persisted rect against below.
+      const containerSize = this.#floatingContainerSize();
       for (const f of expanded.floating) {
         seenPanelIds.add(f.id);
         // Same in-flight pop-out gap as the zone loop above: the tree still
         // lists the panel floating while dockview has already moved it into
         // the popout window — reconciling would drag it back out.
         if (this.#pendingPopouts.has(f.id)) continue;
+        // Re-clamped fresh on every reconcile (a resize, a rotation, a differently-sized
+        // container than when this rect was saved) rather than persisted back into the
+        // tree — a rect that already overlaps the container (including one legitimately
+        // dragged partway off-screen) passes through unchanged.
+        const rect = containerSize
+          ? clampFloatingRectToContainer(f.rect, containerSize.w, containerSize.h)
+          : f.rect;
         const existing = api.getPanel(f.id);
         // A panel already present but NOT in a floating group is transitioning
         // INTO floating (e.g. the menu's "Float" command on a docked tab) —
@@ -2040,7 +2099,7 @@ export class DockviewEngine implements EngineAdapter {
           api.addPanel({
             id: f.id,
             component: "sc-panel",
-            floating: { x: f.rect.x, y: f.rect.y, width: f.rect.w, height: f.rect.h },
+            floating: { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
           });
           this.#wireFloatingA11y(f.id, meta.get(f.id));
         } else {
@@ -2053,20 +2112,23 @@ export class DockviewEngine implements EngineAdapter {
           if (
             entry &&
             live &&
-            (Math.abs(live.x - f.rect.x) >= 1 ||
-              Math.abs(live.y - f.rect.y) >= 1 ||
-              Math.abs(live.w - f.rect.w) >= 1 ||
-              Math.abs(live.h - f.rect.h) >= 1)
+            (Math.abs(live.x - rect.x) >= 1 ||
+              Math.abs(live.y - rect.y) >= 1 ||
+              Math.abs(live.w - rect.w) >= 1 ||
+              Math.abs(live.h - rect.h) >= 1)
           ) {
-            this.#reconcileFloating(entry, f.rect);
+            this.#reconcileFloating(entry, rect);
           }
         }
-        // Snapshot the tree's own rect as the baseline `#handleFloatingLayoutChange`
-        // diffs against, whether this iteration created/relocated the panel or
-        // left an already-floating one untouched — see that method's doc comment
-        // for why this snapshot (not `#applying`) is what suppresses self-caused
-        // churn from a `resizeFloating` op's own round trip back through `apply()`.
-        this.#lastFloatingRect.set(f.id, f.rect);
+        // Snapshot the CLAMPED rect (what is actually rendered) as the baseline
+        // `#handleFloatingLayoutChange` diffs against, whether this iteration
+        // created/relocated the panel or left an already-floating one untouched — see that
+        // method's doc comment for why this snapshot (not `#applying`) is what suppresses
+        // self-caused churn from a `resizeFloating` op's own round trip back through `apply()`.
+        // Using the unclamped `f.rect` here would desync the baseline from the live widget
+        // whenever a clamp actually fired, manufacturing a spurious re-emit on the next
+        // layout-change event.
+        this.#lastFloatingRect.set(f.id, rect);
       }
 
       // Panels/groups no longer named by the tree are removed. Minimized
@@ -2204,16 +2266,20 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** Reads a floating window's live OUTER box (overlay frame, titlebar
-   * included), relative to the dockview root element — the same coordinate
+   * included), relative to the panel host — the same coordinate
    * space `addPanel`'s `floating` option places a new floating window in, so
    * creation, this read, and `#reconcileFloating`'s write all speak one rect
    * language. (The group-level `boundingBox` is deliberately NOT used: it
    * measures the group's content element BELOW the titlebar, so a rect
    * round-tripped through it drifts by `Overlay.headerHeight` on every
-   * gesture→persist→recreate cycle.)
+   * gesture→persist→recreate cycle.) Reads `#host` (the caller-supplied
+   * container) rather than `component.element` (dockview's OWN internally-created root) for
+   * its origin, for the SAME reason `#floatingContainerSize` does — see that method's own doc:
+   * dockview's root is assigned a placeholder size/position at construction and only corrected
+   * once its internal `ResizeObserver` first fires, so a read taken against it before that can
+   * be wrong even though `#host` is already laid out correctly.
    * @param entry The floating window to measure.
-   * @returns The window's live `Rect`, or `null` when the component root is
-   * unavailable.
+   * @returns The window's live `Rect`, or `null` when there is no host.
    * @example
    * ```
    * // private method; not part of the public API — invoked only from
@@ -2223,9 +2289,8 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   #floatingOverlayRect(entry: FloatingWindowEntry): Rect | null {
-    const component = this.#componentAccess();
-    if (!component) return null;
-    const root = component.element.getBoundingClientRect();
+    if (!this.#host) return null;
+    const root = this.#host.getBoundingClientRect();
     const box = entry.overlay.element.getBoundingClientRect();
     return {
       x: Math.round(box.left - root.left),
@@ -2233,6 +2298,37 @@ export class DockviewEngine implements EngineAdapter {
       w: Math.round(box.width),
       h: Math.round(box.height),
     };
+  }
+
+  /** The panel host's current content box, in the same coordinate space `#floatingOverlayRect`/
+   * `addPanel`'s `floating` option use — the CURRENT viewport `apply()`'s floating loop
+   * re-clamps every persisted floating rect against. Reads `#host` (the container element
+   * `init` was given, sized by the app's own page CSS from first paint) rather than
+   * `component.element` (dockview's OWN internally-created root): dockview assigns that root
+   * element a fixed placeholder size on construction and only corrects it once its internal
+   * `ResizeObserver` first fires — asynchronously, on a later frame. `apply()`'s floating loop
+   * can run against that placeholder for many reconciles in a row right after a fresh page
+   * load/reload (observed as a container read of exactly 100x100, dockview-core's own
+   * placeholder, persisting across dozens of calls before the observer corrects it) — reading
+   * `#host` instead sidesteps that race entirely, since the host is a real page-layout element
+   * with no placeholder-then-correct lifecycle of its own.
+   * INVARIANT: the SOLE degenerate-bounds guard for the clamp this feeds: `null` covers both
+   * "no host" (pre-`init`/post-`destroy`) and an unmeasurable (zero-area) read, mirroring
+   * `clampScreenRectToAvailable`'s own degenerate-bounds fallback — `clampFloatingRectToContainer`
+   * itself carries no such check, so this is the one place that decides "unmeasurable".
+   * @returns The current width/height (always positive), or `null` when there is no host or
+   * its measured size is zero-area.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from apply()'s floating loop
+   * this.#floatingContainerSize();
+   * ```
+   */
+  #floatingContainerSize(): FloatingContainerSize | null {
+    if (!this.#host) return null;
+    const root = this.#host.getBoundingClientRect();
+    if (root.width <= 0 || root.height <= 0) return null;
+    return { w: root.width, h: root.height };
   }
 
   /** Pushes the tree's rect onto an already-floating window's widget — the
@@ -2499,6 +2595,7 @@ export class DockviewEngine implements EngineAdapter {
     this.#noticeListeners.clear();
     this.#api?.dispose();
     this.#api = null;
+    this.#host = null;
     this.#expanded = null;
     this.#zoneOfGroup.clear();
     this.#opListeners.clear();

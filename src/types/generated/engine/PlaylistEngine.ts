@@ -12,7 +12,7 @@ import type { PlaylistTrack } from "./PlaylistTrack";
  * use shadowcat::data::engine::audio::{AudioChannel, PlaylistEngine, PlaylistMode, PlaylistTrack};
  *
  * let playlist = PlaylistEngine {
- *     tracks: vec![PlaylistTrack { asset: "a1".into(), name: None, gain: 1.0, loop_: false }],
+ *     tracks: vec![PlaylistTrack { asset: "11111111-1111-1111-1111-111111111111".into(), name: None, gain: 1.0, loop_: false }],
  *     mode: PlaylistMode::Sequential,
  *     channel: AudioChannel::Music,
  *     fade_ms: 2000,

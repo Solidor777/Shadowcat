@@ -140,7 +140,11 @@ async fn a_validator_refused_create_is_rejected_with_the_modules_reason() {
         msg.contains("validator ") && msg.contains("hp must stay positive"),
         "the refusal must name the validator channel and carry the reason: {msg}"
     );
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -266,7 +270,11 @@ async fn apply_command_never_invokes_a_validator() {
     r.apply_command(cmd)
         .await
         .expect("apply_command is the trusted replay path: no validator runs");
-    assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
+    assert!(r
+        .get_document(crate::test_ids::test_uuid(1))
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
@@ -393,7 +401,7 @@ async fn a_document_changed_between_the_pre_image_read_and_the_transaction_confl
         &gm_ctx,
         w.id,
         vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 path: "/system/hp".into(),
                 old: first_old.clone(),
@@ -417,7 +425,7 @@ async fn a_document_changed_between_the_pre_image_read_and_the_transaction_confl
             &gm_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     path: "/system/hp".into(),
                     old: first_old,
@@ -435,7 +443,7 @@ async fn a_document_changed_between_the_pre_image_read_and_the_transaction_confl
         "expected Conflict, got {err:?}"
     );
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -584,7 +592,7 @@ async fn an_embedded_only_system_update_reaches_the_child_validator() {
             &gm_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     path: "/embedded/widgets/0/system/hp".into(),
                     old: serde_json::Value::Null,
@@ -646,7 +654,7 @@ async fn a_concurrent_cross_field_change_revalidates_the_in_transaction_post_ima
             w.id,
             vec![
                 Operation::Update {
-                    doc_id: Uuid::from_u128(1),
+                    doc_id: crate::test_ids::test_uuid(1),
                     changes: vec![FieldChange {
                         path: "/system/a".into(),
                         old: serde_json::json!(1),
@@ -655,7 +663,7 @@ async fn a_concurrent_cross_field_change_revalidates_the_in_transaction_post_ima
                     }],
                 },
                 Operation::Update {
-                    doc_id: Uuid::from_u128(1),
+                    doc_id: crate::test_ids::test_uuid(1),
                     changes: vec![FieldChange {
                         path: "/system/b".into(),
                         old: serde_json::json!(1),
@@ -679,7 +687,7 @@ async fn a_concurrent_cross_field_change_revalidates_the_in_transaction_post_ima
     // Whole-batch rollback: the document is still {a:1,b:1}, and each op on its
     // own (validated against the true pre-image) is accepted.
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -690,7 +698,7 @@ async fn a_concurrent_cross_field_change_revalidates_the_in_transaction_post_ima
         &gm_ctx,
         w.id,
         vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 path: "/system/a".into(),
                 old: serde_json::json!(1),
@@ -781,7 +789,7 @@ async fn prior_is_withheld_from_a_writer_without_whole_document_read() {
             &gm_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     path: "/system/hp".into(),
                     old: serde_json::json!(1),
@@ -822,7 +830,7 @@ async fn prior_is_withheld_from_a_writer_without_whole_document_read() {
         &p_ctx,
         w.id,
         vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 path: "/system/hp".into(),
                 old: serde_json::json!(1),
@@ -905,7 +913,7 @@ async fn embedded_boundary_rewrites_reach_the_child_validator() {
                 &gm_ctx,
                 w.id,
                 vec![Operation::Update {
-                    doc_id: Uuid::from_u128(1),
+                    doc_id: crate::test_ids::test_uuid(1),
                     changes: vec![FieldChange {
                         path: path.clone(),
                         old,
@@ -936,7 +944,7 @@ async fn embedded_boundary_rewrites_reach_the_child_validator() {
         &gm_ctx,
         w.id,
         vec![Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 path: "/embedded/widgets".into(),
                 old: serde_json::to_value(vec![&stored_child]).unwrap(),
@@ -950,7 +958,7 @@ async fn embedded_boundary_rewrites_reach_the_child_validator() {
     .await
     .expect("an accepted whole-collection rewrite commits");
     assert_eq!(
-        r.get_document(Uuid::from_u128(1))
+        r.get_document(crate::test_ids::test_uuid(1))
             .await
             .unwrap()
             .unwrap()
@@ -995,7 +1003,7 @@ async fn an_update_addressing_a_foreign_worlds_document_never_reaches_a_validato
             &gm_ctx,
             w.id,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(9),
+                doc_id: crate::test_ids::test_uuid(9),
                 changes: vec![FieldChange {
                     path: "/system/hp".into(),
                     old: serde_json::json!(1),

@@ -19,7 +19,7 @@ use crate::data::document::{Document, PermissionSet, Scope};
 /// A deterministic id for test documents (stable across runs, unlike a
 /// freshly minted uuid, so failures diff readably).
 pub(crate) fn test_id(s: &str) -> Uuid {
-    Uuid::from_u128(s.bytes().fold(0u128, |acc, b| {
+    crate::test_ids::test_uuid(s.bytes().fold(0u128, |acc, b| {
         acc.wrapping_mul(31).wrapping_add(u128::from(b))
     }))
 }

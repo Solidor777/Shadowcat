@@ -298,8 +298,12 @@ fn error_reason(reply: ServerMsg) -> MergeErrorKind {
 #[tokio::test]
 async fn pull_clean_applies_and_refreshes_base() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE101), Uuid::from_u128(0xE102)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE101),
+        crate::test_ids::test_uuid(0xE102),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
 
     let reply = handle_merge_intent(
@@ -307,7 +311,7 @@ async fn pull_clean_applies_and_refreshes_base() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -337,8 +341,12 @@ async fn pull_clean_applies_and_refreshes_base() {
 #[tokio::test]
 async fn pull_conflicted_reports_then_resolutions_apply() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE111), Uuid::from_u128(0xE112)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE111),
+        crate::test_ids::test_uuid(0xE112),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
     h.set_system(child, json!({ "hp": 11 })).await;
 
@@ -347,7 +355,7 @@ async fn pull_conflicted_reports_then_resolutions_apply() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -371,7 +379,7 @@ async fn pull_conflicted_reports_then_resolutions_apply() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child,
             resolutions: Some(vec!["/system/hp".to_string()]),
         },
@@ -392,8 +400,12 @@ async fn pull_conflicted_reports_then_resolutions_apply() {
 #[tokio::test]
 async fn pull_resolutions_off_surface_path_is_unknown_resolution() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE121), Uuid::from_u128(0xE122)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE121),
+        crate::test_ids::test_uuid(0xE122),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
     h.set_system(child, json!({ "hp": 11 })).await;
 
@@ -402,7 +414,7 @@ async fn pull_resolutions_off_surface_path_is_unknown_resolution() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: Some(vec!["/permissions/default".to_string()]),
         },
@@ -431,8 +443,12 @@ async fn pull_resolutions_off_surface_path_is_unknown_resolution() {
 #[tokio::test]
 async fn pull_resolutions_made_stale_by_an_interleaving_edit() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE131), Uuid::from_u128(0xE132)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE131),
+        crate::test_ids::test_uuid(0xE132),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
     h.set_system(child, json!({ "hp": 11 })).await;
 
@@ -441,7 +457,7 @@ async fn pull_resolutions_made_stale_by_an_interleaving_edit() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -460,7 +476,7 @@ async fn pull_resolutions_made_stale_by_an_interleaving_edit() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child,
             resolutions: Some(vec!["/system/hp".to_string()]),
         },
@@ -483,12 +499,17 @@ async fn pull_resolutions_made_stale_by_an_interleaving_edit() {
 #[tokio::test]
 async fn pull_forbidden_for_non_owner_non_gm() {
     let h = merge_harness().await;
-    let (template, _) = player_pullable(&h, Uuid::from_u128(0xE141), Uuid::from_u128(0xE142)).await;
+    let (template, _) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE141),
+        crate::test_ids::test_uuid(0xE142),
+    )
+    .await;
     // A GM-owned, world-visible instance of the same template: the player can
     // READ it but is not its owner.
     let foreign = instance_doc(
         h.world_id,
-        Uuid::from_u128(0xE143),
+        crate::test_ids::test_uuid(0xE143),
         template,
         h.gm.user_id,
         DocRole::Observer,
@@ -501,8 +522,8 @@ async fn pull_forbidden_for_non_owner_non_gm() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
-            child_id: Uuid::from_u128(0xE143),
+            request_id: crate::test_ids::test_uuid(1),
+            child_id: crate::test_ids::test_uuid(0xE143),
             resolutions: None,
         },
         0,
@@ -517,8 +538,12 @@ async fn pull_forbidden_for_non_owner_non_gm() {
 #[tokio::test]
 async fn pull_allowed_for_gm() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE151), Uuid::from_u128(0xE152)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE151),
+        crate::test_ids::test_uuid(0xE152),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
 
     let reply = handle_merge_intent(
@@ -526,7 +551,7 @@ async fn pull_allowed_for_gm() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -546,14 +571,18 @@ async fn pull_allowed_for_gm() {
 #[tokio::test]
 async fn pull_forbidden_when_the_computed_update_exceeds_the_requesters_capabilities() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE161), Uuid::from_u128(0xE162)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE161),
+        crate::test_ids::test_uuid(0xE162),
+    )
+    .await;
 
     // Post-stamp, the template gains an embedded item.
     let item = {
         let mut d = crate::data::document::tests::world_scoped_doc(
             h.world_id,
-            Uuid::from_u128(0xE163),
+            crate::test_ids::test_uuid(0xE163),
             "item",
         );
         d.system = json!({ "qty": 1 });
@@ -583,7 +612,7 @@ async fn pull_forbidden_when_the_computed_update_exceeds_the_requesters_capabili
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -601,7 +630,7 @@ async fn pull_forbidden_when_the_computed_update_exceeds_the_requesters_capabili
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child,
             resolutions: None,
         },
@@ -620,8 +649,12 @@ async fn pull_forbidden_when_the_computed_update_exceeds_the_requesters_capabili
 #[tokio::test]
 async fn revert_applies_to_a_conflicted_instance_without_asking() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE171), Uuid::from_u128(0xE172)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE171),
+        crate::test_ids::test_uuid(0xE172),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
     h.set_system(child, json!({ "hp": 11 })).await;
 
@@ -630,7 +663,7 @@ async fn revert_applies_to_a_conflicted_instance_without_asking() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergeRevert {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
         },
         0,
@@ -659,8 +692,12 @@ async fn revert_applies_to_a_conflicted_instance_without_asking() {
 #[tokio::test]
 async fn revert_forbidden_for_non_owner() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE181), Uuid::from_u128(0xE182)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE181),
+        crate::test_ids::test_uuid(0xE182),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
 
     let reply = handle_merge_intent(
@@ -668,7 +705,7 @@ async fn revert_forbidden_for_non_owner() {
         h.repo.as_ref(),
         &h.bystander,
         ClientMsg::MergeRevert {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
         },
         0,
@@ -693,8 +730,8 @@ async fn pull_not_found_and_not_an_instance() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
-            child_id: Uuid::from_u128(0xDEAD),
+            request_id: crate::test_ids::test_uuid(1),
+            child_id: crate::test_ids::test_uuid(0xDEAD),
             resolutions: None,
         },
         0,
@@ -705,7 +742,7 @@ async fn pull_not_found_and_not_an_instance() {
 
     let plain = template_doc(
         h.world_id,
-        Uuid::from_u128(0xE191),
+        crate::test_ids::test_uuid(0xE191),
         h.player.user_id,
         DocRole::Observer,
         json!({ "hp": 10 }),
@@ -716,8 +753,8 @@ async fn pull_not_found_and_not_an_instance() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
-            child_id: Uuid::from_u128(0xE191),
+            request_id: crate::test_ids::test_uuid(2),
+            child_id: crate::test_ids::test_uuid(0xE191),
             resolutions: None,
         },
         0,
@@ -734,11 +771,11 @@ async fn pull_not_found_and_not_an_instance() {
 /// visible_locked, hidden).
 async fn push_matrix(h: &Harness) -> (Uuid, Uuid, Uuid, Uuid, Uuid) {
     let (template, clean, conflicted, visible_locked, hidden) = (
-        Uuid::from_u128(0xE201),
-        Uuid::from_u128(0xE202),
-        Uuid::from_u128(0xE203),
-        Uuid::from_u128(0xE204),
-        Uuid::from_u128(0xE205),
+        crate::test_ids::test_uuid(0xE201),
+        crate::test_ids::test_uuid(0xE202),
+        crate::test_ids::test_uuid(0xE203),
+        crate::test_ids::test_uuid(0xE204),
+        crate::test_ids::test_uuid(0xE205),
     );
     let mut tmpl = template_doc(
         h.world_id,
@@ -829,7 +866,7 @@ async fn push_mixed_visibility_and_capability_outcomes() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -899,7 +936,7 @@ async fn push_resolutions_second_call_applies() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: Some(
                 [(conflicted, vec!["/system/hp".to_string()])]
@@ -945,7 +982,7 @@ async fn push_resolutions_for_an_invisible_instance_is_unknown_resolution() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: Some(
                 [(hidden, vec!["/system/hp".to_string()])]
@@ -980,7 +1017,7 @@ async fn push_forbidden_for_non_template_owner() {
         h.repo.as_ref(),
         &h.bystander,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -1001,8 +1038,8 @@ async fn push_not_found_for_a_missing_template() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
-            template_id: Uuid::from_u128(0xDEAD),
+            request_id: crate::test_ids::test_uuid(1),
+            template_id: crate::test_ids::test_uuid(0xDEAD),
             resolutions: None,
         },
         0,
@@ -1019,9 +1056,9 @@ async fn push_not_found_for_a_missing_template() {
 async fn push_corrupt_base_fails_closed_before_any_write() {
     let h = merge_harness().await;
     let (template, clean, corrupt) = (
-        Uuid::from_u128(0xE301),
-        Uuid::from_u128(0xE302),
-        Uuid::from_u128(0xE303),
+        crate::test_ids::test_uuid(0xE301),
+        crate::test_ids::test_uuid(0xE302),
+        crate::test_ids::test_uuid(0xE303),
     );
     h.create(template_doc(
         h.world_id,
@@ -1060,7 +1097,7 @@ async fn push_corrupt_base_fails_closed_before_any_write() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -1085,7 +1122,10 @@ async fn push_corrupt_base_fails_closed_before_any_write() {
 #[tokio::test]
 async fn merge_commits_broadcast_and_redact_like_a_client_update() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE401), Uuid::from_u128(0xE402));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE401),
+        crate::test_ids::test_uuid(0xE402),
+    );
     let mut tmpl = template_doc(
         h.world_id,
         template,
@@ -1119,7 +1159,7 @@ async fn merge_commits_broadcast_and_redact_like_a_client_update() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1248,15 +1288,19 @@ async fn hidden_conflict_pair(h: &Harness, template_id: Uuid, child_id: Uuid) ->
 #[tokio::test]
 async fn pull_hides_a_gm_only_conflict_from_a_non_gm_owner_and_applies_child_wins() {
     let h = merge_harness().await;
-    let (_, child) =
-        hidden_conflict_pair(&h, Uuid::from_u128(0xE501), Uuid::from_u128(0xE502)).await;
+    let (_, child) = hidden_conflict_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE501),
+        crate::test_ids::test_uuid(0xE502),
+    )
+    .await;
 
     let reply = handle_merge_intent(
         &h.room,
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1285,15 +1329,19 @@ async fn pull_hides_a_gm_only_conflict_from_a_non_gm_owner_and_applies_child_win
 #[tokio::test]
 async fn pull_reports_the_gm_only_conflict_to_a_gm() {
     let h = merge_harness().await;
-    let (_, child) =
-        hidden_conflict_pair(&h, Uuid::from_u128(0xE511), Uuid::from_u128(0xE512)).await;
+    let (_, child) = hidden_conflict_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE511),
+        crate::test_ids::test_uuid(0xE512),
+    )
+    .await;
 
     let reply = handle_merge_intent(
         &h.room,
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1321,7 +1369,10 @@ async fn pull_reports_the_gm_only_conflict_to_a_gm() {
 #[tokio::test]
 async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
     let h = merge_harness().await;
-    let (template, visible) = (Uuid::from_u128(0xE521), Uuid::from_u128(0xE522));
+    let (template, visible) = (
+        crate::test_ids::test_uuid(0xE521),
+        crate::test_ids::test_uuid(0xE522),
+    );
     let mut tmpl = template_doc(
         h.world_id,
         template,
@@ -1361,7 +1412,7 @@ async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -1393,7 +1444,10 @@ async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
     );
 
     // GM control on a fresh pair: the same divergence is a reported conflict.
-    let (template2, visible2) = (Uuid::from_u128(0xE523), Uuid::from_u128(0xE524));
+    let (template2, visible2) = (
+        crate::test_ids::test_uuid(0xE523),
+        crate::test_ids::test_uuid(0xE524),
+    );
     let mut tmpl2 = template_doc(
         h.world_id,
         template2,
@@ -1429,7 +1483,7 @@ async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             template_id: template2,
             resolutions: None,
         },
@@ -1457,15 +1511,19 @@ async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
 #[tokio::test]
 async fn template_merge_whole_collection_write_carries_no_embedded_base() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE531), Uuid::from_u128(0xE532)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE531),
+        crate::test_ids::test_uuid(0xE532),
+    )
+    .await;
 
     // Post-stamp, the template gains an embedded item — the pull's
     // `/embedded/items` whole-collection write restamps it into the instance.
     let item = {
         let mut d = crate::data::document::tests::world_scoped_doc(
             h.world_id,
-            Uuid::from_u128(0xE533),
+            crate::test_ids::test_uuid(0xE533),
             "item",
         );
         d.system = json!({ "qty": 1 });
@@ -1495,7 +1553,7 @@ async fn template_merge_whole_collection_write_carries_no_embedded_base() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1519,12 +1577,12 @@ async fn template_merge_whole_collection_write_carries_no_embedded_base() {
 #[tokio::test]
 async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
     let outcome = || MergeOutcome::Revert {
-        child_id: Uuid::from_u128(1),
+        child_id: crate::test_ids::test_uuid(1),
         status: MergeRevertStatus::Applied,
     };
 
     let reply = commit_error(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         DataError::Conflict("stale pre-image".into()),
         || async { Ok(outcome()) },
     )
@@ -1539,7 +1597,7 @@ async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
     assert_eq!(o, outcome(), "carries the recomputed outcome");
 
     let reply = commit_error(
-        Uuid::from_u128(9),
+        crate::test_ids::test_uuid(9),
         DataError::Conflict("stale pre-image".into()),
         || async { Err(MergeErrorKind::NotFound) },
     )
@@ -1549,18 +1607,22 @@ async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
         "a failed recompute surfaces its own reason"
     );
 
-    let reply = commit_error(Uuid::from_u128(9), DataError::Forbidden, || async {
-        Ok(outcome())
-    })
+    let reply = commit_error(
+        crate::test_ids::test_uuid(9),
+        DataError::Forbidden,
+        || async { Ok(outcome()) },
+    )
     .await;
     assert!(
         matches!(error_reason(reply), MergeErrorKind::Forbidden),
         "Forbidden passes through"
     );
 
-    let reply = commit_error(Uuid::from_u128(9), DataError::NotFound, || async {
-        Ok(outcome())
-    })
+    let reply = commit_error(
+        crate::test_ids::test_uuid(9),
+        DataError::NotFound,
+        || async { Ok(outcome()) },
+    )
     .await;
     assert!(
         matches!(error_reason(reply), MergeErrorKind::Internal),
@@ -1577,9 +1639,18 @@ async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
 #[tokio::test]
 async fn pull_withholds_a_hidden_embedded_conflict_behind_a_dropped_sibling() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE601), Uuid::from_u128(0xE602));
-    let (t_a, t_b) = (Uuid::from_u128(0xE603), Uuid::from_u128(0xE604));
-    let (i_a, i_b) = (Uuid::from_u128(0xE605), Uuid::from_u128(0xE606));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE601),
+        crate::test_ids::test_uuid(0xE602),
+    );
+    let (t_a, t_b) = (
+        crate::test_ids::test_uuid(0xE603),
+        crate::test_ids::test_uuid(0xE604),
+    );
+    let (i_a, i_b) = (
+        crate::test_ids::test_uuid(0xE605),
+        crate::test_ids::test_uuid(0xE606),
+    );
 
     let mut tmpl = template_doc(
         h.world_id,
@@ -1654,7 +1725,7 @@ async fn pull_withholds_a_hidden_embedded_conflict_behind_a_dropped_sibling() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1693,9 +1764,18 @@ async fn pull_withholds_a_hidden_embedded_conflict_behind_a_dropped_sibling() {
 #[tokio::test]
 async fn pull_withholds_a_hidden_template_side_conflict_behind_a_template_reorder() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE611), Uuid::from_u128(0xE612));
-    let (t_a, t_b) = (Uuid::from_u128(0xE613), Uuid::from_u128(0xE614));
-    let (i_a, i_b) = (Uuid::from_u128(0xE615), Uuid::from_u128(0xE616));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE611),
+        crate::test_ids::test_uuid(0xE612),
+    );
+    let (t_a, t_b) = (
+        crate::test_ids::test_uuid(0xE613),
+        crate::test_ids::test_uuid(0xE614),
+    );
+    let (i_a, i_b) = (
+        crate::test_ids::test_uuid(0xE615),
+        crate::test_ids::test_uuid(0xE616),
+    );
 
     let mut t_a_doc = embedded_child(h.world_id, t_a, None, json!({ "hp": 1, "secret": "S1" }));
     t_a_doc
@@ -1769,7 +1849,7 @@ async fn pull_withholds_a_hidden_template_side_conflict_behind_a_template_reorde
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -1893,7 +1973,10 @@ async fn seat_view(h: &Harness, ctx: &PermissionContext, id: Uuid) -> Document {
 #[tokio::test]
 async fn a_stranger_instance_owner_never_receives_base_even_after_a_gm_push() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE921), Uuid::from_u128(0xE922));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE921),
+        crate::test_ids::test_uuid(0xE922),
+    );
     h.create(template_doc(
         h.world_id,
         template,
@@ -1926,7 +2009,7 @@ async fn a_stranger_instance_owner_never_receives_base_even_after_a_gm_push() {
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -1999,8 +2082,12 @@ async fn assert_sync_state_parity(
 #[tokio::test]
 async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() {
     let h = merge_harness().await;
-    let (template, child) =
-        template_hidden_pair(&h, Uuid::from_u128(0xE701), Uuid::from_u128(0xE702)).await;
+    let (template, child) = template_hidden_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE701),
+        crate::test_ids::test_uuid(0xE702),
+    )
+    .await;
     h.set_system(
         template,
         json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
@@ -2012,7 +2099,7 @@ async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() 
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -2049,8 +2136,12 @@ async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() 
     assert_sync_state_parity(&h, &h.gm, template, child).await;
 
     // A GM's pull of the same pair is unchanged: the GM sees everything.
-    let (template2, child2) =
-        template_hidden_pair(&h, Uuid::from_u128(0xE703), Uuid::from_u128(0xE704)).await;
+    let (template2, child2) = template_hidden_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE703),
+        crate::test_ids::test_uuid(0xE704),
+    )
+    .await;
     h.set_system(
         template2,
         json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
@@ -2061,7 +2152,7 @@ async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() 
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child2,
             resolutions: None,
         },
@@ -2085,8 +2176,12 @@ async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() 
 #[tokio::test]
 async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
     let h = merge_harness().await;
-    let (template, child) =
-        template_hidden_pair(&h, Uuid::from_u128(0xE711), Uuid::from_u128(0xE712)).await;
+    let (template, child) = template_hidden_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE711),
+        crate::test_ids::test_uuid(0xE712),
+    )
+    .await;
     h.set_system(
         template,
         json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
@@ -2103,7 +2198,7 @@ async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergeRevert {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
         },
         0,
@@ -2138,7 +2233,10 @@ async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
 #[tokio::test]
 async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_cannot_fully_see() {
     let h = merge_harness().await;
-    let (template, instance) = (Uuid::from_u128(0xE721), Uuid::from_u128(0xE722));
+    let (template, instance) = (
+        crate::test_ids::test_uuid(0xE721),
+        crate::test_ids::test_uuid(0xE722),
+    );
     let mut tmpl = template_doc(
         h.world_id,
         template,
@@ -2197,7 +2295,7 @@ async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_can
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -2251,7 +2349,10 @@ async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_can
 #[tokio::test]
 async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_fatal() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE801), Uuid::from_u128(0xE802));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE801),
+        crate::test_ids::test_uuid(0xE802),
+    );
     h.create(template_doc(
         h.world_id,
         template,
@@ -2280,7 +2381,7 @@ async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_f
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
@@ -2299,7 +2400,7 @@ async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_f
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child,
             resolutions: Some(vec!["/system/obj/x".into()]),
         },
@@ -2326,7 +2427,7 @@ async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_f
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(3),
+            request_id: crate::test_ids::test_uuid(3),
             child_id: child,
             resolutions: Some(vec![]),
         },
@@ -2343,7 +2444,10 @@ async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_f
 #[tokio::test]
 async fn pull_against_an_unreadable_template_is_not_found() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE811), Uuid::from_u128(0xE812));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE811),
+        crate::test_ids::test_uuid(0xE812),
+    );
     h.create(template_doc(
         h.world_id,
         template,
@@ -2367,12 +2471,12 @@ async fn pull_against_an_unreadable_template_is_not_found() {
 
     for msg in [
         ClientMsg::MergePull {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             child_id: child,
             resolutions: None,
         },
         ClientMsg::MergeRevert {
-            request_id: Uuid::from_u128(2),
+            request_id: crate::test_ids::test_uuid(2),
             child_id: child,
         },
     ] {
@@ -2393,11 +2497,15 @@ async fn pull_against_an_unreadable_template_is_not_found() {
 #[tokio::test]
 async fn pull_on_an_in_sync_instance_publishes_nothing() {
     let h = merge_harness().await;
-    let (template, child) =
-        player_pullable(&h, Uuid::from_u128(0xE821), Uuid::from_u128(0xE822)).await;
+    let (template, child) = player_pullable(
+        &h,
+        crate::test_ids::test_uuid(0xE821),
+        crate::test_ids::test_uuid(0xE822),
+    )
+    .await;
     h.set_system(template, json!({ "hp": 12 })).await;
     let pull = |request_id: u128| ClientMsg::MergePull {
-        request_id: Uuid::from_u128(request_id),
+        request_id: crate::test_ids::test_uuid(request_id),
         child_id: child,
         resolutions: None,
     };
@@ -2430,8 +2538,12 @@ async fn pull_on_an_in_sync_instance_publishes_nothing() {
 #[tokio::test]
 async fn gm_pull_then_player_pull_on_an_in_sync_instance_publishes_nothing() {
     let h = merge_harness().await;
-    let (template, child) =
-        template_hidden_pair(&h, Uuid::from_u128(0xE901), Uuid::from_u128(0xE902)).await;
+    let (template, child) = template_hidden_pair(
+        &h,
+        crate::test_ids::test_uuid(0xE901),
+        crate::test_ids::test_uuid(0xE902),
+    )
+    .await;
     h.set_system(
         template,
         json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
@@ -2447,7 +2559,7 @@ async fn gm_pull_then_player_pull_on_an_in_sync_instance_publishes_nothing() {
             h.repo.as_ref(),
             ctx,
             ClientMsg::MergePull {
-                request_id: Uuid::from_u128(request),
+                request_id: crate::test_ids::test_uuid(request),
                 child_id: child,
                 resolutions: None,
             },
@@ -2506,7 +2618,10 @@ async fn gm_pull_then_player_pull_on_an_in_sync_instance_publishes_nothing() {
 #[tokio::test]
 async fn gm_push_of_a_gm_only_template_value_never_reaches_the_instance_owner() {
     let h = merge_harness().await;
-    let (template, child) = (Uuid::from_u128(0xE911), Uuid::from_u128(0xE912));
+    let (template, child) = (
+        crate::test_ids::test_uuid(0xE911),
+        crate::test_ids::test_uuid(0xE912),
+    );
     h.create(template_doc(
         h.world_id,
         template,
@@ -2543,7 +2658,7 @@ async fn gm_push_of_a_gm_only_template_value_never_reaches_the_instance_owner() 
         h.repo.as_ref(),
         &h.gm,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },
@@ -2632,8 +2747,14 @@ async fn gm_push_of_a_gm_only_template_value_never_reaches_the_instance_owner() 
 #[tokio::test]
 async fn non_owner_template_owner_push_reports_a_template_deleted_child_conflict() {
     let h = merge_harness().await;
-    let (template, instance) = (Uuid::from_u128(0xEA01), Uuid::from_u128(0xEA02));
-    let (t_a, i_a) = (Uuid::from_u128(0xEA03), Uuid::from_u128(0xEA04));
+    let (template, instance) = (
+        crate::test_ids::test_uuid(0xEA01),
+        crate::test_ids::test_uuid(0xEA02),
+    );
+    let (t_a, i_a) = (
+        crate::test_ids::test_uuid(0xEA03),
+        crate::test_ids::test_uuid(0xEA04),
+    );
     let mut tmpl = template_doc(
         h.world_id,
         template,
@@ -2699,7 +2820,7 @@ async fn non_owner_template_owner_push_reports_a_template_deleted_child_conflict
         h.repo.as_ref(),
         &h.player,
         ClientMsg::MergePush {
-            request_id: Uuid::from_u128(1),
+            request_id: crate::test_ids::test_uuid(1),
             template_id: template,
             resolutions: None,
         },

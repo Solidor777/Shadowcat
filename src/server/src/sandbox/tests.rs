@@ -125,7 +125,7 @@ async fn per_module_fault_streaks_are_independent() {
         ("module-a", "item", compiled_for("module-a", FAULTING_WAT)),
         ("module-b", "item", compiled_for("module-b", ACCEPTING_WAT)),
     ]);
-    let world = uuid::Uuid::from_u128(1);
+    let world = crate::test_ids::test_uuid(1);
     let a_only = vec!["module-a".to_string()];
     let b_only = vec!["module-b".to_string()];
     let mut d = doc("item", serde_json::json!({}));
@@ -169,7 +169,7 @@ async fn a_modules_own_accept_resets_its_own_streak() {
         vec![("module-a", "item", compiled_for("module-a", ACCEPTING_WAT))],
         faults,
     );
-    let world = uuid::Uuid::from_u128(2);
+    let world = crate::test_ids::test_uuid(2);
     let ids = vec!["module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
 
@@ -213,7 +213,7 @@ async fn a_modules_own_refuse_also_resets_its_streak() {
         vec![("module-a", "item", compiled_for("module-a", REFUSING_WAT))],
         faults,
     );
-    let world = uuid::Uuid::from_u128(3);
+    let world = crate::test_ids::test_uuid(3);
     let ids = vec!["module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
 
@@ -249,7 +249,7 @@ async fn enabled_module_order_is_sorted_by_validate_document_not_trusted_from_th
         ("module-b", "item", compiled_for("module-b", REFUSING_WAT)),
         ("module-a", "item", compiled_for("module-a", REFUSING_WAT)),
     ]);
-    let world = uuid::Uuid::from_u128(5);
+    let world = crate::test_ids::test_uuid(5);
     let reverse_order = vec!["module-b".to_string(), "module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
 
@@ -274,7 +274,7 @@ async fn a_structural_failure_never_reaches_or_faults_a_validator() {
         "item",
         compiled_for("module-a", FAULTING_WAT),
     )]);
-    let world = uuid::Uuid::from_u128(4);
+    let world = crate::test_ids::test_uuid(4);
     let ids = vec!["module-a".to_string()];
     // A tier-2 schema requiring `/system/hp` to be a number; the document violates it.
     let schemas = vec![crate::data::document::SchemaDeclaration {

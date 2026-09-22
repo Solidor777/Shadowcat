@@ -29,9 +29,9 @@ fn lamp(t_ms: f64, pos: [f64; 2], dim: f64) -> LightSample {
 /// the x=100 wall at (250,50), carrying a torch whose reach at the far sample is `far_dim`.
 fn torch_walk(scene: Uuid, now: i64, far_dim: f64) -> ServerMsg {
     ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0x71),
-        token_id: Uuid::from_u128(0x72),
-        mover: Uuid::from_u128(0xAABB),
+        request_id: crate::test_ids::test_uuid(0x71),
+        token_id: crate::test_ids::test_uuid(0x72),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene,
         start_server_ms: now as f64,
         duration_ms: 1_000.0,
@@ -81,7 +81,7 @@ async fn clip_for(
     else {
         panic!("clip returns a MoveStream")
     };
-    if ctx.user_id != Uuid::from_u128(0xAABB) {
+    if ctx.user_id != crate::test_ids::test_uuid(0xAABB) {
         assert!(mover_vision.is_none(), "mover_vision stays mover-only");
     }
     Some((
@@ -123,11 +123,11 @@ async fn every_recipient_of_one_frame_shares_one_lighting_raycast() {
     let before = room.scene().read().await.lighting_inputs_recompute_count();
     let others = [
         PermissionContext {
-            user_id: Uuid::from_u128(0x0B1),
+            user_id: crate::test_ids::test_uuid(0x0B1),
             world_role: crate::data::document::WorldRole::Player,
         },
         PermissionContext {
-            user_id: Uuid::from_u128(0x0B2),
+            user_id: crate::test_ids::test_uuid(0x0B2),
             world_role: crate::data::document::WorldRole::Player,
         },
     ];
@@ -284,7 +284,7 @@ async fn mover_and_plain_gm_receive_the_full_light_timeline() {
     let now = crate::ws::time::now_millis();
     let frame = torch_walk(scene_id, now, 50.0);
     let mover_ctx = PermissionContext {
-        user_id: Uuid::from_u128(0xAABB),
+        user_id: crate::test_ids::test_uuid(0xAABB),
         world_role: crate::data::document::WorldRole::Player,
     };
     assert_eq!(
@@ -327,7 +327,7 @@ async fn light_admission_reads_the_targets_own_in_flight_timeline() {
     let now = crate::ws::time::now_millis();
     register_timeline(
         &room,
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         obs_ctx.user_id,
         scene_id,
         now,
@@ -359,11 +359,11 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
         setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
     let now = crate::ws::time::now_millis();
 
-    let a_req = Uuid::from_u128(0xA11);
+    let a_req = crate::test_ids::test_uuid(0xA11);
     let a_frame = ServerMsg::MoveStream {
         request_id: a_req,
-        token_id: Uuid::from_u128(0xA),
-        mover: Uuid::from_u128(0xAABB),
+        token_id: crate::test_ids::test_uuid(0xA),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: now as f64,
         duration_ms: 3_000.0,
@@ -387,9 +387,9 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
         truncated: Some(false),
     };
     room.register_stream_for_test(
-        Uuid::from_u128(0xA),
+        crate::test_ids::test_uuid(0xA),
         crate::ws::room::ActiveStream {
-            mover: Uuid::from_u128(0xAABB),
+            mover: crate::test_ids::test_uuid(0xAABB),
             scene: scene_id,
             end_ms: now + 3_000,
             frame: Arc::new(a_frame),
@@ -415,6 +415,8 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
             current_seq,
             modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: fresh_last_activity(),
         },
     ));
     let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
@@ -428,8 +430,8 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
 
     let r_start = now + 100;
     let r_frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0xB11),
-        token_id: Uuid::from_u128(0xE002),
+        request_id: crate::test_ids::test_uuid(0xB11),
+        token_id: crate::test_ids::test_uuid(0xE002),
         mover: obs_ctx.user_id,
         scene: scene_id,
         start_server_ms: r_start as f64,
@@ -461,7 +463,7 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
     };
     let r_arc = Arc::new(r_frame);
     room.register_stream_for_test(
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         crate::ws::room::ActiveStream {
             mover: obs_ctx.user_id,
             scene: scene_id,
@@ -477,7 +479,10 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
         .unwrap()
         .unwrap();
     let first: serde_json::Value = serde_json::from_str(msg_text(&first)).unwrap();
-    assert_eq!(first["request_id"], json!(Uuid::from_u128(0xB11)));
+    assert_eq!(
+        first["request_id"],
+        json!(crate::test_ids::test_uuid(0xB11))
+    );
     let second = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
         .await
         .unwrap()
@@ -504,7 +509,7 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
         setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
     let mut far_wall = crate::data::document::tests::world_scoped_doc(
         room.world_id,
-        Uuid::from_u128(0xE005),
+        crate::test_ids::test_uuid(0xE005),
         "wall",
     );
     far_wall.parent_id = Some(scene_id);
@@ -523,11 +528,11 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
     .unwrap();
     let now = crate::ws::time::now_millis();
 
-    let a_req = Uuid::from_u128(0xA11);
+    let a_req = crate::test_ids::test_uuid(0xA11);
     let a_frame = ServerMsg::MoveStream {
         request_id: a_req,
-        token_id: Uuid::from_u128(0xA),
-        mover: Uuid::from_u128(0xAABB),
+        token_id: crate::test_ids::test_uuid(0xA),
+        mover: crate::test_ids::test_uuid(0xAABB),
         scene: scene_id,
         start_server_ms: now as f64,
         duration_ms: 3_000.0,
@@ -551,9 +556,9 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
         truncated: Some(false),
     };
     room.register_stream_for_test(
-        Uuid::from_u128(0xA),
+        crate::test_ids::test_uuid(0xA),
         crate::ws::room::ActiveStream {
-            mover: Uuid::from_u128(0xAABB),
+            mover: crate::test_ids::test_uuid(0xAABB),
             scene: scene_id,
             end_ms: now + 3_000,
             frame: Arc::new(a_frame),
@@ -579,6 +584,8 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
             current_seq,
             modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown: never_shuts_down(),
+            last_activity: fresh_last_activity(),
         },
     ));
     let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
@@ -592,8 +599,8 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
 
     let r_start = now + 100;
     let r_frame = ServerMsg::MoveStream {
-        request_id: Uuid::from_u128(0xB11),
-        token_id: Uuid::from_u128(0xE002),
+        request_id: crate::test_ids::test_uuid(0xB11),
+        token_id: crate::test_ids::test_uuid(0xE002),
         mover: obs_ctx.user_id,
         scene: scene_id,
         start_server_ms: r_start as f64,
@@ -623,7 +630,7 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
     };
     let r_arc = Arc::new(r_frame);
     room.register_stream_for_test(
-        Uuid::from_u128(0xE002),
+        crate::test_ids::test_uuid(0xE002),
         crate::ws::room::ActiveStream {
             mover: obs_ctx.user_id,
             scene: scene_id,
@@ -639,7 +646,10 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
         .unwrap()
         .unwrap();
     let first: serde_json::Value = serde_json::from_str(msg_text(&first)).unwrap();
-    assert_eq!(first["request_id"], json!(Uuid::from_u128(0xB11)));
+    assert_eq!(
+        first["request_id"],
+        json!(crate::test_ids::test_uuid(0xB11))
+    );
     let second = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
         .await
         .unwrap()

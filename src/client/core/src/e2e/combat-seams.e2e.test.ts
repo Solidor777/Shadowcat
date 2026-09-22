@@ -147,7 +147,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
       },
     ],
   };
-  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, playerTokenId);
+  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" }, actor_id: null, overrides: null, face: null, elevation: null }, playerTokenId);
   tokenDoc.owner = player;
 
   const combatEngine: CombatEngine = {
@@ -206,14 +206,14 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   await playerClient.subscribeScene("combat", (f) => { playerCombatFrame = parseCombats(f.payload); });
 
   // (a): CombatResult correlation — `combat()` resolves only once the broadcast event applies.
-  await gmClient.combat({ type: "combat_start", request_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", combat_id: combatId });
+  await gmClient.combat({ type: "combat_start", request_id: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", combat_id: combatId });
   await waitFor(() => (gmH.store.get(combatId)?.engine as CombatEngine).active === true);
   await waitFor(() => (playerH.store.get(combatId)?.engine as CombatEngine).active === true);
 
   // The advance walks onto the `lifespan: null` event (auto-resolved, nothing on its document
   // changes), wraps the round, and lands back on the player's combatant: the combat document's
   // `turn` reads the SAME id as before the advance, and only the round proves the lap.
-  await gmClient.combat({ type: "combat_advance", request_id: "cccccccc-cccc-cccc-cccc-cccccccccccc", combat_id: combatId });
+  await gmClient.combat({ type: "combat_advance", request_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", combat_id: combatId });
   const landed = (h: { store: DocumentStore }) => {
     const engine = h.store.get(combatId)?.engine as CombatEngine;
     return engine.round === 2 && engine.turn === playerCombatantId;

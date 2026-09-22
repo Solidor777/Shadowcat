@@ -2,9 +2,9 @@ use super::*;
 
 fn doc(id: u128) -> Document {
     Document {
-        id: Uuid::from_u128(id),
+        id: crate::test_ids::test_uuid(id),
         scope: crate::data::document::Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "item".into(),
         schema_version: 1,
@@ -32,7 +32,7 @@ fn create_inverts_to_delete_and_back() {
 #[test]
 fn update_invert_swaps_old_and_new_in_reverse() {
     let op = Operation::Update {
-        doc_id: Uuid::from_u128(1),
+        doc_id: crate::test_ids::test_uuid(1),
         changes: vec![
             FieldChange {
                 remove: false,
@@ -52,7 +52,7 @@ fn update_invert_swaps_old_and_new_in_reverse() {
     assert_eq!(
         inv,
         Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![
                 FieldChange {
                     remove: false,
@@ -75,13 +75,13 @@ fn update_invert_swaps_old_and_new_in_reverse() {
 #[test]
 fn unsequenced_command_invert_is_round_trip() {
     let cmd = UnsequencedCommand {
-        world_id: Uuid::from_u128(9),
-        author: Uuid::from_u128(5),
+        world_id: crate::test_ids::test_uuid(9),
+        author: crate::test_ids::test_uuid(5),
         ts: 1,
         ops: vec![
             Operation::Create { doc: doc(1) },
             Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![FieldChange {
                     remove: false,
                     path: "/system/x".into(),
@@ -234,7 +234,7 @@ fn remove_change_inverts_to_a_reinserting_set() {
     // Inverse of "remove key holding V" is "set key to V"; after the removal
     // the slot is absent, so the inverse's pre-image is Null.
     let op = Operation::Update {
-        doc_id: Uuid::from_u128(1),
+        doc_id: crate::test_ids::test_uuid(1),
         changes: vec![FieldChange {
             path: "/system/foo".into(),
             old: serde_json::json!("bar"),
@@ -245,7 +245,7 @@ fn remove_change_inverts_to_a_reinserting_set() {
     assert_eq!(
         op.invert(),
         Operation::Update {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             changes: vec![FieldChange {
                 path: "/system/foo".into(),
                 old: serde_json::Value::Null,
@@ -280,7 +280,9 @@ fn command_round_trips_through_json() {
         default: DocRole::Observer,
         ..Default::default()
     };
-    perms.users.insert(Uuid::from_u128(5), DocRole::Owner);
+    perms
+        .users
+        .insert(crate::test_ids::test_uuid(5), DocRole::Owner);
     perms
         .property_overrides
         .insert("/system/secret".into(), Visibility::GmOnly);
@@ -289,20 +291,20 @@ fn command_round_trips_through_json() {
     embedded.insert("items".to_string(), vec![doc(2)]);
 
     let rich = Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "actor".into(),
         schema_version: 1,
         name: None,
         source: Some(Source {
-            id: Uuid::from_u128(3),
+            id: crate::test_ids::test_uuid(3),
             pack: Some("dnd5e".into()),
             version: 2,
         }),
         base: None,
-        owner: Some(Uuid::from_u128(5)),
+        owner: Some(crate::test_ids::test_uuid(5)),
         permissions: perms,
         embedded,
         parent_id: None,
@@ -314,14 +316,14 @@ fn command_round_trips_through_json() {
 
     let cmd = Command {
         seq: 7,
-        world_id: Uuid::from_u128(9),
-        author: Uuid::from_u128(5),
+        world_id: crate::test_ids::test_uuid(9),
+        author: crate::test_ids::test_uuid(5),
         ts: 100,
         ops: vec![
             Operation::Create { doc: rich },
             Operation::Delete { doc: doc(4) },
             Operation::Update {
-                doc_id: Uuid::from_u128(1),
+                doc_id: crate::test_ids::test_uuid(1),
                 changes: vec![
                     FieldChange {
                         remove: false,
@@ -352,16 +354,16 @@ fn command_round_trips_through_json() {
 #[test]
 fn move_inverts_by_swapping_parents() {
     let op = Operation::Move {
-        doc_id: Uuid::from_u128(1),
-        parent_id: Some(Uuid::from_u128(2)),
+        doc_id: crate::test_ids::test_uuid(1),
+        parent_id: Some(crate::test_ids::test_uuid(2)),
         old_parent_id: None,
     };
     assert_eq!(
         op.invert(),
         Operation::Move {
-            doc_id: Uuid::from_u128(1),
+            doc_id: crate::test_ids::test_uuid(1),
             parent_id: None,
-            old_parent_id: Some(Uuid::from_u128(2)),
+            old_parent_id: Some(crate::test_ids::test_uuid(2)),
         }
     );
     assert_eq!(op.invert().invert(), op);
@@ -370,19 +372,19 @@ fn move_inverts_by_swapping_parents() {
 #[test]
 fn move_round_trips_through_json_with_op_tag() {
     let op = Operation::Move {
-        doc_id: Uuid::from_u128(1),
-        parent_id: Some(Uuid::from_u128(2)),
+        doc_id: crate::test_ids::test_uuid(1),
+        parent_id: Some(crate::test_ids::test_uuid(2)),
         old_parent_id: None,
     };
     let v = serde_json::to_value(&op).expect("serialize");
     assert_eq!(v["op"], serde_json::json!("move"));
     assert_eq!(
         v["doc_id"],
-        serde_json::json!(Uuid::from_u128(1).to_string())
+        serde_json::json!(crate::test_ids::test_uuid(1).to_string())
     );
     assert_eq!(
         v["parent_id"],
-        serde_json::json!(Uuid::from_u128(2).to_string())
+        serde_json::json!(crate::test_ids::test_uuid(2).to_string())
     );
     assert_eq!(v["old_parent_id"], serde_json::Value::Null);
     let back: Operation = serde_json::from_value(v).expect("deserialize");

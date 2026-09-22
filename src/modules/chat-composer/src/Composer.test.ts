@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import type { AppContext } from "@shadowcat/ui-kit";
 import { SpeakAsToken } from "@shadowcat/ui-kit";
-import { DocumentStore, buildActorDoc, buildChatSettingsDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildChatSettingsDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument, type ChatComposerSendPayload } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
 
@@ -33,6 +33,7 @@ function renderComposer(
     searchDocuments?: AppContext["searchDocuments"];
     speakAsToken?: SpeakAsToken;
     pickAsset?: AppContext["pickAsset"];
+    hooks?: AppContext["hooks"];
   } = {},
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
@@ -44,6 +45,7 @@ function renderComposer(
     searchDocuments: opts.searchDocuments,
     speakAsToken: opts.speakAsToken,
     pickAsset: opts.pickAsset,
+    hooks: opts.hooks,
   });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
@@ -177,9 +179,200 @@ describe("Composer — sending", () => {
     await fireEvent.input(textarea, { target: { value: "spam" } });
     await fireEvent.keyDown(textarea, { key: "Enter" });
     expect(send).toHaveBeenCalledTimes(1);
-    // Input still clears optimistically; the rejection is what surfaces.
-    expect(textarea.value).toBe("");
+    // Cleared optimistically, then restored once the rejection resolves (the composer
+    // sat empty in between, so the draft is not lost) alongside the surfaced error.
     expect(await screen.findByText(/Rate limit exceeded/i)).toBeTruthy();
+    expect(textarea.value).toBe("spam");
+  });
+
+  it("restores the sent draft into the composer when the send rejects and nothing new was typed", async () => {
+    let rejectSend!: (e: Error) => void;
+    const send = vi.fn<(o: unknown) => Promise<void>>(
+      () => new Promise<void>((_resolve, reject) => { rejectSend = reject; }),
+    );
+    renderComposer({ send });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "spam" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    // Optimistic clear fires immediately; the send itself is still in flight.
+    expect(textarea.value).toBe("");
+    rejectSend(new Error("Rate limit exceeded, try again shortly."));
+    await screen.findByText(/Rate limit exceeded/i);
+    // The composer sat empty the whole time — the rejected draft is restored.
+    expect(textarea.value).toBe("spam");
+  });
+
+  it("keeps newly typed text when the send rejects, never overwriting it with the failed draft", async () => {
+    let rejectSend!: (e: Error) => void;
+    const send = vi.fn<(o: unknown) => Promise<void>>(
+      () => new Promise<void>((_resolve, reject) => { rejectSend = reject; }),
+    );
+    renderComposer({ send });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "spam" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("");
+    // The author starts a fresh message before the rejection surfaces.
+    await fireEvent.input(textarea, { target: { value: "already typing something new" } });
+    rejectSend(new Error("Rate limit exceeded, try again shortly."));
+    await screen.findByText(/Rate limit exceeded/i);
+    expect(textarea.value).toBe("already typing something new");
+  });
+
+  it("an earlier send's rejection never restores its draft over a later send, and the later rejection still restores", async () => {
+    const rejectors: Array<(e: Error) => void> = [];
+    const send = vi.fn<(o: unknown) => Promise<void>>(
+      () => new Promise<void>((_resolve, reject) => { rejectors.push(reject); }),
+    );
+    renderComposer({ send });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(textarea.value).toBe("");
+    // The first send rejects after the second send's own optimistic clear: the box is empty,
+    // but it is empty because of the LATER send, so the stale first draft stays out of it.
+    rejectors[0](new Error("First send rejected."));
+    await screen.findByText(/First send rejected/i);
+    expect(textarea.value).toBe("");
+    // The second, latest send rejecting restores its own draft.
+    rejectors[1](new Error("Second send rejected."));
+    await screen.findByText(/Second send rejected/i);
+    expect(textarea.value).toBe("second");
+  });
+
+  it("an earlier send's rejection never restores its draft while a later send is still in its pre-send hook", async () => {
+    const rejectors: Array<(e: Error) => void> = [];
+    const send = vi.fn<(o: unknown) => Promise<void>>(
+      () => new Promise<void>((_resolve, reject) => { rejectors.push(reject); }),
+    );
+    let resolveSecondHook!: (p: ChatComposerSendPayload) => void;
+    let hookCalls = 0;
+    const emitMutate = vi.fn(async (_name: string, payload: ChatComposerSendPayload) => {
+      hookCalls += 1;
+      if (hookCalls === 1) return payload;
+      return new Promise<ChatComposerSendPayload>((resolve) => { resolveSecondHook = resolve; });
+    });
+    const hooks = { emitMutate } as unknown as AppContext["hooks"];
+    renderComposer({ send, hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(1);
+    // The second attempt starts and parks in its hook; the author then empties the box.
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await fireEvent.input(textarea, { target: { value: "" } });
+    // The first send rejects while the second attempt is still in its hook: the box is empty,
+    // but a later attempt has begun, so the stale first draft stays out of it.
+    rejectors[0](new Error("First send rejected."));
+    await screen.findByText(/First send rejected/i);
+    expect(textarea.value).toBe("");
+    resolveSecondHook({ text: "second", cancel: false });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(textarea.value).toBe("");
+  });
+
+  it("an earlier send's rejection never restores its draft after a later attempt is vetoed and the box emptied", async () => {
+    const rejectors: Array<(e: Error) => void> = [];
+    const send = vi.fn<(o: unknown) => Promise<void>>(
+      () => new Promise<void>((_resolve, reject) => { rejectors.push(reject); }),
+    );
+    let hookCalls = 0;
+    const emitMutate = vi.fn(async (_name: string, payload: ChatComposerSendPayload) => {
+      hookCalls += 1;
+      if (hookCalls === 1) return payload;
+      return { ...payload, cancel: true };
+    });
+    const hooks = { emitMutate } as unknown as AppContext["hooks"];
+    renderComposer({ send, hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(1);
+    // The second attempt is vetoed by its hook: it claims a generation but never dispatches,
+    // and a veto leaves its own draft in the box.
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    await vi.waitFor(() => expect(emitMutate).toHaveBeenCalledTimes(2));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe("second");
+    // The author empties the box by hand; the first send's rejection then surfaces into an
+    // empty box, but a later attempt has begun, so the stale first draft stays out of it.
+    await fireEvent.input(textarea, { target: { value: "" } });
+    rejectors[0](new Error("First send rejected."));
+    await screen.findByText(/First send rejected/i);
+    expect(textarea.value).toBe("");
+  });
+
+  // The in-flight guard is scoped to the `chat:composer-send` hook's own await, never to
+  // `ctx.chat.send`'s returned promise — an ordinary accepted chat op settles that promise only
+  // on the wire client's silence timeout (no ack frame exists for a successful send), so a guard
+  // held open across it would disable Send for that whole window on every ordinary message. A
+  // pending HOOK is what these two tests hold open instead.
+  it("a second Enter before the pre-send hook resolves does not invoke the hook or send twice", async () => {
+    let resolveHook!: (p: ChatComposerSendPayload) => void;
+    const emitMutate = vi.fn(
+      async () => new Promise<ChatComposerSendPayload>((resolve) => { resolveHook = resolve; }),
+    );
+    const hooks = { emitMutate } as unknown as AppContext["hooks"];
+    const { send } = renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    // The pre-send hook is still pending: a second rapid Enter must be dropped by the
+    // in-flight guard, not queue a second hook call.
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(emitMutate).toHaveBeenCalledTimes(1);
+    resolveHook({ text: "first", cancel: false });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
+
+  it("the Send button stays disabled while the pre-send hook is still pending, even once new text is typed", async () => {
+    let resolveHook!: (p: ChatComposerSendPayload) => void;
+    const hooks: AppContext["hooks"] = {
+      emitMutate: (async () =>
+        new Promise<ChatComposerSendPayload>((resolve) => { resolveHook = resolve; })) as unknown as AppContext["hooks"]["emitMutate"],
+    };
+    renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first" } });
+    const button = screen.getByText("chat.composer.send") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await fireEvent.click(button);
+    // `canSend` alone would allow this — the button must stay disabled on the in-flight guard.
+    await fireEvent.input(textarea, { target: { value: "second" } });
+    expect(button.disabled).toBe(true);
+    resolveHook({ text: "first", cancel: false });
+    // The guard releases once the hook settles and the send is dispatched — it does not wait
+    // for `ctx.chat.send`'s own promise (see the two tests' shared comment above).
+    await waitFor(() => expect(button.disabled).toBe(false));
+  });
+
+  it("a SYNCHRONOUS throw from ctx.chat.send still surfaces the error and clears the in-flight guard", async () => {
+    // A `.finally()` chained only onto the promise `ctx.chat.send` returns can never run when
+    // the call itself throws before returning a promise at all — the guarded region's own
+    // `try`/`finally` is what closes that gap. A synchronous throw happens before the optimistic
+    // clear, so the draft is left in place (not silently discarded) — the author's next Enter
+    // resubmits the same text.
+    const send = vi.fn(() => {
+      throw new Error("Synchronous failure.");
+    });
+    renderComposer({ send: send as unknown as ReturnType<typeof vi.fn<(o: unknown) => Promise<void>>> });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "boom" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/Synchronous failure/i)).toBeTruthy();
+    // The in-flight guard cleared (not stuck `true` forever): the Send button is enabled again,
+    // since `canSend` and `!sending` both hold — a second, real attempt is possible.
+    const button = screen.getByText("chat.composer.send") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it("clears a prior rejection notice once the author starts typing again", async () => {
@@ -193,6 +386,93 @@ describe("Composer — sending", () => {
     expect(await screen.findByText(/too long/i)).toBeTruthy();
     await fireEvent.input(textarea, { target: { value: "y" } });
     expect(screen.queryByText(/too long/i)).toBeNull();
+  });
+
+  it("keeps text typed while a slow chat:composer-send hook is in flight, instead of discarding it on the optimistic clear", async () => {
+    let resolveHook!: (p: ChatComposerSendPayload) => void;
+    const hooks: AppContext["hooks"] = {
+      emitMutate: (async (_name: string, payload: unknown) =>
+        new Promise<ChatComposerSendPayload>((resolve) => {
+          resolveHook = resolve;
+          void payload;
+        })) as unknown as AppContext["hooks"]["emitMutate"],
+    };
+    const { send } = renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "first draft" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    // The hook is still pending — the author keeps typing before it resolves.
+    await fireEvent.input(textarea, { target: { value: "first draft, more" } });
+    resolveHook({ text: "first draft", cancel: false });
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ channel: "general", content: "first draft", audience: publicAudience }));
+    // The optimistic clear must not discard text typed during the hook's await.
+    expect(textarea.value).toBe("first draft, more");
+  });
+
+  it("still clears the input on the optimistic path when the draft is unchanged while the hook resolves", async () => {
+    let resolveHook!: (p: ChatComposerSendPayload) => void;
+    const hooks: AppContext["hooks"] = {
+      emitMutate: (async (_name: string, payload: unknown) =>
+        new Promise<ChatComposerSendPayload>((resolve) => {
+          resolveHook = resolve;
+          void payload;
+        })) as unknown as AppContext["hooks"]["emitMutate"],
+    };
+    renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "unchanged" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    resolveHook({ text: "unchanged", cancel: false });
+    await waitFor(() => expect(textarea.value).toBe(""));
+  });
+});
+
+/** A `chat:composer-send`-only fake for `AppContext.hooks` — this test suite's target hook is
+ * the only one the composer emits, so a real per-name-keyed `HookBus` would add indirection
+ * with no coverage benefit.
+ * @param transform Applied to the `ChatComposerSendPayload` the composer emits.
+ * @returns The fake `AppContext["hooks"]`.
+ * @example
+ * ```
+ * // internal; used by this suite's own test cases
+ * fakeHooks((p) => ({ ...p, cancel: true }));
+ * ```
+ */
+function fakeHooks(transform: (p: ChatComposerSendPayload) => ChatComposerSendPayload): AppContext["hooks"] {
+  return {
+    emitMutate: (async (_name: string, payload: unknown) => transform(payload as ChatComposerSendPayload)) as unknown as AppContext["hooks"]["emitMutate"],
+  };
+}
+
+describe("Composer — pre-send interception hook", () => {
+  it("sends the text a listener rewrote via chat:composer-send", async () => {
+    const hooks = fakeHooks((p) => ({ ...p, text: "REWRITTEN" }));
+    const { send } = renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "original" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "REWRITTEN", audience: publicAudience });
+  });
+
+  it("never sends when a listener sets cancel: true", async () => {
+    const hooks = fakeHooks((p) => ({ ...p, cancel: true }));
+    const { send } = renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "a system command" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("leaves the input untouched when the send is cancelled by a listener", async () => {
+    const hooks = fakeHooks((p) => ({ ...p, cancel: true }));
+    renderComposer({ hooks });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "/local-only" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    // A cancelled send never reaches ctx.chat.send, so the optimistic clear (which only
+    // happens after the hook settles) does not apply here — the module handling the command
+    // is responsible for its own UI feedback; the composer neither clears nor shows an error.
+    expect(textarea.value).toBe("/local-only");
   });
 });
 

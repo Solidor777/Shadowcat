@@ -6,6 +6,8 @@
 
 /// Asset upload/serve routes + the upload rate limiter.
 pub mod assets;
+/// The `CompressionLayer` response predicate `router` installs globally.
+pub mod compression;
 /// The rust-embedded client bundle (`dist/`) served as the SPA.
 pub mod embed;
 /// `AppError` and its status-code mapping.
@@ -107,9 +109,9 @@ impl AppState {
         use crate::config::SetupTokenPolicy;
         match config.setup_token_policy() {
             SetupTokenPolicy::Open => {
-                if !config.is_loopback_bind() {
+                if config.is_exposed() {
                     tracing::warn!(
-                        "setup token disabled on a non-loopback bind; /api/setup is unauthenticated until an admin exists"
+                        "setup token disabled on an exposed deployment (non-loopback bind, or loopback behind a declared TLS proxy); /api/setup is unauthenticated until an admin exists"
                     );
                 }
                 None
@@ -157,13 +159,46 @@ impl AppState {
 /// # }
 /// ```
 pub async fn router(state: AppState) -> Router {
+    use axum::http::{header, HeaderValue};
     use tower::ServiceBuilder;
+    use tower_http::compression::CompressionLayer;
     use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+    use tower_http::set_header::SetResponseHeaderLayer;
     use tower_http::trace::TraceLayer;
 
     let sessions = crate::auth::session::session_layer(&state.repo, &state.config)
         .await
         .expect("session layer");
+
+    // Response headers every route gets. `X-Frame-Options`/`Referrer-Policy`/
+    // `X-Content-Type-Options` are unconditional; a Content-Security-Policy is deliberately
+    // NOT set here (owned by module signing/CSP work). `Strict-Transport-Security` is
+    // conditional on `Config.behind_tls_proxy`: HSTS instructs browsers to upgrade every future
+    // request to HTTPS, which is wrong to send over a plain HTTP loopback bind with no TLS
+    // anywhere in the path. These two layers are NOT the outermost wrapping: the request-id +
+    // trace layers below wrap them, so a request-id is stamped and the trace span opened
+    // before these headers ever run, and both propagate onto every response including these
+    // headers' own — but they still land on error responses (not just successful ones), since
+    // they sit inside the trace span rather than inside any per-route handler.
+    let security_headers = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("same-origin"),
+        ));
+    let hsts_header = tower::util::option_layer(state.config.behind_tls_proxy.then(|| {
+        SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        )
+    }));
 
     Router::new()
         .route("/health", get(routes::health))
@@ -188,6 +223,10 @@ pub async fn router(state: AppState) -> Router {
             post(routes::create_world).get(routes::list_worlds),
         )
         .route("/api/users/{id}", delete(routes::delete_user))
+        .route(
+            "/api/users/{id}/password",
+            post(routes::reset_user_password),
+        )
         .route("/api/worlds/{id}", delete(routes::delete_world))
         .route("/api/worlds/{id}/export", post(world_bundle::export_world))
         .route(
@@ -301,6 +340,9 @@ pub async fn router(state: AppState) -> Router {
         )
         .fallback(embed::static_handler)
         .layer(sessions)
+        .layer(CompressionLayer::new().compress_when(compression::AssetAndWsSafePredicate::new()))
+        .layer(security_headers)
+        .layer(hsts_header)
         .layer(
             // Last layer = outermost. Request id is stamped first, the trace span
             // wraps everything (including sessions and the gate), then the id is
@@ -311,6 +353,82 @@ pub async fn router(state: AppState) -> Router {
                 .layer(PropagateRequestIdLayer::x_request_id()),
         )
         .with_state(state)
+}
+
+/// Bound on how long `serve` waits, after `axum::serve(..).await` returns, for any still-live
+/// WebSocket connection task to exit (see `serve`'s own doc for why that wait is needed at
+/// all). A connection whose egress loop is merely draining a large resync replay is expected to
+/// finish well inside this; a connection stuck past it is logged and abandoned rather than
+/// blocking process exit indefinitely.
+const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Serve `state`'s router over `listener` until `shutdown_fut` resolves, then return — the
+/// testable core of the `shadowcat` binary's normal (non-backup/restore) startup path.
+///
+/// `axum::serve(..).with_graceful_shutdown(shutdown_fut)` resolves once `shutdown_fut` completes
+/// AND every ordinary HTTP connection has finished. It does NOT wait for a WebSocket session:
+/// `axum::extract::ws::WebSocketUpgrade::on_upgrade` spawns its callback as a task detached from
+/// the hyper connection future that produced the 101 handshake, so from hyper's perspective that
+/// connection is already finished the moment the upgrade response is sent. Without the drain
+/// step below, `main` could return (and drop the tokio runtime) while a `ws::conn::egress_loop`
+/// task is still mid-`send` on its `Message::Close` frame, silently dropping it before the
+/// client ever observes the close.
+///
+/// So this function does two things `axum::serve` alone does not: it accepts a caller-supplied
+/// `shutdown_fut` (letting a test drive shutdown deterministically instead of waiting on a real
+/// OS signal), and after `axum::serve` returns, it calls `WsState::wait_for_drain` — bounded by
+/// `SHUTDOWN_DRAIN_TIMEOUT` — so every live connection's own `egress_loop` shutdown arm (which
+/// races the SAME `shutdown_fut`-triggered signal via `WsState::trigger_shutdown`) has a real
+/// chance to send its Close frame and exit before this function returns.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(false)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+/// // A `shutdown_fut` that resolves immediately, for illustration only.
+/// shadowcat::http::serve(listener, state, async {}).await.unwrap();
+/// # }
+/// ```
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    shutdown_fut: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let ws_state = state.ws.clone();
+    let app = router(state).await;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_fut)
+    .await?;
+    if !ws_state.wait_for_drain(SHUTDOWN_DRAIN_TIMEOUT).await {
+        tracing::warn!(
+            live = ws_state.live_connection_count(),
+            "graceful shutdown timed out waiting for websocket connections to close"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

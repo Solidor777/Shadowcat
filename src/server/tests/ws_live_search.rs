@@ -115,6 +115,18 @@ async fn send(ws: &mut Ws, v: serde_json::Value) {
     ws.send(Message::Text(v.to_string())).await.unwrap();
 }
 
+/// Deterministic v4-shaped document id for test fixtures: same low-order bytes as
+/// `Uuid::from_u128(n)`, with the version/variant nibbles forced to v4/RFC4122 so it satisfies
+/// `shadowcat::data::validation::validate_document_id`. Mirrors
+/// `shadowcat_test_support::test_doc_id`, restated locally per this file's own doc comment
+/// (each `tests/*.rs` binary replicates the harness rather than importing it).
+fn test_doc_id(n: u128) -> Uuid {
+    let mut bytes = n.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
 /// An intent creating one doc with the given `name` and `permissions.default`.
 fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_json::Value {
     serde_json::json!({
@@ -123,7 +135,7 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
         "ops": [{
             "op": "create",
             "doc": {
-                "id": Uuid::from_u128(1000 + n),
+                "id": test_doc_id(1000 + n),
                 "scope": { "kind": "world", "world_id": world },
                 "doc_type": "actor",
                 "schema_version": 1,
@@ -135,7 +147,7 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
                 // search) is what the search assertions below match against.
                 "engine": {
                     "displayName": "Test",
-                    "visual": { "kind": "image", "asset": "a.png" },
+                    "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
                     "size": { "w": 1.0, "h": 1.0 },
                     "shape": "square",
                     "faction": null,
@@ -158,7 +170,7 @@ fn create_note_intent(world: Uuid, n: u128, word: &str, default_role: &str) -> s
         "ops": [{
             "op": "create",
             "doc": {
-                "id": Uuid::from_u128(2000 + n),
+                "id": test_doc_id(2000 + n),
                 "scope": { "kind": "world", "world_id": world },
                 "doc_type": "note",
                 "schema_version": 1,

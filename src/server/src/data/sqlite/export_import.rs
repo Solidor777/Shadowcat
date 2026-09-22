@@ -314,7 +314,8 @@ impl SqliteRepository {
     /// document is run through the same ingress-validation chokepoint the
     /// live `Create`/`Update` write paths use
     /// (`validation::validate_system_size`/`validate_property_overrides`/
-    /// `validate_engine_tree`/`validate_system_schema_tree`) before it
+    /// `validate_engine_tree`/`validate_system_schema_tree`/
+    /// `validate_document_id_tree`) before it
     /// reaches storage, and — once every row is inserted — through the same
     /// placement rules the `Operation::Create` arm of `apply_intent` runs
     /// (`validation::validate_containment`, `check_parent_placement`, and
@@ -589,11 +590,14 @@ impl SqliteRepository {
             // runs before a document reaches storage (see e.g. the
             // `Operation::Update` handler in `apply_intent`) — an imported
             // bundle is untrusted input, not a trusted internal write.
-            // `validate_engine_tree` mutates `document.engine` in place
-            // (re-normalizes it); the persisted row must hold that
-            // normalized form, same as every other write path.
+            // `validate_document_id_tree` covers every id in the row's own embedded tree
+            // (a bundle's Create-shaped rows can carry embedded children with never-checked
+            // ids, same as a live Create/Update can). `validate_engine_tree` mutates
+            // `document.engine` in place (re-normalizes it); the persisted row must hold
+            // that normalized form, same as every other write path.
             validation::validate_system_size(&document)?;
             validation::validate_property_overrides(&document)?;
+            validation::validate_document_id_tree(&document)?;
             validation::validate_engine_tree(&mut document)?;
             validation::validate_system_schema_tree(&document, &world_schemas)?;
             if let Some(registry) = &validator_registry {

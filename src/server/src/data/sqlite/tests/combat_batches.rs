@@ -37,7 +37,7 @@ async fn an_unrelated_deactivation_cannot_let_a_third_combat_steal_an_already_cl
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     // `a` starts inactive; `b` starts active on the same scene.
     let a = combat_doc(1, w.id, scene, false);
     let b = combat_doc(2, w.id, scene, true);
@@ -87,7 +87,7 @@ async fn a_swap_batch_deactivating_then_activating_on_one_scene_passes_in_either
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     let a = combat_doc(1, w.id, scene, true);
     let b = combat_doc(2, w.id, scene, false);
     r.apply_intent(
@@ -134,7 +134,7 @@ async fn activating_two_different_combats_on_one_scene_in_one_batch_still_reject
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     let a = combat_doc(1, w.id, scene, false);
     let b = combat_doc(2, w.id, scene, false);
     r.apply_intent(
@@ -178,7 +178,7 @@ async fn activating_two_different_combats_on_one_scene_in_one_batch_still_reject
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     let a = combat_doc(1, w.id, scene, false);
     let b = combat_doc(2, w.id, scene, false);
     r.apply_intent(
@@ -224,7 +224,7 @@ async fn an_unrelated_update_to_an_already_inactive_combat_does_not_mask_a_real_
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     // `a` starts (and stays) active; `c` starts (and stays) inactive.
     let a = combat_doc(1, w.id, scene, true);
     let c = combat_doc(2, w.id, scene, false);
@@ -287,7 +287,7 @@ async fn combat_transition_origin_skips_capability_gates_but_keeps_occ_and_valid
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let combat = combat_doc(1, w.id, Uuid::from_u128(0x5CE), false);
+    let combat = combat_doc(1, w.id, crate::test_ids::test_uuid(0x5CE), false);
     let c = combatant_doc(2, w.id, combat.id);
     r.apply_intent(
         &gm_ctx,
@@ -379,7 +379,7 @@ async fn combat_transition_may_create_but_never_update_a_message_document() {
         world_role: WorldRole::Gm,
     };
     let msg = Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: Scope::World { world_id: w.id },
         doc_type: crate::chat::MESSAGE_DOC_TYPE.to_string(),
         schema_version: 1,
@@ -441,7 +441,7 @@ async fn a_same_doc_double_update_cannot_reclaim_a_release_already_spent_by_anot
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     let a = combat_doc(1, w.id, scene, true);
     r.apply_intent(
         &ctx,
@@ -501,8 +501,8 @@ async fn a_scene_rebind_combined_with_deactivate_frees_the_old_scene_not_the_new
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let s1 = Uuid::from_u128(0x51);
-    let s2 = Uuid::from_u128(0x52);
+    let s1 = crate::test_ids::test_uuid(0x51);
+    let s2 = crate::test_ids::test_uuid(0x52);
     // `z` is genuinely active on `s2` and is never touched by the batch
     // under test.
     let z = combat_doc(1, w.id, s2, true);
@@ -577,7 +577,7 @@ async fn combat_transition_may_delete_a_cascading_combat_without_delete_capabili
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let combat = combat_doc(1, w.id, Uuid::from_u128(0x5CE), false);
+    let combat = combat_doc(1, w.id, crate::test_ids::test_uuid(0x5CE), false);
     let c = combatant_doc(2, w.id, combat.id);
     r.apply_intent(
         &gm_ctx,
@@ -642,7 +642,7 @@ async fn combat_transition_update_of_an_immutable_envelope_field_is_forbidden() 
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let combat = combat_doc(1, w.id, Uuid::from_u128(0x5CE), false);
+    let combat = combat_doc(1, w.id, crate::test_ids::test_uuid(0x5CE), false);
     r.apply_intent(
         &ctx,
         w.id,
@@ -660,7 +660,7 @@ async fn combat_transition_update_of_an_immutable_envelope_field_is_forbidden() 
             remove: false,
             path: "/id".into(),
             old: serde_json::json!(combat.id),
-            new: serde_json::json!(Uuid::from_u128(0xBAD)),
+            new: serde_json::json!(crate::test_ids::test_uuid(0xBAD)),
         }],
     };
     let res = r
@@ -688,7 +688,7 @@ async fn deleting_an_active_combat_frees_its_scene_for_a_same_batch_create() {
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let scene = Uuid::from_u128(0x5CE);
+    let scene = crate::test_ids::test_uuid(0x5CE);
     let a = combat_doc(1, w.id, scene, true);
     r.apply_intent(
         &ctx,
@@ -734,8 +734,8 @@ async fn a_scene_rebind_that_stays_active_frees_the_old_scene_for_a_same_batch_c
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let s1 = Uuid::from_u128(0x51);
-    let s2 = Uuid::from_u128(0x52);
+    let s1 = crate::test_ids::test_uuid(0x51);
+    let s2 = crate::test_ids::test_uuid(0x52);
     let a = combat_doc(1, w.id, s1, true);
     r.apply_intent(
         &ctx,
@@ -780,8 +780,8 @@ async fn a_scene_rebind_that_stays_active_frees_the_old_scene_for_a_same_batch_c
     // Reverse ordering: Create the new claimant on `s1b` FIRST, then move `x`
     // away from `s1b` -- reuse fresh scenes/docs so this half is independent
     // of the state left by the first half above.
-    let s1b = Uuid::from_u128(0x53);
-    let s2b = Uuid::from_u128(0x54);
+    let s1b = crate::test_ids::test_uuid(0x53);
+    let s2b = crate::test_ids::test_uuid(0x54);
     let x = combat_doc(3, w.id, s1b, true);
     r.apply_intent(
         &ctx,
@@ -839,8 +839,8 @@ async fn scene_rebind_stays_active_does_not_free_the_destination_scenes_real_occ
         user_id: gm,
         world_role: WorldRole::Gm,
     };
-    let s1 = Uuid::from_u128(0x51);
-    let s2 = Uuid::from_u128(0x52);
+    let s1 = crate::test_ids::test_uuid(0x51);
+    let s2 = crate::test_ids::test_uuid(0x52);
     // `z` is genuinely active on `s2` and is never touched by the batch.
     let z = combat_doc(1, w.id, s2, true);
     let a = combat_doc(2, w.id, s1, true);

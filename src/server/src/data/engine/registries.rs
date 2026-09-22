@@ -173,6 +173,13 @@ pub struct Faction {
     pub movement: Vec<String>,
 }
 
+impl Faction {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` `color`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        crate::data::engine::geometry::validate_hex_color(&self.color)
+    }
+}
+
 /// The world's faction registry: a singleton config document. Keyed by
 /// faction id — an actor's `faction` field references a key. A MAP, not an
 /// array, for the same single-key-Update reason as `ChannelRegistryEngine`.
@@ -194,6 +201,17 @@ pub struct FactionRegistryEngine {
 }
 
 impl FactionRegistryEngine {
+    /// Ingress validation beyond serde shape: every faction's `color` validates through
+    /// `Faction::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (id, faction) in &self.factions {
+            faction
+                .validate()
+                .map_err(|m| format!("factions.{id}: {m}"))?;
+        }
+        Ok(())
+    }
+
     /// Default three-faction world seed (friendly / neutral / hostile). The
     /// engine definition — the client's faction UI mirrors these ids and
     /// colors rather than declaring its own seed.
@@ -274,10 +292,10 @@ impl Condition {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(fx) = &self.fx {
             if let Some(tint) = &fx.tint {
-                validate_fx_color(tint)?;
+                crate::data::engine::geometry::validate_hex_color(tint)?;
             }
             if let Some(highlight) = &fx.highlight {
-                validate_fx_color(highlight)?;
+                crate::data::engine::geometry::validate_hex_color(highlight)?;
             }
         }
         Ok(())
@@ -311,15 +329,6 @@ pub struct ConditionFx {
     #[serde(default)]
     #[ts(optional)]
     pub highlight: Option<String>,
-}
-
-/// Condition-fx color check: exactly `#` + 6 hex digits (a css `#rrggbb`
-/// string) — same shape rule as `token::validate_emission_color`.
-fn validate_fx_color(color: &str) -> Result<(), String> {
-    match color.strip_prefix('#') {
-        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
-        _ => Err("fx color must be a css #rrggbb string".to_string()),
-    }
 }
 
 /// The world's condition registry: a singleton config document. Keyed by

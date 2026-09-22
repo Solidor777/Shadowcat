@@ -32,14 +32,14 @@ fn scene_doc(id: u128) -> Document {
     )
 }
 
-/// A scene-parented token LINKED to actor `Uuid::from_u128(actor_id)` at `(x, y)`.
+/// A scene-parented token LINKED to actor `crate::test_ids::test_uuid(actor_id)` at `(x, y)`.
 fn linked_token(id: u128, scene: u128, actor_id: u128, x: f64, y: f64) -> Document {
     entity_doc_eng(
         id,
         scene,
         "token",
         json!({ "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(actor_id).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(actor_id).to_string() }),
     )
 }
 
@@ -231,11 +231,17 @@ fn token_sound_emission_reads_an_embedded_actor() {
 
 #[test]
 fn select_listener_accepts_a_readable_in_scene_override() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
-            readable(owned_token(11, 10, 50.0, 50.0, Uuid::from_u128(99))),
+            readable(owned_token(
+                11,
+                10,
+                50.0,
+                50.0,
+                crate::test_ids::test_uuid(99),
+            )),
         ],
         0,
     );
@@ -243,23 +249,29 @@ fn select_listener_accepts_a_readable_in_scene_override() {
         ecs.select_listener(
             &player_ctx(user),
             &no_world_grants(),
-            Uuid::from_u128(10),
-            Some(Uuid::from_u128(11))
+            crate::test_ids::test_uuid(10),
+            Some(crate::test_ids::test_uuid(11))
         ),
-        Some(Uuid::from_u128(11)),
+        Some(crate::test_ids::test_uuid(11)),
         "an override the recipient can READ in the named scene wins even with no owned token"
     );
 }
 
 #[test]
 fn select_listener_refuses_an_override_in_another_scene() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
             scene_doc(20),
             readable(owned_token(11, 10, 50.0, 50.0, user)),
-            readable(owned_token(21, 20, 50.0, 50.0, Uuid::from_u128(99))),
+            readable(owned_token(
+                21,
+                20,
+                50.0,
+                50.0,
+                crate::test_ids::test_uuid(99),
+            )),
         ],
         0,
     );
@@ -267,22 +279,22 @@ fn select_listener_refuses_an_override_in_another_scene() {
         ecs.select_listener(
             &player_ctx(user),
             &no_world_grants(),
-            Uuid::from_u128(10),
-            Some(Uuid::from_u128(21))
+            crate::test_ids::test_uuid(10),
+            Some(crate::test_ids::test_uuid(21))
         ),
-        Some(Uuid::from_u128(11)),
+        Some(crate::test_ids::test_uuid(11)),
         "an override naming a token of ANOTHER scene is refused; the owned-token rule decides"
     );
 }
 
 #[test]
 fn select_listener_refuses_an_unreadable_override() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
             owned_token(11, 10, 50.0, 50.0, user),
-            owned_token(12, 10, 150.0, 50.0, Uuid::from_u128(99)), // DocRole::None: unreadable
+            owned_token(12, 10, 150.0, 50.0, crate::test_ids::test_uuid(99)), // DocRole::None: unreadable
         ],
         0,
     );
@@ -290,17 +302,17 @@ fn select_listener_refuses_an_unreadable_override() {
         ecs.select_listener(
             &player_ctx(user),
             &no_world_grants(),
-            Uuid::from_u128(10),
-            Some(Uuid::from_u128(12))
+            crate::test_ids::test_uuid(10),
+            Some(crate::test_ids::test_uuid(12))
         ),
-        Some(Uuid::from_u128(11)),
+        Some(crate::test_ids::test_uuid(11)),
         "an override the recipient cannot READ is refused; the owned-token rule decides"
     );
 }
 
 #[test]
 fn select_listener_picks_the_lowest_id_owned_token() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
@@ -313,21 +325,21 @@ fn select_listener_picks_the_lowest_id_owned_token() {
         ecs.select_listener(
             &player_ctx(user),
             &no_world_grants(),
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             None
         ),
-        Some(Uuid::from_u128(15)),
+        Some(crate::test_ids::test_uuid(15)),
         "deterministic: the LOWEST-id owned token listens, regardless of insertion order"
     );
 }
 
 #[test]
 fn select_listener_returns_none_with_no_override_and_no_owned_token() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
-            owned_token(11, 10, 50.0, 50.0, Uuid::from_u128(99)),
+            owned_token(11, 10, 50.0, 50.0, crate::test_ids::test_uuid(99)),
         ],
         0,
     );
@@ -335,7 +347,7 @@ fn select_listener_returns_none_with_no_override_and_no_owned_token() {
         ecs.select_listener(
             &player_ctx(user),
             &no_world_grants(),
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             None
         ),
         None,
@@ -364,24 +376,24 @@ fn listener_and_emitter(user: Uuid, emitter_id: u128) -> SceneEcs {
 
 #[test]
 fn compute_audibility_echoes_the_scene_and_resolves_falloff_and_pan() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = listener_and_emitter(user, 12);
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert_eq!(
         slice.scene,
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         "the slice echoes the scene argument verbatim"
     );
-    assert_eq!(slice.listener, Some(Uuid::from_u128(11)));
+    assert_eq!(slice.listener, Some(crate::test_ids::test_uuid(11)));
     assert!(slice.spatial);
     assert_eq!(slice.emitters.len(), 1);
     let em = &slice.emitters[0];
-    assert_eq!(em.token, Uuid::from_u128(12));
+    assert_eq!(em.token, crate::test_ids::test_uuid(12));
     assert_eq!(em.asset, "a-wind");
     assert!(em.loop_);
     // t = 200/600 = 1/3 → falloff = 1 - 1/9 = 8/9; gain = 0.8 * 8/9.
@@ -399,13 +411,18 @@ fn compute_audibility_echoes_the_scene_and_resolves_falloff_and_pan() {
 
 #[test]
 fn compute_audibility_spatial_false_mixes_flat_regardless_of_listener() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = listener_and_emitter(user, 12);
     ecs.set_world_settings_for_test(ws_body(&[("/audio/spatial", json!(false))]));
     // A player owning NO token (no listener at all) still hears the flat mix under
     // `spatial: false` — the overlay overrides the no-listener silence.
-    let stranger = player_ctx(Uuid::from_u128(42));
-    let slice = ecs.compute_audibility(&stranger, &no_world_grants(), Uuid::from_u128(10), None);
+    let stranger = player_ctx(crate::test_ids::test_uuid(42));
+    let slice = ecs.compute_audibility(
+        &stranger,
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
     assert!(!slice.spatial);
     assert_eq!(slice.listener, None);
     assert_eq!(slice.emitters.len(), 1);
@@ -418,7 +435,7 @@ fn compute_audibility_spatial_false_mixes_flat_regardless_of_listener() {
 
 #[test]
 fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = listener_and_emitter(user, 12);
     ecs.apply_op(&Operation::Create {
         doc: entity_doc_eng(
@@ -431,7 +448,7 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     let em = &slice.emitters[0];
@@ -448,7 +465,7 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
 
 #[test]
 fn compute_audibility_occlusion_none_ignores_walls() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = listener_and_emitter(user, 12);
     ecs.apply_op(&Operation::Create {
         doc: entity_doc_eng(
@@ -462,7 +479,7 @@ fn compute_audibility_occlusion_none_ignores_walls() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert!(
@@ -473,7 +490,7 @@ fn compute_audibility_occlusion_none_ignores_walls() {
 
 #[test]
 fn compute_audibility_honors_the_wall_elevation_band() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = listener_and_emitter(user, 12);
     // The SAME wall position as the occluding case, banded to elevations ≥ 5 — the ground-level
     // listener is outside the band, so it must NOT occlude.
@@ -489,7 +506,7 @@ fn compute_audibility_honors_the_wall_elevation_band() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert!(
@@ -506,8 +523,8 @@ fn compute_audibility_wall_occlusion_inherits_across_levels_from_the_listeners_o
     // floor-1-banded wall between the listener and a floor-2 emitter occludes it exactly as it
     // would a floor-1 emitter at the identical horizontal distance — levels compose with the
     // existing per-listener band filter for free.
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -550,13 +567,13 @@ fn compute_audibility_wall_occlusion_inherits_across_levels_from_the_listeners_o
     let cross = slice
         .emitters
         .iter()
-        .find(|e| e.token == Uuid::from_u128(12))
+        .find(|e| e.token == crate::test_ids::test_uuid(12))
         .expect("cross-floor emitter present")
         .gain;
     let same = slice
         .emitters
         .iter()
-        .find(|e| e.token == Uuid::from_u128(13))
+        .find(|e| e.token == crate::test_ids::test_uuid(13))
         .expect("same-floor emitter present")
         .gain;
     // Identical horizontal distance (200 world units, 600-unit radius) ⇒ an IDENTICAL falloff
@@ -574,7 +591,7 @@ fn compute_audibility_wall_occlusion_inherits_across_levels_from_the_listeners_o
 
 #[test]
 fn compute_audibility_skips_a_disabled_emission() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
@@ -593,7 +610,7 @@ fn compute_audibility_skips_a_disabled_emission() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert!(
@@ -604,7 +621,7 @@ fn compute_audibility_skips_a_disabled_emission() {
 
 #[test]
 fn compute_audibility_beyond_radius_is_silent() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
@@ -621,7 +638,7 @@ fn compute_audibility_beyond_radius_is_silent() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert_eq!(
@@ -632,12 +649,17 @@ fn compute_audibility_beyond_radius_is_silent() {
 
 #[test]
 fn compute_audibility_without_a_listener_every_spatial_emitter_is_silent() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let ecs = listener_and_emitter(user, 12);
     // A player owning nothing in the scene has no listener: spatial emitters resolve to
     // silence (nothing to spatialize FROM).
-    let stranger = player_ctx(Uuid::from_u128(42));
-    let slice = ecs.compute_audibility(&stranger, &no_world_grants(), Uuid::from_u128(10), None);
+    let stranger = player_ctx(crate::test_ids::test_uuid(42));
+    let slice = ecs.compute_audibility(
+        &stranger,
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
     assert_eq!(slice.listener, None);
     assert_eq!(slice.emitters.len(), 1);
     assert_eq!(slice.emitters[0].gain, 0.0);
@@ -646,7 +668,7 @@ fn compute_audibility_without_a_listener_every_spatial_emitter_is_silent() {
 
 #[test]
 fn compute_audibility_omits_an_emitter_the_recipient_cannot_read() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
@@ -663,7 +685,7 @@ fn compute_audibility_omits_an_emitter_the_recipient_cannot_read() {
     let slice = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert_eq!(
@@ -671,12 +693,12 @@ fn compute_audibility_omits_an_emitter_the_recipient_cannot_read() {
         1,
         "a permission-hidden token's carried sound never names it to the recipient"
     );
-    assert_eq!(slice.emitters[0].token, Uuid::from_u128(13));
+    assert_eq!(slice.emitters[0].token, crate::test_ids::test_uuid(13));
     // The GM, holding READ on everything, hears both.
     let gm_slice = ecs.compute_audibility(
-        &gm_ctx(Uuid::from_u128(1)),
+        &gm_ctx(crate::test_ids::test_uuid(1)),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert_eq!(gm_slice.emitters.len(), 2);
@@ -684,7 +706,7 @@ fn compute_audibility_omits_an_emitter_the_recipient_cannot_read() {
 
 #[test]
 fn compute_audibility_emitter_order_is_deterministic() {
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut ecs = SceneEcs::from_documents(
         vec![
             scene_doc(10),
@@ -701,13 +723,13 @@ fn compute_audibility_emitter_order_is_deterministic() {
     let first = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     let second = ecs.compute_audibility(
         &player_ctx(user),
         &no_world_grants(),
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         None,
     );
     assert_eq!(
@@ -717,7 +739,10 @@ fn compute_audibility_emitter_order_is_deterministic() {
     let ids: Vec<Uuid> = first.emitters.iter().map(|e| e.token).collect();
     assert_eq!(
         ids,
-        vec![Uuid::from_u128(25), Uuid::from_u128(40)],
+        vec![
+            crate::test_ids::test_uuid(25),
+            crate::test_ids::test_uuid(40)
+        ],
         "sorted by token id"
     );
 }

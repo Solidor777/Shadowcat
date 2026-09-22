@@ -77,7 +77,6 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.rollPending": "🎲 {formula}",
     "chat.whisperTo": "to {names}",
     "chat.systemBadge": "System",
-    "chat.roll.successes": "{n} successes",
     "chat.roll.pass": "Success",
     "chat.roll.fail": "Failure",
     "chat.openActor": "Open {name}'s sheet",
@@ -89,6 +88,20 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
   };
   let s = templates[key] ?? key;
   if (params) for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
+/** A localized `plural` matching `chat.roll.successes`'s real `en` catalog entry (one/other),
+ * needed to assert on the roll-successes chip's exact text. */
+function fakePlural(key: string, count: number, params?: Record<string, string | number>): string {
+  const templates: Record<string, { one: string; other: string }> = {
+    "chat.roll.successes": { one: "{n} success", other: "{n} successes" },
+  };
+  const entry = templates[key];
+  if (!entry) return key;
+  let s = count === 1 ? entry.one : entry.other;
+  const merged = { count, ...params };
+  for (const [k, v] of Object.entries(merged)) s = s.replaceAll(`{${k}}`, String(v));
   return s;
 }
 
@@ -176,7 +189,7 @@ describe("MessageCard — delegates segment rendering to SegmentList", () => {
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".oembed-provider")?.textContent).toBe("YouTube");
     expect(container.querySelector(".oembed-title")?.textContent).toBe("A Video");
@@ -235,7 +248,7 @@ describe("MessageCard — header", () => {
     const doc = msgDoc("m1", baseSystem({ audience: { kind: "whisper", recipients: ["u2", "u3"] } }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u2", "Bob"]]), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u2", "Bob"]]), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".chip.whisper")?.textContent).toBe("to Bob, u3");
   });
@@ -257,7 +270,7 @@ describe("MessageCard — emote/roll rendering", () => {
     const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "text", text: "1d20+5" }] }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20+5");
   });
@@ -272,7 +285,7 @@ describe("MessageCard — emote/roll rendering", () => {
     );
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20+5");
   });
@@ -281,7 +294,7 @@ describe("MessageCard — emote/roll rendering", () => {
     const doc = msgDoc("m1", baseSystem({ kind: "roll", source: "/r 2d6", content: [{ kind: "text", text: "2d6" }] }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 2d6");
   });
@@ -290,7 +303,7 @@ describe("MessageCard — emote/roll rendering", () => {
     const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "text", text: "1d20" }] }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20");
   });
@@ -316,7 +329,7 @@ describe("MessageCard — emote/roll rendering", () => {
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")).toBeNull();
     expect(container.querySelector(".table-draw-row-label")?.textContent).toBe("Potion");
@@ -340,7 +353,7 @@ describe("MessageCard — emote/roll rendering", () => {
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pending")).toBeNull();
     expect(container.querySelector(".table-draw-no-row")).not.toBeNull();
@@ -355,7 +368,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-formula")?.textContent).toBe("2d6+1");
     expect(container.querySelector(".roll-total")?.textContent).toBe("9");
@@ -370,7 +383,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-formula")?.getAttribute("aria-label")).toBe("chat.roll.formula");
   });
@@ -389,7 +402,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-block")).toBeNull();
     expect(container.querySelector(".roll-pending")).not.toBeNull();
@@ -402,7 +415,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-successes")?.textContent).toBe("2 successes");
     expect(container.querySelector(".roll-pass")?.textContent?.trim()).toBe("Success");
@@ -417,7 +430,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-pass")?.textContent?.trim()).toBe("Failure");
     expect(container.querySelector(".roll-pass.fail")).not.toBeNull();
@@ -430,7 +443,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-tier")?.textContent).toBe("Critical");
     expect(container.querySelector(".roll-pass")).toBeNull();
@@ -452,7 +465,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     const chips = container.querySelectorAll(".die-chip");
     expect(chips).toHaveLength(3);
@@ -471,7 +484,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".die-label")?.textContent).toBe("atk");
     expect(container.querySelector(".die-symbols")?.textContent).toBe("* !");
@@ -490,7 +503,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     const constChip = container.querySelector(".const-chip");
     expect(constChip).not.toBeNull();
@@ -505,7 +518,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const shown = render(MessageCard, {
       props: { message: withCounters, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(withCounters), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(withCounters), t: fakeT, plural: fakePlural }),
     });
     expect(shown.container.querySelector(".roll-counters")).not.toBeNull();
     expect(shown.container.querySelector(".counter.positive")?.textContent).toBe("+2");
@@ -518,7 +531,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const hidden = render(MessageCard, {
       props: { message: zero, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(zero), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(zero), t: fakeT, plural: fakePlural }),
     });
     expect(hidden.container.querySelector(".roll-counters")).toBeNull();
   });
@@ -530,7 +543,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const shown = render(MessageCard, {
       props: { message: withSymbols, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(withSymbols), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(withSymbols), t: fakeT, plural: fakePlural }),
     });
     expect(shown.container.querySelector(".roll-symbol-counts")).not.toBeNull();
     expect(shown.container.querySelectorAll(".symbol-count")).toHaveLength(2);
@@ -542,7 +555,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const hidden = render(MessageCard, {
       props: { message: empty, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(empty), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(empty), t: fakeT, plural: fakePlural }),
     });
     expect(hidden.container.querySelector(".roll-symbol-counts")).toBeNull();
   });
@@ -558,7 +571,7 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-block")).toBeNull();
     expect(container.querySelector(".roll-pending")).not.toBeNull();
@@ -602,7 +615,7 @@ describe("MessageCard — GM recalc menu", () => {
     });
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), role: "gm", t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), role: "gm", t: fakeT, plural: fakePlural }),
     });
     const inputs = Array.from(container.querySelectorAll('input[type="number"]')) as HTMLInputElement[];
     expect(inputs).toHaveLength(2);
@@ -669,7 +682,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        t: fakeT,
+        t: fakeT, plural: fakePlural,
         chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
       }),
     });
@@ -717,7 +730,7 @@ describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote conte
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     const chip = container.querySelector(".roll-tooltip-trigger");
     expect(chip?.textContent?.trim()).toBe("2");
@@ -738,7 +751,7 @@ describe("MessageCard — inline roll chip (roll_embed inside Normal/Emote conte
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".roll-tooltip-trigger")?.textContent?.trim()).toBe("15");
   });
@@ -753,7 +766,7 @@ describe("MessageCard — roll button", () => {
     const send = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
@@ -768,7 +781,7 @@ describe("MessageCard — roll button", () => {
     speakAs.actorId = "actor-1";
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -789,7 +802,7 @@ describe("MessageCard — roll button", () => {
     speakAsToken.select("tok-1");
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -807,7 +820,7 @@ describe("MessageCard — roll button", () => {
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     const btn = container.querySelector(".roll-btn");
     expect(btn?.textContent?.trim()).toBe("1d20+5");
@@ -822,7 +835,7 @@ describe("MessageCard — system notices", () => {
     }));
     const { container } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
     });
     expect(container.querySelector(".card.system")).not.toBeNull();
     expect(container.querySelector(".chip.system-badge")?.textContent).toBe("System");
@@ -971,7 +984,7 @@ describe("MessageCard actor-name navigation", () => {
     const opened: unknown[] = [];
     const { getByRole } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(actor, doc), openDocument: (r) => opened.push(r), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(actor, doc), openDocument: (r) => opened.push(r), t: fakeT, plural: fakePlural }),
     });
     await fireEvent.click(getByRole("button", { name: /Goblin/ }));
     expect(opened).toEqual([{ docId: "a1" }]);
@@ -984,7 +997,7 @@ describe("MessageCard actor-name navigation", () => {
     const opened: unknown[] = [];
     const { getByRole } = render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(actor, token, doc), openDocument: (r) => opened.push(r), t: fakeT }),
+      context: setAppContextForTest({ documents: storeWith(actor, token, doc), openDocument: (r) => opened.push(r), t: fakeT, plural: fakePlural }),
     });
     await fireEvent.click(getByRole("button", { name: /Goblin/ }));
     expect(opened).toEqual([{ tokenId: "token1" }]);

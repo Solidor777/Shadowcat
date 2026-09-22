@@ -65,7 +65,7 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
 fn resolve_scene_movement_restriction_defaults_to_visible_and_lenient() {
     // No world-settings doc, no scene override → built-in defaults.
     let ecs = SceneEcs::new();
-    let r = ecs.resolve_scene(Uuid::from_u128(1));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(1));
     assert_eq!(r.movement_restriction, MovementRestriction::Visible);
     assert!(r.partial_cell_leniency);
 }
@@ -78,7 +78,7 @@ fn resolve_scene_movement_restriction_world_override_and_leniency_off() {
         ("/scene/movementRestriction", json!("revealed")),
         ("/scene/partialCellLeniency", json!(false)),
     ]));
-    let r = ecs.resolve_scene(Uuid::from_u128(1));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(1));
     assert_eq!(r.movement_restriction, MovementRestriction::Revealed);
     assert!(
         !r.partial_cell_leniency,
@@ -90,7 +90,7 @@ fn resolve_scene_movement_restriction_world_override_and_leniency_off() {
 fn resolve_scene_movement_restriction_scene_override_beats_world() {
     use serde_json::json;
     let mut ecs = SceneEcs::new();
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementRestriction", json!("visible"))]));
     // Scene overrides vision.movementRestriction to "unrestricted".
     ecs.insert_scene_for_test(
@@ -111,7 +111,7 @@ fn resolve_scene_movement_restriction_scene_override_beats_world() {
 fn resolve_scene_movement_restriction_null_override_inherits_world() {
     use serde_json::json;
     let mut ecs = SceneEcs::new();
-    let scene_id = Uuid::from_u128(8);
+    let scene_id = crate::test_ids::test_uuid(8);
     ecs.set_world_settings_for_test(ws_body(&[(
         "/scene/movementRestriction",
         json!("revealed"),
@@ -132,7 +132,7 @@ fn resolve_scene_movement_restriction_null_override_inherits_world() {
 #[test]
 fn resolve_scene_movement_model_defaults_to_grid_stepped() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
-    let r = ecs.resolve_scene(Uuid::from_u128(10));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(10));
     assert_eq!(r.movement_model, MovementModel::GridStepped);
 }
 
@@ -152,7 +152,7 @@ fn resolve_scene_movement_model_world_override_to_continuous() {
         "pathfinding": { "diagonalRule": "chebyshev" },
         "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
     }));
-    let r = ecs.resolve_scene(Uuid::from_u128(10));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(10));
     assert_eq!(r.movement_model, MovementModel::Continuous);
 }
 
@@ -180,7 +180,7 @@ fn resolve_scene_movement_model_scene_override_beats_world() {
         "pathfinding": { "diagonalRule": "chebyshev" },
         "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
     }));
-    let r = ecs.resolve_scene(Uuid::from_u128(10));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(10));
     assert_eq!(r.movement_model, MovementModel::Continuous);
 }
 
@@ -208,14 +208,14 @@ fn resolve_scene_movement_model_null_scene_override_inherits_world() {
         "pathfinding": { "diagonalRule": "chebyshev" },
         "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
     }));
-    let r = ecs.resolve_scene(Uuid::from_u128(10));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(10));
     assert_eq!(r.movement_model, MovementModel::Continuous);
 }
 
 #[test]
 fn resolve_scene_bounds_defaults_when_absent() {
     let ecs = SceneEcs::new();
-    let r = ecs.resolve_scene(Uuid::from_u128(1));
+    let r = ecs.resolve_scene(crate::test_ids::test_uuid(1));
     assert_eq!(r.bounds, (100.0, 100.0));
 }
 
@@ -223,7 +223,7 @@ fn resolve_scene_bounds_defaults_when_absent() {
 fn resolve_scene_bounds_reads_authored_value() {
     use serde_json::json;
     let mut ecs = SceneEcs::new();
-    let scene_id = Uuid::from_u128(2);
+    let scene_id = crate::test_ids::test_uuid(2);
     ecs.insert_scene_for_test(
         scene_id,
         json!({
@@ -239,7 +239,7 @@ fn resolve_scene_bounds_reads_authored_value() {
 fn resolve_scene_bounds_fail_closed_on_degenerate() {
     use serde_json::json;
     let mut ecs = SceneEcs::new();
-    let scene_id = Uuid::from_u128(3);
+    let scene_id = crate::test_ids::test_uuid(3);
     // Zero width + negative height are degenerate for a navmesh rectangle → default.
     ecs.insert_scene_for_test(
         scene_id,
@@ -275,7 +275,7 @@ fn the_resolved_shape_reports_the_resolved_kind() {
         ),
     ] {
         let ecs = SceneEcs::from_documents(vec![entity_doc_top_eng(10, "scene", engine)], 0);
-        let scene = Uuid::from_u128(10);
+        let scene = crate::test_ids::test_uuid(10);
         assert_eq!(ecs.resolve_grid_kind(scene), expect);
         assert_eq!(ecs.resolve_scene(scene).grid_kind, expect);
         let declared = *ecs
@@ -294,8 +294,8 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
     // because the snapshot then compares equal across the mutation and the stale mask is
     // returned. It cannot pass vacuously: the fixture asserts the two masks differ, so a
     // scene whose kind change produced no geometric difference fails the guard.
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -372,7 +372,7 @@ fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
     // BOTH normal (floor=dim 0.34) AND darkvision (floor=dark 0.0).  Standing in a brightly-lit
     // cell (light placed at the token), normal's floor (0.34) is higher than darkvision's (0.0),
     // so normal is the highest-admitting mode → its hint (None) wins → lit cells carry no hint.
-    let player = Uuid::from_u128(42);
+    let player = crate::test_ids::test_uuid(42);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -400,7 +400,7 @@ fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
             "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
     let mask = ecs.player_lit_mask(
         player,
@@ -485,8 +485,8 @@ fn cell_visible_predicate_honors_floor_and_range() {
 /// defaults false → the bound-box polygon covers all cells, so the LOS test never rejects a
 /// corner. Returns `(ecs, user, scene_id)`.
 fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -632,8 +632,8 @@ fn a_square_light_occludes_behind_a_wall_within_its_grown_reach() {
 /// effect). `blocks_light` toggles whether the box occludes the boundary-projected environment
 /// light: `true` seals the interior (env cannot reach), `false` is the no-occlusion baseline.
 fn env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -721,8 +721,8 @@ fn env_light_occlusion_narrows_the_mask_and_seals_the_interior() {
 /// walks the perimeter of is grid-kind-dependent, and grid kind and movement model are
 /// independent axes that combine.
 fn hex_env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let g = grid_shape::HexGrid {
         size: HEX_FIXTURE_SIZE,
     };
@@ -859,8 +859,8 @@ fn hex_env_light_walks_the_blocks_real_origin_side_edges() {
 /// normal-vision token, used to prove open-scene equivalence: with nothing to occlude, the
 /// edge-projected env light reaches every LOS cell exactly as the flat all-bright fill does.
 fn open_env_lit_scene(mode: &str) -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -923,8 +923,8 @@ fn visible_cells_strict_parity_global_illumination() {
     // the all_bright arm fires for both paths, so any divergence would be in the all_bright
     // branch — this guards it.
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -958,8 +958,8 @@ fn visible_cells_strict_parity_darkvision() {
     // The darkvision floor (0.0) admits unlit-but-in-range cells; normal vision would see
     // nothing. Both paths must agree on exactly those cells.
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1001,8 +1001,8 @@ fn visible_cells_strict_parity_los_restriction_with_occluding_wall() {
     // Both paths use source_los_poly (the shared raycast), so any divergence would be in
     // per-cell sampling AFTER the LOS polygon is built — this guards the occluded-scene path.
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1087,7 +1087,7 @@ fn visible_cells_lenient_is_a_superset_of_strict() {
 #[test]
 fn visible_cells_empty_when_user_has_no_source_in_scene() {
     let (ecs, _user, scene) = scene_with_lit_player_token();
-    let stranger = Uuid::from_u128(999);
+    let stranger = crate::test_ids::test_uuid(999);
     assert!(
         ecs.visible_cells(
             stranger,
@@ -1107,8 +1107,8 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
     // `visible_cells_cached` must never serve a cell an occluding wall has since removed from
     // view: a stale cache must fail toward recompute, never toward a wider mask.
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     // Grid size 20 (not the usual 100) so the target cell sits comfortably inside the
     // no-walls-yet `bound_for` margin box (±100 around the token) rather than on its edge.
     let scene = entity_doc_top_eng(
@@ -1226,7 +1226,7 @@ fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask
     );
     assert_eq!(ecs.lighting_inputs_recompute_count(), 1);
     // A different exclude set is a different field: one more raycast, then shared again.
-    let mover = Uuid::from_u128(11);
+    let mover = crate::test_ids::test_uuid(11);
     sight(&ecs, &[mover]);
     sight(&ecs, &[mover]);
     assert_eq!(ecs.lighting_inputs_recompute_count(), 2);
@@ -1322,7 +1322,7 @@ fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() 
 /// Build an ECS with one `blocksMove` wall and one non-blocking wall in the same scene.
 /// The blocking wall runs from (100,0) to (100,200); the non-blocking wall runs elsewhere.
 fn scene_with_two_walls_one_blocking() -> (SceneEcs, Uuid) {
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let blocking = json!({ "seg": {"x1": 100, "y1": 0, "x2": 100, "y2": 200}, "blocksMove": true });
     let non_blocking =
         json!({ "seg": {"x1": 0, "y1": 0, "x2": 50, "y2": 50}, "blocksMove": false });
@@ -1340,13 +1340,13 @@ fn scene_with_two_walls_one_blocking() -> (SceneEcs, Uuid) {
 #[test]
 fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     use crate::data::document::Visibility;
-    let scene_id = Uuid::from_u128(10);
-    let owner = Uuid::from_u128(1);
-    let player = Uuid::from_u128(2);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let owner = crate::test_ids::test_uuid(1);
+    let player = crate::test_ids::test_uuid(2);
 
     let mut secret = crate::data::document::tests::world_scoped_doc(
-        Uuid::from_u128(9),
-        Uuid::from_u128(20),
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(20),
         "region",
     );
     secret.parent_id = Some(scene_id);
@@ -1363,8 +1363,8 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
         .insert("/engine".into(), Visibility::GmOnly);
 
     let mut visible = crate::data::document::tests::world_scoped_doc(
-        Uuid::from_u128(9),
-        Uuid::from_u128(21),
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(21),
         "region",
     );
     visible.parent_id = Some(scene_id);
@@ -1377,7 +1377,11 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
 
     let ecs = SceneEcs::from_documents(
         vec![
-            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
             secret,
             visible,
         ],
@@ -1409,10 +1413,10 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
 
 #[test]
 fn region_field_ignores_disabled_regions() {
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut disabled = crate::data::document::tests::world_scoped_doc(
-        Uuid::from_u128(9),
-        Uuid::from_u128(20),
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(20),
         "region",
     );
     disabled.parent_id = Some(scene_id);
@@ -1424,7 +1428,11 @@ fn region_field_ignores_disabled_regions() {
     }));
     let ecs = SceneEcs::from_documents(
         vec![
-            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
             disabled,
         ],
         0,
@@ -1441,11 +1449,11 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     // `region_field` must cover the same cells for the same region, because one
     // rasterizer feeds both. A divergence would let a move spring a region's
     // movement behavior without firing its triggers (or the reverse).
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let region = |id: u128, x0: f64, behavior: &str, enabled: bool, triggers: serde_json::Value| {
         let mut d = crate::data::document::tests::world_scoped_doc(
-            Uuid::from_u128(9),
-            Uuid::from_u128(id),
+            crate::test_ids::test_uuid(9),
+            crate::test_ids::test_uuid(id),
             "region",
         );
         d.parent_id = Some(scene_id);
@@ -1463,7 +1471,11 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     ]);
     let ecs = SceneEcs::from_documents(
         vec![
-            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
             region(20, 0.0, "terrain", true, enter_notice.clone()),
             region(21, 200.0, "arrest", true, enter_notice.clone()),
             region(22, 400.0, "impassable", true, serde_json::json!([])),
@@ -1513,7 +1525,7 @@ fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
 
 /// A scene with grid size `cell` and no walls.
 fn scene_with_grid(cell: f64) -> (SceneEcs, Uuid) {
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let ecs = SceneEcs::from_documents(
         vec![entity_doc_top_eng(
             10,
@@ -1619,14 +1631,14 @@ fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
 #[test]
 fn engine_tier_visible_admits_authoritative_and_rejects_a_non_owner_player_on_gm_only() {
     let mut doc = crate::data::document::tests::world_scoped_doc(
-        Uuid::from_u128(9),
-        Uuid::from_u128(50),
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(50),
         "wall",
     );
     doc.permissions
         .property_overrides
         .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
-    let player = Uuid::from_u128(99);
+    let player = crate::test_ids::test_uuid(99);
     assert!(
         engine_tier_visible(&doc, None),
         "the authoritative (None) viewer sees a gm_only doc"
@@ -1640,7 +1652,7 @@ fn engine_tier_visible_admits_authoritative_and_rejects_a_non_owner_player_on_gm
 #[test]
 fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
     let (ecs, user, _scene) = scene_with_lit_player_token();
-    let ghost_scene = Uuid::from_u128(0xDEAD);
+    let ghost_scene = crate::test_ids::test_uuid(0xDEAD);
     assert!(ecs
         .visible_cells(
             user,
@@ -1677,7 +1689,7 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
 fn absent_scene_region_field_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
     assert!(ecs
-        .region_field(Uuid::from_u128(0xDEAD), None, elevation::GROUND)
+        .region_field(crate::test_ids::test_uuid(0xDEAD), None, elevation::GROUND)
         .is_none());
 }
 
@@ -1685,14 +1697,14 @@ fn absent_scene_region_field_is_none() {
 fn absent_scene_navmesh_for_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
     assert!(ecs
-        .navmesh_for(Uuid::from_u128(0xDEAD), 0.5, "", &[])
+        .navmesh_for(crate::test_ids::test_uuid(0xDEAD), 0.5, "", &[])
         .is_none());
 }
 
 #[test]
 fn navmesh_for_is_memoized_across_calls() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let a = ecs
         .navmesh_for(scene, 0.4, "", &[])
         .expect("navmesh builds");
@@ -1708,7 +1720,7 @@ fn navmesh_for_is_memoized_across_calls() {
 #[test]
 fn navmesh_for_distinguishes_footprint_radii() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let a = ecs
         .navmesh_for(scene, 0.4, "", &[])
         .expect("navmesh builds");
@@ -1724,7 +1736,7 @@ fn navmesh_for_distinguishes_footprint_radii() {
 #[test]
 fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     // Prime the cache at footprint_radius_cells == 0.0: quantized key (scene, 0, []).
     let primed = ecs.navmesh_for(scene, 0.0, "", &[]);
     assert!(
@@ -1832,7 +1844,7 @@ fn navmesh_for_wall_key_is_order_independent() {
 #[test]
 fn wall_mutation_invalidates_the_navmesh_cache() {
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let a = ecs
         .navmesh_for(scene, 0.4, "", &walls)
@@ -1866,7 +1878,7 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
         )],
         0,
     );
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let a = ecs
         .navmesh_for(scene, 0.4, "", &[])
         .expect("navmesh builds");
@@ -1903,20 +1915,20 @@ fn actor_with_light(light: serde_json::Value) -> serde_json::Value {
     body
 }
 
-/// A linked-token fixture at `(x, y)` referencing actor `Uuid::from_u128(actor_id)`.
+/// A linked-token fixture at `(x, y)` referencing actor `crate::test_ids::test_uuid(actor_id)`.
 fn linked_token(id: u128, actor_id: u128, x: f64, y: f64) -> Document {
     entity_doc_eng(
         id,
         10,
         "token",
         json!({ "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                "actor_id": Uuid::from_u128(actor_id).to_string() }),
+                "actor_id": crate::test_ids::test_uuid(actor_id).to_string() }),
     )
 }
 
 #[test]
 fn carried_light_joins_the_emitter_set_and_moves_with_the_token() {
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let mut ecs = SceneEcs::from_documents(
         vec![doc(10, None, "scene"), linked_token(11, 200, 50.0, 50.0)],
         0,
@@ -1935,7 +1947,7 @@ fn carried_light_joins_the_emitter_set_and_moves_with_the_token() {
 
     // The emission is resolved at the token's LIVE position: a position write moves the light.
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(11),
+        doc_id: crate::test_ids::test_uuid(11),
         changes: vec![FieldChange {
             path: "/engine/x".to_string(),
             old: json!(50.0),
@@ -1950,7 +1962,7 @@ fn carried_light_joins_the_emitter_set_and_moves_with_the_token() {
 
 #[test]
 fn carried_light_override_replaces_and_suppresses() {
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let mut tok = linked_token(11, 200, 50.0, 50.0);
     // A per-token override REPLACES the actor's emission wholesale (same precedence as vision).
     tok.engine.as_mut().unwrap()["overrides"] = json!({ "light": { "color": "#0000ff", "intensity": 0.5, "brightRadius": 1.0,
@@ -1971,7 +1983,7 @@ fn carried_light_override_replaces_and_suppresses() {
 
     // `enabled: false` on the override is the suppress path: no contribution at all.
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(11),
+        doc_id: crate::test_ids::test_uuid(11),
         changes: vec![FieldChange {
             path: "/engine/overrides/light/enabled".to_string(),
             old: json!(true),
@@ -1987,7 +1999,7 @@ fn carried_light_override_replaces_and_suppresses() {
 
 #[test]
 fn carried_light_dangling_link_and_raw_token_emit_nothing() {
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let dangling = linked_token(11, 200, 50.0, 50.0); // no such actor in the side table
     let raw = entity_doc_eng(
         12,
@@ -2004,7 +2016,7 @@ fn carried_light_dangling_link_and_raw_token_emit_nothing() {
 
 #[test]
 fn instanced_token_reads_its_embedded_actor_uncached() {
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -2030,7 +2042,7 @@ fn instanced_token_reads_its_embedded_actor_uncached() {
     // visible on the very next read (caching under the embedded doc's own id would go stale —
     // `apply_op` invalidates the token's id, not the child's).
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(11),
+        doc_id: crate::test_ids::test_uuid(11),
         changes: vec![FieldChange {
             path: "/embedded/actor/0/engine/light/enabled".to_string(),
             old: json!(true),
@@ -2048,7 +2060,7 @@ fn instanced_token_reads_its_embedded_actor_uncached() {
 fn carried_light_participates_in_the_lit_mask() {
     // A fully dark scene (env intensity 0, lighting on): with no carried light the owned token
     // sees nothing; the actor's torch lights the cells around the token's live position.
-    let player = Uuid::from_u128(42);
+    let player = crate::test_ids::test_uuid(42);
     let mut tok = linked_token(11, 200, 50.0, 50.0);
     tok.owner = Some(player);
     let mut ecs = SceneEcs::from_documents(
@@ -2063,7 +2075,7 @@ fn carried_light_participates_in_the_lit_mask() {
         0,
     );
     // No world config: the engine default is lighting on, environmentLight, ambient 0 (dark).
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     assert!(
         ecs.visible_cells(
             player,
@@ -2104,7 +2116,7 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
     // walking away from the player's token), so `sources` is unchanged across the move and only
     // the `lights` snapshot member can force the recompute — this pins that membership against a
     // future snapshot edit dropping it.
-    let player = Uuid::from_u128(42);
+    let player = crate::test_ids::test_uuid(42);
     let mut viewer = entity_doc_eng(
         11,
         10,
@@ -2113,7 +2125,7 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
     );
     viewer.owner = Some(player);
     let mut carrier = linked_token(12, 200, 150.0, 50.0); // the GM's torchbearer, one cell over
-    carrier.owner = Some(Uuid::from_u128(7)); // not the player: not the player's vision source
+    carrier.owner = Some(crate::test_ids::test_uuid(7)); // not the player: not the player's vision source
     let mut ecs = SceneEcs::from_documents(
         vec![
             entity_doc_top_eng(
@@ -2131,7 +2143,7 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
         "actor",
         actor_with_light(torch()),
     )]);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
 
     // The torch (bright 2 / dim 4 cells) covers the viewer's cell while the carrier stands by.
     let mask1 = ecs.visible_cells_cached(
@@ -2150,7 +2162,7 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
 
     // The carrier walks to the far side of the scene: the viewer's cell goes dark.
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(12),
+        doc_id: crate::test_ids::test_uuid(12),
         changes: vec![FieldChange {
             path: "/engine/x".to_string(),
             old: json!(150.0),
@@ -2181,7 +2193,7 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
     // Companion to `carried_light_move_invalidates_the_cached_visibility_mask` (which moves the
     // carrier): here nothing moves — the actor's emission itself is edited — so only the
     // `lights` snapshot member's value comparison can force the recompute.
-    let player = Uuid::from_u128(42);
+    let player = crate::test_ids::test_uuid(42);
     let mut viewer = entity_doc_eng(
         11,
         10,
@@ -2190,7 +2202,7 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
     );
     viewer.owner = Some(player);
     let mut carrier = linked_token(12, 200, 150.0, 50.0);
-    carrier.owner = Some(Uuid::from_u128(7));
+    carrier.owner = Some(crate::test_ids::test_uuid(7));
     let mut ecs = SceneEcs::from_documents(
         vec![
             entity_doc_top_eng(
@@ -2208,7 +2220,7 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
         "actor",
         actor_with_light(torch()),
     )]);
-    let scene = Uuid::from_u128(10);
+    let scene = crate::test_ids::test_uuid(10);
     assert!(ecs
         .visible_cells_cached(
             player,
@@ -2259,8 +2271,8 @@ fn elevation_los_fixture(
     token_elevation: serde_json::Value,
 ) -> (SceneEcs, Uuid, Uuid) {
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -2380,8 +2392,8 @@ fn wall_elevation_band_gates_sight_by_source_elevation() {
 #[test]
 fn light_elevation_band_gates_occlusion_per_light() {
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -2460,8 +2472,8 @@ fn light_elevation_band_gates_occlusion_per_light() {
 #[test]
 fn env_light_stays_occluded_by_walls_at_any_elevation_band() {
     use serde_json::json;
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",
@@ -2580,7 +2592,7 @@ fn visible_cells_cached_invalidates_on_source_elevation_change() {
     // Raise the token above the wall's band: the same walls at a new elevation are a
     // different mask — the snapshot must disagree and force a recompute.
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(11),
+        doc_id: crate::test_ids::test_uuid(11),
         changes: vec![fc("/engine/elevation", json!(5.0))],
     });
     let mask2 = ecs.visible_cells_cached(
@@ -2612,9 +2624,9 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
     // `default: DocRole::None` token (None ≤ Observer) to ANY user. This test fails on either
     // side of a mutation: reverting the predicate to the hand-rolled role read breaks (a);
     // dropping the `observer_vision` conjunct or the READ requirement breaks (b)/(c).
-    let owner = Uuid::from_u128(8);
-    let stranger = Uuid::from_u128(999);
-    let scene = Uuid::from_u128(10);
+    let owner = crate::test_ids::test_uuid(8);
+    let stranger = crate::test_ids::test_uuid(999);
+    let scene = crate::test_ids::test_uuid(10);
     // The token's own cell: (50, 50) on the fixture's 100-unit square grid.
     let token_cell = (0, 0);
 
@@ -2809,14 +2821,14 @@ fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
 fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     // Two enabled, trigger-bearing, impassable regions: one banded to a floor-2 band [10,20]
     // over cell (0,0), one unbanded over cell (2,0). The band is the only difference.
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let enter_notice = serde_json::json!([
         { "on": "enter", "effect": { "type": "chat_notice", "text": "hi", "audience": "gm_only" } }
     ]);
     let region = |id: u128, x0: f64, band: serde_json::Value| {
         let mut d = crate::data::document::tests::world_scoped_doc(
-            Uuid::from_u128(9),
-            Uuid::from_u128(id),
+            crate::test_ids::test_uuid(9),
+            crate::test_ids::test_uuid(id),
             "region",
         );
         d.parent_id = Some(scene_id);
@@ -2832,7 +2844,11 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     };
     let ecs = SceneEcs::from_documents(
         vec![
-            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
             region(20, 0.0, serde_json::json!({ "bottom": 10.0, "top": 20.0 })),
             region(21, 200.0, serde_json::Value::Null),
         ],
@@ -2856,11 +2872,13 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
         .trigger_regions(scene_id, elevation::GROUND)
         .expect("scene exists");
     assert!(
-        rows.iter().all(|r| r.region_id != Uuid::from_u128(20)),
+        rows.iter()
+            .all(|r| r.region_id != crate::test_ids::test_uuid(20)),
         "a floor-2 region never fires on a floor-0 token"
     );
     assert!(
-        rows.iter().any(|r| r.region_id == Uuid::from_u128(21)),
+        rows.iter()
+            .any(|r| r.region_id == crate::test_ids::test_uuid(21)),
         "an unbanded region fires at every elevation"
     );
 
@@ -2871,16 +2889,20 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     assert!(field.is_impassable((0, 0)));
     assert!(field.is_impassable((2, 0)));
     let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
-    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(20)));
-    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(21)));
+    assert!(rows
+        .iter()
+        .any(|r| r.region_id == crate::test_ids::test_uuid(20)));
+    assert!(rows
+        .iter()
+        .any(|r| r.region_id == crate::test_ids::test_uuid(21)));
 }
 
 /// A two-level scene (`l1` [0,10), `l2` [10,20)) with a player-owned token on EACH floor — both
 /// at (50,50), so the floor-1 lamp WOULD light the floor-2 token's cell if light leaked across
 /// levels — and a single enabled white light on floor 1 (elevation 0) at that same point.
 fn scene_with_two_levels_and_a_floor_one_light() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",

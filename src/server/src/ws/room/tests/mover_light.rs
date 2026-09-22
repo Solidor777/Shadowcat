@@ -9,12 +9,12 @@ use serde_json::json;
 /// emissions edit the shared illumination field, so only a GM may author one).
 async fn link_torch(h: &MovementHandle, enabled: bool) {
     let wdoc = crate::data::document::tests::world_scoped_doc;
-    let actor_id = Uuid::from_u128(0x70AC);
+    let actor_id = crate::test_ids::test_uuid(0x70AC);
     let mut actor = wdoc(h.world_id, actor_id, "actor");
     actor.owner = Some(h.gm.user_id);
     actor.engine = Some(json!({
         "displayName": "Torch Bearer",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],
@@ -72,7 +72,7 @@ async fn light_timeline(
                 token: h.token_id,
                 path: vec![h.start, h.adj],
                 ts: now_millis(),
-                request_id: Uuid::from_u128(req),
+                request_id: crate::test_ids::test_uuid(req),
             },
         )
         .await
@@ -152,7 +152,7 @@ async fn an_all_bright_scene_samples_nothing() {
             &h.repo,
             &h.gm,
             vec![Operation::Update {
-                doc_id: Uuid::from_u128(0x5CE2),
+                doc_id: crate::test_ids::test_uuid(0x5CE2),
                 changes: vec![FieldChange {
                     path: "/engine/scene/lightMode".into(),
                     old: json!("environmentLight"),

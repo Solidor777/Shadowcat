@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 fn combat(order: Vec<Uuid>) -> CombatEngine {
     CombatEngine {
-        scene_id: Uuid::from_u128(1),
+        scene_id: crate::test_ids::test_uuid(1),
         active: false,
         round: 0,
         turn: None,
@@ -24,16 +24,18 @@ fn combat(order: Vec<Uuid>) -> CombatEngine {
 
 #[test]
 fn combat_order_must_be_unique() {
-    let id = Uuid::from_u128(7);
+    let id = crate::test_ids::test_uuid(7);
     assert!(combat(vec![id, id]).validate().is_err());
-    assert!(combat(vec![id, Uuid::from_u128(8)]).validate().is_ok());
+    assert!(combat(vec![id, crate::test_ids::test_uuid(8)])
+        .validate()
+        .is_ok());
 }
 
 #[test]
 fn combat_turn_must_be_in_order_when_set() {
-    let id = Uuid::from_u128(7);
+    let id = crate::test_ids::test_uuid(7);
     let mut c = combat(vec![id]);
-    c.turn = Some(Uuid::from_u128(9));
+    c.turn = Some(crate::test_ids::test_uuid(9));
     assert!(c.validate().is_err());
     c.turn = Some(id);
     assert!(c.validate().is_ok());
@@ -54,7 +56,7 @@ fn combatant_actor_kind_needs_a_token_or_an_actor() {
     let some = CombatantEngine {
         kind: CombatantKind::Actor {
             token_id: None,
-            actor_id: Some(Uuid::from_u128(3)),
+            actor_id: Some(crate::test_ids::test_uuid(3)),
         },
         ..none
     };
@@ -220,9 +222,9 @@ fn combat_history_validates_every_captured_band() {
     let history = |engine: EffectEngine, combatant: CombatantEngine| CombatHistoryEngine {
         records: vec![TurnRecord {
             round: 1,
-            turn: Uuid::from_u128(7),
+            turn: crate::test_ids::test_uuid(7),
             combatants: vec![CapturedCombatant {
-                id: Uuid::from_u128(7),
+                id: crate::test_ids::test_uuid(7),
                 name: None,
                 permissions: Default::default(),
                 owner: None,
@@ -230,7 +232,7 @@ fn combat_history_validates_every_captured_band() {
                 system: json!({}),
             }],
             effects: vec![EffectSnapshot {
-                host: Uuid::from_u128(9),
+                host: crate::test_ids::test_uuid(9),
                 path: "/embedded/effect/0".into(),
                 engine,
             }],
@@ -366,7 +368,7 @@ fn resolve_combat_rules_folds_cleanup_and_restore_flags() {
 fn combat_history_records_are_capped_and_cursor_in_range() {
     let rec = |round| TurnRecord {
         round,
-        turn: Uuid::from_u128(1),
+        turn: crate::test_ids::test_uuid(1),
         combatants: vec![],
         effects: vec![],
     };

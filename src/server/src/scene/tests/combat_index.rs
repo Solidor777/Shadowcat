@@ -10,7 +10,7 @@ use crate::data::permission::cap;
 /// unconditional — and the readability rules get their own test below.
 fn gm_ctx() -> PermissionContext {
     PermissionContext {
-        user_id: Uuid::from_u128(0xF1),
+        user_id: crate::test_ids::test_uuid(0xF1),
         world_role: WorldRole::Gm,
     }
 }
@@ -32,8 +32,8 @@ fn combat_body(scene: Uuid, active: bool, order: Vec<Uuid>) -> serde_json::Value
 /// its budget through refusals or truncation).
 #[test]
 fn combatant_read_access_follows_per_user_permission_entries_in_both_directions() {
-    let scene = Uuid::from_u128(1);
-    let player = Uuid::from_u128(0x77);
+    let scene = crate::test_ids::test_uuid(1);
+    let player = crate::test_ids::test_uuid(0x77);
     let player_ctx = PermissionContext {
         user_id: player,
         world_role: WorldRole::Player,
@@ -63,14 +63,14 @@ fn combatant_read_access_follows_per_user_permission_entries_in_both_directions(
             doc: entity_doc_top_eng(
                 3,
                 "combat",
-                combat_body(scene, true, vec![Uuid::from_u128(4)]),
+                combat_body(scene, true, vec![crate::test_ids::test_uuid(4)]),
             ),
         });
         let mut combatant = entity_doc_eng(
             4,
             3,
             "combatant",
-            json!({ "kind": { "type": "actor", "token_id": Uuid::from_u128(2), "actor_id": null },
+            json!({ "kind": { "type": "actor", "token_id": crate::test_ids::test_uuid(2), "actor_id": null },
                 "initiative": null, "tiebreak": 0.0, "resources": {} }),
         );
         combatant.owner = None;
@@ -82,8 +82,8 @@ fn combatant_read_access_follows_per_user_permission_entries_in_both_directions(
 
         let (_, _, access) = ecs
             .combatant_for_token(
-                Uuid::from_u128(3),
-                Uuid::from_u128(2),
+                crate::test_ids::test_uuid(3),
+                crate::test_ids::test_uuid(2),
                 &player_ctx,
                 &WorldCapDefaults::default(),
             )
@@ -99,7 +99,7 @@ fn combatant_read_access_follows_per_user_permission_entries_in_both_directions(
 #[test]
 fn active_combat_and_combatant_lookups_follow_apply_op() {
     let mut ecs = SceneEcs::new();
-    let scene = Uuid::from_u128(1);
+    let scene = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
@@ -114,7 +114,7 @@ fn active_combat_and_combatant_lookups_follow_apply_op() {
     let combat = entity_doc_top_eng(
         3,
         "combat",
-        combat_body(scene, true, vec![Uuid::from_u128(4)]),
+        combat_body(scene, true, vec![crate::test_ids::test_uuid(4)]),
     );
     ecs.apply_op(&Operation::Create {
         doc: combat.clone(),
@@ -123,27 +123,27 @@ fn active_combat_and_combatant_lookups_follow_apply_op() {
         4,
         3,
         "combatant",
-        json!({ "kind": { "type": "actor", "token_id": Uuid::from_u128(2), "actor_id": null },
+        json!({ "kind": { "type": "actor", "token_id": crate::test_ids::test_uuid(2), "actor_id": null },
         "initiative": null, "tiebreak": 0.0, "resources": { "movement": { "current": 30.0 } } }),
     );
     combatant.permissions.default = crate::data::document::DocRole::Observer;
     ecs.apply_op(&Operation::Create { doc: combatant });
     let (id, e) = ecs.active_combat_for_scene(scene).expect("active");
-    assert_eq!(id, Uuid::from_u128(3));
+    assert_eq!(id, crate::test_ids::test_uuid(3));
     assert_eq!(e.movement.resource.as_deref(), Some("movement"));
     let (cid, ce, access) = ecs
         .combatant_for_token(
             id,
-            Uuid::from_u128(2),
+            crate::test_ids::test_uuid(2),
             &gm_ctx(),
             &WorldCapDefaults::default(),
         )
         .expect("combatant");
-    assert_eq!(cid, Uuid::from_u128(4));
+    assert_eq!(cid, crate::test_ids::test_uuid(4));
     assert_eq!(ce.resources["movement"].current, 30.0);
     assert!(access.has(cap::READ));
     ecs.apply_op(&Operation::Update {
-        doc_id: Uuid::from_u128(3),
+        doc_id: crate::test_ids::test_uuid(3),
         changes: vec![fc("/engine/active", json!(false))],
     });
     assert!(ecs.active_combat_for_scene(scene).is_none());
@@ -153,12 +153,12 @@ fn active_combat_and_combatant_lookups_follow_apply_op() {
 fn combatant_lookup_falls_back_to_the_tokens_actor_id() {
     // token with engine.actor_id = 0xA; combatant kind { token_id: null, actor_id: 0xA } ⇒ found.
     let mut ecs = SceneEcs::new();
-    let scene = Uuid::from_u128(1);
+    let scene = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
     );
-    let actor_id = Uuid::from_u128(0xA);
+    let actor_id = crate::test_ids::test_uuid(0xA);
     let token = entity_doc_eng(
         2,
         1,
@@ -169,7 +169,7 @@ fn combatant_lookup_falls_back_to_the_tokens_actor_id() {
     let combat = entity_doc_top_eng(
         3,
         "combat",
-        combat_body(scene, true, vec![Uuid::from_u128(4)]),
+        combat_body(scene, true, vec![crate::test_ids::test_uuid(4)]),
     );
     ecs.apply_op(&Operation::Create {
         doc: combat.clone(),
@@ -186,13 +186,13 @@ fn combatant_lookup_falls_back_to_the_tokens_actor_id() {
 
     let (id, ce, access) = ecs
         .combatant_for_token(
-            Uuid::from_u128(3),
-            Uuid::from_u128(2),
+            crate::test_ids::test_uuid(3),
+            crate::test_ids::test_uuid(2),
             &gm_ctx(),
             &WorldCapDefaults::default(),
         )
         .expect("combatant via the token's resolved actor_id");
-    assert_eq!(id, Uuid::from_u128(4));
+    assert_eq!(id, crate::test_ids::test_uuid(4));
     assert!(matches!(
         ce.kind,
         eng::CombatantKind::Actor {
@@ -207,8 +207,8 @@ fn combatant_lookup_falls_back_to_the_tokens_actor_id() {
     // comparison runs).
     assert!(ecs
         .combatant_for_token(
-            Uuid::from_u128(3),
-            Uuid::from_u128(999),
+            crate::test_ids::test_uuid(3),
+            crate::test_ids::test_uuid(999),
             &gm_ctx(),
             &WorldCapDefaults::default()
         )
@@ -223,12 +223,12 @@ fn combatant_lookup_falls_back_to_an_instanced_tokens_embedded_actor_copy() {
     // instead. The combatant's `kind.actor_id` matches that embedded copy's id, not any
     // `engine.actor_id` field on the token (there isn't one).
     let mut ecs = SceneEcs::new();
-    let scene = Uuid::from_u128(1);
+    let scene = crate::test_ids::test_uuid(1);
     ecs.insert_scene_for_test(
         scene,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
     );
-    let actor_id = Uuid::from_u128(0xB);
+    let actor_id = crate::test_ids::test_uuid(0xB);
     let mut actor = entity_doc_top_eng(0xB, "actor", actor_body(json!([])));
     actor.id = actor_id;
     let mut token = entity_doc_eng(
@@ -242,7 +242,7 @@ fn combatant_lookup_falls_back_to_an_instanced_tokens_embedded_actor_copy() {
     let combat = entity_doc_top_eng(
         3,
         "combat",
-        combat_body(scene, true, vec![Uuid::from_u128(4)]),
+        combat_body(scene, true, vec![crate::test_ids::test_uuid(4)]),
     );
     ecs.apply_op(&Operation::Create {
         doc: combat.clone(),
@@ -259,13 +259,13 @@ fn combatant_lookup_falls_back_to_an_instanced_tokens_embedded_actor_copy() {
 
     let (id, ce, access) = ecs
         .combatant_for_token(
-            Uuid::from_u128(3),
-            Uuid::from_u128(2),
+            crate::test_ids::test_uuid(3),
+            crate::test_ids::test_uuid(2),
             &gm_ctx(),
             &WorldCapDefaults::default(),
         )
         .expect("combatant via the token's embedded actor copy");
-    assert_eq!(id, Uuid::from_u128(4));
+    assert_eq!(id, crate::test_ids::test_uuid(4));
     assert!(matches!(
         ce.kind,
         eng::CombatantKind::Actor {
@@ -299,8 +299,8 @@ mod resolved_combats {
     }
 
     fn build() -> Fixture {
-        let scene = Uuid::from_u128(1);
-        let player = Uuid::from_u128(0x77);
+        let scene = crate::test_ids::test_uuid(1);
+        let player = crate::test_ids::test_uuid(0x77);
         let mut ecs = SceneEcs::new();
         ecs.insert_scene_for_test(
             scene,
@@ -327,7 +327,7 @@ mod resolved_combats {
             0xB0,
             1,
             "token",
-            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0, "actor_id": Uuid::from_u128(0xA0) }),
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0, "actor_id": crate::test_ids::test_uuid(0xA0) }),
         );
         ecs.apply_op(&Operation::Create { doc: pc_token });
 
@@ -337,7 +337,11 @@ mod resolved_combats {
             combat_body(
                 scene,
                 true,
-                vec![Uuid::from_u128(4), Uuid::from_u128(5), Uuid::from_u128(6)],
+                vec![
+                    crate::test_ids::test_uuid(4),
+                    crate::test_ids::test_uuid(5),
+                    crate::test_ids::test_uuid(6),
+                ],
             ),
         );
         combat_doc.permissions.default = DocRole::Observer;
@@ -348,7 +352,7 @@ mod resolved_combats {
             4,
             3,
             "combatant",
-            json!({ "kind": { "type": "actor", "token_id": Uuid::from_u128(0xB0), "actor_id": Uuid::from_u128(0xA0) },
+            json!({ "kind": { "type": "actor", "token_id": crate::test_ids::test_uuid(0xB0), "actor_id": crate::test_ids::test_uuid(0xA0) },
                 "initiative": null, "tiebreak": 0.0, "resources": {} }),
         );
         pc.owner = Some(player);
@@ -397,9 +401,9 @@ mod resolved_combats {
         Fixture {
             ecs,
             scene,
-            pc_combatant: Uuid::from_u128(4),
-            npc_combatant: Uuid::from_u128(5),
-            hidden_combatant: Uuid::from_u128(6),
+            pc_combatant: crate::test_ids::test_uuid(4),
+            npc_combatant: crate::test_ids::test_uuid(5),
+            hidden_combatant: crate::test_ids::test_uuid(6),
             player_ctx: PermissionContext {
                 user_id: player,
                 world_role: WorldRole::Player,
@@ -545,7 +549,7 @@ mod resolved_combats {
         .unwrap();
         engine.movement.interpretation = eng::Interpretation::Spaces;
         f.ecs.apply_op(&Operation::Update {
-            doc_id: Uuid::from_u128(3),
+            doc_id: crate::test_ids::test_uuid(3),
             changes: vec![fc("/engine", serde_json::to_value(&engine).unwrap())],
         });
         let payload = f
@@ -581,7 +585,7 @@ mod resolved_combats {
     fn a_paused_combat_is_still_reported() {
         let mut f = build();
         f.ecs.apply_op(&Operation::Update {
-            doc_id: Uuid::from_u128(3),
+            doc_id: crate::test_ids::test_uuid(3),
             changes: vec![fc("/engine/active", json!(false))],
         });
         let payload = f
@@ -614,7 +618,7 @@ mod resolved_combats {
     fn a_mirror_bound_movement_resource_yields_no_movement_cells_and_an_unresolvable_gate() {
         let mut f = build();
         f.ecs.apply_op(&Operation::Update {
-            doc_id: Uuid::from_u128(0x50),
+            doc_id: crate::test_ids::test_uuid(0x50),
             changes: vec![fc(
                 "/engine/resources/movement/binding",
                 json!({ "kind": "mirror", "value": "speed" }),
@@ -642,7 +646,7 @@ mod resolved_combats {
         let bg = crate::ws::room::budget_gate_for_token(
             &f.ecs,
             f.scene,
-            Uuid::from_u128(0xB0),
+            crate::test_ids::test_uuid(0xB0),
             &f.player_ctx,
             &WorldCapDefaults::default(),
         )
@@ -674,7 +678,7 @@ mod resolved_combats {
         let bg = crate::ws::room::budget_gate_for_token(
             &f.ecs,
             f.scene,
-            Uuid::from_u128(0xB0),
+            crate::test_ids::test_uuid(0xB0),
             &f.player_ctx,
             &WorldCapDefaults::default(),
         )

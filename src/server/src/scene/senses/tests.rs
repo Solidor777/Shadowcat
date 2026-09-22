@@ -7,9 +7,12 @@ use serde_json::json;
 
 /// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
-    d.parent_id = parent.map(Uuid::from_u128);
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        ty,
+    );
+    d.parent_id = parent.map(crate::test_ids::test_uuid);
     d
 }
 
@@ -38,7 +41,7 @@ fn no_grants() -> WorldCapDefaults {
 fn actor_body(vision: serde_json::Value) -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],
@@ -101,7 +104,7 @@ fn tremorsense_perceives_a_grounded_token_through_walls_in_darkness() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -109,7 +112,7 @@ fn tremorsense_perceives_a_grounded_token_through_walls_in_darkness() {
     let target = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -117,19 +120,19 @@ fn tremorsense_perceives_a_grounded_token_through_walls_in_darkness() {
     // A full-blocking wall between the two, and no light anywhere: the target is invisible
     // to the terrain mask, so only the creature sense can name it.
     let wall = crate::scene::tests::wall_doc_eng(
-        Uuid::from_u128(SCENE),
+        crate::test_ids::test_uuid(SCENE),
         (2.0 * CELL, -CELL),
         (2.0 * CELL, 2.0 * CELL),
     );
     let ecs = SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, target, wall], 0);
     // Exactly the target — the source never perceives itself.
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(12)]
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![crate::test_ids::test_uuid(12)]
     );
     // Non-vacuity: the terrain mask genuinely does NOT show the target (darkness + wall).
     let lit = ecs.player_lit_mask(
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         WorldRole::Player,
         &no_grants(),
         &ecs.resolved_bands(),
@@ -147,7 +150,7 @@ fn flying_tokens_neither_perceive_nor_are_perceived() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -155,7 +158,7 @@ fn flying_tokens_neither_perceive_nor_are_perceived() {
     let mut flying = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -166,7 +169,7 @@ fn flying_tokens_neither_perceive_nor_are_perceived() {
     let grounded = sense_token(
         13,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         2.5 * CELL,
         json!([]),
@@ -174,15 +177,15 @@ fn flying_tokens_neither_perceive_nor_are_perceived() {
     let ecs =
         SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, flying, grounded], 0);
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(13)]
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![crate::test_ids::test_uuid(13)]
     );
 
     // A flying SOURCE feels nothing, even with a grounded target in range.
     let mut air_source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -193,13 +196,13 @@ fn flying_tokens_neither_perceive_nor_are_perceived() {
     let target = sense_token(
         13,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
     );
     let ecs = SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), air_source, target], 0);
-    assert!(perceived(&ecs, Uuid::from_u128(USER)).is_empty());
+    assert!(perceived(&ecs, crate::test_ids::test_uuid(USER)).is_empty());
 }
 
 #[test]
@@ -208,7 +211,7 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -216,13 +219,13 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
     let far = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         13.5 * CELL,
         0.5 * CELL,
         json!([]),
     );
     let ecs = SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, far], 0);
-    assert!(perceived(&ecs, Uuid::from_u128(USER)).is_empty());
+    assert!(perceived(&ecs, crate::test_ids::test_uuid(USER)).is_empty());
 
     // A `range: 0` creature sense is unlimited: the same far target is perceived, and the
     // payload's token ids come out sorted (BTreeSet collection — egress change detection
@@ -230,7 +233,7 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         json!([{ "mode": "tremorsense", "range": 0 }]),
@@ -238,7 +241,7 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
     let far_high_id = sense_token(
         20,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         13.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -246,7 +249,7 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
     let far_low_id = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         25.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -256,8 +259,11 @@ fn range_gates_perception_and_zero_range_is_unlimited() {
         0,
     );
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(12), Uuid::from_u128(20)],
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(20)
+        ],
         "unlimited range reaches both, sorted by id"
     );
 }
@@ -267,7 +273,7 @@ fn a_permission_hidden_target_is_never_named() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -278,7 +284,7 @@ fn a_permission_hidden_target_is_never_named() {
     let mut hidden = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -287,7 +293,7 @@ fn a_permission_hidden_target_is_never_named() {
     let readable = sense_token(
         13,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         2.5 * CELL,
         json!([]),
@@ -295,8 +301,8 @@ fn a_permission_hidden_target_is_never_named() {
     let ecs =
         SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, hidden, readable], 0);
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(13)],
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![crate::test_ids::test_uuid(13)],
         "only the READ-able token is named"
     );
 }
@@ -306,7 +312,7 @@ fn an_already_visible_target_is_not_restated() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         tremorsense(),
@@ -314,7 +320,7 @@ fn an_already_visible_target_is_not_restated() {
     let target = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -333,7 +339,7 @@ fn an_already_visible_target_is_not_restated() {
     let ecs = SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, target, light], 0);
     // Non-vacuity: the target's center cell IS in the lit mask.
     let lit = ecs.player_lit_mask(
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         WorldRole::Player,
         &no_grants(),
         &ecs.resolved_bands(),
@@ -347,21 +353,21 @@ fn an_already_visible_target_is_not_restated() {
         "the target's cell must be lit here"
     );
     assert!(
-        perceived(&ecs, Uuid::from_u128(USER)).is_empty(),
+        perceived(&ecs, crate::test_ids::test_uuid(USER)).is_empty(),
         "a target the lit mask already shows is not restated in perceived"
     );
 }
 
 #[test]
 fn observer_vision_admits_a_readable_non_owned_token_as_a_source() {
-    let other = Uuid::from_u128(8);
+    let other = crate::test_ids::test_uuid(8);
     // The source belongs to someone else; the user holds READ on it (Observer default).
     let source = sense_token(11, SCENE, other, 0.5 * CELL, 0.5 * CELL, tremorsense());
     let target = sense_token(12, SCENE, other, 3.5 * CELL, 0.5 * CELL, json!([]));
     let mut ecs = SceneEcs::from_documents(vec![doc(SCENE, None, "scene"), source, target], 0);
 
     // observerVision OFF (the default): a non-owned token is not a source, READ or not.
-    assert!(perceived(&ecs, Uuid::from_u128(USER)).is_empty());
+    assert!(perceived(&ecs, crate::test_ids::test_uuid(USER)).is_empty());
 
     // observerVision ON: the same READ-able token contributes its creature sense.
     ecs.set_world_settings_for_test(crate::scene::tests::ws_body(&[(
@@ -369,8 +375,8 @@ fn observer_vision_admits_a_readable_non_owned_token_as_a_source() {
         json!(true),
     )]));
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(12)]
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![crate::test_ids::test_uuid(12)]
     );
 }
 
@@ -386,7 +392,7 @@ fn a_requires_los_creature_sense_is_wall_bounded() {
     let source = sense_token(
         11,
         SCENE,
-        Uuid::from_u128(USER),
+        crate::test_ids::test_uuid(USER),
         0.5 * CELL,
         0.5 * CELL,
         json!([{ "mode": "blindsight" }]),
@@ -396,7 +402,7 @@ fn a_requires_los_creature_sense_is_wall_bounded() {
     let open = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
@@ -405,13 +411,13 @@ fn a_requires_los_creature_sense_is_wall_bounded() {
     let behind = sense_token(
         13,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         0.5 * CELL,
         3.5 * CELL,
         json!([]),
     );
     let wall = crate::scene::tests::wall_doc_eng(
-        Uuid::from_u128(SCENE),
+        crate::test_ids::test_uuid(SCENE),
         (-CELL, 2.0 * CELL),
         (2.0 * CELL, 2.0 * CELL),
     );
@@ -421,32 +427,32 @@ fn a_requires_los_creature_sense_is_wall_bounded() {
     );
     ecs.set_world_config(None, None, Some(vm), None, None, None);
     assert_eq!(
-        perceived(&ecs, Uuid::from_u128(USER)),
-        vec![Uuid::from_u128(12)],
+        perceived(&ecs, crate::test_ids::test_uuid(USER)),
+        vec![crate::test_ids::test_uuid(12)],
         "the walled-off target is not perceived by a requires-los sense"
     );
 }
 
 #[test]
 fn compute_derived_carries_perceived_in_the_masked_payload_only() {
-    let user = Uuid::from_u128(USER);
+    let user = crate::test_ids::test_uuid(USER);
     let source = sense_token(11, SCENE, user, 0.5 * CELL, 0.5 * CELL, tremorsense());
     let target = sense_token(
         12,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         3.5 * CELL,
         0.5 * CELL,
         json!([]),
     );
     // A second player with their own tremorsense source and a private far-away target —
     // the see-as shape: `compute_derived` keyed off the passed ctx must yield THEIR set.
-    let seer = Uuid::from_u128(21);
+    let seer = crate::test_ids::test_uuid(21);
     let seer_source = sense_token(13, SCENE, seer, 30.5 * CELL, 30.5 * CELL, tremorsense());
     let seer_target = sense_token(
         14,
         SCENE,
-        Uuid::from_u128(8),
+        crate::test_ids::test_uuid(8),
         33.5 * CELL,
         30.5 * CELL,
         json!([]),
@@ -468,17 +474,26 @@ fn compute_derived_carries_perceived_in_the_masked_payload_only() {
         .as_array()
         .expect("masked payload carries perceived");
     assert_eq!(perceived.len(), 1);
-    assert_eq!(perceived[0]["scene"], json!(Uuid::from_u128(SCENE)));
-    assert_eq!(perceived[0]["tokens"], json!([Uuid::from_u128(12)]));
+    assert_eq!(
+        perceived[0]["scene"],
+        json!(crate::test_ids::test_uuid(SCENE))
+    );
+    assert_eq!(
+        perceived[0]["tokens"],
+        json!([crate::test_ids::test_uuid(12)])
+    );
 
     // The see-as shape: a `PermissionContext` for the other user yields their set, not
     // the first user's.
     let sv = compute_derived("vision", &ecs, &player_ctx(seer), &no_grants(), None).unwrap();
-    assert_eq!(sv["perceived"][0]["tokens"], json!([Uuid::from_u128(14)]));
+    assert_eq!(
+        sv["perceived"][0]["tokens"],
+        json!([crate::test_ids::test_uuid(14)])
+    );
 
     // The GM arm carries none — a GM sees all, so there is nothing to perceive.
     let gm = PermissionContext {
-        user_id: Uuid::from_u128(1),
+        user_id: crate::test_ids::test_uuid(1),
         world_role: WorldRole::Gm,
     };
     let gv = compute_derived("vision", &ecs, &gm, &no_grants(), None).unwrap();

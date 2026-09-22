@@ -93,7 +93,7 @@ fn eviction_drops_the_oldest_entry_past_the_cap() {
 #[test]
 fn rate_limiter_allows_up_to_per_min_then_rejects_and_recovers() {
     let lim = PreviewRateLimiter::new();
-    let u = uuid::Uuid::from_u128(42);
+    let u = crate::test_ids::test_uuid(42);
     for i in 0..PREVIEW_FETCH_PER_MIN {
         assert!(
             lim.check(u, 1_000 + i as i64, PREVIEW_FETCH_PER_MIN),

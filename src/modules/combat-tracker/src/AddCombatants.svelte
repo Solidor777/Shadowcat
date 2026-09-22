@@ -97,7 +97,7 @@
     {ctx.t("combatTracker.hidden")}
   </label>
   <button type="button" data-testid="combat-tracker:add-selected" disabled={selectableTokenIds.length === 0} onclick={addSelected}>
-    {ctx.t("combatTracker.addSelected", { n: selectableTokenIds.length })}
+    {ctx.plural("combatTracker.addSelected", selectableTokenIds.length, { n: selectableTokenIds.length })}
   </button>
 
   {#if showEventForm}

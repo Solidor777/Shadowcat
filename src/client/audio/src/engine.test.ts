@@ -87,6 +87,83 @@ describe("AudioEngine", () => {
     engine.applyState(state());
   });
 
+  describe("preload", () => {
+    it("is a no-op before unlock (nothing to preload into before a device gesture)", () => {
+      let elements = 0;
+      setMediaElementFactory(() => {
+        elements++;
+        return stubMediaElement();
+      });
+      const engine = new AudioEngine(makeOpts());
+      engine.preload("next-track");
+      expect(elements).toBe(0);
+    });
+
+    it("begins fetching the named asset once unlocked", async () => {
+      const engine = new AudioEngine(makeOpts());
+      await engine.unlock();
+      let elements = 0;
+      setMediaElementFactory(() => {
+        elements++;
+        return stubMediaElement();
+      });
+      engine.preload("next-track");
+      expect(elements).toBe(1);
+    });
+
+    it("calls load() on the preload element — assigning src alone does not guarantee a fetch starts", async () => {
+      const engine = new AudioEngine(makeOpts());
+      await engine.unlock();
+      const load = vi.fn();
+      setMediaElementFactory(() => ({ ...stubMediaElement(), load }));
+      engine.preload("next-track");
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("is bounded to one preloaded track: preloading a second releases the first", async () => {
+      const engine = new AudioEngine(makeOpts());
+      await engine.unlock();
+      const paused: string[] = [];
+      let created = 0;
+      setMediaElementFactory(() => {
+        created++;
+        const src = String(created);
+        return {
+          ...stubMediaElement(),
+          get src() {
+            return src;
+          },
+          set src(_v: string) {},
+          pause: () => paused.push(src),
+        };
+      });
+      engine.preload("track-a");
+      engine.preload("track-b");
+      expect(created).toBe(2);
+      expect(paused).toEqual(["1"]); // the first preload was released, never a third
+    });
+
+    it("releases an unused preload on dispose", async () => {
+      const engine = new AudioEngine(makeOpts());
+      await engine.unlock();
+      const paused: boolean[] = [];
+      setMediaElementFactory(() => ({ ...stubMediaElement(), pause: () => paused.push(true) }));
+      engine.preload("track-a");
+      engine.dispose();
+      expect(paused).toEqual([true]);
+    });
+
+    it("releases the preload once the real player takes over the same asset", async () => {
+      const engine = new AudioEngine(makeOpts());
+      await engine.unlock();
+      const paused: boolean[] = [];
+      setMediaElementFactory(() => ({ ...stubMediaElement(), pause: () => paused.push(true) }));
+      engine.preload("a1"); // matches the entry() fixture's default asset
+      engine.applyState(state(entry("e1", { asset: "a1" })));
+      expect(paused).toEqual([true]);
+    });
+  });
+
   it("setChannel writes the live channel GainNode and clamps gain to 0..=1", async () => {
     const opts = makeOpts();
     const ctx = stubAudioContext();

@@ -6,6 +6,7 @@
 // reader of whatever the server actually derived and echoed back.
 import { envelope, grantAuthor } from "./scene-docs";
 import { SegmentListSchema, type ChatSegment, type UnknownSegment } from "./chat-docs";
+import { appendSortKey } from "./sort-key";
 import type { NoteEngine } from "@shadowcat/types";
 import type { WireDocument } from "./wire";
 
@@ -74,6 +75,37 @@ export function buildNoteDoc(
   doc.permissions = { ...doc.permissions, default: "none" };
   if (opts?.owner) grantAuthor(doc, opts.owner);
   return doc;
+}
+
+/** A note's `engine.sort` field, read as `number` — the ts-rs `bigint` mapping never reaches
+ * the wire (see `buildNoteDoc`'s doc comment). */
+interface SortableNoteEngine {
+  /** `NoteEngine.sort`. */
+  sort?: number;
+}
+
+/** The `sort` key a newly created note appended under `parentId` should take — one density
+ * step past the highest existing sibling's key, or `SORT_KEY_DENSITY` for the first child. The
+ * shared home for this computation: `@shadowcat/module-notes` (panel-level create) and
+ * `@shadowcat/module-sheet-note` (child-note create) are sibling modules that never import one
+ * another, so this lives in `@shadowcat/core` beside `buildNoteDoc` rather than in either.
+ * @param notes Every `note` document the caller's optimistic view currently holds.
+ * @param parentId The parent note id, or `null` for a root-level note.
+ * @returns The allocated append key, for `buildNoteDoc`'s `opts.sort`.
+ * @example
+ * ```ts
+ * import { appendNoteSortKey } from "@shadowcat/core";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const notes: WireDocument[];
+ * appendNoteSortKey(notes, null);
+ * ```
+ */
+export function appendNoteSortKey(notes: WireDocument[], parentId: string | null): number {
+  const siblingSortValues = notes
+    .filter((n) => n.doc_type === NOTE_DOC_TYPE && n.parent_id === parentId)
+    .map((n) => (n.engine as SortableNoteEngine | null | undefined)?.sort ?? 0);
+  return appendSortKey(siblingSortValues);
 }
 
 /** Fail-closed read of a note's server-derived body: `null` for a non-note `doc_type` or a

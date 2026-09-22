@@ -17,7 +17,7 @@ export function isHealthy(status: HealthStatus): boolean {
 export { silentLogger, consoleLogger } from "./logger";
 export type { Logger } from "./logger";
 export { HookBus, STOP } from "./hooks";
-export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./hooks";
+export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks, HookFaultPayload } from "./hooks";
 export { ServiceRegistry } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";
@@ -172,18 +172,22 @@ export {
   CombatHookEmitter,
 } from "./combat-hooks";
 export type { CombatHookEvent, CombatTurnEvent } from "./combat-hooks";
+export { CHAT_COMPOSER_HOOK_VERSION, defineChatComposerHooks } from "./chat-hooks";
+export type { ChatComposerSendPayload } from "./chat-hooks";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, SegmentListSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, RollEmbedSegmentSchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, firstChannel } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, DocLinkTarget, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm, WireDieKind, WireRawRoll, RecalcHistoryEntry, RollEmbedSegment, TableDrawSegment, DrawnRow } from "./chat-docs";
 export { buildMoveOp } from "./move-op";
+export { allocateSortKey, appendSortKey, SORT_KEY_DENSITY } from "./sort-key";
+export type { SortKeyAllocation } from "./sort-key";
 export { buildUpdate } from "./update-op";
 export type { FieldEdit } from "./update-op";
 export { TABLE_DOC_TYPE, buildTableDoc } from "./table-docs";
 export type { TableEngine, DrawRule, TableRow, RowRange, TableEntry, BuildTableDocOptions } from "./table-docs";
-export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody } from "./note-docs";
+export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody, appendNoteSortKey } from "./note-docs";
 export type { NoteEngine, BuildNoteDocOptions } from "./note-docs";
-export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc } from "./playlist-docs";
+export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc, resolveNextTrackAsset } from "./playlist-docs";
 export type { AudioChannel, AudioStateEngine, PlayingTrack, PlaylistEngine, PlaylistMode, PlaylistTrack, BuildPlaylistDocOptions } from "./playlist-docs";
 export type { AudioChannelId, AudioChannelState, AudioApi, DuckController, DuckSource } from "./audio";
 export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer, normalizeBase } from "./merge";

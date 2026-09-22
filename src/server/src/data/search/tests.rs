@@ -1,12 +1,11 @@
 use super::*;
 use crate::data::document::{Document, PermissionSet, Scope, Visibility};
-use uuid::Uuid;
 
 fn doc(doc_type: &str, system: serde_json::Value) -> Document {
     Document {
-        id: Uuid::from_u128(1),
+        id: crate::test_ids::test_uuid(1),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: doc_type.into(),
         schema_version: 1,
@@ -29,7 +28,7 @@ fn doc(doc_type: &str, system: serde_json::Value) -> Document {
 fn actor_engine(display_name: &str) -> serde_json::Value {
     serde_json::json!({
         "displayName": display_name,
-        "visual": { "kind": "image", "asset": "a" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,

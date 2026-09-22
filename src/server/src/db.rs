@@ -29,6 +29,87 @@ pub fn parse_connect_options(url: &str) -> Result<SqliteConnectOptions, sqlx::Er
     SqliteConnectOptions::from_str(url)
 }
 
+/// Resolves the on-disk file `url` names, or `None` when `url` addresses an
+/// in-memory database with no filesystem location at all. The single decider
+/// every caller that needs "which file is this database" (log/backup/module
+/// sibling-directory placement, one-shot backup/restore) must route through,
+/// rather than treating [`crate::config::Config::db`] as a bare path itself —
+/// `Config.db` is any string [`parse_connect_options`] accepts: a bare path, a
+/// `sqlite:`/`sqlite://` URL (relative or absolute), or one of two in-memory
+/// spellings (`:memory:`/`sqlite::memory:`, or a `mode=memory` query
+/// parameter on any URL).
+///
+/// Parses through [`parse_connect_options`] (never a second URL parser) and
+/// inspects the result two ways. `:memory:` is detected via
+/// [`SqliteConnectOptions::get_filename`]: sqlx's own `from_db_and_params`
+/// marks an in-memory database by setting the filename to a generated
+/// `file:sqlx-in-memory-<n>` placeholder rather than a real path, and that
+/// marker is the only public signal of the in-memory flag sqlx exposes (the
+/// flag itself is a private field with a builder setter but no getter).
+/// `mode=memory` is a second, independent in-memory spelling sqlx's parser
+/// reads into that same private flag without exposing it either, so this
+/// function re-reads the query string itself with `url::form_urlencoded` —
+/// the identical parser sqlx's own `from_db_and_params` uses internally,
+/// already a workspace dependency, so no second query-string parser is
+/// introduced.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::db::database_file;
+///
+/// // Bare filesystem path.
+/// assert_eq!(
+///     database_file("data/shadowcat.db").unwrap(),
+///     Some(std::path::PathBuf::from("data/shadowcat.db")),
+/// );
+///
+/// // A `sqlite://` URL is a real file too -- a bare-path check would miss it.
+/// assert_eq!(
+///     database_file("sqlite:///srv/shadowcat.db").unwrap(),
+///     Some(std::path::PathBuf::from("/srv/shadowcat.db")),
+/// );
+///
+/// // A relative `sqlite:` URL.
+/// assert_eq!(
+///     database_file("sqlite:data/shadowcat.db").unwrap(),
+///     Some(std::path::PathBuf::from("data/shadowcat.db")),
+/// );
+///
+/// // Both in-memory spellings resolve to `None`.
+/// assert_eq!(database_file(":memory:").unwrap(), None);
+/// assert_eq!(database_file("sqlite::memory:").unwrap(), None);
+/// assert_eq!(database_file("sqlite://?mode=memory").unwrap(), None);
+///
+/// // A bare path containing the word "memory" is still a real file -- a
+/// // substring check on `Config.db` would wrongly treat this as in-memory.
+/// assert_eq!(
+///     database_file("memory-lane/shadowcat.db").unwrap(),
+///     Some(std::path::PathBuf::from("memory-lane/shadowcat.db")),
+/// );
+/// ```
+pub fn database_file(url: &str) -> Result<Option<std::path::PathBuf>, sqlx::Error> {
+    let options = parse_connect_options(url)?;
+    let filename = options.get_filename();
+    if filename
+        .to_str()
+        .is_some_and(|f| f.starts_with("file:sqlx-in-memory-"))
+    {
+        return Ok(None);
+    }
+    // `SqliteConnectOptions::from_str` strips a leading `sqlite://`/`sqlite:` scheme
+    // before splitting on `?`; the query string starts at the same offset in `url`
+    // itself regardless of which scheme prefix (or none) is present.
+    if let Some((_, query)) = url.split_once('?') {
+        let is_memory_mode = url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "mode" && value == "memory");
+        if is_memory_mode {
+            return Ok(None);
+        }
+    }
+    Ok(Some(filename.to_path_buf()))
+}
+
 /// Opens a SQLite connection pool from already-parsed `options`, with the
 /// server's single-writer connection cap and foreign-key enforcement.
 /// [`connect_pool`] is the URL-string convenience over this for callers with

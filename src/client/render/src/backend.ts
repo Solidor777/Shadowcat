@@ -117,6 +117,12 @@ export interface DisplayBackend {
    * known viewport size at the new resolution.
    * @param scale The render-scale fraction, already clamped by the caller. */
   setRenderScale(scale: number): void;
+  /** Set the GPU texture-cache byte budget (`PerformanceSettings.textureBudgetBytes`) — the
+   * backend's own periodic sweep (driven off `tickTokenAnimations`) evicts least-recently-used,
+   * unreferenced texture sources once tracked bytes exceed this. Never evicts a texture a live
+   * sprite or an in-flight load still references, regardless of budget.
+   * @param bytes The new byte budget. */
+  setTextureBudget(bytes: number): void;
   /** Draw exactly one frame now — the idle-skip ticker's render call. */
   render(): void;
   /** Release all GPU resources and detach the canvas. */

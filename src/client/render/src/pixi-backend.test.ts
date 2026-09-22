@@ -4,6 +4,7 @@ import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
 import type { TokenNodeSpec, VisibilityInput } from "./types";
+import type { TextureCacheManager } from "./texture-cache";
 
 vi.mock("pixi.js", async (importActual) => {
   const actual = await importActual<typeof import("pixi.js")>();
@@ -467,6 +468,8 @@ interface VfxNodeLike {
   visual: AnimatedSprite;
   /** Mirror of `VfxRenderNode.anim` — read to assert load state and per-frame timings. */
   anim: { frameMs: number[]; loop: boolean; elapsedMs: number; frameCount: number | null };
+  /** Mirror of `VfxRenderNode.textureUrls` — read to assert texture-cache bookkeeping. */
+  textureUrls: string[];
 }
 
 /** Reads the backend's private `vfxNodes` map (no public accessor exists; the tests pin the
@@ -642,6 +645,53 @@ describe("PixiBackend VFX playback", () => {
   });
 });
 
+describe("PixiBackend VFX texture budget", () => {
+  /** Waits until `id`'s VFX render node has actually acquired a texture-cache reference — mirrors
+   * `waitForTextureAcquired` above, for `vfxNodes` instead of `tokens`. */
+  async function waitForVfxTextureAcquired(backend: PixiBackend, id: string): Promise<void> {
+    await vi.waitFor(() => {
+      expect(vfxNodesOf(backend).get(id)?.textureUrls.length).toBeGreaterThan(0);
+    });
+  }
+
+  test("a removed VFX node's texture is unloaded once over budget", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/vfx/gone", rows: 1, cols: 2 },
+      loop: false, anchor: "point",
+    });
+    await waitForVfxTextureAcquired(backend, "oneshot:1");
+    backend.removeVfx("oneshot:1");
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(5_000);
+    expect(unloadSpy).toHaveBeenCalledWith("/vfx/gone");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a live VFX node's texture is never unloaded, however far over budget", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("emitter:t1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/vfx/live", rows: 1, cols: 2 },
+      loop: true, anchor: "token", token: "t1",
+    });
+    await waitForVfxTextureAcquired(backend, "emitter:t1");
+    backend.setTextureBudget(0); // far below even a single texture's estimated size
+    backend.tickTokenAnimations(5_000);
+    expect(unloadSpy).not.toHaveBeenCalled();
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+});
+
 describe("frame cap and render scale", () => {
   test("setFrameCap forwards to ticker.maxFPS (0 = uncapped)", () => {
     const app = fakeApp({ ticker: { maxFPS: 0, add: vi.fn(), remove: vi.fn() } });
@@ -670,5 +720,301 @@ describe("frame cap and render scale", () => {
     backend.render();
     expect(renderer.render).toHaveBeenCalledWith({ container: app.stage });
 
+  });
+});
+
+describe("PixiBackend texture budget", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+
+  /** Advances the sweep-interval accumulator past its threshold in one call — the sweep is
+   * driven off the same `tickTokenAnimations` call `RenderEngine` already makes every frame,
+   * throttled internally so a real session doesn't re-run eviction 60x/s. */
+  const SWEEP_INTERVAL_MS = 5_000;
+
+  /** Waits until `id`'s render node has actually acquired a texture-cache reference — a load
+   * spy having been CALLED only proves the request started; the texture is applied (and the
+   * cache entry created) one microtask hop later, in the load's own `.then()`. Reading the
+   * private `tokens` map (no public accessor exists) is what makes the wait precise instead of
+   * timing-fragile.
+   * @param backend The backend under test.
+   * @param id The token id whose texture acquisition to await.
+   */
+  async function waitForTextureAcquired(backend: PixiBackend, id: string): Promise<void> {
+    await vi.waitFor(() => {
+      const node = (backend as unknown as { tokens: Map<string, { textureUrls: string[] }> }).tokens.get(id);
+      expect(node?.textureUrls.length).toBeGreaterThan(0);
+    });
+  }
+
+  test("never unloads a texture a live token still references, however far over budget", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/live" } });
+    await waitForTextureAcquired(backend, "t1");
+    backend.setTextureBudget(0); // far below even a single texture's estimated size
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).not.toHaveBeenCalled();
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a texture reporting a non-finite width still contributes a finite, budget-comparable byte estimate", async () => {
+    // A NaN dimension must fail closed to the fixed minimum estimate (1) rather than propagating
+    // through Math.max, which would poison TextureCacheManager.totalBytes()'s running sum for
+    // every entry, not just this one.
+    // A real Texture.EMPTY clone (so Sprite's texture setter still finds every property/method it
+    // needs) with width/height overridden as own properties shadowing the class's getters.
+    const nanTexture = Object.create(Texture.EMPTY) as typeof Texture.EMPTY;
+    Object.defineProperty(nanTexture, "width", { value: Number.NaN, configurable: true });
+    Object.defineProperty(nanTexture, "height", { value: 10, configurable: true });
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(nanTexture as never);
+    const backend = headlessBackend();
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/nan-width" } });
+    await waitForTextureAcquired(backend, "t1");
+    const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+    expect(Number.isFinite(cache.totalBytes())).toBe(true);
+    expect(cache.totalBytes()).toBe(1 * 10 * 4); // width floors to 1, height stays 10
+    loadSpy.mockRestore();
+  });
+
+  test("unloads a texture once its token is removed and the budget is exceeded", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/gone" } });
+    await waitForTextureAcquired(backend, "t1");
+    backend.removeToken("t1");
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/gone");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("does not unload a removed token's texture while still within budget", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/kept" } });
+    await waitForTextureAcquired(backend, "t1");
+    backend.removeToken("t1");
+    backend.setTextureBudget(1024 * 1024 * 1024); // 1 GiB — a 1x1 stub texture fits comfortably
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).not.toHaveBeenCalled();
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("the sweep is throttled: a burst of small ticks under the interval never sweeps", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/throttled" } });
+    await waitForTextureAcquired(backend, "t1");
+    backend.removeToken("t1");
+    backend.setTextureBudget(0);
+    for (let i = 0; i < 10; i++) backend.tickTokenAnimations(16); // 160ms total, well under the interval
+    expect(unloadSpy).not.toHaveBeenCalled();
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("an in-flight load can never be evicted: it is untracked until it resolves", () => {
+    const backend = headlessBackend();
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    const loadSpy = vi.spyOn(Assets, "load").mockReturnValue(new Promise(() => {})); // never resolves
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/pending" } });
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).not.toHaveBeenCalled();
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a reload reusing an already-held url is TOUCHED, not re-acquired — a second load resolving with an overlapping URL set leaves the count at 1 after removeToken", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+    const acquireSpy = vi.spyOn(cache, "acquire");
+    const touchSpy = vi.spyOn(cache, "touch");
+    const animatedVisual = (fps: number): TokenNodeSpec["visual"] => ({
+      kind: "animated",
+      source: { type: "frames", urls: ["/tex/shared"] },
+      fps,
+      loop: true,
+    });
+    backend.setToken("t1", { ...base, visual: animatedVisual(2) });
+    await waitForTextureAcquired(backend, "t1");
+    expect(acquireSpy).toHaveBeenCalledTimes(1);
+    // Same url, different fps: a new `visualSourceKey` (so a new load fires) resolving to the
+    // SAME url set the node already holds a reference for.
+    backend.setToken("t1", { ...base, visual: animatedVisual(4) });
+    await vi.waitFor(() => expect(loadSpy).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(touchSpy).toHaveBeenCalledWith("/tex/shared", expect.any(Number)));
+    expect(acquireSpy).toHaveBeenCalledTimes(1); // still exactly one acquire — the reload only touched
+    backend.removeToken("t1");
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/shared");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a background load superseded before it resolves is still fed into the cache, so a later sweep can evict it", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load");
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    let resolveFirst!: (t: typeof Texture.EMPTY) => void;
+    loadSpy.mockReturnValueOnce(new Promise((r) => (resolveFirst = r)) as never);
+    loadSpy.mockResolvedValueOnce(Texture.EMPTY as never);
+    backend.setBackground({ url: "/bg/superseded" });
+    backend.setBackground({ url: "/bg/current" }); // supersedes the first load before it resolves
+    await vi.waitFor(() => {
+      const bgUrl = (backend as unknown as { backgroundTextureUrl: string | null }).backgroundTextureUrl;
+      expect(bgUrl).toBe("/bg/current");
+    });
+    resolveFirst(Texture.EMPTY);
+    await vi.waitFor(() => {
+      const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+      expect(cache.has("/bg/superseded")).toBe(true);
+    });
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/bg/superseded");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a token visual load superseded before it resolves is still fed into the cache, so a later sweep can evict it", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load");
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    let resolveFirst!: (t: typeof Texture.EMPTY) => void;
+    loadSpy.mockReturnValueOnce(new Promise((r) => (resolveFirst = r)) as never);
+    loadSpy.mockResolvedValueOnce(Texture.EMPTY as never);
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/superseded" } });
+    backend.setToken("t1", { ...base, visual: { kind: "image", url: "/tex/current" } }); // supersedes before resolve
+    await waitForTextureAcquired(backend, "t1");
+    resolveFirst(Texture.EMPTY);
+    await vi.waitFor(() => {
+      const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+      expect(cache.has("/tex/superseded")).toBe(true);
+    });
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/superseded");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("an ANIMATED token visual load superseded before it resolves is still fed into the cache, so a later sweep can evict it", async () => {
+    // Mirrors the image-branch test above: `loadAssetTexture` registers every url it loads with
+    // `TextureCacheManager` at load completion, regardless of what the caller does with the
+    // result — so a lost-race frame texture (`updateTokenVisual`'s animated arm, via
+    // `loadAnimatedTextures`) is already tracked and sweep-eligible with no per-site bookkeeping.
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load");
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    let resolveFirst!: (t: typeof Texture.EMPTY) => void;
+    loadSpy.mockReturnValueOnce(new Promise((r) => (resolveFirst = r)) as never);
+    loadSpy.mockResolvedValueOnce(Texture.EMPTY as never);
+    const animatedVisual = (url: string): TokenNodeSpec["visual"] => ({
+      kind: "animated",
+      source: { type: "frames", urls: [url] },
+      fps: 2,
+      loop: true,
+    });
+    backend.setToken("t1", { ...base, visual: animatedVisual("/tex/anim-superseded") });
+    backend.setToken("t1", { ...base, visual: animatedVisual("/tex/anim-current") }); // supersedes before resolve
+    await waitForTextureAcquired(backend, "t1");
+    resolveFirst(Texture.EMPTY);
+    await vi.waitFor(() => {
+      const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+      expect(cache.has("/tex/anim-superseded")).toBe(true);
+    });
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/anim-superseded");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a VFX sheet+sidecar load superseded before it resolves is still fed into the cache, so a later sweep can evict it", async () => {
+    // Same loader-owned-registration shape as the token/background tests above, exercised
+    // through `setVfx`'s `imageUrl` (spritesheet + JSON sidecar) branch: this branch has no
+    // per-site acquire/release compensation of its own — `loadAssetTexture` (the one loader
+    // every branch goes through) registers the atlas url on load completion regardless of
+    // whether this branch's own stale-guard discards the result.
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load");
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    let resolveFirst!: (t: typeof Texture.EMPTY) => void;
+    loadSpy.mockReturnValueOnce(new Promise((r) => (resolveFirst = r)) as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ frames: {}, animations: { play: [] }, meta: { size: { w: 1, h: 1 }, scale: "1" } }),
+    } as never);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { kind: "sheet", imageUrl: "/tex/vfx-superseded", sheetUrl: "/sidecar.json", animation: "play" },
+      loop: false, anchor: "point",
+    });
+    backend.removeVfx("oneshot:1"); // supersedes before the imageUrl load resolves
+    resolveFirst(Texture.EMPTY);
+    await vi.waitFor(() => {
+      const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+      expect(cache.has("/tex/vfx-superseded")).toBe(true);
+    });
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/vfx-superseded");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  test("a NEW caller that loads and discards a texture through the loader directly still leaves it evictable — the registration duty lives in the loader, not in any current or future call site", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    // A hypothetical caller with no acquire/release of its own — it drives the private loader
+    // seam directly and discards the result immediately.
+    const loader = backend as unknown as { loadAssetTexture(url: string): Promise<unknown> };
+    await loader.loadAssetTexture("/tex/loaded-and-discarded");
+    const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+    expect(cache.has("/tex/loaded-and-discarded")).toBe(true);
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/loaded-and-discarded");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
+  });
+
+  test("a sweep landing while a texture's load is still in flight never evicts it, even at refCount 0 and over budget", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load");
+    const unloadSpy = vi.spyOn(Assets, "unload").mockResolvedValue(undefined);
+    let resolveLoad!: (t: typeof Texture.EMPTY) => void;
+    loadSpy.mockReturnValueOnce(new Promise((r) => (resolveLoad = r)) as never);
+    const loader = backend as unknown as { loadAssetTexture(url: string): Promise<unknown> };
+    const pending = loader.loadAssetTexture("/tex/in-flight");
+    // The load has started but not yet resolved: `beginLoad` has fired, `register` has not.
+    // A sweep landing in this exact window must not be able to unload the url once it lands
+    // (there is nothing to unload yet, but nothing must misfire either).
+    backend.setTextureBudget(0);
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).not.toHaveBeenCalled();
+    resolveLoad(Texture.EMPTY);
+    await pending;
+    const cache = (backend as unknown as { textureCache: TextureCacheManager }).textureCache;
+    expect(cache.has("/tex/in-flight")).toBe(true);
+    // Now unreferenced and load-complete: the NEXT sweep (past the throttle interval again) may
+    // evict it.
+    backend.tickTokenAnimations(SWEEP_INTERVAL_MS);
+    expect(unloadSpy).toHaveBeenCalledWith("/tex/in-flight");
+    loadSpy.mockRestore();
+    unloadSpy.mockRestore();
   });
 });

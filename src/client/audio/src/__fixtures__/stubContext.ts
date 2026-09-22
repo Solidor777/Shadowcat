@@ -187,6 +187,7 @@ export function stubMediaElement(): MediaElementLike {
     loop: false,
     play: async () => {},
     pause: () => {},
+    load: () => {},
     onended: null,
     canPlayType: () => "probably",
   };

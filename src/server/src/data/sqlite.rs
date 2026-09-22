@@ -958,7 +958,13 @@ impl Repository for SqliteRepository {
                     let mut doc = doc.clone();
                     // Same band-classification gate as apply_intent: no stored override
                     // can name a pointer redaction cannot classify (data integrity, not
-                    // authz — see the /engine gate below for the same rationale).
+                    // authz — see the /engine gate below for the same rationale). The
+                    // id-tree shape check below runs here too, on the trusted replay path,
+                    // for the identical reason: a v4/v7-shaped id is a data-integrity
+                    // invariant independent of trust level, the same posture as its two
+                    // neighbours (`validate_property_overrides`/`validate_engine_tree`),
+                    // not a client-trust gate this path is exempt from.
+                    crate::data::validation::validate_document_id_tree(&doc)?;
                     crate::data::validation::validate_property_overrides(&doc)?;
                     crate::data::validation::validate_engine_tree(&mut doc)?;
                     crate::data::validation::validate_containment(&doc)?;
@@ -1693,6 +1699,7 @@ impl Repository for SqliteRepository {
                             .entry("/engine/resources".to_string())
                             .or_insert(crate::data::document::Visibility::OwnerOrGm);
                     }
+                    validation::validate_document_id_tree(doc)?;
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
@@ -2178,6 +2185,13 @@ impl Repository for SqliteRepository {
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
                     validation::validate_property_overrides(&doc)?;
+                    // An Update DOES revisit ids, contrary to `validate_document_id_tree`'s
+                    // own doc for the CREATE-only case: a whole-collection embedded-child
+                    // replacement (or an `Operation::Update` that adds a new embedded child
+                    // wholesale) introduces a child id this ingress chokepoint has never
+                    // checked before, so the id-tree walk is re-run over the full merged
+                    // post-image here, in lockstep with `validate_engine_tree` below.
+                    validation::validate_document_id_tree(&doc)?;
                     // Engine band re-validated + normalized post-merge (mutates
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).

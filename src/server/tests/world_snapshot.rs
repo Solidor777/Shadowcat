@@ -17,7 +17,7 @@ fn doc_json(
     property_overrides: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
-        "id": uuid::Uuid::from_u128(id),
+        "id": shadowcat_test_support::test_doc_id(id),
         "scope": { "kind": "world", "world_id": world },
         "doc_type": doc_type,
         "schema_version": 1,
@@ -45,7 +45,7 @@ async fn snapshot_spans_multiple_doc_types_and_redacts_per_recipient() {
         1,
         "actor",
         Some(serde_json::json!({
-            "displayName": "Test", "visual": { "kind": "image", "asset": "a.png" },
+            "displayName": "Test", "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
             "faction": null, "conditions": [], "prototype": true
         })),

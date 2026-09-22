@@ -108,7 +108,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
   await plWatch.start();
   await sleep(300);
 
-  const noteId = "20000000-0000-0000-0000-000000000001";
+  const noteId = "20000000-0000-4000-8000-000000000001";
   const sourceWithSpans = `# Hi\n\n[[roll:1d6|Luck]] see [[doc:${fixtureDoc}|Doc]]`;
   const doc = buildNoteDoc(world, "Session 1", sourceWithSpans, { owner: gmId, id: noteId });
 
@@ -175,7 +175,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
 
   // A child note whose parent is a NON-note (the fixture doc) is rejected.
   rejected = null;
-  const childId = "20000000-0000-0000-0000-000000000002";
+  const childId = "20000000-0000-4000-8000-000000000002";
   const child = buildNoteDoc(world, null, "child", { owner: gmId, id: childId, parentId: fixtureDoc });
   gm.send({ type: "intent", intent_id: crypto.randomUUID(), ops: [{ op: "create", doc: child }] });
   for (let i = 0; i < 50 && rejected === null; i++) await sleep(100);

@@ -7,7 +7,7 @@ fn system_layer_beats_engine_fallback_when_world_is_absent() {
     ecs.set_system_defaults_for_test(
         json!({ "scene": { "fog": false, "movementRestriction": "unrestricted" } }),
     );
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
@@ -26,7 +26,7 @@ fn world_layer_beats_system_layer_and_scene_beats_world() {
     let mut ecs = SceneEcs::new();
     ecs.set_system_defaults_for_test(json!({ "scene": { "fog": false } }));
     ecs.set_world_settings_for_test(ws_body(&[("/scene/fog", json!(true))]));
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
@@ -77,7 +77,7 @@ fn partial_world_overlay_leaf_beats_system_and_engine_fallback() {
         "scene": { "fog": true },
         "pathfinding": { "diagonalRule": "euclidean" }
     }));
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
@@ -109,7 +109,7 @@ fn absent_world_settings_resolves_like_an_empty_one() {
     let mut absent = SceneEcs::new();
     let mut empty = SceneEcs::new();
     empty.set_world_settings_for_test(json!({}));
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     for ecs in [&mut absent, &mut empty] {
         ecs.insert_scene_for_test(
             scene_id,
@@ -141,7 +141,7 @@ fn apply_op_hydrates_and_retires_the_system_defaults_doc() {
         doc_id: sd.id,
         changes: vec![fc("/engine/scene/fog", json!(true))],
     });
-    let scene_id = Uuid::from_u128(7);
+    let scene_id = crate::test_ids::test_uuid(7);
     ecs.insert_scene_for_test(
         scene_id,
         json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),

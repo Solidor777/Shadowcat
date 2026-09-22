@@ -6,9 +6,12 @@ use serde_json::json;
 
 /// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> crate::data::document::Document {
-    let mut d =
-        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
-    d.parent_id = parent.map(Uuid::from_u128);
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        ty,
+    );
+    d.parent_id = parent.map(crate::test_ids::test_uuid);
     d
 }
 
@@ -29,7 +32,7 @@ fn entity_doc_eng(
 fn actor_body() -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "faction": null,
@@ -42,7 +45,7 @@ fn actor_body() -> serde_json::Value {
 fn token_body(actor_id: Option<u128>, overrides: Option<serde_json::Value>) -> serde_json::Value {
     let mut b = json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 });
     if let Some(id) = actor_id {
-        b["actor_id"] = json!(Uuid::from_u128(id).to_string());
+        b["actor_id"] = json!(crate::test_ids::test_uuid(id).to_string());
     }
     if let Some(o) = overrides {
         b["overrides"] = o;
@@ -55,7 +58,7 @@ fn faction_registry_doc() -> crate::data::document::Document {
     let mut d = doc(50, None, "faction-registry");
     d.engine = Some(json!({
         "factions": {
-            "skyborn": { "name": "Skyborn", "color": "#88c", "stance": "neutral",
+            "skyborn": { "name": "Skyborn", "color": "#8888cc", "stance": "neutral",
                          "movement": ["flying"] }
         }
     }));
@@ -88,7 +91,7 @@ fn linked_token_unions_actor_and_faction_tags_deduplicated() {
     };
     let linked = entity_doc_eng(300, 10, "token", token_body(Some(200), None));
     let ecs = ecs_with(vec![actor, linked]);
-    let tags = ecs.token_movement_tags(Uuid::from_u128(300));
+    let tags = ecs.token_movement_tags(crate::test_ids::test_uuid(300));
     assert_eq!(
         tags.iter().cloned().collect::<Vec<_>>(),
         vec!["ethereal-step", "flying"] // BTreeSet order; the duplicate "flying" deduped
@@ -113,7 +116,7 @@ fn token_override_replaces_the_whole_set_even_when_empty() {
     );
     let ecs = ecs_with(vec![actor.clone(), grounded]);
     assert_eq!(
-        ecs.token_movement_tags(Uuid::from_u128(300)),
+        ecs.token_movement_tags(crate::test_ids::test_uuid(300)),
         BTreeSet::new()
     );
 
@@ -125,10 +128,10 @@ fn token_override_replaces_the_whole_set_even_when_empty() {
         token_body(Some(200), Some(json!({ "movement": ["burrowing"] }))),
     );
     let ecs = ecs_with(vec![actor, burrower]);
-    let tags = ecs.token_movement_tags(Uuid::from_u128(301));
+    let tags = ecs.token_movement_tags(crate::test_ids::test_uuid(301));
     assert_eq!(tags.into_iter().collect::<Vec<_>>(), vec!["burrowing"]);
     assert!(!ignores_terrain_cost(
-        &ecs.token_movement_tags(Uuid::from_u128(301))
+        &ecs.token_movement_tags(crate::test_ids::test_uuid(301))
     ));
 }
 
@@ -144,7 +147,7 @@ fn dangling_actor_link_yields_empty_overrides_ignored() {
     );
     let ecs = ecs_with(vec![dangling]);
     assert_eq!(
-        ecs.token_movement_tags(Uuid::from_u128(300)),
+        ecs.token_movement_tags(crate::test_ids::test_uuid(300)),
         BTreeSet::new()
     );
 }
@@ -158,7 +161,7 @@ fn dangling_faction_link_contributes_nothing() {
     actor.engine = Some(ab);
     let linked = entity_doc_eng(300, 10, "token", token_body(Some(200), None));
     let ecs = ecs_with(vec![actor, linked]);
-    let tags = ecs.token_movement_tags(Uuid::from_u128(300));
+    let tags = ecs.token_movement_tags(crate::test_ids::test_uuid(300));
     assert_eq!(tags.into_iter().collect::<Vec<_>>(), vec!["burrowing"]);
 }
 
@@ -171,7 +174,7 @@ fn instanced_token_reads_embedded_copy_and_joins_faction_registry() {
     embedded.engine = Some(ab);
     tok.embedded.insert("actor".to_string(), vec![embedded]);
     let ecs = ecs_with(vec![tok]);
-    let tags = ecs.token_movement_tags(Uuid::from_u128(300));
+    let tags = ecs.token_movement_tags(crate::test_ids::test_uuid(300));
     assert_eq!(tags.into_iter().collect::<Vec<_>>(), vec!["flying"]);
 
     // Overrides do not apply to instanced tokens.
@@ -186,7 +189,7 @@ fn instanced_token_reads_embedded_copy_and_joins_faction_registry() {
     tok2.embedded.insert("actor".to_string(), vec![embedded2]);
     let ecs2 = ecs_with(vec![tok2]);
     assert_eq!(
-        ecs2.token_movement_tags(Uuid::from_u128(301)),
+        ecs2.token_movement_tags(crate::test_ids::test_uuid(301)),
         BTreeSet::new()
     );
 }
@@ -202,11 +205,11 @@ fn embedded_actor_edits_are_never_stale() {
     tok.embedded.insert("actor".to_string(), vec![embedded]);
     let mut ecs = ecs_with(vec![tok]);
     assert_eq!(
-        ecs.token_movement_tags(Uuid::from_u128(300)),
+        ecs.token_movement_tags(crate::test_ids::test_uuid(300)),
         BTreeSet::new()
     );
     ecs.apply_op(&crate::data::command::Operation::Update {
-        doc_id: Uuid::from_u128(300),
+        doc_id: crate::test_ids::test_uuid(300),
         changes: vec![crate::data::command::FieldChange {
             path: "/embedded/actor/0/engine/movement".to_string(),
             old: serde_json::Value::Null,
@@ -214,7 +217,7 @@ fn embedded_actor_edits_are_never_stale() {
             remove: false,
         }],
     });
-    let tags = ecs.token_movement_tags(Uuid::from_u128(300));
+    let tags = ecs.token_movement_tags(crate::test_ids::test_uuid(300));
     assert_eq!(
         tags.iter().cloned().collect::<Vec<_>>(),
         vec!["incorporeal"]
@@ -227,12 +230,12 @@ fn raw_or_unknown_token_resolves_empty() {
     let raw = entity_doc_eng(300, 10, "token", token_body(None, None));
     let ecs = ecs_with(vec![raw]);
     assert_eq!(
-        ecs.token_movement_tags(Uuid::from_u128(300)),
+        ecs.token_movement_tags(crate::test_ids::test_uuid(300)),
         BTreeSet::new()
     );
     // An id the ECS does not hold at all fails closed the same way.
     assert_eq!(
-        ecs.token_movement_tags(Uuid::from_u128(999)),
+        ecs.token_movement_tags(crate::test_ids::test_uuid(999)),
         BTreeSet::new()
     );
 }

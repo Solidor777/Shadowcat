@@ -81,8 +81,9 @@ impl TokenEngine {
     /// the position inside the ONE shared movement-coordinate bound
     /// (`scene::move_exec::MAX_GATE_WALK_COORD`) — the GM-write/Create path
     /// and the move gate must agree on admissible coordinates structurally,
-    /// never by call ordering. The override whitelist's emission payloads
-    /// validate through `TokenOverrides::validate` here, so an actor-backed
+    /// never by call ordering. A present raw `visual` validates through
+    /// `TokenVisual::validate` (asset refs + colour fields). The override whitelist's emission
+    /// payloads validate through `TokenOverrides::validate` here, so an actor-backed
     /// token can never carry an emission the actor arm would have refused.
     ///
     /// # Examples
@@ -110,6 +111,9 @@ impl TokenEngine {
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
         if self.x.abs() > bound || self.y.abs() > bound {
             return Err(format!("position exceeds coordinate bound {bound}"));
+        }
+        if let Some(visual) = &self.visual {
+            visual.validate().map_err(|m| format!("visual: {m}"))?;
         }
         if let Some(overrides) = &self.overrides {
             overrides.validate()?;
@@ -179,7 +183,7 @@ impl AuraEmission {
     /// `opacity`, and a finite, non-negative, cell-cap-bounded `radius` (see
     /// `validate_emission_radius`).
     pub(crate) fn validate(&self) -> Result<(), String> {
-        validate_emission_color(&self.color)?;
+        crate::data::engine::geometry::validate_hex_color(&self.color)?;
         validate_emission_scalar("opacity", self.opacity)?;
         validate_emission_radius(self.radius)?;
         Ok(())
@@ -276,15 +280,6 @@ impl VfxEmission {
     }
 }
 
-/// Shared emission-payload color check: exactly `#` + 6 hex digits (a css
-/// `#rrggbb` string).
-fn validate_emission_color(color: &str) -> Result<(), String> {
-    match color.strip_prefix('#') {
-        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
-        _ => Err("color must be a css #rrggbb string".to_string()),
-    }
-}
-
 /// Shared emission-payload radius check: finite, non-negative, and within the
 /// ONE cell-radius cap every cell-measured radius reads
 /// (`scene::pathfinding::MAX_FOOTPRINT_CELLS`) — a second, emission-specific
@@ -313,13 +308,11 @@ fn validate_emission_scalar(name: &str, v: f64) -> Result<(), String> {
     Ok(())
 }
 
-/// Shared emission-payload asset check: non-empty (an empty id can never
-/// resolve to an asset).
+/// Shared emission-payload asset check: delegates to the ONE cross-doc-type asset-ref
+/// validator (`geometry::validate_asset_ref`) — every asset id in the engine tree is a UUID
+/// string, format-only, never an existence check.
 fn validate_emission_asset(asset: &str) -> Result<(), String> {
-    if asset.is_empty() {
-        return Err("asset must be non-empty".to_string());
-    }
-    Ok(())
+    crate::data::engine::geometry::validate_asset_ref(asset)
 }
 
 /// The per-token override whitelist for a linked token.
@@ -397,9 +390,15 @@ pub struct TokenOverrides {
 }
 
 impl TokenOverrides {
-    /// Ingress validation of the emission payloads only (`light`/`aura`/`sound`/`vfx`);
-    /// every other whitelisted field's shape is serde-enforced.
+    /// Ingress validation of the emission payloads (`light`/`aura`/`sound`/`vfx`) and, when
+    /// present, `visual` (through `TokenVisual::validate`); every other whitelisted field's
+    /// shape is serde-enforced.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(visual) = &self.visual {
+            visual
+                .validate()
+                .map_err(|m| format!("overrides.visual: {m}"))?;
+        }
         if let Some(light) = &self.light {
             light
                 .validate()
@@ -537,6 +536,45 @@ pub enum TokenVisual {
     },
 }
 
+impl TokenVisual {
+    /// Ingress validation beyond serde shape: every asset ref (`Image`/`Animated`'s source)
+    /// and every colour field (`Generated`'s border/background) validates through their own
+    /// `validate`; `Faces`' member visuals and `Generated`'s `art` recurse through
+    /// `RenderVisual::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match self {
+            TokenVisual::Image { asset } => {
+                crate::data::engine::geometry::validate_asset_ref(asset)
+                    .map_err(|m| format!("asset: {m}"))
+            }
+            TokenVisual::Animated { source, .. } => source.validate(),
+            TokenVisual::Faces { faces, .. } => {
+                for (name, visual) in faces {
+                    visual
+                        .validate()
+                        .map_err(|m| format!("faces.{name}: {m}"))?;
+                }
+                Ok(())
+            }
+            TokenVisual::Generated {
+                art,
+                border,
+                background,
+                ..
+            } => {
+                art.validate().map_err(|m| format!("art: {m}"))?;
+                if let Some(b) = border {
+                    b.validate().map_err(|m| format!("border: {m}"))?;
+                }
+                if let Some(b) = background {
+                    b.validate().map_err(|m| format!("background: {m}"))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// The kinds the render layer actually draws — the render/resolution
 /// boundary. A face's own visual is always one of these — no `faces` nesting
 /// (a face can never itself be `{kind:"faces"}`).
@@ -593,6 +631,36 @@ pub enum RenderVisual {
     },
 }
 
+impl RenderVisual {
+    /// Ingress validation beyond serde shape: every asset ref and every colour field, mirroring
+    /// `TokenVisual::validate` minus the `Faces` arm (a face's own visual is always a leaf kind
+    /// here, never `Faces` itself — see this enum's own doc).
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match self {
+            RenderVisual::Image { asset } => {
+                crate::data::engine::geometry::validate_asset_ref(asset)
+                    .map_err(|m| format!("asset: {m}"))
+            }
+            RenderVisual::Animated { source, .. } => source.validate(),
+            RenderVisual::Generated {
+                art,
+                border,
+                background,
+                ..
+            } => {
+                art.validate().map_err(|m| format!("art: {m}"))?;
+                if let Some(b) = border {
+                    b.validate().map_err(|m| format!("border: {m}"))?;
+                }
+                if let Some(b) = background {
+                    b.validate().map_err(|m| format!("background: {m}"))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// The crop shape of a generated token visual (`RenderVisual::Generated`).
 ///
 /// # Examples
@@ -633,6 +701,17 @@ pub struct GeneratedBorder {
     pub width: f64,
 }
 
+impl GeneratedBorder {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` color and a finite width.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        crate::data::engine::geometry::validate_hex_color(&self.color)?;
+        if !self.width.is_finite() {
+            return Err("border width must be finite".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// A generated token visual's background fill (`RenderVisual::Generated`),
 /// drawn behind the cropped art in the crop shape.
 ///
@@ -650,6 +729,13 @@ pub struct GeneratedBorder {
 pub struct GeneratedBackground {
     /// Fill color, a css `#rrggbb` string.
     pub color: String,
+}
+
+impl GeneratedBackground {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` color.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        crate::data::engine::geometry::validate_hex_color(&self.color)
+    }
 }
 
 /// An animated visual's frame source: an ordered list of individually
@@ -694,6 +780,26 @@ pub enum AnimatedSource {
         #[serde(default)]
         count: Option<u32>,
     },
+}
+
+impl AnimatedSource {
+    /// Ingress validation beyond serde shape: every asset ref (`Frames`' whole list, or
+    /// `Sheet`'s single `asset`) validates through `geometry::validate_asset_ref`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match self {
+            AnimatedSource::Frames { frames } => {
+                for (i, asset) in frames.iter().enumerate() {
+                    crate::data::engine::geometry::validate_asset_ref(asset)
+                        .map_err(|m| format!("frames[{i}]: {m}"))?;
+                }
+                Ok(())
+            }
+            AnimatedSource::Sheet { asset, .. } => {
+                crate::data::engine::geometry::validate_asset_ref(asset)
+                    .map_err(|m| format!("asset: {m}"))
+            }
+        }
+    }
 }
 
 /// An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
@@ -788,10 +894,12 @@ pub struct ActorEngine {
 }
 
 impl ActorEngine {
-    /// Ingress validation beyond serde shape, covering ONLY the emission
-    /// payloads (`light` through `LightEmission::validate`, plus `aura`/`sound`/`vfx`) — every
-    /// other field keeps its serde-enforced shape.
+    /// Ingress validation beyond serde shape: the required `visual` (through
+    /// `TokenVisual::validate`) and the emission payloads (`light` through
+    /// `LightEmission::validate`, plus `aura`/`sound`/`vfx`) — every other field keeps its
+    /// serde-enforced shape.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        self.visual.validate().map_err(|m| format!("visual: {m}"))?;
         if let Some(light) = &self.light {
             light.validate().map_err(|m| format!("light: {m}"))?;
         }

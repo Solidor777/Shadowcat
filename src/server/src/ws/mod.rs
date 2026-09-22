@@ -7,6 +7,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
@@ -147,6 +148,63 @@ pub struct WsState {
     /// per-world). See `crate::modules::ModuleScanCache`'s own doc for the
     /// invalidation rule.
     pub module_scan_cache: Arc<crate::modules::ModuleScanCache>,
+    /// The server-wide graceful-shutdown sender; kept alive here so the paired `shutdown`
+    /// receiver's channel never closes on its own — an unexpectedly closed `watch` channel
+    /// would make every connection's `shutdown.changed()` select arm resolve immediately (a
+    /// `Recv` error, treated the same as a real shutdown signal — see `egress_loop`'s own
+    /// doc), closing every socket as though a real shutdown had been requested.
+    /// `trigger_shutdown` is the only place this sends.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Cloned by `ws::conn::handle_socket` into each connection's `EgressConnState` so its
+    /// egress loop can select on it and exit gracefully (send a Close frame, then return) once
+    /// `trigger_shutdown` fires — see `main`'s `with_graceful_shutdown` wiring.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// Count of currently-live WebSocket connection tasks. `axum::WebSocketUpgrade::on_upgrade`
+    /// spawns its callback as a task DETACHED from the hyper connection future that produced the
+    /// 101 handshake — that connection future completes at the handshake itself, so
+    /// `axum::serve(..).with_graceful_shutdown(..)` resolves once ordinary HTTP requests drain
+    /// and does NOT wait for a live WebSocket session to finish closing. `connection_guard`
+    /// increments this on connect and decrements it (waking `drain_notify`) when the guard
+    /// drops at the end of `ws::conn::handle_socket`; `wait_for_drain` is what actually blocks a
+    /// caller until every such task has exited.
+    live_connections: Arc<AtomicUsize>,
+    /// Woken by a `ConnectionGuard::drop` whenever `live_connections` reaches zero (see
+    /// `wait_for_drain`).
+    drain_notify: Arc<tokio::sync::Notify>,
+}
+
+/// RAII handle held for the lifetime of one WebSocket connection task
+/// (`ws::conn::handle_socket`), so `WsState::live_connections` accurately counts live sessions
+/// regardless of which `return`/`break`/panic path the task exits through. Never constructed
+/// directly outside this module — obtain one via `WsState::connection_guard`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::WsState;
+///
+/// let state = WsState::new();
+/// assert_eq!(state.live_connection_count(), 0);
+/// let guard = state.connection_guard();
+/// assert_eq!(state.live_connection_count(), 1);
+/// drop(guard);
+/// assert_eq!(state.live_connection_count(), 0);
+/// ```
+pub struct ConnectionGuard {
+    /// Back-reference to the counter/notifier this guard decrements/wakes on drop.
+    live_connections: Arc<AtomicUsize>,
+    /// See `ConnectionGuard::live_connections`.
+    drain_notify: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        // `fetch_sub` returns the PRE-decrement value; a post-decrement value of zero is what
+        // `wait_for_drain` is waiting to observe.
+        if self.live_connections.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.drain_notify.notify_waiters();
+        }
+    }
 }
 
 impl WsState {
@@ -164,6 +222,7 @@ impl WsState {
         // trigger-fired VFX (`fire_region_triggers`'s Teleport arm) share one bucket.
         let rooms = Arc::new(RoomRegistry::new());
         let vfx_rate = rooms.vfx_rate();
+        let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
         Self {
             rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
@@ -175,6 +234,10 @@ impl WsState {
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown_tx,
+            shutdown,
+            live_connections: Arc::new(AtomicUsize::new(0)),
+            drain_notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -193,6 +256,7 @@ impl WsState {
         // See `WsState::new`'s doc: `vfx_rate` clones `rooms`'s own canonical limiter.
         let rooms = Arc::new(RoomRegistry::with_capacity(capacity));
         let vfx_rate = rooms.vfx_rate();
+        let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
         Self {
             rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
@@ -204,7 +268,106 @@ impl WsState {
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+            shutdown_tx,
+            shutdown,
+            live_connections: Arc::new(AtomicUsize::new(0)),
+            drain_notify: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Signal every live connection's `egress_loop` to exit gracefully: send a Close frame and
+    /// return. This alone does NOT guarantee the connection's task has finished exiting by the
+    /// time it returns — see `wait_for_drain` for the mechanism that actually waits for that.
+    /// Called once from `main`'s Ctrl+C/SIGTERM handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::WsState;
+    ///
+    /// let state = WsState::new();
+    /// state.trigger_shutdown();
+    /// assert!(*state.shutdown.borrow());
+    /// ```
+    pub fn trigger_shutdown(&self) {
+        // A dropped receiver (no live connections) makes `send` return `Err`, which is not an
+        // error here — there is nothing left to notify.
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    /// Register one live WebSocket connection task, returning an RAII guard that decrements the
+    /// count (and wakes any `wait_for_drain` caller once it reaches zero) when dropped. Called
+    /// once at the top of `ws::conn::handle_socket`, held for the task's whole lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::WsState;
+    ///
+    /// let state = WsState::new();
+    /// assert_eq!(state.live_connection_count(), 0);
+    /// let guard = state.connection_guard();
+    /// assert_eq!(state.live_connection_count(), 1);
+    /// drop(guard);
+    /// assert_eq!(state.live_connection_count(), 0);
+    /// ```
+    pub fn connection_guard(&self) -> ConnectionGuard {
+        self.live_connections.fetch_add(1, Ordering::AcqRel);
+        ConnectionGuard {
+            live_connections: self.live_connections.clone(),
+            drain_notify: self.drain_notify.clone(),
+        }
+    }
+
+    /// The current count of live WebSocket connection tasks (see `connection_guard`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::WsState;
+    ///
+    /// let state = WsState::new();
+    /// assert_eq!(state.live_connection_count(), 0);
+    /// ```
+    pub fn live_connection_count(&self) -> usize {
+        self.live_connections.load(Ordering::Acquire)
+    }
+
+    /// Block until every live WebSocket connection task has exited (its `ConnectionGuard`
+    /// dropped), or `timeout` elapses — whichever comes first. Returns `true` if every
+    /// connection drained within the timeout, `false` on timeout (some connections were still
+    /// live). This is the mechanism that closes the gap `trigger_shutdown`'s own doc names:
+    /// `axum::serve(..).with_graceful_shutdown(..)` does not itself wait for a WebSocket
+    /// session's task to finish, so a caller (`main`, after `axum::serve(..).await` returns)
+    /// must call this explicitly before letting the process (and its tokio runtime) exit, or an
+    /// in-flight `Message::Close` send can be dropped mid-write.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use shadowcat::ws::WsState;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let state = WsState::new();
+    /// // No live connections: returns immediately, successfully.
+    /// assert!(state.wait_for_drain(Duration::from_millis(50)).await);
+    /// # }
+    /// ```
+    pub async fn wait_for_drain(&self, timeout: std::time::Duration) -> bool {
+        if self.live_connection_count() == 0 {
+            return true;
+        }
+        // `notified()` must be constructed BEFORE the re-check below to avoid the classic
+        // notify-before-wait race: a `ConnectionGuard::drop` between the count check above and
+        // this call would otherwise call `notify_waiters()` with nobody registered yet to
+        // receive it. `Notify::notified()` returns a future that, once polled, registers itself
+        // to be woken by any FUTURE `notify_waiters()` call.
+        let notified = self.drain_notify.notified();
+        if self.live_connection_count() == 0 {
+            return true;
+        }
+        tokio::time::timeout(timeout, notified).await.is_ok() && self.live_connection_count() == 0
     }
 }
 

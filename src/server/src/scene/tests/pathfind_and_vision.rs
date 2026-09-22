@@ -7,8 +7,8 @@ use crate::scene::pathfinding::MoveTraits;
 /// intensity = 0). The visible mask is therefore empty; only explored memory can admit cells.
 /// Returns `(ecs, user, scene_id)`.
 fn scene_revealed_player_token() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -40,7 +40,7 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
     let (ecs, _user, scene) = scene_with_lit_player_token();
     let r = ecs.pathfind(
         RouteRequester {
-            user: Uuid::from_u128(1),
+            user: crate::test_ids::test_uuid(1),
             is_gm: true,
             world_role: WorldRole::Gm,
             world_defaults: &no_world_grants(),
@@ -88,14 +88,14 @@ fn pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene() {
     let outcome = ecs
         .pathfind(
             RouteRequester {
-user: Uuid::from_u128(1),
+user: crate::test_ids::test_uuid(1),
 is_gm: true,
 world_role: WorldRole::Gm,
 world_defaults: &no_world_grants(),
 explored: // GM: unrestricted mask
             None,
 },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(950.0, 50.0)],
             crate::scene::RouteMover {
@@ -144,13 +144,13 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
     let outcome = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(950.0, 50.0)],
             crate::scene::RouteMover {
@@ -196,7 +196,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
 
     let world_defaults = no_world_grants();
     let requester = || RouteRequester {
-        user: Uuid::from_u128(1),
+        user: crate::test_ids::test_uuid(1),
         is_gm: true,
         world_role: WorldRole::Gm,
         world_defaults: &world_defaults,
@@ -208,7 +208,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
     let grid_out = grid_ecs
         .pathfind(
             requester(),
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             start,
             &[goal],
             crate::scene::RouteMover {
@@ -222,7 +222,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
     let continuous_out = continuous_ecs
         .pathfind(
             requester(),
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             start,
             &[goal],
             crate::scene::RouteMover {
@@ -284,14 +284,14 @@ fn pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost() {
     let outcome = ecs
         .pathfind(
             RouteRequester {
-user: Uuid::from_u128(1),
+user: crate::test_ids::test_uuid(1),
 is_gm: true,
 world_role: WorldRole::Gm,
 world_defaults: &no_world_grants(),
 explored: // GM: unrestricted mask
             None,
 },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(50.0, 50.0)],
             crate::scene::RouteMover {
@@ -312,8 +312,8 @@ explored: // GM: unrestricted mask
 /// `visible_cells` mask through the continuous dispatch branch instead of a hand-built
 /// `BTreeSet` test double.
 fn scene_with_lit_player_token_continuous() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -409,13 +409,13 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
             crate::scene::RouteMover {
@@ -497,7 +497,7 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
     // neighbour arrests too, so the whole ring is checked rather than the two cells the route
     // happens to pass through.
     let field = ecs
-        .region_field(Uuid::from_u128(10), None, elevation::GROUND)
+        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
         .expect("scene exists");
     assert!(
         field.is_arrest(arrest_cell),
@@ -513,13 +513,13 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             g.cell_center((0, 1)),
             &[g.cell_center((4, 1))],
             crate::scene::RouteMover {
@@ -561,13 +561,13 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
             crate::scene::RouteMover {
@@ -609,13 +609,13 @@ fn pathfind_continuous_impassable_routes_around() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(250.0, 350.0)],
             crate::scene::RouteMover {
@@ -665,7 +665,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
     docs.push(secret);
     let mut ecs = SceneEcs::from_documents(docs, 0);
     ecs.set_world_settings_for_test(continuous_world_settings());
-    let player = Uuid::from_u128(2);
+    let player = crate::test_ids::test_uuid(2);
     // Player (non-GM, unrestricted movement => no mask): secret terrain absent => straight route.
     let p = ecs
         .pathfind(
@@ -676,7 +676,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
             crate::scene::RouteMover {
@@ -698,13 +698,13 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
     let g = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
             crate::scene::RouteMover {
@@ -799,7 +799,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     // for a non-GM requester under a real RESTRICTING `visible_cells` mask (default
     // fail-closed `MovementRestriction::Visible`, same fixture as the pure-polyanya test —
     // its default settings already yield a small, genuinely restricting mask).
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -840,7 +840,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
         },
     );
     let ecs = SceneEcs::from_documents(vec![scene, tok, light, terrain], 0);
-    let scene_id = Uuid::from_u128(10);
+    let scene_id = crate::test_ids::test_uuid(10);
     let cell = 100.0;
 
     let lenient = ecs.resolve_scene(scene_id).partial_cell_leniency;
@@ -949,7 +949,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
         .property_overrides
         .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
     docs.push(secret);
-    let player = Uuid::from_u128(2);
+    let player = crate::test_ids::test_uuid(2);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -960,8 +960,8 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
     docs.push(tok);
     let mut ecs = SceneEcs::from_documents(docs, 0);
     ecs.set_world_settings_for_test(continuous_world_settings());
-    let scene = Uuid::from_u128(10);
-    let token = Uuid::from_u128(11);
+    let scene = crate::test_ids::test_uuid(10);
+    let token = crate::test_ids::test_uuid(11);
 
     // Player (non-GM): secret arrest is invisible to their per-requester field, so the
     // preview is the full, untruncated straight polyanya route.
@@ -1001,7 +1001,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
     let g = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
@@ -1075,8 +1075,8 @@ fn scene_with_secret_wall_between_two_cells(owner_is_gm: bool) -> (SceneEcs, Uui
                 "bounds": { "width": 4.0, "height": 4.0 },
                 "vision": { "movementModel": "continuous" } }),
     );
-    let scene_id = Uuid::from_u128(10);
-    let user = Uuid::from_u128(if owner_is_gm { 1 } else { 2 });
+    let scene_id = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(if owner_is_gm { 1 } else { 2 });
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1084,7 +1084,7 @@ fn scene_with_secret_wall_between_two_cells(owner_is_gm: bool) -> (SceneEcs, Uui
         json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
     );
     tok.owner = Some(user);
-    let token_id = Uuid::from_u128(11);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut wall = wall_doc_eng(scene_id, (150.0, 0.0), (150.0, 100.0));
     wall.permissions
         .property_overrides
@@ -1203,7 +1203,7 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
     let (ecs, _user, scene) = scene_with_lit_player_token();
     let r = ecs.pathfind(
         RouteRequester {
-            user: Uuid::from_u128(1),
+            user: crate::test_ids::test_uuid(1),
             is_gm: true,
             world_role: WorldRole::Gm,
             world_defaults: &no_world_grants(),
@@ -1303,9 +1303,9 @@ fn vision_at_grows_as_token_advances() {
     // Vertical blocksSight wall at x=100 (y ±200). Token committed at (50,50).
     // The wall spans the relevant y range of the bounding box so the test point
     // (150,50) is directly occluded from the near side.
-    let scene = Uuid::from_u128(10);
-    let user = Uuid::from_u128(7);
-    let token_id = Uuid::from_u128(11);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1356,9 +1356,9 @@ fn vision_at_grows_as_token_advances() {
 #[test]
 fn vision_at_uses_full_wall_set() {
     use crate::data::document::DocRole;
-    let scene = Uuid::from_u128(10);
-    let user = Uuid::from_u128(7);
-    let token_id = Uuid::from_u128(11);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1403,8 +1403,8 @@ fn vision_at_uses_full_wall_set() {
 /// the viewpoint.
 #[test]
 fn wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box() {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1446,7 +1446,7 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
     // so whichever scene is not the source of that value fails one of its two assertions —
     // the small scene reveals a point beyond its own extent, or the large scene stops short of
     // one inside its own.
-    let user = Uuid::from_u128(7);
+    let user = crate::test_ids::test_uuid(7);
     let mut docs = Vec::new();
     for (scene_id, token_id, block) in [(10u128, 11u128, 5.0_f64), (20, 21, 1.0)] {
         let mut tok = entity_doc_eng(
@@ -1474,7 +1474,7 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
 
     let extents: Vec<grid_shape::WorldExtent> = [10u128, 20]
         .iter()
-        .map(|&s| ecs.scene_world_extent(Uuid::from_u128(s)))
+        .map(|&s| ecs.scene_world_extent(crate::test_ids::test_uuid(s)))
         .collect();
     assert!(
         extents[0].max.0 > extents[1].max.0,
@@ -1484,7 +1484,7 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
     for (i, scene_id) in [10u128, 20].iter().enumerate() {
         let (_, _, poly) = polys
             .iter()
-            .find(|(sid, _, _)| *sid == Uuid::from_u128(*scene_id))
+            .find(|(sid, _, _)| *sid == crate::test_ids::test_uuid(*scene_id))
             .expect("scene present");
         let (ex, ey) = extents[i].max;
         // Just inside this scene's own extent, on the diagonal from the viewpoint.
@@ -1511,8 +1511,8 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
 /// unbounded, never leaking beyond `bounds`.
 #[test]
 fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1543,9 +1543,9 @@ fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
 /// bound.
 #[test]
 fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound() {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
-    let token_id = Uuid::from_u128(11);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1581,10 +1581,10 @@ fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound
 /// points to an existing token owned by another user.
 #[test]
 fn vision_at_empty_when_user_owns_no_token() {
-    let scene = Uuid::from_u128(10);
-    let user = Uuid::from_u128(7);
-    let stranger = Uuid::from_u128(999);
-    let token_id = Uuid::from_u128(11);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let stranger = crate::test_ids::test_uuid(999);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1611,8 +1611,8 @@ fn vision_at_empty_when_user_owns_no_token() {
 /// scene's authored extent but strictly outside a degenerate
 /// `viewpoint±VISION_BOUND_MARGIN(100)` box around the token at (50,50): `[-50,-50]..[150,150]`.
 fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1811,8 +1811,8 @@ fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
 /// -50. That dominance is why this fixture's dependants measure the same mask an
 /// origin-anchored rectangle would give — a property of this size, not of the conversion.
 fn hex_open_scene_with_vision_range(range_cells: Option<f64>) -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -1937,7 +1937,7 @@ fn visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask() {
 fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
     let (ecs, user, scene) = hex_open_scene();
     let cell = HEX_FIXTURE_SIZE;
-    let token = Uuid::from_u128(11);
+    let token = crate::test_ids::test_uuid(11);
     let grid = ecs.resolve_grid_shape(scene, cell);
     let dest = grid.cell_center((4, 0));
 
@@ -2110,8 +2110,8 @@ const HEX_LIGHT_BLOCK: (f64, f64) = (6.0, 4.0);
 /// document here (there are none), so the LOS polygon stays the plain rectangle and vision
 /// never gates a probe either.
 fn hex_lit_scene() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -2203,8 +2203,8 @@ fn a_hex_light_radius_is_measured_in_grid_steps() {
 /// run in a unit suite. Wall-less, all-bright, LOS off, one owned token at the origin cell, so
 /// the whole scan is a single source's.
 fn over_cap_scan_scene() -> (SceneEcs, Uuid, Uuid) {
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -2298,9 +2298,9 @@ fn an_over_cap_lit_mask_scan_yields_a_bounded_cell_set_not_an_empty_one() {
 /// (`VISION_BOUND_MARGIN` cancels against the token's own offset on the low edge; the scene's
 /// extent dominates the high edge).
 fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid, Uuid) {
-    let user = Uuid::from_u128(8);
-    let scene_id = Uuid::from_u128(20);
-    let token_id = Uuid::from_u128(21);
+    let user = crate::test_ids::test_uuid(8);
+    let scene_id = crate::test_ids::test_uuid(20);
+    let token_id = crate::test_ids::test_uuid(21);
     let mut tok = entity_doc_eng(
         21,
         20,
@@ -2493,7 +2493,7 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
     );
     // The row is strictly interior: the envelope's bottom edge sits a full circumradius under
     // these centres, and its left edge half the flats to the left of the leftmost one.
-    let envelope = ecs.scene_world_extent(Uuid::from_u128(10));
+    let envelope = ecs.scene_world_extent(crate::test_ids::test_uuid(10));
     assert!(
         envelope.min.1 < corner.1 - g.size * 0.99 && envelope.min.0 < corner.0,
         "the origin row must sit strictly inside the envelope {envelope:?}"
@@ -2509,13 +2509,13 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
         let out = ecs
             .pathfind(
                 RouteRequester {
-                    user: Uuid::from_u128(1),
+                    user: crate::test_ids::test_uuid(1),
                     is_gm: true,
                     world_role: WorldRole::Gm,
                     world_defaults: &no_world_grants(),
                     explored: None,
                 },
-                Uuid::from_u128(10),
+                crate::test_ids::test_uuid(10),
                 from,
                 &[to],
                 crate::scene::RouteMover {
@@ -2581,13 +2581,13 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             from,
             &[to],
             crate::scene::RouteMover {
@@ -2642,13 +2642,13 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             g.cell_center((1, 1)),
             &[dest],
             crate::scene::RouteMover {
@@ -2704,7 +2704,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
     // predicate fires. Asserted rather than assumed: with an empty field the pure-polyanya
     // path runs instead and the cost assertion would be measuring a different function.
     let field = ecs
-        .region_field(Uuid::from_u128(10), None, elevation::GROUND)
+        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
         .expect("the fixture's scene resolves a region field");
     assert!(
         field.has_terrain_or_impassable(),
@@ -2717,13 +2717,13 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
     let out = ecs
         .pathfind(
             RouteRequester {
-                user: Uuid::from_u128(1),
+                user: crate::test_ids::test_uuid(1),
                 is_gm: true,
                 world_role: WorldRole::Gm,
                 world_defaults: &no_world_grants(),
                 explored: None,
             },
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             a,
             &[b],
             crate::scene::RouteMover {
@@ -2764,19 +2764,21 @@ fn a_degenerate_authored_grid_size_never_reaches_the_extent_conversion() {
     let ecs = SceneEcs::from_documents(vec![scene], 0);
     let cell = ecs
         .scene_grid_sizes()
-        .get(&Uuid::from_u128(10))
+        .get(&crate::test_ids::test_uuid(10))
         .copied()
         .expect("a live scene always carries a grid size");
     assert!(
         cell > 0.0,
         "a non-positive authored grid size must be hardened before it converts, got {cell}"
     );
-    let e = ecs.scene_world_extent(Uuid::from_u128(10));
+    let e = ecs.scene_world_extent(crate::test_ids::test_uuid(10));
     assert!(
         e.width() > 0.0 && e.height() > 0.0,
         "the converted envelope is therefore never degenerate, got {e:?}"
     );
-    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, "", &[]).is_some());
+    assert!(ecs
+        .navmesh_for(crate::test_ids::test_uuid(10), 0.4, "", &[])
+        .is_some());
 }
 
 #[test]
@@ -2797,11 +2799,11 @@ fn navmesh_for_refuses_a_radius_over_the_footprint_cap() {
     let ecs = SceneEcs::from_documents(vec![scene], 0);
     let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
     assert!(ecs
-        .navmesh_for(Uuid::from_u128(10), over_cap, "", &[])
+        .navmesh_for(crate::test_ids::test_uuid(10), over_cap, "", &[])
         .is_none());
     assert!(ecs
         .navmesh_for(
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
             "",
             &[]
@@ -2825,7 +2827,9 @@ fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
                 "bounds": { "width": 1e10, "height": 100.0 } }),
     );
     let ecs = SceneEcs::from_documents(vec![over], 0);
-    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, "", &[]).is_none());
+    assert!(ecs
+        .navmesh_for(crate::test_ids::test_uuid(10), 0.4, "", &[])
+        .is_none());
 
     let under = entity_doc_top_eng(
         11,
@@ -2834,7 +2838,9 @@ fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
                 "bounds": { "width": 10.0, "height": 10.0 } }),
     );
     let ecs = SceneEcs::from_documents(vec![under], 0);
-    assert!(ecs.navmesh_for(Uuid::from_u128(11), 0.4, "", &[]).is_some());
+    assert!(ecs
+        .navmesh_for(crate::test_ids::test_uuid(11), 0.4, "", &[])
+        .is_some());
 }
 
 /// A scene whose corridor from (50,50) to (250,50) is crossed by a blocksMove wall at x=150
@@ -2851,8 +2857,8 @@ fn scene_with_banded_wall_between_two_cells(
                 "bounds": { "width": 4.0, "height": 4.0 },
                 "vision": { "movementModel": "continuous" } }),
     );
-    let scene_id = Uuid::from_u128(10);
-    let user = Uuid::from_u128(2);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(2);
     let mut tok = entity_doc_eng(
         11,
         10,
@@ -2860,7 +2866,7 @@ fn scene_with_banded_wall_between_two_cells(
         json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
     );
     tok.owner = Some(user);
-    let token_id = Uuid::from_u128(11);
+    let token_id = crate::test_ids::test_uuid(11);
     let mut wall = wall_doc_eng(scene_id, (150.0, 0.0), (150.0, 100.0));
     wall.engine
         .as_mut()
@@ -3051,8 +3057,8 @@ fn player_vision_polygons_tags_each_polygon_with_its_sources_level() {
     // Two levels on one scene; the user owns a token on each floor. Each polygon carries the
     // level `level_of` resolves for its source's elevation, so the client cuts fog holes only
     // into the viewed level's fog.
-    let user = Uuid::from_u128(7);
-    let scene_id = Uuid::from_u128(10);
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
     let scene = entity_doc_top_eng(
         10,
         "scene",

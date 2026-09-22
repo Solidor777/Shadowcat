@@ -212,9 +212,9 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 /// Applies a math function to its already-`fold`ed argument values. Indexes
 /// defensively (`unwrap_or(0)` via the local `a` closure, mirroring `fold`'s own
 /// Div-by-zero-to-0 convention) rather than panicking on an argument count that
-/// disagrees with `name.arity()` — unreachable from `dice::notation::parser`-constructed
-/// input (arity is checked at parse time there), but this crate's own types stay
-/// unvalidated by design for a hand-constructed `RollSpec`.
+/// disagrees with `name.accepts_arg_count` — unreachable from `dice::notation::parser`-
+/// constructed input (arity is checked at parse time there), but this crate's own types
+/// stay unvalidated by design for a hand-constructed `RollSpec`.
 /// `Floor`/`Ceil`/`Round` are true integer no-ops (`fold` never produces a fractional
 /// value for any other `Expr` variant — `BinOp::Div` truncates toward zero rather than
 /// producing a fraction), NOT a round-trip through `f64`: an `i64 -> f64` cast itself
@@ -223,13 +223,18 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 /// ever ran. These three functions exist so notation and the engine formula grammar
 /// (`crate::formula`) accept the same function names; if a future change gives this
 /// grammar a true fractional value, their implementation must be revisited then.
+/// `Min`/`Max` are variadic (`FnName::accepts_arg_count` admits any count `>= 2`): both fold
+/// over every element of `args` rather than indexing two fixed slots, so a 3+ argument call
+/// is folded the same way a 2-argument call always was. An empty slice (unreachable from the
+/// parser, since even the minimum admissible count is 2) defensively yields 0, matching
+/// `fold`'s Div-by-zero-to-0 convention.
 fn apply_fn(name: FnName, args: &[i64]) -> i64 {
     let a = |i: usize| args.get(i).copied().unwrap_or(0);
     match name {
         FnName::Floor | FnName::Ceil | FnName::Round => a(0),
         FnName::Abs => a(0).saturating_abs(),
-        FnName::Min => a(0).min(a(1)),
-        FnName::Max => a(0).max(a(1)),
+        FnName::Min => args.iter().copied().reduce(i64::min).unwrap_or(0),
+        FnName::Max => args.iter().copied().reduce(i64::max).unwrap_or(0),
     }
 }
 

@@ -7,6 +7,28 @@
 use super::*;
 
 impl SqliteRepository {
+    /// Revokes every live session belonging to `user`, on the caller's own transaction
+    /// connection. INVARIANT: a password change or an account deletion must invalidate every
+    /// session for that user — `AuthUser` trusts a session record without re-reading `users`,
+    /// so a surviving row would keep the OLD credential (or a deleted account) authenticated
+    /// until cookie expiry. The caller MUST run this in the SAME transaction as the write that
+    /// motivates it (the password update or the user delete), never a separate connection
+    /// acquisition, or the two could observe a window where the write has landed but the old
+    /// session has not yet been purged. Session identity lives at `$.data.user.id` inside the
+    /// `tower_sessions` JSON blob (the store has no `user_id` column); JSON1 ships in the
+    /// bundled SQLite. Private (never a doctest requirement — see `delete_user`/
+    /// `set_user_password` for the two real callers' own examples).
+    async fn purge_sessions_for(
+        tx: &mut sqlx::SqliteConnection,
+        user: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM tower_sessions WHERE json_extract(data, '$.data.user.id') = ?")
+            .bind(user.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+
     /// Whether `user` is the world's sole GM, evaluated on the supplied tx
     /// connection so the read and the caller's mutation are atomic — without the
     /// shared tx, the count check and the mutation are separate connection
@@ -129,12 +151,52 @@ impl SqliteRepository {
             .bind(target.to_string())
             .execute(&mut *tx)
             .await?;
-        // Session identity lives at $.data.user.id inside the JSON blob (the
-        // store has no user_id column); JSON1 ships in the bundled SQLite.
-        sqlx::query("DELETE FROM tower_sessions WHERE json_extract(data, '$.data.user.id') = ?")
+        // Purged via the shared helper (never a second, independently-maintained copy of this
+        // query) in the SAME transaction as the delete above — see `purge_sessions_for`'s doc.
+        Self::purge_sessions_for(&mut tx, target).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Updates a user's password hash and revokes every existing session for them in the
+    /// SAME transaction — mirrors `delete_user`'s live-session invalidation for the identical
+    /// reason: `AuthUser` trusts the session record without re-reading `users`, so a
+    /// surviving session would let the OLD credential's authenticated state outlive the
+    /// reset. Uses the shared `purge_sessions_for` helper (never a second,
+    /// independently-maintained copy of that query). `NotFound` if `target` doesn't exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::auth::session::SqlxSqliteStore;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone())
+    ///     .migrate()
+    ///     .await
+    ///     .unwrap();
+    /// let id = repo.create_user("mock_target", Some("old-hash"), ServerRole::User, 0).await?;
+    /// repo.set_user_password(id, "new-hash").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_user_password(&self, target: Uuid, new_hash: &str) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        let res = sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(new_hash)
             .bind(target.to_string())
             .execute(&mut *tx)
             .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        // Purged via the shared helper — the same purge `delete_user` runs, kept as one query
+        // rather than a second copy of it — in the SAME transaction as the password update
+        // above.
+        Self::purge_sessions_for(&mut tx, target).await?;
         tx.commit().await?;
         Ok(())
     }

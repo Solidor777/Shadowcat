@@ -30,7 +30,7 @@ pub(super) fn tests_doc(
     Document {
         id: Uuid::new_v4(),
         scope: Scope::World {
-            world_id: Uuid::from_u128(9),
+            world_id: crate::test_ids::test_uuid(9),
         },
         doc_type: "actor".into(),
         schema_version: 1,
@@ -70,7 +70,7 @@ pub(super) fn tests_engine_doc(
 /// type.
 pub(super) fn world_doc(id: u128, world: Uuid, system: serde_json::Value) -> Document {
     Document {
-        id: Uuid::from_u128(id),
+        id: crate::test_ids::test_uuid(id),
         scope: Scope::World { world_id: world },
         doc_type: "actor".into(),
         schema_version: 1,

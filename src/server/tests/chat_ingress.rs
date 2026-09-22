@@ -118,6 +118,18 @@ fn intent_msg(intent_n: u64, ops: serde_json::Value) -> Message {
     )
 }
 
+/// Deterministic v4-shaped document id for test fixtures: same low-order bytes as
+/// `Uuid::from_u128(n)`, with the version/variant nibbles forced to v4/RFC4122 so it satisfies
+/// `shadowcat::data::validation::validate_document_id`. Mirrors
+/// `shadowcat_test_support::test_doc_id`, restated locally per this file's harness-replication
+/// convention.
+fn test_doc_id(n: u128) -> Uuid {
+    let mut bytes = n.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
 /// A `create` op authoring a `message` doc directly — the client path this
 /// guard must reject (only `handle_send_message` may author these).
 fn create_message_op(world: Uuid, doc_id: Uuid) -> serde_json::Value {
@@ -146,7 +158,7 @@ async fn client_authored_message_create_is_rejected() {
     let mut ws = h.connect().await;
     let _ = ws.next().await; // Welcome
 
-    let doc_id = Uuid::from_u128(9000);
+    let doc_id = test_doc_id(9000);
     ws.send(intent_msg(
         1,
         serde_json::json!([create_message_op(h.world, doc_id)]),

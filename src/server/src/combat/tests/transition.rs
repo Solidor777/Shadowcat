@@ -3,7 +3,7 @@ use crate::data::command::Operation;
 
 #[test]
 fn start_initializes_round_one_and_runs_turn_start_recovery() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let snap = snapshot(
@@ -11,16 +11,16 @@ fn start_initializes_round_one_and_runs_turn_start_recovery() {
         vec![a, b],
         vec![],
     );
-    let ops = start(&snap, 0, WORLD, Uuid::from_u128(0x6E)).unwrap();
+    let ops = start(&snap, 0, WORLD, crate::test_ids::test_uuid(0x6E)).unwrap();
     let docs = apply(&snap, &ops);
     let c: CombatEngine = engine_of(&docs, combat);
-    assert!(c.active && c.round == 1 && c.turn == Some(Uuid::from_u128(10)));
-    let first: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    assert!(c.active && c.round == 1 && c.turn == Some(crate::test_ids::test_uuid(10)));
+    let first: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         first.resources["movement"].current, 30.0,
         "turn_start recovery applied and clamped to max"
     );
-    let second: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let second: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(second.resources["movement"].current, 0.0);
     assert!(
         ops.iter()
@@ -31,7 +31,7 @@ fn start_initializes_round_one_and_runs_turn_start_recovery() {
 
 #[test]
 fn start_with_a_turn_resumes_without_resnapshot_or_recovery() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 5.0);
     let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 3, false);
     engine.movement.enforcement = Enforcement::Warn;
@@ -50,13 +50,13 @@ fn start_with_a_turn_resumes_without_resnapshot_or_recovery() {
     let docs = apply(&snap, &ops);
     let c: CombatEngine = engine_of(&docs, combat);
     assert!(c.active && c.round == 3 && c.movement.enforcement == Enforcement::Warn);
-    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let a: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(a.resources["movement"].current, 5.0);
 }
 
 #[test]
 fn start_pauses_the_other_active_combat_on_the_scene() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let other = doc(
         2,
@@ -91,7 +91,7 @@ fn start_pauses_the_other_active_combat_on_the_scene() {
 
 #[test]
 fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 10.0);
     let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let snap = snapshot(
@@ -101,8 +101,8 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
     );
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
     let c: CombatEngine = engine_of(&docs, combat);
-    assert_eq!((c.round, c.turn), (1, Some(Uuid::from_u128(11))));
-    let b: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!((c.round, c.turn), (1, Some(crate::test_ids::test_uuid(11))));
+    let b: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(
         b.resources["movement"].current, 30.0,
         "turn_start for the new turn owner"
@@ -123,7 +123,10 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
     };
     let docs2 = apply(&snap2, &advance(&snap2, WORLD, Uuid::nil(), 0).unwrap());
     let c2: CombatEngine = engine_of(&docs2, combat);
-    assert_eq!((c2.round, c2.turn), (2, Some(Uuid::from_u128(10))));
+    assert_eq!(
+        (c2.round, c2.turn),
+        (2, Some(crate::test_ids::test_uuid(10)))
+    );
 }
 
 #[test]
@@ -131,9 +134,9 @@ fn advance_skips_a_combatant_moved_out_of_the_active_combat() {
     // `order` still names the moved-out combatant's id; `combatants` (a
     // fresh query of the combat's current children) does not — exactly the
     // shape an ordinary `Move` of the `combatant` document produces.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
-    let departed = Uuid::from_u128(11);
+    let departed = crate::test_ids::test_uuid(11);
     let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, departed, c.doc.id], Some(a.doc.id), 1, true),
@@ -144,12 +147,15 @@ fn advance_skips_a_combatant_moved_out_of_the_active_combat() {
     let engine: CombatEngine = engine_of(&docs, combat);
     assert_eq!(
         engine.turn,
-        Some(Uuid::from_u128(12)),
+        Some(crate::test_ids::test_uuid(12)),
         "advance succeeded and landed on the next real combatant, skipping the departed slot"
     );
     assert_eq!(
         engine.order,
-        vec![Uuid::from_u128(10), Uuid::from_u128(12)],
+        vec![
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(12)
+        ],
         "the departed combatant's id was dropped from the persisted order"
     );
 }
@@ -165,7 +171,7 @@ fn advance_never_auto_admits_an_arrival_but_an_explicit_sort_does() {
     // genuine, permanent design state (a staged/hidden combatant), and
     // `order` alone cannot distinguish that from a fresh arrival —
     // `heal_order` must not guess.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
@@ -178,10 +184,13 @@ fn advance_never_auto_admits_an_arrival_but_an_explicit_sort_does() {
     let engine: CombatEngine = engine_of(&docs, combat);
     assert_eq!(
         engine.order,
-        vec![Uuid::from_u128(10), Uuid::from_u128(11)],
+        vec![
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11)
+        ],
         "advance leaves the arrival out of order — it is not a departed entry to prune"
     );
-    assert_eq!(engine.turn, Some(Uuid::from_u128(11)));
+    assert_eq!(engine.turn, Some(crate::test_ids::test_uuid(11)));
 
     // The arrival is not invisible forever: an explicit `CombatSort` folds
     // it in deterministically, proving the closure is available on demand
@@ -189,7 +198,7 @@ fn advance_never_auto_admits_an_arrival_but_an_explicit_sort_does() {
     let sort_docs = apply(&snap, &sort(&snap).unwrap());
     let sorted: CombatEngine = engine_of(&sort_docs, combat);
     assert!(
-        sorted.order.contains(&Uuid::from_u128(12)),
+        sorted.order.contains(&crate::test_ids::test_uuid(12)),
         "an explicit sort admits the arrival"
     );
 }
@@ -200,9 +209,9 @@ fn a_stale_order_entry_heals_on_the_next_transition_even_when_the_walk_never_rea
     // combatant, so this advance's own walk stops one step short of ever
     // reaching its slot — proving the correction is structural (applied at
     // snapshot load) rather than a side effect of the walk passing over it.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
-    let stale = Uuid::from_u128(99);
+    let stale = crate::test_ids::test_uuid(99);
     let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, stale, b.doc.id], Some(a.doc.id), 1, true),
@@ -213,14 +222,17 @@ fn a_stale_order_entry_heals_on_the_next_transition_even_when_the_walk_never_rea
     let engine: CombatEngine = engine_of(&docs, combat);
     assert_eq!(
         engine.order,
-        vec![Uuid::from_u128(10), Uuid::from_u128(11)],
+        vec![
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11)
+        ],
         "the already-inconsistent row healed on this transition's own commit"
     );
 }
 
 #[test]
 fn text_recoveries_evaluate_server_side_over_the_formula_host() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     // 0x9A, not 0xA — a host id must never numerically collide with a
     // combatant doc id (`actor_combatant(10, ..)` is id 10 == 0xA).
     let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
@@ -233,7 +245,7 @@ fn text_recoveries_evaluate_server_side_over_the_formula_host() {
     );
     snap.registry = Some(registry_with_movement(Formula::Text("speed / 2".into())));
     let docs = apply(&snap, &start(&snap, 0, WORLD, Uuid::nil()).unwrap());
-    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let a: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         a.resources["movement"].current, 6.0,
         "the turn_start recovery evaluated over the host's system band"
@@ -242,7 +254,7 @@ fn text_recoveries_evaluate_server_side_over_the_formula_host() {
 
 #[test]
 fn a_failing_recovery_formula_applies_nothing_and_posts_one_gm_only_notice() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     // No host document at all: the text recovery's reference cannot resolve.
     let a = actor_combatant(10, combat, 0xA, None, false, 5.0);
     let mut snap = snapshot(
@@ -270,7 +282,7 @@ fn a_failing_recovery_formula_applies_nothing_and_posts_one_gm_only_notice() {
         "the notice names the failing resource and boundary: {text}"
     );
     let docs = apply(&snap, &ops);
-    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let a: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         a.resources["movement"].current, 5.0,
         "the failing recovery applied nothing"
@@ -279,7 +291,7 @@ fn a_failing_recovery_formula_applies_nothing_and_posts_one_gm_only_notice() {
 
 #[test]
 fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let mut a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
     a.engine.resources.clear();
     a.doc.engine = Some(serde_json::to_value(&a.engine).unwrap());
@@ -296,7 +308,7 @@ fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
     );
     snap.registry = Some(registry);
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
-    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let e: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         e.resources["movement"].current, 20.0,
         "full (the evaluated max, 30) minus the turn_end recovery, materializing the absent entry"
@@ -305,7 +317,7 @@ fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
 
 #[test]
 fn an_event_with_no_stored_entry_recovers_uniformly_like_any_combatant() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
     // Survives its own resolution (no lifespan) and carries NO resource entry.
     let ev = event_combatant(11, combat, None, None);
@@ -322,7 +334,7 @@ fn an_event_with_no_stored_entry_recovers_uniformly_like_any_combatant() {
     );
     snap.registry = Some(registry);
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
-    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let e: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(
         e.resources["movement"].current, 20.0,
         "the drain materialized the event's absent entry from full (30) exactly as it would an actor's"
@@ -331,7 +343,7 @@ fn an_event_with_no_stored_entry_recovers_uniformly_like_any_combatant() {
 
 #[test]
 fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text_max() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x9A, None, false, 5.0);
     let mut host = doc(0x9A, "actor", None, actor_body());
     host.system = serde_json::json!({ "hp": 27.0, "mv": 8.0 });
@@ -362,7 +374,7 @@ fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text
         matches!(
             resource(
                 &snap,
-                Uuid::from_u128(10),
+                crate::test_ids::test_uuid(10),
                 "hp",
                 ResourceOp::Delta { amount: -3.0 }
             ),
@@ -372,13 +384,13 @@ fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text
     );
     let ops = resource(
         &snap,
-        Uuid::from_u128(10),
+        crate::test_ids::test_uuid(10),
         "movement",
         ResourceOp::Set { value: 50.0 },
     )
     .unwrap();
     let docs = apply(&snap, &ops);
-    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let e: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         e.resources["movement"].current, 8.0,
         "clamped to the evaluated text max"
@@ -387,7 +399,7 @@ fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text
 
 #[test]
 fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
@@ -400,10 +412,10 @@ fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() 
     let e: CombatEngine = engine_of(&docs, combat);
     assert_eq!(
         e.turn,
-        Some(Uuid::from_u128(12)),
+        Some(crate::test_ids::test_uuid(12)),
         "the hidden turn started and ended inside the command"
     );
-    let hidden: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let hidden: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(
         hidden.resources["movement"].current, 30.0,
         "its turn_start recovery still ran"
@@ -413,12 +425,12 @@ fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() 
     let snap = snapshot(gm_only, vec![a, h, c], vec![]);
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
     let e: CombatEngine = engine_of(&docs, combat);
-    assert_eq!(e.turn, Some(Uuid::from_u128(11)));
+    assert_eq!(e.turn, Some(crate::test_ids::test_uuid(11)));
 }
 
 #[test]
 fn event_posts_its_message_decrements_lifespan_and_is_deleted_at_zero() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), Some("Lair action"));
     let snap = snapshot(
@@ -426,27 +438,27 @@ fn event_posts_its_message_decrements_lifespan_and_is_deleted_at_zero() {
         vec![a.clone(), ev],
         vec![],
     );
-    let ops = advance(&snap, WORLD, Uuid::from_u128(0x6E), 0).unwrap();
+    let ops = advance(&snap, WORLD, crate::test_ids::test_uuid(0x6E), 0).unwrap();
     assert!(ops
         .iter()
         .any(|o| matches!(o, Operation::Create { doc } if doc.doc_type == "message")));
-    assert!(ops
-        .iter()
-        .any(|o| matches!(o, Operation::Delete { doc } if doc.id == Uuid::from_u128(11))));
+    assert!(ops.iter().any(
+        |o| matches!(o, Operation::Delete { doc } if doc.id == crate::test_ids::test_uuid(11))
+    ));
     let docs = apply(&snap, &ops);
     let e: CombatEngine = engine_of(&docs, combat);
     assert_eq!(
         e.turn,
-        Some(Uuid::from_u128(10)),
+        Some(crate::test_ids::test_uuid(10)),
         "wrapped back to a; the event is gone"
     );
-    assert_eq!(e.order, vec![Uuid::from_u128(10)]);
+    assert_eq!(e.order, vec![crate::test_ids::test_uuid(10)]);
     assert_eq!(e.round, 2);
 }
 
 #[test]
 fn all_events_order_terminates_by_the_loop_guard() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let e1 = event_combatant(10, combat, None, None);
     let e2 = event_combatant(11, combat, None, None);
     let snap = snapshot(
@@ -462,7 +474,7 @@ fn all_events_order_terminates_by_the_loop_guard() {
 
 #[test]
 fn roll_writes_initiative_rebuilds_order_and_posts_whispers_for_hidden() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let snap = snapshot(
@@ -474,11 +486,11 @@ fn roll_writes_initiative_rebuilds_order_and_posts_whispers_for_hidden() {
     let ops = roll(
         &snap,
         &[
-            (Uuid::from_u128(10), post(5)),
-            (Uuid::from_u128(11), post(17)),
+            (crate::test_ids::test_uuid(10), post(5)),
+            (crate::test_ids::test_uuid(11), post(17)),
         ],
         WORLD,
-        Uuid::from_u128(0x6E),
+        crate::test_ids::test_uuid(0x6E),
         "table",
         0,
     )
@@ -498,12 +510,18 @@ fn roll_writes_initiative_rebuilds_order_and_posts_whispers_for_hidden() {
     assert_eq!(hidden_msg.permissions.gm_role, Some(DocRole::Observer));
     let docs = apply(&snap, &ops);
     let e: CombatEngine = engine_of(&docs, combat);
-    assert_eq!(e.order, vec![Uuid::from_u128(11), Uuid::from_u128(10)]);
+    assert_eq!(
+        e.order,
+        vec![
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(10)
+        ]
+    );
 }
 
 #[test]
 fn resource_delta_and_set_clamp_to_zero_and_max() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 10.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
@@ -514,34 +532,36 @@ fn resource_delta_and_set_clamp_to_zero_and_max() {
         &snap,
         &resource(
             &snap,
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             "movement",
             ResourceOp::Delta { amount: -50.0 },
         )
         .unwrap(),
     );
     assert_eq!(
-        engine_of::<CombatantEngine>(&docs, Uuid::from_u128(10)).resources["movement"].current,
+        engine_of::<CombatantEngine>(&docs, crate::test_ids::test_uuid(10)).resources["movement"]
+            .current,
         0.0
     );
     let docs = apply(
         &snap,
         &resource(
             &snap,
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             "movement",
             ResourceOp::Set { value: 99.0 },
         )
         .unwrap(),
     );
     assert_eq!(
-        engine_of::<CombatantEngine>(&docs, Uuid::from_u128(10)).resources["movement"].current,
+        engine_of::<CombatantEngine>(&docs, crate::test_ids::test_uuid(10)).resources["movement"]
+            .current,
         30.0
     );
     assert!(matches!(
         resource(
             &snap,
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             "actions",
             ResourceOp::Set { value: 1.0 }
         ),
@@ -550,7 +570,7 @@ fn resource_delta_and_set_clamp_to_zero_and_max() {
     assert!(matches!(
         resource(
             &snap,
-            Uuid::from_u128(10),
+            crate::test_ids::test_uuid(10),
             "movement",
             ResourceOp::Set { value: f64::NAN }
         ),
@@ -560,7 +580,7 @@ fn resource_delta_and_set_clamp_to_zero_and_max() {
 
 #[test]
 fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let mut a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     a.engine.initiative = Some(12.0);
     let mut b = actor_combatant(11, combat, 0xB, None, false, 0.0);
@@ -572,22 +592,22 @@ fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
         rebuild_order(
             &[a, b, c],
             &[
-                Uuid::from_u128(10),
-                Uuid::from_u128(11),
-                Uuid::from_u128(12)
+                crate::test_ids::test_uuid(10),
+                crate::test_ids::test_uuid(11),
+                crate::test_ids::test_uuid(12)
             ]
         ),
         vec![
-            Uuid::from_u128(11),
-            Uuid::from_u128(10),
-            Uuid::from_u128(12)
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(12)
         ]
     );
 }
 
 #[test]
 fn end_expires_cleanup_effects_then_deletes_the_combat() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let host = actor_with_effect(0xA, None, 3, ExpiryPoint::TurnEnd, DurationUnit::Rounds);
     let snap = snapshot(
@@ -596,7 +616,7 @@ fn end_expires_cleanup_effects_then_deletes_the_combat() {
         vec![host],
     );
     let ops = end(&snap, WORLD, Uuid::nil(), 0).unwrap();
-    assert!(ops.iter().any(|o| matches!(o, Operation::Update { doc_id, changes } if *doc_id == Uuid::from_u128(0xA) && changes[0].path == "/embedded/effect/0/engine/active" && changes[0].new == serde_json::json!(false))));
+    assert!(ops.iter().any(|o| matches!(o, Operation::Update { doc_id, changes } if *doc_id == crate::test_ids::test_uuid(0xA) && changes[0].path == "/embedded/effect/0/engine/active" && changes[0].new == serde_json::json!(false))));
     assert!(matches!(ops.last(), Some(Operation::Delete { doc }) if doc.id == combat));
     let mut off = snap.engine.clone();
     off.effect_cleanup = false;
@@ -608,7 +628,7 @@ fn end_expires_cleanup_effects_then_deletes_the_combat() {
     let ops = end(&snap_off, WORLD, Uuid::nil(), 0).unwrap();
     assert!(
         !ops.iter().any(
-            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0xA))
+            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == crate::test_ids::test_uuid(0xA))
         ),
         "master switch off ⇒ no cleanup"
     );
@@ -616,7 +636,7 @@ fn end_expires_cleanup_effects_then_deletes_the_combat() {
 
 #[test]
 fn pause_only_clears_active() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 2, true),
@@ -635,7 +655,7 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
     // a and b share the SAME host (both link to actor 0x10). Its unanchored
     // effect is collected once per combatant, but a round-wrap sweep must
     // still tick it exactly once, not once per combatant that shares it.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0x10, None, false, 0.0);
     let b = actor_combatant(11, combat, 0x10, None, false, 0.0);
     let host = actor_with_effect(0x10, None, 2, ExpiryPoint::RoundStart, DurationUnit::Rounds);
@@ -649,7 +669,7 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
     let c: CombatEngine = engine_of(&docs, combat);
     assert_eq!(c.round, 2, "the round wrapped exactly once");
     let effect: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0x10)].embedded["effect"][0]
+        docs[&crate::test_ids::test_uuid(0x10)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
@@ -668,7 +688,7 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
 /// its own turn.
 #[test]
 fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     // lifespan None: the event survives its own resolution, so there IS a
     // document left for the turn_end boundary to write.
@@ -690,7 +710,7 @@ fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
     );
     snap.registry = Some(registry);
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
-    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let e: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(
         e.resources["movement"].current, 20.0,
         "turn_start's +30 (clamped to max 30) THEN turn_end's -10 — 30 would mean turn_end never ran"
@@ -702,7 +722,7 @@ fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
 /// rewind can land on it.
 #[test]
 fn an_auto_resolved_hidden_entry_gets_its_own_history_record() {
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
@@ -720,7 +740,10 @@ fn an_auto_resolved_hidden_entry_gets_its_own_history_record() {
         serde_json::from_value(history.engine.clone().unwrap()).unwrap();
     assert_eq!(
         engine.records.iter().map(|r| r.turn).collect::<Vec<Uuid>>(),
-        vec![Uuid::from_u128(11), Uuid::from_u128(12)],
+        vec![
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(12)
+        ],
         "the hidden entry the walk auto-resolved past has its own record before the settled one"
     );
     assert_eq!(engine.cursor as usize, engine.records.len() - 1);
@@ -743,7 +766,7 @@ fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
     // round) then lands back on a at the guard's last iteration — a must
     // ALSO be fully resolved (its own turn_start AND turn_end both run),
     // never just parked mid-turn.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, true, 0.0);
     let b = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let mut registry = registry_with_movement(Formula::Number(30.0));
@@ -763,17 +786,17 @@ fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
     assert_eq!(e.round, 2, "the walk wrapped exactly once");
     assert_eq!(
         e.turn,
-        Some(Uuid::from_u128(10)),
+        Some(crate::test_ids::test_uuid(10)),
         "parked on the last-visited entry, per the all-auto-resolving termination case"
     );
     // Both entries must show turn_start's +30 THEN turn_end's -10: 20, not
     // 30 (turn_end skipped) and not 0 (turn_start skipped).
-    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    let a: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(10));
     assert_eq!(
         a.resources["movement"].current, 20.0,
         "a is the guard-exhaustion entry — its own turn_end must still have run"
     );
-    let b: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let b: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(
         b.resources["movement"].current, 20.0,
         "b was fully resolved mid-walk"
@@ -786,7 +809,7 @@ fn auto_resolved_hidden_turn_coalesces_host_updates_into_one_operation() {
     // encountered next, bound to a host with two effects — one ticking at
     // TurnStart, one at TurnEnd — so h's auto-resolved turn (its `enter_turn`
     // and `run_turn_end` back to back) writes the SAME host document twice.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let h = actor_combatant(11, combat, 0x50, None, true, 0.0);
     let mut host = actor_with_effect(0x50, None, 1, ExpiryPoint::TurnStart, DurationUnit::Turns);
@@ -805,7 +828,7 @@ fn auto_resolved_hidden_turn_coalesces_host_updates_into_one_operation() {
     let host_updates: Vec<&Operation> = ops
         .iter()
         .filter(
-            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0x50)),
+            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == crate::test_ids::test_uuid(0x50)),
         )
         .collect();
     assert_eq!(
@@ -831,7 +854,7 @@ fn auto_resolved_hidden_turn_coalesces_combatant_updates_into_one_operation() {
     // two separate `run_boundary` calls write the SAME path on h's own
     // combatant document. `Working::coalesce_updates` covers combatant
     // documents identically to host documents, not just hosts.
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let mut registry = registry_with_movement(Formula::Number(30.0));
@@ -849,7 +872,7 @@ fn auto_resolved_hidden_turn_coalesces_combatant_updates_into_one_operation() {
     let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
     let combatant_updates: Vec<&Operation> = ops
         .iter()
-        .filter(|o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(11)))
+        .filter(|o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == crate::test_ids::test_uuid(11)))
         .collect();
     assert_eq!(
         combatant_updates.len(),
@@ -876,7 +899,7 @@ fn auto_resolved_hidden_turn_coalesces_combatant_updates_into_one_operation() {
     // `apply`'s own strict OCC check is itself proof this batch is
     // well-formed relative to the batch-start document.
     let docs = apply(&snap, &ops);
-    let h_engine: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    let h_engine: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
     assert_eq!(h_engine.resources["movement"].current, 20.0);
 }
 
@@ -903,7 +926,7 @@ fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals
     // walk. `settle_turn`'s budget instead grows by only ONE step per
     // removal, bounding the whole walk to a small multiple of N.
     const N: u32 = 30;
-    let combat = Uuid::from_u128(1);
+    let combat = crate::test_ids::test_uuid(1);
     let mut combatants = Vec::new();
     let mut order = Vec::new();
     for i in 0..N {

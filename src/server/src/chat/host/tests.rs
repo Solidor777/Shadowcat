@@ -24,7 +24,7 @@ fn actor_doc(id: Uuid, world: Uuid) -> Document {
         parent_id: None,
         engine: Some(serde_json::json!({
             "displayName": "A",
-            "visual": { "kind": "image", "asset": "a.png" },
+            "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,

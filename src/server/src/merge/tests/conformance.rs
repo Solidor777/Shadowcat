@@ -269,7 +269,7 @@ fn run_case(case: &Value) -> Value {
     let forward: BTreeMap<String, Uuid> = ids
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.clone(), Uuid::from_u128(i as u128 + 1)))
+        .map(|(i, s)| (s.clone(), crate::test_ids::test_uuid(i as u128 + 1)))
         .collect();
     let reverse: BTreeMap<String, String> = forward
         .iter()

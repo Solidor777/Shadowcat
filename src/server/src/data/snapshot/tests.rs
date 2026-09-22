@@ -4,11 +4,11 @@ use crate::data::command::Operation;
 fn sample_command() -> Command {
     Command {
         seq: 7,
-        world_id: Uuid::from_u128(1),
-        author: Uuid::from_u128(2),
+        world_id: crate::test_ids::test_uuid(1),
+        author: crate::test_ids::test_uuid(2),
         ts: 100,
         ops: vec![Operation::Update {
-            doc_id: Uuid::from_u128(3),
+            doc_id: crate::test_ids::test_uuid(3),
             changes: vec![],
         }],
     }
@@ -20,16 +20,16 @@ fn stored_command_round_trips_through_json() {
         command: sample_command(),
         snapshot: CommandSnapshot {
             per_op: vec![Some(OpSnapshot {
-                owner_at_commit: Some(Uuid::from_u128(4)),
+                owner_at_commit: Some(crate::test_ids::test_uuid(4)),
                 doc_type: "actor".into(),
                 overrides_at_commit: vec![("/system/secret".into(), Visibility::GmOnly)],
                 retraction_hidden_at_commit: None,
                 created_seq_at_commit: Some(5),
                 permissions_at_commit: Some(PermissionSet::default()),
                 permissions_before_commit: Some(PermissionSet::default()),
-                owner_before_commit: Some(Uuid::from_u128(6)),
+                owner_before_commit: Some(crate::test_ids::test_uuid(6)),
             })],
-            world_gm_at_commit: HashMap::from([(Uuid::from_u128(4), true)]),
+            world_gm_at_commit: HashMap::from([(crate::test_ids::test_uuid(4), true)]),
         },
     };
     let s = serde_json::to_string(&stored).unwrap();

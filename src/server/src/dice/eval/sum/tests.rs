@@ -424,10 +424,23 @@ fn apply_fn_abs_min_max() {
 
 #[test]
 fn apply_fn_defends_against_missing_args_instead_of_panicking() {
-    // Unreachable from parser-constructed input (arity is checked at parse
-    // time), but a hand-constructed `Expr::Call` with too few args must not
-    // panic -- mirrors `fold`'s own Div-by-zero-to-0 convention.
-    assert_eq!(super::apply_fn(FnName::Min, &[3]), 0); // missing arg defaults to 0
+    // Unreachable from parser-constructed input (the parser rejects a `min`/`max` call
+    // below the 2-argument minimum, and never produces an empty argument list at all),
+    // but a hand-constructed `Expr::Call` must not panic. A single-element slice folds
+    // to that element (variadic `Min`/`Max` fold over whatever is present); a truly
+    // empty slice defensively yields 0, mirroring `fold`'s own Div-by-zero-to-0
+    // convention.
+    assert_eq!(super::apply_fn(FnName::Min, &[3]), 3);
+    assert_eq!(super::apply_fn(FnName::Min, &[]), 0);
+    assert_eq!(super::apply_fn(FnName::Max, &[]), 0);
+}
+
+#[test]
+fn apply_fn_min_max_are_variadic_over_three_or_more_args() {
+    assert_eq!(super::apply_fn(FnName::Min, &[5, 1, 3]), 1);
+    assert_eq!(super::apply_fn(FnName::Max, &[5, 1, 3]), 5);
+    assert_eq!(super::apply_fn(FnName::Min, &[9, 2, 7, 4]), 2);
+    assert_eq!(super::apply_fn(FnName::Max, &[9, 2, 7, 4]), 9);
 }
 
 #[test]
@@ -486,6 +499,27 @@ fn min_call_across_two_dice_groups_threads_group_index_through_both_args() {
          for both args) is distinguishable from the correct min: g0={g0} g1={g1}"
     );
     assert_eq!(out.total, g0.min(g1));
+}
+
+#[test]
+fn min_call_across_three_dice_groups_evaluates_to_the_minimum() {
+    let spec = notation::parse("min(1d6,1d8,1d10)", total_ctx()).unwrap();
+    let raws = roll(&spec, &mut NoiseRng::from_seed(7));
+    let out = evaluate(&spec, &raws);
+    let group_total = |gi: usize| -> i64 {
+        raws.records
+            .iter()
+            .filter(|r| r.group_index == gi && r.kept)
+            .map(|r| r.value as i64)
+            .sum()
+    };
+    assert_eq!(
+        raws.records.len(),
+        3,
+        "each of the three groups rolls one die"
+    );
+    let expected = group_total(0).min(group_total(1)).min(group_total(2));
+    assert_eq!(out.total, expected);
 }
 
 #[test]

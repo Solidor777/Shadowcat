@@ -1,13 +1,12 @@
 use super::*;
 use crate::data::command::Command;
-use uuid::Uuid;
 
 fn event(seq: i64, ts: i64) -> RoomEvent {
     RoomEvent::Event(Arc::new(StoredCommand {
         command: Command {
             seq,
-            world_id: Uuid::from_u128(1),
-            author: Uuid::from_u128(2),
+            world_id: crate::test_ids::test_uuid(1),
+            author: crate::test_ids::test_uuid(2),
             ts,
             ops: vec![],
         },

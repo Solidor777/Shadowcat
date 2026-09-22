@@ -213,8 +213,8 @@ async fn move_into_own_descendant_or_self_is_rejected() {
 async fn combatant_moves_only_between_combat_parents() {
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
-    let scene_a = Uuid::from_u128(100);
-    let scene_b = Uuid::from_u128(101);
+    let scene_a = crate::test_ids::test_uuid(100);
+    let scene_b = crate::test_ids::test_uuid(101);
     let c1 = combat_doc(1, w, scene_a, false);
     let c2 = combat_doc(2, w, scene_b, false);
     let fighter = combatant_doc(3, w, c1.id);
@@ -261,7 +261,7 @@ async fn combat_document_refuses_any_parent() {
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
     let a = folder_doc(1, w, "alpha", None);
-    let c = combat_doc(2, w, Uuid::from_u128(100), false);
+    let c = combat_doc(2, w, crate::test_ids::test_uuid(100), false);
     create_all(&r, &ctx, w, &[a.clone(), c.clone()]).await;
 
     let err = r
@@ -574,7 +574,7 @@ async fn generic_doc_cannot_move_to_a_cross_world_parent() {
 async fn combatant_cannot_move_to_a_cross_world_combat() {
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
-    let c1 = combat_doc(1, w, Uuid::from_u128(100), false);
+    let c1 = combat_doc(1, w, crate::test_ids::test_uuid(100), false);
     let fighter = combatant_doc(2, w, c1.id);
     create_all(&r, &ctx, w, &[c1.clone(), fighter.clone()]).await;
 
@@ -587,7 +587,7 @@ async fn combatant_cannot_move_to_a_cross_world_combat() {
         user_id: other_gm,
         world_role: WorldRole::Gm,
     };
-    let c_foreign = combat_doc(3, w2.id, Uuid::from_u128(101), false);
+    let c_foreign = combat_doc(3, w2.id, crate::test_ids::test_uuid(101), false);
     create_all(&r, &ctx2, w2.id, std::slice::from_ref(&c_foreign)).await;
 
     // The parent IS a combat — but in another world.
@@ -679,9 +679,9 @@ async fn trigger_origin_moves_a_player_owned_token_past_the_gm_only_gate() {
     // token could never be moved across scenes by a trusted trigger write.
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
-    let scene_a = Uuid::from_u128(10);
-    let scene_b = Uuid::from_u128(11);
-    let token_id = Uuid::from_u128(12);
+    let scene_a = crate::test_ids::test_uuid(10);
+    let scene_b = crate::test_ids::test_uuid(11);
+    let token_id = crate::test_ids::test_uuid(12);
     let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
     r.add_member(w, player, WorldRole::Player).await.unwrap();
     let mut scene_a_doc = crate::data::document::tests::world_scoped_doc(w, scene_a, "scene");

@@ -4,7 +4,7 @@
 // lives in `@shadowcat/core`'s `buildMoveOp` — shared with every other
 // document tree that has a `parent_id` band.
 
-import { envelope, type WireDocument } from "@shadowcat/core";
+import { appendSortKey, envelope, type WireDocument } from "@shadowcat/core";
 
 /** The `asset_folder` doc_type string. */
 export const ASSET_FOLDER_DOC_TYPE = "asset_folder";
@@ -35,6 +35,11 @@ function sortOf(doc: WireDocument): number {
  * ordered by `engine.sort`, then name.
  * @param docs - Candidate documents (non-folders are ignored).
  * @param parentId - The parent folder id, or `null` for the root.
+ * @param nameCompare - The name tie-break comparator. Defaults to plain `String.localeCompare`
+ * so this module stays independently testable with no `@shadowcat/ui-kit` dependency; the
+ * production caller (`FolderTree.svelte`) passes ui-kit's locale-reactive `compare` — the ONE
+ * collator every name sort in the client reads — so this pure module never constructs its own
+ * `Intl.Collator`.
  * @returns The ordered children.
  * @example
  * ```ts
@@ -46,10 +51,14 @@ function sortOf(doc: WireDocument): number {
  * void roots;
  * ```
  */
-export function folderChildren(docs: WireDocument[], parentId: string | null): WireDocument[] {
+export function folderChildren(
+  docs: WireDocument[],
+  parentId: string | null,
+  nameCompare: (a: string, b: string) => number = (a, b) => a.localeCompare(b),
+): WireDocument[] {
   return docs
     .filter((d) => d.doc_type === ASSET_FOLDER_DOC_TYPE && d.parent_id === parentId)
-    .sort((a, b) => sortOf(a) - sortOf(b) || (a.name ?? "").localeCompare(b.name ?? ""));
+    .sort((a, b) => sortOf(a) - sortOf(b) || nameCompare(a.name ?? "", b.name ?? ""));
 }
 
 /**
@@ -108,10 +117,32 @@ export function isDescendantOrSelf(docs: WireDocument[], rootId: string, id: str
 }
 
 /**
+ * The `sort` key a new folder appended under `parentId` should take — one density step past
+ * the highest existing sibling's key, or `SORT_KEY_DENSITY` for the first child.
+ * @param docs - Candidate documents (non-folders are ignored).
+ * @param parentId - The parent folder id, or `null` for the root.
+ * @returns The allocated append key.
+ * @example
+ * ```ts
+ * import { appendFolderSortKey } from "@shadowcat/module-asset-browser";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const docs: WireDocument[];
+ * appendFolderSortKey(docs, null);
+ * ```
+ */
+export function appendFolderSortKey(docs: WireDocument[], parentId: string | null): number {
+  const siblings = folderChildren(docs, parentId);
+  return appendSortKey(siblings.map(sortOf));
+}
+
+/**
  * A fresh `asset_folder` document envelope for a Create op.
  * @param world - The owning world id.
  * @param name - The folder's display name.
  * @param parentId - The parent folder, or `null` for the root.
+ * @param sort - The new folder's ordering key among its siblings; defaults to `0` for a caller
+ * that has no sibling list to allocate an append key from (see `appendFolderSortKey`).
  * @returns The document for `dispatchIntent`'s Create.
  * @example
  * ```ts
@@ -121,6 +152,6 @@ export function isDescendantOrSelf(docs: WireDocument[], rootId: string, id: str
  * doc.doc_type; // "asset_folder"
  * ```
  */
-export function buildFolderDoc(world: string, name: string, parentId: string | null): WireDocument {
-  return envelope(world, ASSET_FOLDER_DOC_TYPE, parentId, {}, undefined, { sort: 0 }, name);
+export function buildFolderDoc(world: string, name: string, parentId: string | null, sort = 0): WireDocument {
+  return envelope(world, ASSET_FOLDER_DOC_TYPE, parentId, {}, undefined, { sort }, name);
 }

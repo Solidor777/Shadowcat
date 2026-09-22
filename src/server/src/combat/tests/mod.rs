@@ -8,8 +8,8 @@ use crate::data::command::Operation;
 use crate::data::document::{DocRole, Document, PermissionSet, Scope};
 use crate::data::engine::combat::*;
 
-pub(super) const WORLD: Uuid = Uuid::from_u128(0xF0);
-pub(super) const SCENE: Uuid = Uuid::from_u128(0x5CE);
+pub(super) const WORLD: Uuid = crate::test_ids::test_uuid(0xF0);
+pub(super) const SCENE: Uuid = crate::test_ids::test_uuid(0x5CE);
 
 pub(super) fn doc(
     id: u128,
@@ -18,7 +18,7 @@ pub(super) fn doc(
     engine: serde_json::Value,
 ) -> Document {
     Document {
-        id: Uuid::from_u128(id),
+        id: crate::test_ids::test_uuid(id),
         scope: Scope::World { world_id: WORLD },
         doc_type: doc_type.into(),
         schema_version: 1,
@@ -72,7 +72,7 @@ pub(super) fn actor_combatant(
     let engine = CombatantEngine {
         kind: CombatantKind::Actor {
             token_id: None,
-            actor_id: Some(Uuid::from_u128(actor)),
+            actor_id: Some(crate::test_ids::test_uuid(actor)),
         },
         initiative: None,
         tiebreak: 0.0,
@@ -128,7 +128,7 @@ pub(super) fn event_combatant(
 pub(super) fn actor_body() -> serde_json::Value {
     json!({
         "displayName": "Fixture Actor",
-        "visual": { "kind": "image", "asset": "a.png" },
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
         "size": { "w": 1.0, "h": 1.0 },
         "shape": "square",
         "conditions": [],

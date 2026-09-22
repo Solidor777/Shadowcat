@@ -723,7 +723,7 @@ async fn inert_href_substring_in_body_text_yields_no_preview_and_no_fetch() {
 fn stored_message_without_link_preview_segments_still_deserializes() {
     let j = serde_json::json!({
         "channel": "all",
-        "user_owner": Uuid::from_u128(1),
+        "user_owner": crate::test_ids::test_uuid(1),
         "kind": "normal",
         "audience": { "kind": "public" },
         "content": [{ "kind": "text", "text": "hi" }],

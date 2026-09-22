@@ -1,10 +1,17 @@
 use super::*;
 
+/// A distinct, valid asset-ref UUID string derived from `i` — every track/entry fixture in
+/// this file needs one, since `PlaylistTrack.asset`/`PlayingTrack.asset` are now format-checked
+/// by `validate_asset_ref` (a placeholder like `"a0"` no longer passes ingress).
+fn test_asset(i: usize) -> String {
+    format!("00000000-0000-0000-0000-{i:012}")
+}
+
 #[test]
 fn playlist_engine_rejects_over_cap_tracks() {
     let tracks = (0..=MAX_PLAYLIST_TRACKS)
         .map(|i| PlaylistTrack {
-            asset: format!("a{i}"),
+            asset: test_asset(i),
             name: None,
             gain: 1.0,
             loop_: false,
@@ -39,7 +46,7 @@ fn playlist_engine_rejects_empty_asset_id() {
 fn playlist_engine_rejects_nonfinite_gain() {
     let playlist = PlaylistEngine {
         tracks: vec![PlaylistTrack {
-            asset: "a".into(),
+            asset: test_asset(0),
             name: None,
             gain: f64::NAN,
             loop_: false,
@@ -65,11 +72,11 @@ fn playlist_engine_rejects_over_cap_fade() {
 #[test]
 fn audio_state_engine_rejects_over_cap_playing() {
     let playing = (0..=MAX_PLAYING_TRACKS)
-        .map(|_| PlayingTrack {
+        .map(|i| PlayingTrack {
             id: uuid::Uuid::new_v4(),
             playlist: None,
             track_index: 0,
-            asset: "a".into(),
+            asset: test_asset(i),
             channel: AudioChannel::Sfx,
             gain: 1.0,
             loop_: false,

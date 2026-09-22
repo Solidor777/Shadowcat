@@ -300,7 +300,7 @@ async fn a_draw_naming_a_non_table_doc_is_not_found() {
         embedded: Default::default(),
         parent_id: None,
         engine: Some(serde_json::json!({
-            "displayName": "x", "visual": {"kind": "image", "asset": "a"},
+            "displayName": "x", "visual": {"kind": "image", "asset": "11111111-1111-1111-1111-111111111111"},
             "size": {"w": 1.0, "h": 1.0}, "shape": "square", "faction": null,
             "conditions": [], "prototype": true
         })),

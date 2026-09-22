@@ -105,8 +105,8 @@ fn host_is_none_for_an_event_combatant() {
 fn host_is_none_when_every_named_host_document_is_absent() {
     let c = combatant(
         0xC1,
-        Some(Uuid::from_u128(0x71)),
-        Some(Uuid::from_u128(0xA1)),
+        Some(crate::test_ids::test_uuid(0x71)),
+        Some(crate::test_ids::test_uuid(0xA1)),
     );
     let hosts: HashMap<Uuid, Document> = HashMap::new();
     assert!(formula_host(&hosts, &c.engine.kind).is_none());

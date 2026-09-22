@@ -2,9 +2,9 @@ use super::*;
 
 fn session(id: u128, byte_size: u64, last_touch_ms: i64) -> UploadSession {
     UploadSession {
-        id: Uuid::from_u128(id),
-        world: Uuid::from_u128(1),
-        user: Uuid::from_u128(2),
+        id: crate::test_ids::test_uuid(id),
+        world: crate::test_ids::test_uuid(1),
+        user: crate::test_ids::test_uuid(2),
         name: "big.bin".into(),
         content_type: "application/octet-stream".into(),
         byte_size,
@@ -60,10 +60,14 @@ fn sweep_returns_only_idle_sessions() {
     let now = SESSION_IDLE_MS + 1;
     let swept = table.sweep(now);
     let ids: Vec<Uuid> = swept.iter().map(|s| s.id).collect();
-    assert_eq!(ids, vec![Uuid::from_u128(1)], "only the idle, non-busy one");
+    assert_eq!(
+        ids,
+        vec![crate::test_ids::test_uuid(1)],
+        "only the idle, non-busy one"
+    );
     assert_eq!(table.len(), 2);
-    assert!(table.with(Uuid::from_u128(2), |_| ()).is_some());
-    assert!(table.with(Uuid::from_u128(3), |_| ()).is_some());
+    assert!(table.with(crate::test_ids::test_uuid(2), |_| ()).is_some());
+    assert!(table.with(crate::test_ids::test_uuid(3), |_| ()).is_some());
 
     let swept = table.sweep(1_000_000 + SESSION_IDLE_MS + 1);
     assert_eq!(swept.len(), 1, "the busy one still never sweeps");

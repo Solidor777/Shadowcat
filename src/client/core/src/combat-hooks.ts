@@ -85,7 +85,7 @@ export interface CombatEffectTickEvent extends CombatEffectEventBase {
 export type CombatEffectExpiredEvent = CombatEffectEventBase;
 
 declare module "./hooks" {
-  /** Declaration-merged with `./hooks`'s own (empty) `CoreHooks` to add the nine `combat:*`
+  /** Declaration-merged with `./hooks`'s own `CoreHooks` to add the nine `combat:*`
    * entries below. */
   interface CoreHooks {
     /** A combat began running its clock (`combat_start` accepted, or resumed off a paused

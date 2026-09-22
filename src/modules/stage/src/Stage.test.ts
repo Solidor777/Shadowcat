@@ -65,6 +65,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     resize() {},
     setFrameCap() {},
     setRenderScale() {},
+    setTextureBudget() {},
     render() {},
     destroy() { this.destroyed = true; },
   };
@@ -972,6 +973,7 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
         serverNow: () => 0,
         transport: () => {},
         listenAs: () => {},
+        preload: () => {},
       },
     }),
   });

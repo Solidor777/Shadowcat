@@ -3712,3 +3712,69 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
   remote is the backstop for that class.
 
+
+## Comparative VTT survey — hardening harvest ✅
+Branch `survey-hardening`, cut from `main`. A ten-area read-only survey of a mature VTT's
+behaviour (never its code) against Shadowcat's subsystems produced two lists: invisible,
+uncontested hardening, integrated here; and every GM/player-facing capability gap, logged
+under `docs/TODO.md`'s two "Blocked on owner approval" sections for case-by-case rulings.
+Every design below is clean-room and justified on its own merits in the code's comments.
+Delivered:
+- **Server HTTP surface**: `Config.behind_tls_proxy` + `Config::is_exposed()` — the ONE
+  predicate `setup_token_policy`'s `"auto"` arm, `AppState::resolve_setup_token`'s warning and
+  `session_layer`'s cookie `Secure` flag all read (a loopback bind behind a TLS-terminating proxy
+  is exposed; HSTS alone reads the flag directly); a global response-header layer
+  (`X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, HSTS only when
+  `behind_tls_proxy`); `CompressionLayer` (gzip + brotli) behind
+  `http::compression::AssetAndWsSafePredicate`, which refuses the Opus/WebM derivatives named by
+  `audio::OPUS_CONTENT_TYPE`/`WEBM_CONTENT_TYPE` and any `101 Switching Protocols`;
+  `Cache-Control` on the embedded SPA (`immutable` for the content-hashed `assets/` tree via
+  `http::embed::is_hashed_asset_path`, `no-cache` for root files) and `no-cache` on every
+  `http::assets::serve` branch so the existing ETag path is load-bearing; `serve`'s attachment
+  branch reuses `attachment_disposition`.
+- **Server lifecycle + realtime**: graceful shutdown (`ctrl_c` everywhere, SIGTERM under
+  `cfg(unix)`, `WsState.shutdown` watch channel selected FIRST in `egress_loop`, a
+  `ConnectionGuard` acquired in `ws_handler` BEFORE the upgrade so hyper's accounting and the
+  drain count never disagree, and `WsState::wait_for_drain` awaited after `axum::serve` returns,
+  proven by end-to-end WebSocket tests); a per-connection heartbeat (`PING_INTERVAL`/
+  `PING_TIMEOUT`, liveness stamped on every inbound frame against a monotonic
+  `std::time::Instant`, the ping arm ordered directly after shutdown so a busy room cannot starve
+  it — pinned by a credit-gated-sink test that fails with the old arm order);
+  `WS_MAX_MESSAGE_BYTES` derived from `MAX_SYSTEM_BYTES` and `MAX_INTENT_DOCS`, the latter
+  enforced at intent ingress so the derivation is structural.
+- **Server ops + accounts**: `Config.log_dir`/`Config::logs_path()` with daily-rotated,
+  retention-bounded files (`tracing-appender`, the directory created by
+  `main::build_rolling_appender` before the appender opens it) alongside stdout, stdout-only
+  for an in-memory database unless `log_dir` is explicit; `db::database_file` as the one decider
+  for which file `Config.db` names, so log, backup, asset and module directories and the
+  backup/restore modes all accept a `sqlite:` URL and refuse an in-memory database clearly; a per-account world-creation
+  budget (`WORLD_CREATE_PER_MIN_PER_ACCOUNT`, tunable through
+  `Config.world_create_per_min_per_account` like the login and invite budgets); admin-gated
+  `POST /api/users/{id}/password` sharing `validate_password_policy` with `create_user` and the
+  ONE `SqliteRepository::purge_sessions_for` + `evict_user` path with `delete_user` (a self-reset
+  evicts the admin too); `set_world_enabled_modules` reports every bad entry in one response.
+- **Data layer**: `validate_hex_color` enforced on every colour-typed engine field and
+  `validate_asset_ref` (UUID shape) on every asset-bearing one, including `LightEmission.color`,
+  scene/level backgrounds, playlist and playing-track assets and `PortalTarget.vfx`;
+  client-supplied document ids must be v4/v7 UUIDs (`validate_document_id_tree` at both Create
+  paths, on the Update post-image, and per row in `import_world`); `MAX_DOCUMENT_NAME_BYTES` on
+  the envelope `name`; `dice::spec::FnName` `Min`/`Max` accept two or more arguments;
+  `vision::visibility_polygon` pre-filters walls against its own bound (pinned by a mutation
+  test). Test fixtures mint ids through `test_ids::test_uuid`/`shadowcat_test_support::test_doc_id`
+  (v4-shaped) and the permission tests live under `data/permission/tests/<subject>.rs`.
+- **Client**: next-track audio preload (`AudioApi.preload`, `resolveNextTrackAsset` for
+  `Sequential`/`LoopAll`); the `chat:composer-send` mutate hook + emit-only `AppContext.hooks`,
+  with `Composer.svelte`'s in-flight guard over the hook await and a draft-aware optimistic clear; the
+  `core:hook-fault` observability hook; a GPU texture budget (`PerformanceSettings.
+  textureBudgetBytes` per preset, `TextureCacheManager` with loader-owned registration in
+  `PixiBackend#loadAssetTexture`, in-flight protection, ref-counted LRU + TTL sweep,
+  `DisplayBackend.setTextureBudget`); the shared `allocateSortKey`/`appendSortKey`
+  sibling-ordering primitive adopted at every note/folder create site; floating panels
+  re-clamped to the current viewport on every reconcile, measured against the host container
+  rather than dockview's placeholder-sized root; `NotificationCenter`'s visible cap +
+  FIFO queue; `MergeConflictModal`'s submitting guard; `I18n.compare` (locale collation),
+  `I18n.plural` (per-supplying-locale rules) and a `fallbackLocale`, all exposed through
+  `AppContext` beside `t` and consumed where names sort and counts render.
+- **Docs**: `docs/TODO.md` gains the two owner-approval sections; `docs/design/ARCHITECTURE.md`
+  §4 marks photometric lighting and advanced vision modes as built; `docs/PLAN.md` Phase 4
+  points at the compendium ruling; the hosting guide documents `behind_tls_proxy` and `log_dir`.

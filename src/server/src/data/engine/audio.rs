@@ -80,7 +80,7 @@ pub enum AudioChannel {
 /// ```
 /// use shadowcat::data::engine::audio::PlaylistTrack;
 ///
-/// let track = PlaylistTrack { asset: "tavern-loop".into(), name: None, gain: 0.8, loop_: true };
+/// let track = PlaylistTrack { asset: "11111111-1111-1111-1111-111111111111".into(), name: None, gain: 0.8, loop_: true };
 /// assert!(track.loop_);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -110,7 +110,7 @@ pub struct PlaylistTrack {
 /// use shadowcat::data::engine::audio::{AudioChannel, PlaylistEngine, PlaylistMode, PlaylistTrack};
 ///
 /// let playlist = PlaylistEngine {
-///     tracks: vec![PlaylistTrack { asset: "a1".into(), name: None, gain: 1.0, loop_: false }],
+///     tracks: vec![PlaylistTrack { asset: "11111111-1111-1111-1111-111111111111".into(), name: None, gain: 1.0, loop_: false }],
 ///     mode: PlaylistMode::Sequential,
 ///     channel: AudioChannel::Music,
 ///     fade_ms: 2000,
@@ -135,7 +135,7 @@ pub struct PlaylistEngine {
 
 impl PlaylistEngine {
     /// Ingress validation beyond serde shape: track count and per-field caps (`MAX_PLAYLIST_TRACKS`,
-    /// non-empty asset ids, finite gains, `MAX_PLAYLIST_FADE_MS`).
+    /// valid asset ids, finite gains, `MAX_PLAYLIST_FADE_MS`).
     ///
     /// # Examples
     ///
@@ -153,9 +153,8 @@ impl PlaylistEngine {
             ));
         }
         for track in &self.tracks {
-            if track.asset.is_empty() {
-                return Err("every track's asset id must be non-empty".into());
-            }
+            crate::data::engine::geometry::validate_asset_ref(&track.asset)
+                .map_err(|m| format!("track asset: {m}"))?;
             if !track.gain.is_finite() {
                 return Err("every track's gain must be finite".into());
             }
@@ -179,7 +178,7 @@ impl PlaylistEngine {
 ///     id: Uuid::new_v4(),
 ///     playlist: None,
 ///     track_index: 0,
-///     asset: "a1".into(),
+///     asset: "22222222-2222-2222-2222-222222222222".into(),
 ///     channel: AudioChannel::Sfx,
 ///     gain: 1.0,
 ///     loop_: false,
@@ -256,7 +255,7 @@ pub struct AudioStateEngine {
 
 impl AudioStateEngine {
     /// Ingress validation beyond serde shape: at most `MAX_PLAYING_TRACKS` concurrently
-    /// playing entries.
+    /// playing entries, each carrying a valid asset ref.
     ///
     /// # Examples
     ///
@@ -271,6 +270,10 @@ impl AudioStateEngine {
                 "at most {MAX_PLAYING_TRACKS} tracks may play at once, got {}",
                 self.playing.len()
             ));
+        }
+        for entry in &self.playing {
+            crate::data::engine::geometry::validate_asset_ref(&entry.asset)
+                .map_err(|m| format!("playing entry asset: {m}"))?;
         }
         Ok(())
     }

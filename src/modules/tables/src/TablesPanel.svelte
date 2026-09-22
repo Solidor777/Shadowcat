@@ -11,7 +11,7 @@
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
   const allTables = $derived.by((): WireDocument[] => {
     subscribe();
-    return [...ctx.documents.query(TABLE_DOC_TYPE)].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+    return [...ctx.documents.query(TABLE_DOC_TYPE)].sort((a, b) => ctx.compare(a.name ?? "", b.name ?? ""));
   });
 
   // Live FTS search, same shape as `ActorsPanel`'s: cancel-guarded, server-side `docTypes`

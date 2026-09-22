@@ -11,9 +11,3 @@
 # `pnpm lint:allowances` also fails on a lint lowered in Cargo.toml, clippy.toml or
 # eslint.config.js — a manifest-level lowering suppresses the same diagnostic from
 # further away and would otherwise be the one route around this file.
-
-[[allow]]
-file = "src/client/core/src/hooks.ts"
-item = "CoreHooks"
-lint = "@typescript-eslint/no-empty-object-type"
-reason = "The empty body IS the mechanism. CoreHooks is the declaration-merging registry through which a module author types a hook name and its payload, giving the emitInfo/emitMutate overloads that take `K extends keyof CoreHooks` their static checking. Only an interface can be merged into from another module; every construct that would satisfy this rule (type alias, Record<never, never>, object) removes that ability and drops every module author onto the open string-name overload, which checks neither the name nor the payload. It ships empty by design because first-party code declares no hooks and module authors supply the entries. Relaxing the rule in eslint.config.js is not an alternative: that is a manifest-level lowering, which this gate rejects as its own failure condition."

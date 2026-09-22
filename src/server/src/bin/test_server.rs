@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         parent_id: None,
         engine: Some(serde_json::json!({
             "displayName": "Player Dragon",
-            "visual": { "kind": "image", "asset": "dragon.png" },
+            "visual": { "kind": "image", "asset": "77777777-7777-7777-7777-777777777777" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
         parent_id: None,
         engine: Some(serde_json::json!({
             "displayName": "Secret Dragon",
-            "visual": { "kind": "image", "asset": "dragon.png" },
+            "visual": { "kind": "image", "asset": "77777777-7777-7777-7777-777777777777" },
             "size": { "w": 1.0, "h": 1.0 },
             "shape": "square",
             "faction": null,
