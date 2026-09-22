@@ -4,7 +4,7 @@
 // mount; before/after attachment every call no-ops (snap is identity) so a tool
 // component never crashes when no canvas is mounted. Render types are type-only imports
 // (zero runtime dependency on @shadowcat/render here).
-import type { SceneTool, SceneToolHost, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample } from "@shadowcat/render";
 
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
@@ -64,6 +64,14 @@ export class SceneInteractionBridge implements SceneInteraction {
    */
   setSnapEnabled(enabled: boolean): void {
     this.#host?.setSnapEnabled(enabled);
+  }
+
+  /** Forward to the attached host; a no-op when detached.
+   * @param mode - Which lattice point `snap` resolves to (`"center"` or `"vertex"`).
+   * @example sceneInteraction.setSnapMode("vertex");
+   */
+  setSnapMode(mode: SnapMode): void {
+    this.#host?.setSnapMode(mode);
   }
 
   /** Forward to the attached host; a no-op when detached.

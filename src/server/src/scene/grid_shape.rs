@@ -33,7 +33,9 @@ pub(crate) trait GridShape {
     fn cell_of(&self, p: vision::P) -> Cell;
     /// Every reachable neighbor of `c` under diagonal-parity `parity`, as `(neighbor, step_cost,
     /// next_parity)`. `parity` exists only for square's `Alternating` rule (PF1e/3.5 5-10-5);
-    /// `HexGrid` always returns the same `parity` it was given (no rule-dependent state).
+    /// `HexGrid` always returns the same `parity` it was given (no rule-dependent state). The
+    /// neighbor SET itself is rule-dependent: `SquareGrid` under `DiagonalRule::Orthogonal`
+    /// enumerates only the four orthogonal directions.
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)>;
     /// Every cell the segment `a -> b` crosses (supercover, not a thin line) at the given cell
     /// size. `None` on a degenerate/over-cap span — callers fail closed on `None`.
@@ -278,8 +280,10 @@ pub(crate) fn euclidean_span_cells(a: (f64, f64), b: (f64, f64), world_units_per
 
 /// The ordinary square-grid formulas: `cell_center` is `((i+0.5)*cell, (j+0.5)*cell)`;
 /// `footprint_cells` is disc-vs-cell overlap; `line_traversal` delegates to
-/// `movement::supercover_cells`; `neighbors_with_cost` is the 8-directional `dirs` array +
-/// `step_cost`. `cell` and `rule` are the scene's resolved cell size and diagonal-cost rule.
+/// `movement::supercover_cells`; `neighbors_with_cost` is the shared 8-direction `DIRS` array +
+/// `step_cost`, sliced to its four orthogonal entries under `DiagonalRule::Orthogonal` (the one
+/// adjacency-changing rule). `cell` and `rule` are the scene's resolved cell size and
+/// diagonal-cost rule.
 pub(crate) struct SquareGrid {
     /// Cell size in scene units.
     pub cell: f64,
@@ -300,6 +304,9 @@ impl GridShape for SquareGrid {
     }
 
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
+        // Orthogonal FIRST: `Orthogonal` slices the shared array's first four entries rather
+        // than maintaining a second array, so the orthogonal-direction ordering can never drift
+        // from the 8-direction enumeration's own.
         const DIRS: [(i32, i32); 8] = [
             (1, 0),
             (-1, 0),
@@ -310,7 +317,16 @@ impl GridShape for SquareGrid {
             (-1, 1),
             (-1, -1),
         ];
-        DIRS.iter()
+        // `Orthogonal` removes the diagonal grid EDGES from the router's search graph entirely
+        // (adjacency, not cost — an excluded edge is never an A* candidate, which an infinite
+        // price would still leave). `step_cost` is therefore never called with a diagonal pair
+        // under this rule; its `unreachable!` arm pins that invariant.
+        let dirs: &[(i32, i32)] = if self.rule == DiagonalRule::Orthogonal {
+            &DIRS[..4]
+        } else {
+            &DIRS[..]
+        };
+        dirs.iter()
             .map(|&(di, dj)| {
                 let next = (c.0 + di, c.1 + dj);
                 let (cost, next_parity) = step_cost(self.rule, di, dj, parity);
@@ -388,7 +404,7 @@ impl GridShape for SquareGrid {
     }
 
     /// Delegates to `pathfinding::heuristic(self.rule, ...)` — the admissible+consistent
-    /// `DiagonalRule`-based square estimate, covering all 4 diagonal rules.
+    /// `DiagonalRule`-based square estimate, covering all six diagonal rules.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         pathfinding::heuristic(self.rule, from, to)
     }
@@ -871,7 +887,7 @@ fn normalize_bounds_cells(bounds_cells: (f64, f64)) -> Option<(f64, f64)> {
 /// The sole definition of this rule — `pathfinding::astar_leg` AND `move_exec::execute_move` both
 /// reach it through the `GridShape` trait's neighbor enumeration rather than duplicating it, so
 /// the A* cost, the executor's cost, and any other consumer cannot drift apart. The client
-/// mirrors the same four rules in the client's `Grid.distance`.
+/// mirrors the same six rules in the client's `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
@@ -881,10 +897,20 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
         DiagonalRule::Chebyshev => (1.0, parity),
         DiagonalRule::Manhattan => (2.0, parity),
         DiagonalRule::Euclidean => (std::f64::consts::SQRT_2, parity),
+        DiagonalRule::Approximate => (1.5, parity),
         DiagonalRule::Alternating => {
             let cost = if parity == 0 { 1.0 } else { 2.0 };
             (cost, 1 - parity)
         }
+        // `SquareGrid::neighbors_with_cost` never emits a diagonal pair under `Orthogonal`, so
+        // this arm is unreachable BY CONSTRUCTION — and it must stay a panic: it is the
+        // load-bearing tripwire proving the neighbor enumeration and the pricing rule cannot
+        // silently drift apart (a refactor that re-admitted a diagonal edge under `Orthogonal`
+        // panics loudly here instead of silently pricing an illegal step).
+        DiagonalRule::Orthogonal => unreachable!(
+            "Orthogonal excludes diagonal steps from neighbors_with_cost; step_cost is never \
+             called with a diagonal step under this rule"
+        ),
     }
 }
 

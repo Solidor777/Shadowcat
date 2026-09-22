@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
-import type { SceneTool, SceneToolHost, Point } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, SnapMode, Point } from "@shadowcat/render";
 import { SceneInteractionBridge } from "./sceneInteraction";
 import { fakeSceneHost } from "./__fixtures__/fakeSceneHost";
 
@@ -121,6 +121,16 @@ test("setSnapEnabled forwards to the host (no-op when detached)", () => {
   bridge.setSnapEnabled(false);
   bridge.setSnapEnabled(true);
   expect(calls).toEqual([false, true]);
+});
+
+test("setSnapMode forwards to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.setSnapMode("vertex")).not.toThrow(); // detached: no-op
+  const calls: SnapMode[] = [];
+  bridge.attach(fakeSceneHost({ setSnapMode: (mode) => calls.push(mode) }));
+  bridge.setSnapMode("vertex");
+  bridge.setSnapMode("center");
+  expect(calls).toEqual(["vertex", "center"]);
 });
 
 test("animateSamples forwards moverLight to the host", () => {

@@ -352,13 +352,16 @@ fn conv_movement_model(v: eng::MovementModel) -> MovementModel {
     }
 }
 
-/// Wire (`eng::DiagonalRule`) → router-enum bridge.
+/// Wire (`eng::DiagonalRule`) → router-enum bridge. Exhaustive by construction (no wildcard
+/// arm): a variant added to one enum without the other fails the build here.
 fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
     match v {
         eng::DiagonalRule::Chebyshev => pathfinding::DiagonalRule::Chebyshev,
         eng::DiagonalRule::Manhattan => pathfinding::DiagonalRule::Manhattan,
         eng::DiagonalRule::Euclidean => pathfinding::DiagonalRule::Euclidean,
         eng::DiagonalRule::Alternating => pathfinding::DiagonalRule::Alternating,
+        eng::DiagonalRule::Approximate => pathfinding::DiagonalRule::Approximate,
+        eng::DiagonalRule::Orthogonal => pathfinding::DiagonalRule::Orthogonal,
     }
 }
 

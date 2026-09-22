@@ -994,6 +994,7 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     setActiveTool: () => {},
     snap: (p) => p,
     setSnapEnabled: () => {},
+    setSnapMode: () => {},
     setDraggingToken: () => {},
     previewOverlay: () => {},
     clearOverlay: () => {},

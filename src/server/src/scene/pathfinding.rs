@@ -10,21 +10,32 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). All four are the same
-/// king-move graph; they differ only in diagonal cost + the admissible heuristic. `Alternating`
-/// (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so requires a parity bit in the search node.
+/// Grid diagonal-cost rule (from `world-settings.pathfinding.diagonalRule`). Every rule except
+/// `Orthogonal` shares the same king-move graph; those differ only in diagonal cost + the
+/// admissible heuristic. `Alternating` (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so
+/// requires a parity bit in the search node. `Orthogonal` is the one ADJACENCY-changing rule:
+/// it removes the diagonal edges from the search graph rather than repricing them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagonalRule {
     /// Diagonals cost 1.0 (equal to orthogonal steps).
     Chebyshev,
     /// Diagonals cost 2.0 — priced as two orthogonal steps, NOT banned
-    /// (the king-move graph is identical across all four rules).
+    /// (the king-move graph is identical across every cost-only rule).
     Manhattan,
     /// Diagonals cost sqrt(2).
     Euclidean,
     /// Diagonals alternate 1,2,1,2… (PF1e/3.5 "5-10-5"); needs the node
     /// parity bit.
     Alternating,
+    /// Diagonals cost 1.5 — a flat multiplier standing in for the
+    /// alternating approximation. Cost-only: the king-move graph is unchanged.
+    Approximate,
+    /// Diagonal steps are ILLEGAL in the search graph: `SquareGrid::neighbors_with_cost`
+    /// enumerates only the four orthogonal directions under this rule, so `step_cost` is never
+    /// called with a diagonal pair (its `unreachable!` arm is the tripwire for that
+    /// invariant). Inert on a hex scene — `HexGrid` carries no `rule` field at all (six
+    /// uniform axial neighbors; no diagonal/orthogonal split exists to remove).
+    Orthogonal,
 }
 
 use crate::scene::vision::{self, point_segment_distance};
@@ -355,11 +366,12 @@ impl PartialOrd for QNode {
 /// terrain can only make the real path more expensive, never cheaper than this heuristic assumes,
 /// and an exempt mover's cost equals the unweighted assumption exactly.
 /// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
-/// holds because Δh per king-move never exceeds that move's minimum step cost: orthogonal Δh ≤ 1 =
-/// orthogonal cost; diagonal Δh ≤ √2 ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
-/// Euclidean √2, Alternating 1); for Alternating the optimistic bound (Chebyshev = dmax) gives
-/// Δh ≤ 1, which is the cheapest diagonal cost. Consistency is load-bearing: it makes the first
-/// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
+/// holds because Δh per graph edge never exceeds that edge's minimum step cost: orthogonal Δh ≤ 1 =
+/// orthogonal cost on every rule; diagonal Δh ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
+/// Euclidean √2, Alternating 1, Approximate 1.5 — for the two rules whose heuristic stays at the
+/// Chebyshev bound, Δh ≤ 1 ≤ the diagonal cost); `Orthogonal` has no diagonal edges at all and its
+/// Manhattan estimate changes by exactly 1 per orthogonal step. Consistency is load-bearing: it
+/// makes the first goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
 ///
 /// `pub(crate)` so `SquareGrid::heuristic` can return this byte-identical value —
 /// `astar_leg` calls it only through `grid.inputs.shape.heuristic(...)` now, never directly, so
@@ -371,9 +383,14 @@ pub(crate) fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let (dmax, dmin) = (di.max(dj) as f64, di.min(dj) as f64);
     match rule {
         // Alternating's optimistic bound assumes every diagonal is cheap (cost 1) → Chebyshev.
-        DiagonalRule::Chebyshev | DiagonalRule::Alternating => dmax,
+        // Approximate's true diagonal cost (1.5) is ≥ 1, so the same Chebyshev bound stays
+        // admissible — looser than the true cost, never over it.
+        DiagonalRule::Chebyshev | DiagonalRule::Alternating | DiagonalRule::Approximate => dmax,
         DiagonalRule::Manhattan => (di + dj) as f64,
         DiagonalRule::Euclidean => (dmax - dmin) + std::f64::consts::SQRT_2 * dmin,
+        // No diagonal edges exist under Orthogonal: Manhattan distance is the exact cost of the
+        // 4-directional unit-step graph, hence admissible AND consistent for it.
+        DiagonalRule::Orthogonal => (di + dj) as f64,
     }
 }
 

@@ -2,7 +2,7 @@
 //! ground plane (0 = grounded), a wall optionally carries the elevation band its
 //! occlusion applies to, and a scene optionally declares `SceneEngine::levels` —
 //! named elevation bands (`SceneLevel`) a token's floor is derived from via
-//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light
+//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light/sound
 //! source — the star-shaped raycast pipeline itself is untouched, and
 //! sight/light ranges stay 2D (horizontal). Environment ambient light is the one
 //! exception: it keeps the full wall set at every elevation (walls always shadow
@@ -36,7 +36,7 @@ pub(crate) fn elevation_or_ground(v: Option<f64>) -> f64 {
 /// absent end is unbounded, and `band: None` contains every elevation.
 /// Fail-closed: a malformed interval (`bottom > top`) or a non-finite band
 /// endpoint contains everything (the pre-elevation behavior for that wall).
-/// Shared by `wall_occludes` (vision/light occlusion), the movement gate
+/// Shared by `wall_occludes` (vision/light/sound occlusion), the movement gate
 /// (`SceneEcs::move_wall_entries`'s per-mover filter), `SceneEcs::region_field`'s
 /// per-mover selection, `SceneEcs::trigger_regions`'s per-mover selection, and
 /// the drawing/region render filters (`sceneScopedDocs`'s TS mirror
@@ -92,10 +92,11 @@ pub(crate) fn level_of(levels: &[eng::SceneLevel], elevation: f64) -> Option<&en
 }
 
 /// A wall segment paired with the elevation band its occlusion applies to (`None`
-/// band = occludes every elevation). The collected shape both bare wall accessors
-/// and their elevation-filtered `_for` variants derive from — the wall SELECTION
-/// rule (doc_type, parent scene, the blocks flag) is stated once per collector, so
-/// an elevation edit and a flag edit reach every consumer through the same read.
+/// band = occludes every elevation). The collected shape every wall accessor
+/// (sight/light/sound/movement) and its elevation-filtered `_for` variant derives from — the
+/// wall SELECTION rule (doc_type, parent scene, the resolved blocks flag) is stated
+/// once per collector, so an elevation edit and a flag edit reach every consumer
+/// through the same read.
 ///
 /// The segment itself carries the raycast-only occlusion metadata (`vision::Seg::one_way`/
 /// `vision::Seg::limited`): which collectors populate those fields (and from which
@@ -218,6 +219,48 @@ impl SceneEcs {
             .into_iter()
             .map(|w| w.seg)
             .collect()
+    }
+
+    /// The scene's sound-blocking walls with their elevation bands (the shared collector
+    /// behind `sound_walls_for`). The flag read goes through
+    /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
+    /// wall's door state — reading its `blocks_sound` output: an explicitly authored
+    /// `blocksSound` always wins, an absent one inherits the door-resolved `blocks_sight`,
+    /// and an open door occludes no sound regardless of either. Sound occlusion is
+    /// SYMMETRIC and immediate by design: `one_way`/`limited` are always `None`/`false`
+    /// here regardless of the wall's authored `direction`/`sight_tier` (those are
+    /// sight/movement gates only — see `WallEngine::direction`'s own doc), exactly as
+    /// `light_wall_entries` treats them.
+    pub(crate) fn sound_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
+        let mut out = Vec::new();
+        for w in self.world.query::<&SceneEntity>().iter() {
+            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
+                continue;
+            }
+            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
+                continue;
+            };
+            if !wall.effective_flags().blocks_sound {
+                continue;
+            }
+            out.push(WallEntry {
+                seg: vision::Seg {
+                    a: (wall.seg.x1, wall.seg.y1),
+                    b: (wall.seg.x2, wall.seg.y2),
+                    one_way: None,
+                    limited: false,
+                },
+                elevation: wall.elevation,
+            });
+        }
+        out
+    }
+
+    /// The sound-blocking wall segments of `scene` that occlude a listener at `elevation`
+    /// (`wall_occludes` band test per wall) — the wall set
+    /// `scene::audibility::compute_audibility`'s occlusion test runs against.
+    pub(crate) fn sound_walls_for(&self, scene: Uuid, elevation: f64) -> Vec<vision::Seg> {
+        walls_at_elevation(&self.sound_wall_entries(scene), elevation)
     }
 }
 

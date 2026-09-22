@@ -12,4 +12,4 @@
  * assert_eq!(rule, DiagonalRule::Euclidean);
  * ```
  */
-export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";
+export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan" | "approximate" | "orthogonal";

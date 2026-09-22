@@ -20,6 +20,7 @@ fn diagonal_steps_are_priced_by_the_world_rule() {
         ("manhattan", 2.0),
         ("euclidean", std::f64::consts::SQRT_2),
         ("alternating", 1.0),
+        ("approximate", 1.5),
     ] {
         let (ecs, scene, token) = scene_with_rule(rule);
         let out = execute_move(
@@ -68,6 +69,42 @@ fn alternating_rule_threads_parity_across_consecutive_diagonals() {
     )
     .expect("admissible");
     assert!((out.cost - 4.0).abs() < 1e-9, "1 + 2 + 1, got {}", out.cost);
+}
+
+#[test]
+fn orthogonal_rule_prices_a_hand_dragged_diagonal_by_euclidean_fallback() {
+    // `Orthogonal` removes the diagonal edge from the ROUTER's neighbor set only; the
+    // executor's per-cell gate is deliberately untouched (a continuous drag is still gated by
+    // the wall/mask/region checks exactly as under any other rule). The pricing consequence:
+    // a hand-dragged one-cell diagonal is a transition `neighbors_with_cost` does not enumerate
+    // under this rule, so `execute_move`'s GridStepped arm falls back to the Euclidean span — the
+    // same fallback a >1-cell jump takes. Pinned so the consequence is visible rather than
+    // incidental: √2 ≈ 1.414, not the 2.0 two orthogonal steps would cost.
+    let (ecs, scene, token) = scene_with_rule("orthogonal");
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 100.0)],
+        true,
+        0.4,
+    )
+    .expect("admissible");
+    assert!(
+        (out.cost - std::f64::consts::SQRT_2).abs() < 1e-9,
+        "a dragged diagonal under `orthogonal` prices at the Euclidean fallback span, got {}",
+        out.cost
+    );
+    assert_eq!(out.stop, (100.0, 100.0));
+    assert!(!out.truncated);
 }
 
 #[test]

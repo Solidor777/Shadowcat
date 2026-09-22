@@ -359,3 +359,114 @@ fn terrain_region_raises_astar_step_cost() {
          king-move-adjacent intermediate cells the route passes through"
     );
 }
+
+#[test]
+fn heuristic_approximate_is_admissible() {
+    // Admissibility: the heuristic (the Chebyshev `dmax` bound) never exceeds the true optimal
+    // cost under `Approximate`. The true optimum on an open grid is derived from the step
+    // semantics, not from the impl: every step moves at most one cell per axis, so at least
+    // `dmax` steps are needed; diagonals cost 1.5 < 2, so taking `dmin` diagonals plus
+    // `dmax - dmin` orthogonals is optimal. The A* run pins that the loose bound still FINDS
+    // that optimum (admissible ⇒ optimal goal-pop); asserting `h <= cost` alone against the
+    // A* result would be vacuous if the bound were so bad the search overshot.
+    let shape = crate::scene::grid_shape::SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Approximate,
+    };
+    let walls: Vec<Seg> = vec![];
+    let mut checked = 0usize;
+    for di in -6i32..=6 {
+        for dj in -6i32..=6 {
+            let goal = (di, dj);
+            let (dmax, dmin) = (di.abs().max(dj.abs()) as f64, di.abs().min(dj.abs()) as f64);
+            let true_optimum = (dmax - dmin) + 1.5 * dmin;
+            let h = heuristic(DiagonalRule::Approximate, (0, 0), goal);
+            assert!(
+                h <= true_optimum + 1e-9,
+                "heuristic {h} exceeds the true optimal cost {true_optimum} for {goal:?}"
+            );
+            let g = PathGrid {
+                inputs: PathInputs {
+                    cell: shape.cell,
+                    footprint_radius_cells: 0.1,
+                    walls: &walls,
+                    mask: None,
+                    regions: None,
+                    shape: &shape,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
+                window: (-20, -20, 20, 20),
+            };
+            let (_cells, cost, _p) = astar_leg(&g, (0, 0), goal, 0).expect("open grid is routable");
+            assert!(
+                (cost - true_optimum).abs() < 1e-9,
+                "A* under the admissible bound must return the true optimum {true_optimum} for \
+                 {goal:?}, got {cost}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "the battery must actually sweep offsets");
+}
+
+#[test]
+fn heuristic_orthogonal_is_admissible_and_consistent() {
+    // `Orthogonal`'s Manhattan estimate is EXACT on the 4-directional unit-step graph (every
+    // step moves one axis by one cell, so any route needs at least |di| + |dj| steps and the
+    // direct walk achieves it) — exactness implies both admissibility (never over) and
+    // consistency (h(c) <= cost(c,n) + h(n) per edge). Both are pinned by enumeration: the
+    // admissibility half against `astar_leg`'s returned cost, the consistency half against
+    // every neighbor edge `neighbors_with_cost` emits.
+    let shape = crate::scene::grid_shape::SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Orthogonal,
+    };
+    let walls: Vec<Seg> = vec![];
+    let mut checked = 0usize;
+    for di in -6i32..=6 {
+        for dj in -6i32..=6 {
+            let goal = (di, dj);
+            let h = heuristic(DiagonalRule::Orthogonal, (0, 0), goal);
+            let g = PathGrid {
+                inputs: PathInputs {
+                    cell: shape.cell,
+                    footprint_radius_cells: 0.1,
+                    walls: &walls,
+                    mask: None,
+                    regions: None,
+                    shape: &shape,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
+                window: (-20, -20, 20, 20),
+            };
+            let (_cells, cost, _p) = astar_leg(&g, (0, 0), goal, 0).expect("open grid is routable");
+            assert!(
+                h <= cost + 1e-9,
+                "heuristic {h} exceeds the true cost {cost} for {goal:?}"
+            );
+            assert!(
+                (h - cost).abs() < 1e-9,
+                "the Manhattan estimate is exact for the 4-directional graph: {h} vs {cost}"
+            );
+            // Consistency: from every cell within a few steps of the start, no neighbor edge
+            // drops the estimate by more than the edge's own cost.
+            for c in [(-1, 0), (0, 0), (1, 1), (2, -1)] {
+                for (n, sc, _p) in
+                    crate::scene::grid_shape::GridShape::neighbors_with_cost(&shape, c, 0)
+                {
+                    let hc = heuristic(DiagonalRule::Orthogonal, c, goal);
+                    let hn = heuristic(DiagonalRule::Orthogonal, n, goal);
+                    assert!(
+                        hc <= sc + hn + 1e-9,
+                        "inconsistent at {c:?} -> {n:?} toward {goal:?}: h(c)={hc}, \
+                         cost={sc}, h(n)={hn}"
+                    );
+                }
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "the battery must actually sweep offsets");
+}

@@ -6,9 +6,12 @@ import type { WallDirection } from "./WallDirection";
 import type { WallSightTier } from "./WallSightTier";
 
 /**
- * A wall's segment + sight/light/movement-blocking flags. Absent/false
+ * A wall's segment + sight/light/movement/sound-blocking flags. Absent/false
  * flags exclude the wall from that gate, matching how each gate
- * (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
+ * (`move_exec`/`pathfinding`/`lighting`/`scene::audibility`) reads these fields.
+ * `blocks_sound` is the one flag with an inheritance default: absent, it resolves
+ * to the door-resolved `blocks_sight` (`WallEngine::effective_flags`), so a wall
+ * that never authors the field occludes sound exactly as it occludes sight.
  *
  * Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
  * `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
@@ -26,6 +29,7 @@ import type { WallSightTier } from "./WallSightTier";
  *     blocks_sight: Some(true),
  *     blocks_light: Some(true),
  *     blocks_move: Some(true),
+ *     blocks_sound: None,
  *     elevation: None,
  *     door: None,
  *     direction: None,
@@ -53,6 +57,13 @@ blocksLight: boolean | null,
  * traversal decision). Absent/false = passable.
  */
 blocksMove: boolean | null, 
+/**
+ * Occludes carried-sound emitters (`scene::audibility::compute_audibility`'s
+ * occlusion test). Absent = inherit the door-resolved `blocks_sight`
+ * (`effective_flags`): a stored document carrying no `blocksSound` key
+ * occludes sound exactly as it occludes sight.
+ */
+blocksSound: boolean | null, 
 /**
  * The elevation band this wall's sight/light occlusion applies to;
  * absent = occludes every elevation. Consulted by the movement gate exactly

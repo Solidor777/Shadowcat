@@ -262,7 +262,9 @@ impl SceneEcs {
     /// Compute one scene's `SceneAudibility` slice for `ctx`, given the connection's current
     /// listen-as `override_` (see `select_listener`). `world_defaults` gates
     /// `select_listener`'s override admission (`ctx_access`) the same way every other derived
-    /// channel's recipient-scoping does.
+    /// channel's recipient-scoping does. Occlusion reads the scene's SOUND wall set
+    /// (`SceneEcs::sound_walls_for` — a wall's effective `blocks_sound`, which inherits its
+    /// door-resolved `blocks_sight` when unauthored), never the sight set.
     pub(crate) fn compute_audibility(
         &self,
         ctx: &PermissionContext,
@@ -274,7 +276,6 @@ impl SceneEcs {
         let listener = self.select_listener(ctx, world_defaults, scene, override_);
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
         let wu_per_cell = self.resolve_grid_shape(scene, cell).world_units_per_cell();
-        let sight_walls = self.sight_wall_entries(scene);
 
         // The listener's own position + elevation (band-filters the occlusion wall set, mirroring
         // every other per-source elevation filter in this module). Absent a listener, walls are
@@ -286,6 +287,9 @@ impl SceneEcs {
             let t = self.engine_as_cached::<eng::TokenEngine>(id, &c.doc)?;
             Some(((t.x, t.y), elevation::elevation_or_ground(t.elevation)))
         });
+        // Both inputs (the wall set, the listener's elevation) are invariant across the emitter
+        // loop below, so the elevation band filter runs once here rather than per emitter.
+        let listener_walls = listener_geo.map(|(_, l_elev)| self.sound_walls_for(scene, l_elev));
 
         let mut emitters = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -327,7 +331,7 @@ impl SceneEcs {
             } else {
                 match listener_geo {
                     None => (0.0, 0.0),
-                    Some((lp, l_elev)) => {
+                    Some((lp, _)) => {
                         let dx = pos.0 - lp.0;
                         let dy = pos.1 - lp.1;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -338,8 +342,10 @@ impl SceneEcs {
                         };
                         let mut g = volume * falloff(t);
                         if g > 0.0 && overlay.occlusion == eng::Occlusion::Walls {
-                            let walls = elevation::walls_at_elevation(&sight_walls, l_elev);
-                            if segment_occluded(lp, pos, &walls) {
+                            // `Some` whenever `listener_geo` is — this arm's own match
+                            // condition — so the default is never taken.
+                            let walls = listener_walls.as_deref().unwrap_or(&[]);
+                            if segment_occluded(lp, pos, walls) {
                                 g = (g * overlay.through_wall_gain).max(0.0);
                             }
                         }

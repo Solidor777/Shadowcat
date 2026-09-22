@@ -9,6 +9,7 @@ import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
+import type { SnapModePreference } from "./snapModePreference.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 import type { PerformanceController } from "./performance.svelte";
 
@@ -267,6 +268,11 @@ export interface AppContext {
    * surface (composer, chat-card roll buttons) resolves against; the one-shot `speakAsToken`
    * takes precedence when pending. See `SpeakAs`'s class doc. */
   speakAs: SpeakAs;
+  /** The session's snap-MODE preference (cell-center vs. nearest-vertex) for scene-tool
+   * placement. Client-local GM authoring state: never persisted to a document and never
+   * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
+   * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */
+  snapModePreference: SnapModePreference;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Broadcast a transient emote over `token` on the currently-viewed scene. The server

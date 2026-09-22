@@ -423,16 +423,25 @@ export interface LightingInput {
   cells: LitCell[];
 }
 
+/** Which lattice point `SceneToolHost.snap` resolves a point to while snapping is enabled:
+ * `"center"` snaps to the containing/nearest cell's center; `"vertex"` snaps to the nearest
+ * cell corner (`Grid.snapVertex`). Orthogonal to the snap on/off axis
+ * (`SceneToolHost.setSnapEnabled`): the mode selects the snap TARGET, never whether a snap
+ * happens. */
+export type SnapMode = "center" | "vertex";
+
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
  * RenderEngine implements this; a detached bridge no-ops. */
 export interface SceneToolHost {
   /** Set (or clear) the active tool; the no-tool case falls back to camera pan/zoom.
    * @param tool The tool to activate, or `null` so the camera owns all gestures. */
   setActiveTool(tool: SceneTool | null): void;
-  /** Snap a scene point to the active grid's nearest cell CENTER (square: the containing
-   * cell's center; hex: the nearest hex's center) — never a vertex/corner.
+  /** Snap a scene point to the active grid per the current snap mode (see
+   * `setSnapMode`): the containing/nearest cell's CENTER under `"center"` (square: the
+   * containing cell's center; hex: the nearest hex's center), the nearest cell VERTEX
+   * under `"vertex"`.
    * @param p A scene-coordinate point.
-   * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled. */
+   * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled. */
   snap(p: Point): Point;
   /** Toggle the scene-level snap-to-grid axis: disabled makes `snap` identity
    * (free-form float placement/movement for a snap-off scene); grid RENDERING is unaffected —
@@ -441,6 +450,12 @@ export interface SceneToolHost {
    * @param enabled `false` disables snapping (free-form placement/movement); `true` re-enables
    * it. */
   setSnapEnabled(enabled: boolean): void;
+  /** Select WHICH lattice point `snap` resolves to (see `SnapMode`) — an axis orthogonal
+   * to `setSnapEnabled`'s whether-to-snap toggle, so a snap-off scene stays identity under
+   * either mode. Every tool that calls `snap` via the AppContext `scene` bridge inherits the
+   * mode automatically; no per-tool opt-in exists.
+   * @param mode The snap-target mode to apply. */
+  setSnapMode(mode: SnapMode): void;
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it.
    * @param id The token document id to mark as dragging, or `null` to clear it. */

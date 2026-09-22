@@ -5,7 +5,7 @@ import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
-import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
+import { TokenSelection, SpeakAsToken, SnapModePreference } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
 
@@ -316,6 +316,44 @@ test("a non-GM does not see the snap toggle even with an active scene", () => {
   expect(screen.queryByTestId("snap-toggle")).toBeNull();
 });
 
+test("the snap-mode toggle flips the session preference and reflects it (center default)", async () => {
+  const snapModePreference = new SnapModePreference();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", documents: sceneStore(), snapModePreference }),
+  });
+  const toggle = screen.getByTestId("snap-mode-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false"); // default: center mode
+  await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("vertex");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("center");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+});
+
+test("the snap-mode toggle dispatches no document write (client-local session state)", async () => {
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("snap-mode-toggle"));
+  expect(dispatched).toEqual([]);
+});
+
+test("no active scene: the snap-mode toggle does not render", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: new DocumentStore() }) });
+  expect(screen.queryByTestId("snap-mode-toggle")).toBeNull();
+});
+
+test("a non-GM does not see the snap-mode toggle even with an active scene", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore() }) });
+  expect(screen.queryByTestId("snap-mode-toggle")).toBeNull();
+});
+
 test("the tool rail renders as a non-compact side rail under jsdom (expanded default)", () => {
   const { scene } = captureScene();
   const { container } = render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -539,6 +577,29 @@ test("selecting a wall with the select tool opens the flag editor; a flag toggle
   expect(dispatched.at(-1)![0]).toEqual({
     op: "update", doc_id: wallId,
     changes: [{ path: "/engine/blocksLight", old: true, new: false }],
+  });
+});
+
+test("the wall editor's blocksSound checkbox authors an explicit override with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+
+  // The fixture wall authors no `blocksSound` (unchecked; absent = inherit blocksSight
+  // server-side), so checking it writes `true` with a null OCC pre-image.
+  const box = screen.getByTestId("wall-blocks-sound") as HTMLInputElement;
+  expect(box.checked).toBe(false);
+  await fireEvent.click(box);
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/blocksSound", old: null, new: true }],
   });
 });
 

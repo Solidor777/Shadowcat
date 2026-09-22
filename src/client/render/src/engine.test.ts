@@ -546,6 +546,24 @@ test("setSnapEnabled(false) makes snap identity; true restores the active grid's
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // restored
 });
 
+test("setSnapMode('vertex') routes the single snap chokepoint through snapVertex; every ctx.scene.snap caller inherits it", () => {
+  const { engine } = makeEngine(); // square / 100
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // default: center mode
+  engine.setSnapMode("vertex");
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 100, y: 200 }); // nearest vertex
+  engine.setSnapMode("center");
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // back to cell centers
+});
+
+test("the snap mode is orthogonal to setSnapEnabled: a snap-off scene stays identity under vertex mode", () => {
+  const { engine } = makeEngine(); // square / 100
+  engine.setSnapMode("vertex");
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 140, y: 160 }); // identity, mode irrelevant
+  engine.setSnapEnabled(true);
+  expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 100, y: 200 }); // mode applies again
+});
+
 test("a second pointer mid-gesture is ignored (single-pointer dispatch)", () => {
   const { backend, engine } = makeEngine();
   engine.setViewport(300, 200);

@@ -48,6 +48,19 @@ describe("world defaults editor", () => {
     ]);
   });
 
+  // Insurance: pins the panel's rendered option VALUES to the exact `DiagonalRule` wire strings
+  // (the ts-rs-generated union). A drift here (a variant added to the server enum but not the
+  // panel, or vice versa) must fail loudly rather than silently omit an option.
+  it("diagonal rule select exposes exactly the DiagonalRule wire strings", () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws), dispatchIntent }) });
+    const sel = screen.getByLabelText("gameSettings.diagonalRule") as HTMLSelectElement;
+    expect(Array.from(sel.options).map((o) => o.value)).toEqual([
+      "chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal",
+    ]);
+  });
+
   it("changing movement model dispatches a JSON-pointer update", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");

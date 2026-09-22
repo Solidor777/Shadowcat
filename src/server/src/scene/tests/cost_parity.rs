@@ -6,7 +6,14 @@ use serde_json::json;
 /// two costs agree — per diagonal rule, on a grid-stepped scene with terrain.
 #[test]
 fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
-    for rule in ["chebyshev", "manhattan", "euclidean", "alternating"] {
+    for rule in [
+        "chebyshev",
+        "manhattan",
+        "euclidean",
+        "alternating",
+        "approximate",
+        "orthogonal",
+    ] {
         let mut ecs = SceneEcs::new();
         ecs.set_world_settings_for_test(ws_body(&[("/pathfinding/diagonalRule", json!(rule))]));
         let scene_id = crate::test_ids::test_uuid(1);

@@ -95,6 +95,79 @@ fn square_grid_neighbors_with_cost_alternating_threads_parity() {
 }
 
 #[test]
+fn orthogonal_rule_excludes_diagonal_neighbors() {
+    let g = SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Orthogonal,
+    };
+    let ns = g.neighbors_with_cost((0, 0), 0);
+    let mut got: Vec<Cell> = ns.iter().map(|(c, _, _)| *c).collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![(-1, 0), (0, -1), (0, 1), (1, 0)],
+        "exactly the four orthogonal directions — no diagonal edge exists in the search graph"
+    );
+    for (_, cost, next_parity) in &ns {
+        assert!(
+            (*cost - 1.0).abs() < 1e-9,
+            "every orthogonal step costs 1.0"
+        );
+        assert_eq!(
+            *next_parity, 0,
+            "parity passes through untouched (no diagonal consumed it)"
+        );
+    }
+    // The same rule on any other variant keeps the full king-move set: pinned here so the
+    // slicing cannot leak across rules.
+    let king = SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Approximate,
+    };
+    assert_eq!(
+        king.neighbors_with_cost((0, 0), 0).len(),
+        8,
+        "a cost-only rule keeps all 8 neighbors"
+    );
+}
+
+#[test]
+fn approximate_rule_costs_diagonal_at_one_point_five() {
+    let g = SquareGrid {
+        cell: 100.0,
+        rule: DiagonalRule::Approximate,
+    };
+    let ns = g.neighbors_with_cost((0, 0), 0);
+    assert_eq!(ns.len(), 8, "adjacency is unchanged from the king-move set");
+    let diag = ns
+        .iter()
+        .find(|(c, _, _)| *c == (1, 1))
+        .expect("diagonal neighbor present");
+    assert!(
+        (diag.1 - 1.5).abs() < 1e-9,
+        "a diagonal costs 1.5x an orthogonal step, got {}",
+        diag.1
+    );
+    assert_eq!(diag.2, 0, "parity passes through untouched");
+    let ortho = ns
+        .iter()
+        .find(|(c, _, _)| *c == (1, 0))
+        .expect("orthogonal neighbor present");
+    assert!((ortho.1 - 1.0).abs() < 1e-9);
+}
+
+#[test]
+#[should_panic(expected = "Orthogonal excludes diagonal steps")]
+fn orthogonal_step_cost_panics_if_ever_called_with_a_diagonal() {
+    // `step_cost` is reachable only through `SquareGrid::neighbors_with_cost`, which never
+    // emits a diagonal pair under `Orthogonal` (pinned by
+    // `orthogonal_rule_excludes_diagonal_neighbors`). Invoking it with a hand-built diagonal
+    // pair here documents the invariant as a tripwire: a future refactor that re-admitted a
+    // diagonal edge under this rule panics rather than silently pricing an illegal step.
+    let _ = step_cost(DiagonalRule::Orthogonal, 1, 1, 0);
+}
+
+#[test]
 fn square_grid_line_traversal_matches_supercover_cells() {
     let g = SquareGrid {
         cell: 100.0,
@@ -661,7 +734,10 @@ fn square_heuristic_never_exceeds_the_true_neighbor_graph_cost() {
     // contract is proven on both grid kinds against their own neighbor functions. `Alternating`
     // is excluded: its step cost depends on the carried parity, so a parity-blind uniform-cost
     // search is not its true cost function (its admissibility is pinned by the square parity
-    // tests in `pathfinding::alternating_five_ten_five_parity`).
+    // tests in `pathfinding::alternating_five_ten_five_parity`). `Approximate` and `Orthogonal`
+    // carry no parity state, so the parity-blind search IS their true cost function —
+    // `Orthogonal` additionally exercises that the oracle's true costs come from the sliced
+    // 4-direction neighbor enumeration itself (a Manhattan-exact bound over that graph).
     const R: i32 = 4;
     let cells: Vec<Cell> = (-R..=R)
         .flat_map(|i| (-R..=R).map(move |j| (i, j)))
@@ -670,6 +746,8 @@ fn square_heuristic_never_exceeds_the_true_neighbor_graph_cost() {
         DiagonalRule::Chebyshev,
         DiagonalRule::Manhattan,
         DiagonalRule::Euclidean,
+        DiagonalRule::Approximate,
+        DiagonalRule::Orthogonal,
     ] {
         let g = SquareGrid { cell: 100.0, rule };
         for &from in &cells {
@@ -718,6 +796,8 @@ fn square_heuristic_is_byte_identical_to_the_free_pathfinding_heuristic() {
         DiagonalRule::Manhattan,
         DiagonalRule::Euclidean,
         DiagonalRule::Alternating,
+        DiagonalRule::Approximate,
+        DiagonalRule::Orthogonal,
     ] {
         let g = SquareGrid { cell: 100.0, rule };
         for &(from, to) in &[((0, 0), (3, 5)), ((-2, 4), (7, -1)), ((5, 5), (5, 5))] {

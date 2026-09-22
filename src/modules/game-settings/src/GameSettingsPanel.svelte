@@ -208,7 +208,7 @@
   const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
-  const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan"] as const;
+  const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal"] as const;
   const EASING = ["easeInOut", "linear"] as const;
   const PERCEPTIONS: Perception[] = ["terrain", "creatures"];
   const DICE_MODE = ["total", "success_count"] as const;

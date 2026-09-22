@@ -14,6 +14,7 @@ fn wall(door: Option<DoorState>) -> WallEngine {
         blocks_sight: Some(true),
         blocks_light: Some(true),
         blocks_move: Some(true),
+        blocks_sound: None,
         elevation: None,
         door,
         direction: None,
@@ -32,15 +33,17 @@ fn door_open_resolves_all_flags_false_regardless_of_authored_flags() {
             blocks_move: false,
             blocks_sight: false,
             blocks_light: false,
+            blocks_sound: false,
         }
     );
 
     // The authored flags being ABSENT changes nothing either: open wins over
-    // both authored extremes.
+    // both authored extremes — including an explicit `blocks_sound: true`.
     let mut sparse = wall(Some(DoorState::Open));
     sparse.blocks_sight = None;
     sparse.blocks_light = None;
     sparse.blocks_move = None;
+    sparse.blocks_sound = Some(true);
     assert_eq!(sparse.effective_flags(), flags);
 }
 
@@ -56,6 +59,9 @@ fn door_closed_and_locked_resolve_authored_flags_unchanged() {
                 blocks_move: true,
                 blocks_sight: true,
                 blocks_light: true,
+                // `blocks_sound` absent in the fixture: inherits the resolved
+                // `blocks_sight`.
+                blocks_sound: true,
             },
             "{state:?} must apply the authored flags unchanged"
         );
@@ -70,6 +76,10 @@ fn door_closed_and_locked_resolve_authored_flags_unchanged() {
         assert!(flags.blocks_move);
         assert!(!flags.blocks_sight);
         assert!(!flags.blocks_light);
+        assert!(
+            !flags.blocks_sound,
+            "an unauthored blocks_sound inherits the resolved blocks_sight (false here)"
+        );
     }
 }
 
@@ -94,6 +104,7 @@ fn door_absent_resolves_authored_flags_unchanged() {
             blocks_move: true,
             blocks_sight: true,
             blocks_light: true,
+            blocks_sound: true,
         }
     );
 
@@ -103,6 +114,7 @@ fn door_absent_resolves_authored_flags_unchanged() {
     assert!(!flags.blocks_move);
     assert!(flags.blocks_sight);
     assert!(flags.blocks_light);
+    assert!(flags.blocks_sound);
 }
 
 #[test]
@@ -189,5 +201,74 @@ fn wall_validate_rejects_a_non_unit_blocking_side_at_ingress() {
     assert!(
         crate::data::engine::normalize_engine_opt("wall", Some(&good)).is_ok(),
         "a unit sign and a known tier pass ingress"
+    );
+}
+
+#[test]
+fn blocks_sound_inherits_the_resolved_blocks_sight_when_absent() {
+    // The inheritance default: an unauthored `blocks_sound` resolves to the
+    // door-resolved `blocks_sight`, so a wall that never authors the field
+    // occludes sound exactly as it occludes sight.
+    let mut w = wall(None);
+    assert!(
+        w.effective_flags().blocks_sound,
+        "blocks_sight: Some(true) inherits true"
+    );
+    w.blocks_sight = None;
+    assert!(
+        !w.effective_flags().blocks_sound,
+        "blocks_sight absent resolves false and inherits as false"
+    );
+    w.blocks_sight = Some(false);
+    assert!(
+        !w.effective_flags().blocks_sound,
+        "blocks_sight: Some(false) inherits false"
+    );
+}
+
+#[test]
+fn blocks_sound_explicit_wins_over_inheritance_in_both_directions() {
+    // Sound-transparent but sight-blocking (a heavy curtain): blocks_sound wins.
+    let mut curtain = wall(None);
+    curtain.blocks_sound = Some(false);
+    let flags = curtain.effective_flags();
+    assert!(flags.blocks_sight);
+    assert!(!flags.blocks_sound);
+
+    // Sight-transparent but sound-blocking (a window): blocks_sound wins.
+    let mut window = wall(None);
+    window.blocks_sight = Some(false);
+    window.blocks_sound = Some(true);
+    let flags = window.effective_flags();
+    assert!(!flags.blocks_sight);
+    assert!(flags.blocks_sound);
+}
+
+#[test]
+fn blocks_sound_round_trips_its_wire_name_and_defaults_absent() {
+    // The wire spelling is camelCase `blocksSound`; pin it, since the client
+    // authors the payload by key.
+    let mut w = wall(None);
+    w.blocks_sound = Some(false);
+    let json = serde_json::to_value(&w).unwrap();
+    assert_eq!(json["blocksSound"], serde_json::json!(false));
+    let back: WallEngine = serde_json::from_value(json).unwrap();
+    assert_eq!(back.blocks_sound, Some(false));
+
+    // A stored document carrying no `blocksSound` key deserializes with `None`
+    // (the inherit default) and passes ingress unchanged.
+    let body = serde_json::json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
+        "blocksSight": true,
+    });
+    let parsed: WallEngine = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(parsed.blocks_sound, None);
+    assert!(
+        parsed.effective_flags().blocks_sound,
+        "absent blocks_sound inherits the authored blocks_sight"
+    );
+    assert!(
+        crate::data::engine::normalize_engine_opt("wall", Some(&body)).is_ok(),
+        "a wall without a blocksSound key passes ingress"
     );
 }

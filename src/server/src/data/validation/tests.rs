@@ -393,7 +393,7 @@ fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
         "name": "Old",
         "engine": {
             "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
-            "blocksSight": null, "blocksLight": null, "blocksMove": null,
+            "blocksSight": null, "blocksLight": null, "blocksMove": null, "blocksSound": null,
             "elevation": null, "door": null, "direction": null, "sightTier": null
         },
         "system": { "hp": 1 },

@@ -33,6 +33,7 @@ fn scene_with_door_walls(doors: &[Option<eng::DoorState>]) -> (SceneEcs, Uuid) {
                 blocks_sight: Some(true),
                 blocks_light: Some(true),
                 blocks_move: Some(true),
+                blocks_sound: None,
                 elevation: None,
                 door: *door,
                 direction: None,
@@ -107,6 +108,7 @@ fn scene_with_directed_wall(
             blocks_sight: Some(true),
             blocks_light: Some(true),
             blocks_move: Some(true),
+            blocks_sound: None,
             elevation: None,
             door: None,
             direction: direction.map(|blocking_side| eng::WallDirection { blocking_side }),
@@ -147,6 +149,105 @@ fn light_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
     // Light occlusion is symmetric and immediate by design: neither field propagates.
     let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
     let entries = ecs.light_wall_entries(scene);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].seg.one_way, None);
+    assert!(!entries[0].seg.limited);
+}
+
+/// A scene (id 10) with one wall carrying the given authored sight/sound flags and door
+/// state. Returns the ECS and the scene id.
+fn scene_with_sound_wall(
+    blocks_sight: Option<bool>,
+    blocks_sound: Option<bool>,
+    door: Option<eng::DoorState>,
+) -> (SceneEcs, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut scene = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        scene_id,
+        "scene",
+    );
+    scene.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100 }, "background": null
+    }));
+    let mut wall = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        Uuid::new_v4(),
+        "wall",
+    );
+    wall.parent_id = Some(scene_id);
+    wall.engine = Some(
+        serde_json::to_value(eng::WallEngine {
+            seg: eng::Seg {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 10.0,
+                y2: 0.0,
+            },
+            blocks_sight,
+            blocks_light: None,
+            blocks_move: None,
+            blocks_sound,
+            elevation: None,
+            door,
+            direction: None,
+            sight_tier: None,
+        })
+        .unwrap(),
+    );
+    (SceneEcs::from_documents(vec![scene, wall], 0), scene_id)
+}
+
+#[test]
+fn sound_wall_entries_inherits_blocks_sight_when_blocks_sound_absent() {
+    // A wall that never authors `blocks_sound` occludes sound exactly as it occludes
+    // sight — the default that keeps every stored wall's sound behavior unchanged.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), None, None);
+    assert_eq!(
+        ecs.sound_wall_entries(scene).len(),
+        1,
+        "absent blocks_sound inherits blocks_sight: true"
+    );
+    let (ecs, scene) = scene_with_sound_wall(Some(false), None, None);
+    assert!(
+        ecs.sound_wall_entries(scene).is_empty(),
+        "absent blocks_sound inherits blocks_sight: false"
+    );
+}
+
+#[test]
+fn sound_wall_entries_honors_explicit_blocks_sound_true_when_blocks_sight_false() {
+    // A window: sound-blocking while sight-transparent — the explicit flag wins.
+    let (ecs, scene) = scene_with_sound_wall(Some(false), Some(true), None);
+    assert_eq!(ecs.sound_wall_entries(scene).len(), 1);
+}
+
+#[test]
+fn sound_wall_entries_honors_explicit_blocks_sound_false_when_blocks_sight_true() {
+    // A heavy curtain: sight-blocking while sound-transparent — the explicit flag wins.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), Some(false), None);
+    assert!(ecs.sound_wall_entries(scene).is_empty());
+}
+
+#[test]
+fn sound_wall_entries_excludes_an_open_door() {
+    // An open door is a hole for sound even with an explicit `blocks_sound: true`;
+    // a closed door keeps the authored (or inherited) flag.
+    let (ecs, scene) = scene_with_sound_wall(Some(true), Some(true), Some(eng::DoorState::Open));
+    assert!(
+        ecs.sound_wall_entries(scene).is_empty(),
+        "the resolver resolves every flag false for an open door"
+    );
+    let (ecs, scene) = scene_with_sound_wall(Some(true), None, Some(eng::DoorState::Closed));
+    assert_eq!(ecs.sound_wall_entries(scene).len(), 1);
+}
+
+#[test]
+fn sound_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
+    // Sound occlusion is symmetric and immediate by design: neither sight-only field
+    // propagates into the sound set.
+    let (ecs, scene) = scene_with_directed_wall(Some(1.0), Some(eng::WallSightTier::Limited));
+    let entries = ecs.sound_wall_entries(scene);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].seg.one_way, None);
     assert!(!entries[0].seg.limited);

@@ -102,6 +102,11 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
   occlusion is aliased onto sight-blocking walls. Default for existing walls: inherit
   `blocks_sight` (no migration). (S, mildly contested — the aliasing is documented as
   deliberate)
+- TODO: Tri-state authoring for `blocksSound` in the wall editor — the landed checkbox writes
+  `Some(true)`/`Some(false)` but offers no path back to `null` (inherit `blocksSight`), so once
+  touched the inheritance state is unrecoverable through the UI. A tri-state control or a
+  clear affordance (the door `<select>`'s `none`-writes-`null` precedent) is the long-term
+  shape. Surfaced by code review as owner-awareness, not a defect in the landed slice. (S)
 - TODO: LIMITED partial-blocking tier per wall flag (see through one such wall, not two) — a
   per-ray crossing count in `vision::visibility_polygon`'s `nearest_hit`. (M-L, contested:
   polish; must land together with any other change to that kernel)
@@ -112,6 +117,11 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
   centers, so walls cut through cell interiors instead of running along boundaries.
   `Grid.cellVertices` already exists to build a `snapVertex` mode on. (S-M, contested:
   center-only is a stated design decision in the code)
+- TODO: Edge-snap variant for the snap-mode toggle — nearest point on the nearest cell EDGE,
+  for wall mid-span placement. The vertex snap mode landed (`Grid.snapVertex`, GM-only
+  `snap-mode-toggle`, default center); edge-snap was scoped out of it as an unresolved scope
+  question (the vertex case covers wall endpoints and region corners, which is all the
+  original item's body elaborated). (S)
 - TODO: Diagonal rules — add `DiagonalRule::Approximate` (diagonals cost 1.5×) to
   `scene::pathfinding` and the `Grid` client mirror (S); a no-diagonal rule changes the
   pathfinder's ADJACENCY (`astar_leg`/`neighbors_with_cost`, `Grid.distance`), a separate

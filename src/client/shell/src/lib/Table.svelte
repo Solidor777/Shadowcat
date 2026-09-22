@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -54,6 +54,11 @@
   // Sticky speak-as actor selection: every roll-producing surface (composer, chat-card
   // buttons) resolves the same session-level selection. Stable per Table, like `speakAsToken`.
   const speakAs = new SpeakAs();
+
+  // Snap-mode preference (center vs vertex): the ToolRail toggle writes it, Stage pushes it
+  // to the engine's snap chokepoint. Client-local session state — never a document write.
+  // Stable per Table, like `speakAs`.
+  const snapModePreference = new SnapModePreference();
 
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
   // `session` is fixed per Table, so capturing it once here is intended (see the identical
@@ -130,6 +135,7 @@
     sceneSelection,
     speakAsToken,
     speakAs,
+    snapModePreference,
     sendPing: (x, y) => session.sendPing(x, y),
     sendEmote: (token, emote) => session.sendEmote(token, emote),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),

@@ -6,7 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController, SnapModePreference } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -193,6 +193,26 @@ test("pushes the resolved snapToGrid to the engine (continuous scene: default fa
     }),
   });
   await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(false));
+  spy.mockRestore();
+});
+
+test("pushes the session snap-mode preference to the engine (default center, then vertex on toggle)", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "setSnapMode");
+  const snapModePreference = new SnapModePreference();
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: sceneDocs({ grid: { kind: "square", size: 100 } }),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      snapModePreference,
+    }),
+  });
+  // The engine gets the session's current mode at attach, with no document involvement.
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("center"));
+  // A preference change re-runs the engine-push effect and reaches the engine.
+  snapModePreference.set("vertex");
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("vertex"));
   spy.mockRestore();
 });
 

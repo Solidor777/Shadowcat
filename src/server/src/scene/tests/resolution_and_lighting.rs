@@ -62,6 +62,49 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
 }
 
 #[test]
+fn every_wire_rule_string_resolves_through_conv_diagonal_rule() {
+    // The whole `eng::DiagonalRule` → `pathfinding::DiagonalRule` bridge, one arm per wire
+    // string: a spelling drift on either enum (e.g. "approximate" vs "approximation") fails
+    // here, and `conv_diagonal_rule`'s exhaustive match is what makes a future variant
+    // un-forgettable at compile time.
+    use serde_json::json;
+    for (wire, expect) in [
+        (
+            "chebyshev",
+            crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        ),
+        (
+            "alternating",
+            crate::scene::pathfinding::DiagonalRule::Alternating,
+        ),
+        (
+            "euclidean",
+            crate::scene::pathfinding::DiagonalRule::Euclidean,
+        ),
+        (
+            "manhattan",
+            crate::scene::pathfinding::DiagonalRule::Manhattan,
+        ),
+        (
+            "approximate",
+            crate::scene::pathfinding::DiagonalRule::Approximate,
+        ),
+        (
+            "orthogonal",
+            crate::scene::pathfinding::DiagonalRule::Orthogonal,
+        ),
+    ] {
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_settings_for_test(ws_body(&[("/pathfinding/diagonalRule", json!(wire))]));
+        assert_eq!(
+            ecs.resolved_diagonal_rule(),
+            expect,
+            "wire string {wire:?} resolves"
+        );
+    }
+}
+
+#[test]
 fn resolve_scene_movement_restriction_defaults_to_visible_and_lenient() {
     // No world-settings doc, no scene override → built-in defaults.
     let ecs = SceneEcs::new();
@@ -1622,6 +1665,7 @@ fn move_wall_entries_excludes_an_open_door() {
                 blocks_sight: Some(true),
                 blocks_light: Some(true),
                 blocks_move: Some(true),
+                blocks_sound: None,
                 elevation: None,
                 door,
                 direction: None,

@@ -105,6 +105,17 @@ pub enum DiagonalRule {
     /// Diagonals cost the same as two orthogonal steps (no diagonal
     /// shortcut; diagonal moves themselves stay legal).
     Manhattan,
+    /// Diagonals cost 1.5x an orthogonal step — a flat multiplier standing in
+    /// for the alternating approximation. Cost-only: a diagonal step stays
+    /// legal, exactly as under `Chebyshev`/`Euclidean`/`Manhattan`.
+    Approximate,
+    /// Diagonal moves are illegal in the router's search graph:
+    /// `SquareGrid::neighbors_with_cost` enumerates only the four orthogonal
+    /// directions under this rule, so a diagonal edge is absent rather than
+    /// merely expensive. The one variant that changes ADJACENCY, not just
+    /// cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
+    /// (six uniform axial neighbors; no diagonal/orthogonal split exists).
+    Orthogonal,
 }
 
 /// Token move-animation easing.
@@ -567,7 +578,8 @@ impl SceneEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "camelCase")]
 pub enum Occlusion {
-    /// `los`-band walls attenuate an emitter to `throughWallGain`.
+    /// Walls in the `SceneEcs::sound_walls_for` set (whose resolved `blocks_sound` is true)
+    /// attenuate an emitter to `throughWallGain`.
     Walls,
     /// No occlusion: every emitter's gain is falloff-only, walls ignored.
     None,

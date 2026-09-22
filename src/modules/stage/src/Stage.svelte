@@ -248,6 +248,10 @@
       detachScene = scene.attach(e);
       engineRef = e;
       if (gmView !== "all") applyGmView(); // survive an $effect re-run with a non-default view
+      // Survive an $effect re-run with a non-center snap mode (same window as the gmView
+      // line above): the watcher below also pushes the preference, but its first run is
+      // async, so a fresh engine gets the session's mode synchronously at attach.
+      e.setSnapMode(ctx.snapModePreference.mode);
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
@@ -286,6 +290,11 @@
             lastSelectionKey = selKey;
             e.reapplyTokenSelection();
           }
+          // Snap mode is session-scoped client state (ctx.snapModePreference), not a
+          // document: pushed unconditionally, the same cheap-flag-write discipline
+          // `setSnapEnabled` gets in onDocs. Reading `.mode` here is what tracks the
+          // preference, so a ToolRail toggle re-runs this effect and reaches the engine.
+          e.setSnapMode(ctx.snapModePreference.mode);
         });
       });
       wirePointer(e, controller.signal);
@@ -371,6 +380,32 @@
           documents.query("drawing").length + documents.query("template").length,
         );
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal: each viewed-scene wall's committed `seg` endpoints
+        // as `x1,y1>x2,y2`, sorted so the string is order-independent — the exact geometry a
+        // wall-tool drag stored, so an e2e can confirm which snap resolution a placement ran
+        // under (cell center vs vertex) without inspecting WebGL pixels.
+        host.dataset.wallSegments = documents
+          .query("wall")
+          .filter((w) => !vsid || w.parent_id === vsid)
+          .map((w) => {
+            const seg = (w.engine as {
+              /** Mirrors `WallEngine.seg`; absent only on a doc that predates its geometry. */
+              seg?: {
+                /** Segment start x, scene units. */
+                x1: number;
+                /** Segment start y, scene units. */
+                y1: number;
+                /** Segment end x, scene units. */
+                x2: number;
+                /** Segment end y, scene units. */
+                y2: number;
+              };
+            } | undefined)?.seg;
+            return seg ? `${seg.x1},${seg.y1}>${seg.x2},${seg.y2}` : null;
+          })
+          .filter((s): s is string => s !== null)
+          .sort()
+          .join(";");
         // Read-only observability signal: each viewed-scene token's last-projected badge chips
         // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
         // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can

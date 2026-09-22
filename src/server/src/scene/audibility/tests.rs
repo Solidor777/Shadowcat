@@ -493,6 +493,73 @@ fn compute_audibility_occlusion_none_ignores_walls() {
 }
 
 #[test]
+fn compute_audibility_blocks_sound_false_wall_never_occludes_despite_blocking_sight() {
+    // The de-aliasing pin: `blocksSight: true, blocksSound: false` keeps the wall in the
+    // SIGHT set (the document parses and occludes vision) while excluding it from the SOUND
+    // set — the emitter's gain is the bare falloff, untouched by `throughWallGain`.
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                    "blocksSight": true, "blocksSound": false }),
+        ),
+    });
+    assert_eq!(
+        ecs.sight_wall_entries(crate::test_ids::test_uuid(10)).len(),
+        1,
+        "the wall still parses and blocks sight — only the sound set drops it"
+    );
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        (slice.emitters[0].gain - 0.8 * 8.0 / 9.0).abs() < 1e-9,
+        "a sound-transparent wall between listener and emitter changes nothing: {}",
+        slice.emitters[0].gain
+    );
+}
+
+#[test]
+fn compute_audibility_blocks_sound_true_wall_occludes_despite_transparent_sight() {
+    // The other half of the de-aliasing pin: `blocksSight: false, blocksSound: true`
+    // occludes sound while leaving vision untouched — a window that blocks noise.
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                    "blocksSight": false, "blocksSound": true }),
+        ),
+    });
+    assert!(
+        ecs.sight_wall_entries(crate::test_ids::test_uuid(10))
+            .is_empty(),
+        "the wall stays out of the sight set"
+    );
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        (slice.emitters[0].gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "a sound-blocking wall attenuates to volume * falloff * throughWallGain: {}",
+        slice.emitters[0].gain
+    );
+}
+
+#[test]
 fn compute_audibility_honors_the_wall_elevation_band() {
     let user = crate::test_ids::test_uuid(7);
     let mut ecs = listener_and_emitter(user, 12);

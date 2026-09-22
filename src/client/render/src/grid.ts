@@ -1,14 +1,18 @@
+import type { DiagonalRule } from "@shadowcat/core";
 import type { Point, LineSeg } from "./types";
 
 /** The two supported grid geometries; a `Grid` instance is fixed to one for its lifetime. */
 export type GridKind = "square" | "hex";
 
-/** Cost rule for diagonal movement on square grids. Mirrors the client `DiagonalRule` type
- * and the server's `DiagonalRule` enum — see
- * {@link Grid.distance} for the exact per-rule formulas and the scope of the parity
- * they match (unweighted routes; terrain regions can raise the server's real cost
- * above what this client-side distance reports). */
-export type DiagonalRule = "chebyshev" | "manhattan" | "euclidean" | "alternating";
+// `DiagonalRule` comes from `@shadowcat/core` (the ts-rs-generated declaration of the server's
+// `data::engine::scene::DiagonalRule`), never a second local string union: ONE declaration means
+// a new rule variant reaches this package's `Grid.distance` switch as a type error (through that
+// switch's exhaustiveness guard), never a silent omission. Re-exported so existing
+// `@shadowcat/render` consumers keep their import site.
+// See {@link Grid.distance} for the exact per-rule formulas and the scope of the parity they
+// match (unweighted routes; terrain regions can raise the server's real cost above what this
+// client-side distance reports).
+export type { DiagonalRule };
 
 /** A grid's fixed geometry: kind, cell size, and (square-only) diagonal-cost rule. */
 export interface GridSpec {
@@ -77,6 +81,57 @@ export class Grid {
   }
 
   /**
+   * Snaps a scene point to the active grid's nearest cell VERTEX (corner) — the
+   * vertex-target counterpart of {@link snap}, which resolves a cell center. Candidates are
+   * {@link cellVertices} of the cell `p` falls in plus every immediate neighbor cell (the 8
+   * surrounding cells on square, the containing hex plus its 6 axial neighbors on hex), so a
+   * point near a cell boundary snaps to the shared corner the boundary cells meet at rather
+   * than being pinned to the containing cell's own corner set. Every candidate comes from
+   * `cellVertices` itself — the same single corner formula `hexLines` draws with — so the
+   * snap target is provably a point the grid overlay renders, never a second vertex formula.
+   * Ties (a point exactly equidistant to two or more vertices, e.g. a square cell's exact
+   * center) resolve deterministically to the lowest-x candidate, then lowest-y — never to
+   * candidate enumeration order.
+   * @param p A scene-coordinate point.
+   * @returns `p` snapped to the nearest cell vertex.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.snapVertex({ x: 12, y: 34 }); // { x: 0, y: 0 } — the corner, where snap gives the center
+   * ```
+   */
+  snapVertex(p: Point): Point {
+    const { col, row } = this.cellOf(p);
+    // Square: the 3×3 cell block around the containing cell (the four edge-neighbors plus
+    // the four corner-touching ones). Hex: the containing hex plus its six axial neighbors.
+    const offsets: [number, number][] = this.spec.kind === "square"
+      ? [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]
+      : [[0, 0], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+    let best: Point | null = null;
+    let bestD2 = Infinity;
+    for (const [dc, dr] of offsets) {
+      for (const v of this.cellVertices(col + dc, row + dr)) {
+        const dx = v.x - p.x;
+        const dy = v.y - p.y;
+        const d2 = dx * dx + dy * dy;
+        if (
+          d2 < bestD2 ||
+          (d2 === bestD2 && best !== null && (v.x < best.x || (v.x === best.x && v.y < best.y)))
+        ) {
+          best = v;
+          bestD2 = d2;
+        }
+      }
+    }
+    // Every `offsets` list names the containing cell, whose `cellVertices` is non-empty on
+    // both grid kinds, so `best` is always set; a degenerate empty scan snaps to nothing
+    // rather than fabricating a vertex.
+    return best ?? p;
+  }
+
+  /**
    * The world distance between two adjacent cell centres — `size` on square (the edge length IS
    * the center-to-center step), `size * sqrt(3)` on hex (every axial neighbour sits `sqrt(3) ·
    * size` away; `axialToPixel` confirms this for the six unit-axial offsets). This is NOT
@@ -100,7 +155,8 @@ export class Grid {
   }
 
   /** Whole-cell distance between two scene points.
-   * Hex: axial distance (`col`/`row` are axial q/r).
+   * Hex: axial distance (`col`/`row` are axial q/r). The rule is inert on hex — six
+   * uniform-cost axial neighbors, no diagonal/orthogonal split exists.
    * Square: selected by `spec.diagonalRule` (default `"chebyshev"`):
    *   - chebyshev  — max(dCol, dRow) (chessboard / 1-per-diagonal).
    *   - manhattan  — dCol + dRow (no diagonal shortcuts).
@@ -110,7 +166,10 @@ export class Grid {
    *     variant carrying parity across chained waypoint legs would need the general
    *     recurrence instead, but this method always measures a single fresh pair, so parity
    *     0 is the only case that applies here).
-   * All four mirror the server's per-rule step costs: chebyshev/manhattan/euclidean
+   *   - approximate — (dmax−dmin) + 1.5·dmin (flat 1.5×-per-diagonal).
+   *   - orthogonal — dCol + dRow (diagonal steps are illegal under this rule, so the
+   *     Manhattan figure is EXACT, not a no-shortcut bound).
+   * All six mirror the server's per-rule step costs: chebyshev/manhattan/euclidean/orthogonal
    * match `pathfinding::heuristic` exactly (an admissible AND tight bound for a
    * direct route with no obstacles AND no terrain weighting — that function's
    * ADMISSIBILITY WITH TERRAIN note records that it bounds only the UNWEIGHTED step
@@ -119,7 +178,12 @@ export class Grid {
    * wall-free route); alternating matches `grid_shape::step_cost`'s 1,2,1,2… parity-threaded
    * diagonal cost starting at parity 0, whose closed-form sum over `dmin` diagonal
    * steps is `dmin + floor(dmin/2)` (odd `dmin` diverges from this if the parity
-   * sequence didn't start fresh; even `dmin` agrees regardless of starting parity).
+   * sequence didn't start fresh; even `dmin` agrees regardless of starting parity);
+   * approximate matches the server's TRUE route cost via `grid_shape::step_cost` (1.5 per
+   * diagonal) — deliberately NOT its heuristic, which stays at the looser admissible
+   * Chebyshev bound (`dmax`) and would under-report what a ruler should display.
+   * The per-rule figures are pinned against the server by the shared corpus
+   * `__fixtures__/diagonal-cost-conformance.json` (asserted here and by `astar_leg`).
    * @param a One scene-coordinate point.
    * @param b The other scene-coordinate point.
    * @returns The whole-cell distance between `a` and `b`, per the rule above.
@@ -144,13 +208,25 @@ export class Grid {
     }
     const dmax = Math.max(dCol, dRow);
     const dmin = Math.min(dCol, dRow);
-    switch (this.spec.diagonalRule ?? "chebyshev") {
+    const rule = this.spec.diagonalRule ?? "chebyshev";
+    switch (rule) {
+      case "chebyshev":   return dmax;
       case "manhattan":   return dCol + dRow;
       case "euclidean":   return (dmax - dmin) + Math.SQRT2 * dmin;
       // Diagonals alternate cost 1, 2, 1, 2 … (5-10-5 rule). dmin diagonals cost
       // dmin + floor(dmin/2); the remainder (dmax−dmin) are orthogonal at cost 1 each.
       case "alternating": return (dmax - dmin) + dmin + Math.floor(dmin / 2);
-      default:            return dmax; // chebyshev
+      case "approximate": return (dmax - dmin) + 1.5 * dmin;
+      // No diagonal steps exist under this rule: the Manhattan figure, exact for the
+      // 4-directional graph.
+      case "orthogonal":  return dCol + dRow;
+      // Exhaustiveness guard: with every variant cased above, `rule` narrows to `never`
+      // here — a new `DiagonalRule` variant fails to compile rather than silently
+      // pricing as some other rule.
+      default: {
+        const _exhaustive: never = rule;
+        return _exhaustive;
+      }
     }
   }
 

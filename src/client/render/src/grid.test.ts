@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "vitest";
-import { Grid, type GridSpec } from "./index";
+import { Grid, type DiagonalRule, type GridSpec } from "./index";
 
 /** Convenience factory so tests can pass a partial spec without repeating defaults. */
 function makeGrid(spec: GridSpec): Grid {
@@ -152,6 +153,46 @@ test("alternating (5-10-5) rule: two diagonal steps (dmin=2) cost 3, not 2", () 
   expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
 });
 
+test("approximate costs a diagonal at 1.5x an orthogonal step", () => {
+  const g = makeGrid({ kind: "square", size: 100, diagonalRule: "approximate" });
+  // Pure diagonal: 2 steps at 1.5 → 3.
+  expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
+  // Mixed (dCol=4, dRow=2): 2 diagonals (3) + 2 orthogonals (2) → 5.
+  expect(g.distance({ x: 50, y: 50 }, { x: 450, y: 250 })).toBe(5);
+  // Adjacency is unchanged from the king-move rules — unlike orthogonal below.
+  expect(g.distance({ x: 50, y: 50 }, { x: 150, y: 150 })).toBe(1.5);
+});
+
+test("orthogonal prices a diagonal displacement as the Manhattan figure", () => {
+  const g = makeGrid({ kind: "square", size: 100, diagonalRule: "orthogonal" });
+  // Diagonal steps are illegal under this rule, so (2,2) costs 4 (two dog-leg
+  // pairs), not any diagonal shortcut — and this figure is EXACT for the
+  // 4-directional graph, not a bound.
+  expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(4);
+  expect(g.distance({ x: 50, y: 50 }, { x: 450, y: 250 })).toBe(6);
+});
+
+// Cross-language parity pin. Both this corpus read and the server's
+// `diagonal_cost_matches_the_shared_client_corpus` assert EVERY case of the same file —
+// `Grid.distance` here, `astar_leg` there — so a per-rule cost drift on either side fails
+// its own comparison against the corpus. The corpus covers all six rules (not only the two
+// newest) so an edit to an EXISTING rule's pricing is caught the same way.
+test("Grid.distance matches the shared diagonal-cost corpus", () => {
+  const raw = JSON.parse(
+    readFileSync(new URL("./__fixtures__/diagonal-cost-conformance.json", import.meta.url), "utf8"),
+  ) as { cases: { name: string; rule: DiagonalRule; dCol: number; dRow: number; expect: number }[] };
+  expect(raw.cases.length).toBe(6 * 8);
+  const seen = new Set<string>();
+  for (const c of raw.cases) {
+    expect(seen.has(c.name), `duplicate case name ${c.name}`).toBe(false);
+    seen.add(c.name);
+    const g = makeGrid({ kind: "square", size: 100, diagonalRule: c.rule });
+    // Cell centers of (0,0) and (dCol,dRow), so `cellOf` assigns the offset exactly.
+    const got = g.distance({ x: 50, y: 50 }, { x: 50 + c.dCol * 100, y: 50 + c.dRow * 100 });
+    expect(got, `case "${c.name}" (${c.rule} +${c.dCol},+${c.dRow})`).toBeCloseTo(c.expect, 9);
+  }
+});
+
 test("square cellCenter/cellVertices: axis-aligned rect anchored at (col*size, row*size)", () => {
   const g = new Grid({ kind: "square", size: 100 });
   expect(g.cellCenter(2, 0)).toEqual({ x: 250, y: 50 });
@@ -217,4 +258,44 @@ test("hexLines' outline for a cell matches cellVertices exactly (single formula,
     }
   }
   expect(outline).toEqual(corners);
+});
+
+test("snapVertex resolves to the nearest square vertex across a cell boundary", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // (140,160) falls in cell (1,1); its nearest vertex (100,200) is shared with cells
+  // (0,1)/(0,2)/(1,2) — the corner four cells meet at, not a corner unique to the
+  // containing cell. `snap` on the same point resolves the cell CENTER (150,150) instead.
+  expect(g.snapVertex({ x: 140, y: 160 })).toEqual({ x: 100, y: 200 });
+  expect(g.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 });
+  // Just across the boundary in the other direction: cell (0,0)'s side of the same corner.
+  expect(g.snapVertex({ x: 95, y: 95 })).toEqual({ x: 100, y: 100 });
+});
+
+test("snapVertex resolves to the nearest hex vertex", () => {
+  const g = new Grid({ kind: "hex", size: 100 });
+  // Hex (0,0) is centered on the origin; its pointy-top vertices sit at angles 60i−30°
+  // around it, so (0,-100) is the top vertex and (86.6025…,-50) the top-right one.
+  const top = g.snapVertex({ x: 5, y: -95 });
+  expect(top.x).toBeCloseTo(0, 9);
+  expect(top.y).toBeCloseTo(-100, 9);
+  const topRight = g.snapVertex({ x: 80, y: -45 });
+  expect(topRight.x).toBeCloseTo(100 * Math.cos(-Math.PI / 6), 9);
+  expect(topRight.y).toBeCloseTo(100 * Math.sin(-Math.PI / 6), 9);
+  // The result is `cellVertices`'s own corner up to float dust — the same single corner
+  // formula `hexLines` draws with, never a second vertex computation. Not bitwise: a shared
+  // corner is recomputed per adjoining cell (`center + size·cos/sin`), and those copies can
+  // differ in the last ulp.
+  const corner = g.cellVertices(0, 0)[0];
+  expect(Math.abs(topRight.x - corner.x)).toBeLessThan(1e-9);
+  expect(Math.abs(topRight.y - corner.y)).toBeLessThan(1e-9);
+});
+
+test("snapVertex breaks exact ties deterministically (lowest x, then lowest y)", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // The exact center of cell (0,0) is equidistant to all four corners (the squared
+  // distances are bitwise equal: 50²+50² exactly), so the outcome must come from the
+  // documented tie-break — lowest x, then lowest y — never from candidate enumeration order.
+  expect(g.snapVertex({ x: 50, y: 50 })).toEqual({ x: 0, y: 0 });
+  // A point on the shared edge midpoint ties between the two corners of that edge.
+  expect(g.snapVertex({ x: 100, y: 50 })).toEqual({ x: 100, y: 0 });
 });

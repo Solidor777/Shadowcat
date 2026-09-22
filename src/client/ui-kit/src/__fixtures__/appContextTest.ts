@@ -9,6 +9,7 @@ import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
 import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
+import { SnapModePreference } from "../snapModePreference.svelte";
 import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
 import { PerformanceController } from "../performance.svelte";
 
@@ -142,6 +143,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
     speakAsToken: over.speakAsToken ?? new SpeakAsToken(),
     speakAs: over.speakAs ?? new SpeakAs(),
+    snapModePreference: over.snapModePreference ?? new SnapModePreference(),
     templates: over.templates ?? {
       stampInstance: (s) => s,
       pull: () => {},

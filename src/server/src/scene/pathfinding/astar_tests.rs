@@ -49,6 +49,121 @@ fn euclidean_diagonal_costs_sqrt2() {
 }
 
 #[test]
+fn approximate_diagonal_costs_one_point_five() {
+    let g = open(DiagonalRule::Approximate, 0.1);
+    let (_c, cost, _p) = astar_leg(&g, (0, 0), (1, 1), 0).unwrap();
+    assert!(
+        (cost - 1.5).abs() < 1e-9,
+        "one diagonal step at 1.5x an orthogonal step, got {cost}"
+    );
+    // A longer mixed route: (0,0)->(4,2) = 2 diagonals + 2 orthogonals = 3 + 2.
+    let (_c, cost, _p) = astar_leg(&g, (0, 0), (4, 2), 0).unwrap();
+    assert!((cost - 5.0).abs() < 1e-9, "2*1.5 + 2*1, got {cost}");
+}
+
+#[test]
+fn astar_leg_orthogonal_never_returns_a_diagonal_step() {
+    // The adjacency change end-to-end: under `Orthogonal` the search graph has no diagonal
+    // edges, so every consecutive pair of a returned route differs on exactly one axis by one
+    // cell, and the route's cost IS the Manhattan distance (exact for this graph). Swept over a
+    // battery of (start, goal) pairs — including pure-diagonal alignments, which must now route
+    // as an L-shaped orthogonal detour rather than a straight diagonal.
+    let g = open(DiagonalRule::Orthogonal, 0.1);
+    for (start, goal) in [
+        ((0, 0), (3, 3)),
+        ((0, 0), (4, 2)),
+        ((-2, 1), (2, -3)),
+        ((1, 1), (1, 1)),
+        ((0, 0), (0, 5)),
+    ] {
+        let (cells, cost, parity) = astar_leg(&g, start, goal, 0).unwrap();
+        for w in cells.windows(2) {
+            let step = (w[1].0 - w[0].0).abs() + (w[1].1 - w[0].1).abs();
+            assert_eq!(
+                step, 1,
+                "route {start:?} -> {goal:?} contains a non-orthogonal step {w:?}"
+            );
+        }
+        let manhattan = ((goal.0 - start.0).abs() + (goal.1 - start.1).abs()) as f64;
+        assert!(
+            (cost - manhattan).abs() < 1e-9,
+            "{start:?} -> {goal:?}: cost {cost} must equal the Manhattan distance {manhattan}"
+        );
+        assert_eq!(parity, 0, "no diagonal step ever flips the parity bit");
+    }
+}
+
+/// One conformance case: a rule, a cell offset, and the cost a direct wall-free route between
+/// two cells that far apart must report — asserted by the server's `astar_leg` here and by the
+/// client's `Grid.distance` against the same file (the `chosen-vision-sample.json` shared-
+/// fixture pattern), so the two languages cannot drift on what a rule costs.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagonalCostCase {
+    /// Human-readable case label (uniqueness asserted below).
+    name: String,
+    /// The `diagonalRule` wire string.
+    rule: String,
+    /// Column delta between the two cells.
+    d_col: i32,
+    /// Row delta between the two cells.
+    d_row: i32,
+    /// The expected direct-route cost in cells.
+    expect: f64,
+}
+
+/// The corpus envelope.
+#[derive(serde::Deserialize)]
+struct DiagonalCostCorpus {
+    /// The case list.
+    cases: Vec<DiagonalCostCase>,
+}
+
+#[test]
+fn diagonal_cost_matches_the_shared_client_corpus() {
+    let raw: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../client/render/src/__fixtures__/diagonal-cost-conformance.json"
+    ))
+    .expect("diagonal-cost-conformance.json parses");
+    let corpus: DiagonalCostCorpus =
+        serde_json::from_value(raw).expect("corpus matches the case schema");
+    let mut seen = std::collections::HashSet::new();
+    for case in &corpus.cases {
+        assert!(seen.insert(case.name.as_str()), "duplicate case name");
+        let rule = match case.rule.as_str() {
+            "chebyshev" => DiagonalRule::Chebyshev,
+            "alternating" => DiagonalRule::Alternating,
+            "euclidean" => DiagonalRule::Euclidean,
+            "manhattan" => DiagonalRule::Manhattan,
+            "approximate" => DiagonalRule::Approximate,
+            "orthogonal" => DiagonalRule::Orthogonal,
+            other => panic!("corpus names an unknown rule {other:?}"),
+        };
+        let g = open(rule, 0.1);
+        let (_cells, cost, _p) =
+            astar_leg(&g, (0, 0), (case.d_col, case.d_row), 0).unwrap_or_else(|e| {
+                panic!(
+                    "case {:?} ({}) must be routable: {e:?}",
+                    case.name, case.rule
+                )
+            });
+        assert!(
+            (cost - case.expect).abs() < 1e-9,
+            "case {:?} ({}): astar cost {} != corpus {}",
+            case.name,
+            case.rule,
+            cost,
+            case.expect
+        );
+    }
+    assert_eq!(
+        corpus.cases.len(),
+        6 * 8,
+        "every rule x every offset is covered — a dropped case weakens the pin"
+    );
+}
+
+#[test]
 fn alternating_five_ten_five_parity() {
     // Two consecutive diagonals from parity 0: first costs 1, second costs 2 → total 3, end parity 0.
     let g = open(DiagonalRule::Alternating, 0.1);

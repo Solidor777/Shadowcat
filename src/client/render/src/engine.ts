@@ -2,7 +2,7 @@ import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core"
 import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
@@ -181,6 +181,11 @@ export class RenderEngine implements SceneToolHost {
    * identity — grid RENDERING is unaffected, only the snap call chain every tool inherits
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
+  /** Which lattice point `snap` resolves to while `snapEnabled` — `"center"` (default) via
+   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`. An orthogonal axis to `snapEnabled`:
+   * the mode selects the snap TARGET, never whether a snap happens. Pushed by the host
+   * through {@link setSnapMode}; every `ctx.scene.snap` caller inherits it. */
+  private snapMode: SnapMode = "center";
   /** Diffs the store's `scene`/background doc into backend nodes; one of the six views
    * {@link start}/{@link reapplyViewedScene} re-run per store commit or scene switch. */
   private readonly reconciler: SceneReconciler;
@@ -1215,14 +1220,15 @@ export class RenderEngine implements SceneToolHost {
     this.clearMeasure();
   }
 
-  /** `SceneToolHost.snap`: snap a scene point to the active grid's nearest CELL CENTER — for
-   * square grids, the containing cell's center; for hex, the nearest hex's center via
-   * axial-round-then-convert (`Grid.snap`; `Grid.axialToPixel` returns a hex center, the same
-   * method `Grid.hexLines` calls to get the origin it draws the six corners around — so this is a
-   * center, never a vertex, on either grid kind) — or the identity function when {@link
-   * setSnapEnabled} has disabled snapping for the current scene.
+  /** `SceneToolHost.snap`: snap a scene point to the active grid per the current snap mode —
+   * `"center"` (the default): the containing cell's center for square grids, the nearest hex's
+   * center via axial-round-then-convert for hex (`Grid.snap`; `Grid.axialToPixel` returns a hex
+   * center, the same method `Grid.hexLines` calls to get the origin it draws the six corners
+   * around — so center mode resolves a center, never a vertex, on either grid kind);
+   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`). The identity function when {@link
+   * setSnapEnabled} has disabled snapping for the current scene, regardless of mode.
    * @param p A scene-coordinate point.
-   * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled.
+   * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1232,7 +1238,8 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   snap(p: Point): Point {
-    return this.snapEnabled ? this.grid.snap(p) : p;
+    if (!this.snapEnabled) return p;
+    return this.snapMode === "vertex" ? this.grid.snapVertex(p) : this.grid.snap(p);
   }
 
   /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
@@ -1250,6 +1257,24 @@ export class RenderEngine implements SceneToolHost {
    */
   setSnapEnabled(enabled: boolean): void {
     this.snapEnabled = enabled;
+  }
+
+  /** `SceneToolHost.setSnapMode`: select which lattice point {@link snap} resolves to while
+   * snapping is enabled — `"center"` (the default) routes through `Grid.snap` (cell centers),
+   * `"vertex"` through `Grid.snapVertex` (cell corners). Orthogonal to {@link setSnapEnabled}:
+   * a snap-off scene stays identity under either mode. This is the single routing point —
+   * every tool that calls `ctx.scene.snap` inherits the mode with no per-tool change.
+   * @param mode The snap-target mode to apply.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setSnapMode("vertex");
+   * ```
+   */
+  setSnapMode(mode: SnapMode): void {
+    this.snapMode = mode;
   }
 
   /** `SceneToolHost.setDraggingToken`: mark a token as locally dragging (forwards to

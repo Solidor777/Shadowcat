@@ -165,16 +165,16 @@ pub enum WallSightTier {
 
 /// The door-resolved blocking flags of a `WallEngine` — the ONE resolver output
 /// every wall collector (`SceneEcs::sight_wall_entries`/`light_wall_entries`/
-/// `move_wall_entries`) reads, never the authored `blocks_*` fields directly.
-/// Returned as one struct so no caller can read two of the three flags and
-/// silently mis-derive the third.
+/// `sound_wall_entries`/`move_wall_entries`) reads, never the authored `blocks_*`
+/// fields directly. Returned as one struct so no caller can read a subset of the
+/// flags and silently mis-derive the rest.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::engine::EffectiveWallFlags;
 ///
-/// let flags = EffectiveWallFlags { blocks_move: true, blocks_sight: false, blocks_light: true };
+/// let flags = EffectiveWallFlags { blocks_move: true, blocks_sight: false, blocks_light: true, blocks_sound: false };
 /// assert!(flags.blocks_move);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,11 +185,19 @@ pub struct EffectiveWallFlags {
     pub blocks_sight: bool,
     /// Whether the wall occludes light propagation.
     pub blocks_light: bool,
+    /// Whether the wall occludes carried-sound emitters. The one flag with an
+    /// inheritance rule: an unauthored `WallEngine::blocks_sound` resolves to the
+    /// door-resolved `blocks_sight`, so a wall that never authors the field
+    /// occludes sound exactly as it occludes sight.
+    pub blocks_sound: bool,
 }
 
-/// A wall's segment + sight/light/movement-blocking flags. Absent/false
+/// A wall's segment + sight/light/movement/sound-blocking flags. Absent/false
 /// flags exclude the wall from that gate, matching how each gate
-/// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
+/// (`move_exec`/`pathfinding`/`lighting`/`scene::audibility`) reads these fields.
+/// `blocks_sound` is the one flag with an inheritance default: absent, it resolves
+/// to the door-resolved `blocks_sight` (`WallEngine::effective_flags`), so a wall
+/// that never authors the field occludes sound exactly as it occludes sight.
 ///
 /// Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
 /// `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
@@ -207,6 +215,7 @@ pub struct EffectiveWallFlags {
 ///     blocks_sight: Some(true),
 ///     blocks_light: Some(true),
 ///     blocks_move: Some(true),
+///     blocks_sound: None,
 ///     elevation: None,
 ///     door: None,
 ///     direction: None,
@@ -231,9 +240,15 @@ pub struct WallEngine {
     /// traversal decision). Absent/false = passable.
     #[serde(default)]
     pub blocks_move: Option<bool>,
-    /// The elevation band this wall's sight/light occlusion applies to;
+    /// Occludes carried-sound emitters (`scene::audibility::compute_audibility`'s
+    /// occlusion test). Absent = inherit the door-resolved `blocks_sight`
+    /// (`effective_flags`): a stored document carrying no `blocksSound` key
+    /// occludes sound exactly as it occludes sight.
+    #[serde(default)]
+    pub blocks_sound: Option<bool>,
+    /// The elevation band this wall's sight/light/sound occlusion applies to;
     /// absent = occludes every elevation. Consulted by the movement gate exactly
-    /// as it is by sight/light occlusion — see `scene::elevation::band_contains`
+    /// as it is by sight/light/sound occlusion — see `scene::elevation::band_contains`
     /// and `SceneEcs::move_wall_entries`.
     #[serde(default)]
     pub elevation: Option<ElevationBand>,
@@ -254,10 +269,12 @@ pub struct WallEngine {
 
 impl WallEngine {
     /// Resolve the wall's effective blocking flags through its door state: an
-    /// `Open` door makes the wall fully passable/see-through/light-through
-    /// regardless of the authored flags; every other state (no door, `Closed`,
-    /// `Locked`) applies the authored flags unchanged (each `Option<bool>` read
-    /// as `== Some(true)`, matching every collector's convention). This is the
+    /// `Open` door makes the wall fully passable/see-through/light-through/
+    /// sound-transparent regardless of the authored flags; every other state
+    /// (no door, `Closed`, `Locked`) applies the authored flags unchanged (each
+    /// `Option<bool>` read as `== Some(true)`, matching every collector's
+    /// convention), except `blocks_sound`, which alone inherits: an absent
+    /// `blocks_sound` resolves to the door-resolved `blocks_sight`. This is the
     /// ONE resolver over authored flags + door state — never a second copy of
     /// the flags at a read site.
     ///
@@ -271,6 +288,7 @@ impl WallEngine {
     ///     blocks_sight: Some(true),
     ///     blocks_light: Some(true),
     ///     blocks_move: Some(true),
+    ///     blocks_sound: None,
     ///     elevation: None,
     ///     door: Some(DoorState::Open),
     ///     direction: None,
@@ -279,6 +297,8 @@ impl WallEngine {
     /// assert!(!wall.effective_flags().blocks_move);
     /// wall.door = Some(DoorState::Closed);
     /// assert!(wall.effective_flags().blocks_move);
+    /// // `blocks_sound` unauthored: inherits the door-resolved `blocks_sight`.
+    /// assert!(wall.effective_flags().blocks_sound);
     /// ```
     pub fn effective_flags(&self) -> EffectiveWallFlags {
         if self.door == Some(DoorState::Open) {
@@ -286,12 +306,15 @@ impl WallEngine {
                 blocks_move: false,
                 blocks_sight: false,
                 blocks_light: false,
+                blocks_sound: false,
             };
         }
+        let blocks_sight = self.blocks_sight == Some(true);
         EffectiveWallFlags {
             blocks_move: self.blocks_move == Some(true),
-            blocks_sight: self.blocks_sight == Some(true),
+            blocks_sight,
             blocks_light: self.blocks_light == Some(true),
+            blocks_sound: self.blocks_sound.unwrap_or(blocks_sight),
         }
     }
 
@@ -312,6 +335,7 @@ impl WallEngine {
     ///     blocks_sight: None,
     ///     blocks_light: None,
     ///     blocks_move: None,
+    ///     blocks_sound: None,
     ///     elevation: None,
     ///     door: None,
     ///     direction: Some(WallDirection { blocking_side: 1.0 }),

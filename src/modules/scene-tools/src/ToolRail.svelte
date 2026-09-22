@@ -118,6 +118,19 @@
     ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/snapToGrid", old: rawSnap, value: !snapToGrid }])]);
   }
 
+  /** Flips the session's snap-MODE preference between cell-center and nearest-vertex
+   * snapping. Client-local session state (`ctx.snapModePreference`), never a document write —
+   * unlike `toggleSnap` above, nothing here is shared with other clients; `Stage` observes
+   * the preference and re-pushes it to the engine's `setSnapMode` chokepoint.
+   * @example
+   * ```
+   * toggleSnapMode();
+   * ```
+   */
+  function toggleSnapMode(): void {
+    ctx.snapModePreference.set(ctx.snapModePreference.mode === "vertex" ? "center" : "vertex");
+  }
+
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
    * than a token's own position). The three ungated tools each go through a path the server
    * already polices for a non-GM — but select/move does NOT go through the same path for every
@@ -511,6 +524,22 @@
     </button>
   {/if}
 
+  <!-- Snap MODE (center vs vertex) steers only this client's own tool clicks, so it is
+       client-local session state (`ctx.snapModePreference`), not a scene-document write;
+       GM-only like the snap toggle beside it. -->
+  {#if isGm && activeScene}
+    <button
+      type="button"
+      class="tool"
+      aria-pressed={ctx.snapModePreference.mode === "vertex"}
+      data-testid="snap-mode-toggle"
+      title={t("tools.snapMode")}
+      onclick={toggleSnapMode}
+    >
+      {ctx.snapModePreference.mode === "vertex" ? t("tools.snapModeVertex") : t("tools.snapModeCenter")}
+    </button>
+  {/if}
+
   {#if canActAsSelected}
     <button
       type="button"
@@ -688,6 +717,17 @@
             onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight ?? null, e.currentTarget.checked)}
           />
           {t("tools.blocksLight")}
+        </label>
+        <!-- `blocksSound` absent = inherits the wall's door-resolved blocksSight server-side
+             (`WallEngine::effective_flags`); the checkbox authors an explicit override only. -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-sound"
+            checked={eng.blocksSound}
+            onchange={(e) => editSelected("/engine/blocksSound", eng.blocksSound ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksSound")}
         </label>
         <!-- One-way walls: `direction` carries the sign naming the SOLID side of the segment
              (`WallDirection.blockingSide`, ±1 — the cross-product convention is documented on
