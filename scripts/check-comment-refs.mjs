@@ -625,7 +625,7 @@ const WORD_NARRATION_TOKEN =
 const ACKNOWLEDGED = [
   {
     name: "product, protocol or algorithm name carrying a version-like number",
-    re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bIPv6\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix32\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b|\bWin32\b|\bJSON1\b|\bGIF89a\b|\bBM25\b|\bPF1e\b|\bTS2322\b/,
+    re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bIPv6\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix32\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b|\bWin32\b|\bJSON1\b|\bGIF89a\b|\bBM25\b|\bPF1e\b|\bTS2322\b|\bRGBA8\b/,
   },
   {
     name: "a code symbol cited as a value, not a process id",
