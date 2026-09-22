@@ -89,6 +89,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `session_key` | *(generated + DB-persisted)* | Session-cookie signing key. Unset, a key is generated once and stored in the database, so sessions survive restarts by default; set it explicitly only for multi-replica setups or controlled key rotation |
 | `assets_dir` | `assets/` beside the db | Uploaded-file store |
 | `modules_dir` | `modules/` beside the db | Installed community modules |
+| `log_dir` | `logs/` beside the db | Rolling daily log-file output root (retains 14 files; stdout logging is unaffected) |
 | `backups_dir` | `backups/` beside the db | In-app backup output root |
 | `upload_max_bytes` | 25 MiB | Upload size cap (players) |
 | `upload_rate_per_min` | 20 | Uploads per minute (players) |
@@ -97,6 +98,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `login_per_min_per_identity` / `login_per_min_per_ip` | built-in | `/api/login` throttle budgets |
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
 | `trusted_proxies` | *(empty)* | Reverse-proxy IPs trusted to set `X-Forwarded-For` |
+| `behind_tls_proxy` | `false` | Declares a TLS-terminating reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy, the session cookie's `Secure` flag, and the HSTS response header |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.
 `SHADOWCAT_LOG=debug`.
@@ -116,6 +118,12 @@ directly.
 `trusted_proxies` is a list, so the env-var form needs bracket syntax even for one entry:
 `SHADOWCAT_TRUSTED_PROXIES=[127.0.0.1]` (a bare `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` fails to
 parse). In `shadowcat.toml`, use ordinary TOML array syntax: `trusted_proxies = ["127.0.0.1"]`.
+
+If that reverse proxy also terminates TLS, set `behind_tls_proxy = true`. A loopback bind
+(`127.0.0.1:30000`) is otherwise treated as local-only — the setup-token window opens without a
+token, the session cookie skips `Secure`, and no HSTS header is sent — which is wrong once a
+TLS-terminating proxy makes it internet-reachable. Setting this flag makes all three treat the
+deployment as exposed regardless of the bind address.
 
 ## Worlds and players
 
@@ -169,7 +177,8 @@ without starting the server:
 consistent SQLite `VACUUM INTO` snapshot plus the asset files; on success it
 prints one summary line — output directory, asset file count, database bytes,
 and the Shadowcat version that wrote it (useful when restoring later). A running
-server can also produce backups into `backups_dir` from the admin UI.
+server also writes backups into `backups_dir` through the admin-only
+`POST /api/admin/backup` endpoint.
 
 ## Serving to your table
 
