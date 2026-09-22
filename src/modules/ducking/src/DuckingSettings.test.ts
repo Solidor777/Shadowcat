@@ -41,6 +41,7 @@ function audioFixture(depth = 0.7, setDepth = vi.fn()) {
     serverNow: () => 0,
     transport: () => {},
     listenAs: () => {},
+    preload: () => {},
   };
 }
 

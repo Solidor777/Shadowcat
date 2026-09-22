@@ -63,6 +63,9 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
     resize: (width, height) => { onDirty(); backend.resize(width, height); },
     setFrameCap: (fps) => backend.setFrameCap(fps),
     setRenderScale: (scale) => backend.setRenderScale(scale),
+    // Budget setting, not a draw — same exclusion class as setFrameCap/setRenderScale; the
+    // periodic sweep it configures runs off tickTokenAnimations, itself already excluded.
+    setTextureBudget: (bytes) => backend.setTextureBudget(bytes),
     render: () => backend.render(),
     destroy: () => backend.destroy(),
   };

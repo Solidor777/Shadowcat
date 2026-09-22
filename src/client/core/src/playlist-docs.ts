@@ -62,3 +62,55 @@ export function buildPlaylistDoc(
   if (opts?.owner) grantAuthor(doc, opts.owner);
   return doc;
 }
+
+/**
+ * Resolves the asset id of the track a playlist will advance to AFTER `currentTrackIndex`, for
+ * preloading purposes only (`AudioApi.preload`) — never for playback decisions.
+ *
+ * The server's own advance (`audio::state::apply`'s `resolve_track_index`) is not mirrored
+ * here: `Sequential`/`LoopAll` are deterministic from the current index alone, so this resolves
+ * them directly; `Shuffle` draws from a server-seeded RNG (`AudioStateEngine.shuffleSeed`) this
+ * client cannot reproduce, and `Single` never advances at all, so both resolve to `null` —
+ * preloading is simply skipped for those two modes rather than guessing wrong and evicting a
+ * useful preload.
+ * @param playlist The playlist document's engine body.
+ * @param currentTrackIndex The currently-playing entry's `PlayingTrack.trackIndex`.
+ * @returns The next track's asset id to preload, or `null` when no next track can be resolved
+ * client-side.
+ * @example
+ * ```ts
+ * import { resolveNextTrackAsset } from "@shadowcat/core";
+ * import type { PlaylistEngine } from "@shadowcat/types";
+ *
+ * const playlist: PlaylistEngine = {
+ *   tracks: [
+ *     { asset: "a1", name: null, gain: 1, loop: false },
+ *     { asset: "a2", name: null, gain: 1, loop: false },
+ *   ],
+ *   mode: "loop_all",
+ *   channel: "music",
+ *   fadeMs: 0,
+ * };
+ * resolveNextTrackAsset(playlist, 1); // "a1" (wraps)
+ * ```
+ */
+export function resolveNextTrackAsset(
+  playlist: PlaylistEngine,
+  currentTrackIndex: number,
+): string | null {
+  const count = playlist.tracks.length;
+  if (count === 0) return null;
+  switch (playlist.mode) {
+    case "sequential": {
+      const next = currentTrackIndex + 1;
+      return next < count ? playlist.tracks[next].asset : null;
+    }
+    case "loop_all": {
+      const next = (currentTrackIndex + 1) % count;
+      return playlist.tracks[next].asset;
+    }
+    case "shuffle":
+    case "single":
+      return null;
+  }
+}

@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Exercises plain document builders: no component render and no DOM API use.
 import { describe, test, expect } from "vitest";
-import { buildPlaylistDoc, PLAYLIST_DOC_TYPE } from "./playlist-docs";
+import { buildPlaylistDoc, PLAYLIST_DOC_TYPE, resolveNextTrackAsset } from "./playlist-docs";
 import { AUTHOR_CAPS } from "./scene-docs";
 import type { PlaylistEngine } from "@shadowcat/types";
 
@@ -35,5 +35,45 @@ describe("buildPlaylistDoc", () => {
     for (const cap of AUTHOR_CAPS) {
       expect(doc.permissions.capabilities.by_role.owner).toContain(cap);
     }
+  });
+});
+
+describe("resolveNextTrackAsset", () => {
+  const tracks = [
+    { asset: "a1", name: null, gain: 1, loop: false },
+    { asset: "a2", name: null, gain: 1, loop: false },
+    { asset: "a3", name: null, gain: 1, loop: false },
+  ];
+
+  test("sequential: returns the next-in-order track's asset", () => {
+    const playlist: PlaylistEngine = { tracks, mode: "sequential", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 0)).toBe("a2");
+    expect(resolveNextTrackAsset(playlist, 1)).toBe("a3");
+  });
+
+  test("sequential: returns null past the last track (no wrap)", () => {
+    const playlist: PlaylistEngine = { tracks, mode: "sequential", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 2)).toBeNull();
+  });
+
+  test("loop_all: wraps to the first track past the last", () => {
+    const playlist: PlaylistEngine = { tracks, mode: "loop_all", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 1)).toBe("a3");
+    expect(resolveNextTrackAsset(playlist, 2)).toBe("a1");
+  });
+
+  test("shuffle: never resolves a next track (no client mirror of the server's shuffle draw)", () => {
+    const playlist: PlaylistEngine = { tracks, mode: "shuffle", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 0)).toBeNull();
+  });
+
+  test("single: never resolves a next track (the entry does not advance)", () => {
+    const playlist: PlaylistEngine = { tracks, mode: "single", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 0)).toBeNull();
+  });
+
+  test("empty playlist resolves null on every mode", () => {
+    const playlist: PlaylistEngine = { tracks: [], mode: "loop_all", channel: "music", fadeMs: 0 };
+    expect(resolveNextTrackAsset(playlist, 0)).toBeNull();
   });
 });

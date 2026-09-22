@@ -1,6 +1,6 @@
 <script lang="ts">
   import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
-  import { t } from "@shadowcat/ui-kit";
+  import { t, plural, compare } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
   import { logout } from "./api";
@@ -101,6 +101,8 @@
     notify: (message, level) => notifications.push(level ?? "warning", message),
     members: session.members,
     t,
+    plural,
+    compare,
     assets: session.assets,
     assetPick,
     pickAsset: ((opts?: PickAssetOptions) =>
@@ -153,6 +155,7 @@
     audio: session.audio,
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
+    hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {

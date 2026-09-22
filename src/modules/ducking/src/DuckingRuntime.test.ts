@@ -36,6 +36,7 @@ function audioFixture() {
     serverNow: () => 0,
     transport: () => {},
     listenAs: () => {},
+    preload: () => {},
   };
   return { audio, addSource, removeSource };
 }

@@ -71,7 +71,7 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
   // Attempt the GM-gated write directly over the wire.
   const intent: ClientMsg = {
     type: "intent",
-    intent_id: "11111111-1111-1111-1111-111111111111",
+    intent_id: "11111111-1111-4111-8111-111111111111",
     ops: [
       {
         op: "update",

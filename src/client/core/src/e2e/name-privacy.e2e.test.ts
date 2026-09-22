@@ -62,10 +62,10 @@ test("/name owner_or_gm override: owner+GM see the name, a non-owner player gets
   await gm.start();
   await sleep(300);
 
-  const docId = "55555555-5555-5555-5555-555555555555";
+  const docId = "55555555-5555-4555-8555-555555555555";
   const createIntent: ClientMsg = {
     type: "intent",
-    intent_id: "66666666-6666-6666-6666-666666666666",
+    intent_id: "66666666-6666-4666-8666-666666666666",
     ops: [
       {
         op: "create",
@@ -91,7 +91,7 @@ test("/name owner_or_gm override: owner+GM see the name, a non-owner player gets
           // `engine.displayName` carries no override and stays searchable.
           engine: {
             displayName: "Unrelated Actor",
-            visual: { kind: "image", asset: "a.png" },
+            visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" },
             size: { w: 1, h: 1 },
             shape: "square",
             faction: null,

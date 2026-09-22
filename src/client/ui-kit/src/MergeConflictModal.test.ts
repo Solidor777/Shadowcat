@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import MergeConflictModal from "./MergeConflictModal.svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import type { WireMergeConflict } from "@shadowcat/core";
@@ -27,7 +27,7 @@ describe("MergeConflictModal", () => {
     const { getByText, getAllByRole } = render(MergeConflictModal, {
       props: {
         groups: [{ key: "C", label: null, conflicts }],
-        onApply: (m: Map<string, Set<string>>) => applied.push(m),
+        onApply: (m: Map<string, Set<string>>) => { applied.push(m); },
         onCancel: () => {},
       },
       context,
@@ -64,6 +64,55 @@ describe("MergeConflictModal", () => {
 
     await fireEvent.keyDown(document, { key: "Escape" });
     expect(cancelled).toBe(true);
+  });
+
+  it("disables Apply/Cancel while an async onApply is in flight, and re-enables on settle", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const context = setAppContextForTest();
+    const { getByText } = render(MergeConflictModal, {
+      props: {
+        groups: [{ key: "C", label: null, conflicts }],
+        onApply: () => pending,
+        onCancel: () => {},
+      },
+      context,
+    });
+    const applyBtn = getByText("templates.conflict.apply") as HTMLButtonElement;
+    const cancelBtn = getByText("templates.conflict.cancel") as HTMLButtonElement;
+    expect(applyBtn.disabled).toBe(false);
+
+    await fireEvent.click(applyBtn);
+    expect(applyBtn.disabled).toBe(true);
+    expect(cancelBtn.disabled).toBe(true);
+
+    release();
+    await waitFor(() => expect(applyBtn.disabled).toBe(false));
+    expect(cancelBtn.disabled).toBe(false);
+  });
+
+  it("re-enables Apply/Cancel when the async onApply rejects", async () => {
+    let reject!: (err: Error) => void;
+    const pending = new Promise<void>((_resolve, r) => {
+      reject = r;
+    });
+    const context = setAppContextForTest();
+    const { getByText } = render(MergeConflictModal, {
+      props: {
+        groups: [{ key: "C", label: null, conflicts }],
+        onApply: () => pending,
+        onCancel: () => {},
+      },
+      context,
+    });
+    const applyBtn = getByText("templates.conflict.apply") as HTMLButtonElement;
+    await fireEvent.click(applyBtn);
+    expect(applyBtn.disabled).toBe(true);
+
+    reject(new Error("dispatch failed"));
+    await waitFor(() => expect(applyBtn.disabled).toBe(false));
   });
 
   it("groups rows under a per-instance label when provided (push)", () => {

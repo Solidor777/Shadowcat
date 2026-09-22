@@ -330,7 +330,7 @@
             <div class="roll-formula" aria-label={t("chat.roll.formula")}>{rollBlock.formula}</div>
             {#if rollBlock.outcome.successes != null}
               <div class="roll-result">
-                <span class="roll-successes">{t("chat.roll.successes", { n: rollBlock.outcome.successes })}</span>
+                <span class="roll-successes">{ctx.plural("chat.roll.successes", rollBlock.outcome.successes, { n: rollBlock.outcome.successes })}</span>
                 {#if rollBlock.outcome.tier_label}
                   <span class="roll-tier">{rollBlock.outcome.tier_label}</span>
                 {:else if rollBlock.outcome.pass != null}

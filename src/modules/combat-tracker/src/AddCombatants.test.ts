@@ -14,6 +14,12 @@ function actorRow(id: string, tokenId: string | null): Row {
   return { doc: buildCombatantDoc("w1", "combat-1", engine, { id }), kind: "actor", view: null, name: id, art: {} };
 }
 
+// A fixture-driven `plural` stub, distinct from the identity-echo `t` default: it names both
+// the key AND the count it was called with, so a test can assert AddCombatants dispatched the
+// right count through `ctx.plural` (the AppContext seam) without depending on the real ui-kit
+// `i18n` singleton's actual English catalog text.
+const fixturePlural = (key: string, count: number): string => `${key}=${count}`;
+
 function renderAdd(rows: Row[], selectedTokenIds: string[]) {
   const store = new DocumentStore();
   const combat = fakeCombatApi(store);
@@ -22,7 +28,7 @@ function renderAdd(rows: Row[], selectedTokenIds: string[]) {
   return {
     ...render(AddCombatants, {
       props: { combatId: "combat-1", rows },
-      context: setAppContextForTest({ store, documents: store, combat, tokenSelection }),
+      context: setAppContextForTest({ store, documents: store, combat, tokenSelection, plural: fixturePlural }),
     }),
     combat,
   };
@@ -32,7 +38,10 @@ describe("AddCombatants", () => {
   it("counts only selected tokens NOT already in the combat", () => {
     const rows = [actorRow("a", "token-1")];
     const { getByTestId } = renderAdd(rows, ["token-1", "token-2"]);
-    expect(getByTestId("combat-tracker:add-selected").textContent).toBe("combatTracker.addSelected");
+    // token-1 is already in the combat (row "a"); only token-2 counts. Asserted through the
+    // fixture-driven `ctx.plural` seam (see `fixturePlural`) rather than the real ui-kit `i18n`
+    // singleton's English text, since the component now goes through AppContext for this.
+    expect(getByTestId("combat-tracker:add-selected").textContent?.trim()).toBe("combatTracker.addSelected=1");
   });
 
   it("clicking Add selected calls addCombatants with the filtered token set", async () => {
@@ -50,9 +59,11 @@ describe("AddCombatants", () => {
     expect(combat.calls.addCombatants).toEqual([["combat-1", [{ tokenId: "token-1", hidden: true }, { tokenId: "token-2", hidden: true }]]]);
   });
 
-  it("is disabled when there are no addable selected tokens", () => {
+  it("is disabled when there are no addable selected tokens, and calls ctx.plural with count 0", () => {
     const { getByTestId } = renderAdd([], []);
-    expect((getByTestId("combat-tracker:add-selected") as HTMLButtonElement).disabled).toBe(true);
+    const btn = getByTestId("combat-tracker:add-selected") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent?.trim()).toBe("combatTracker.addSelected=0");
   });
 
   it("the event form requires a name", async () => {

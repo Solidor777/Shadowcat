@@ -124,6 +124,15 @@ export class AudioEngine implements AudioApi {
   /** The last duck gain applied to `#duckNode` — the driver writes `setTargetAtTime` only when
    * `DuckControllerImpl.gain` differs from this, avoiding a redundant ramp restart every frame. */
   #lastAppliedDuckGain: number | null = null;
+  /** The single in-flight preload (`preload`'s bound of at most one track), or `null`. The
+   * element is never connected to the graph and never played — its ONLY purpose is to start
+   * the browser fetching the resource ahead of an anticipated playlist advance. */
+  #preload: {
+    /** The asset being preloaded. */
+    asset: string;
+    /** The element fetching it (never played, never graph-connected). */
+    el: MediaElementLike;
+  } | null = null;
 
   /** Construct the engine (no graph yet — `unlock()` builds it on the first user gesture).
    * @param opts The engine's dependencies and device hooks.
@@ -400,6 +409,7 @@ export class AudioEngine implements AudioApi {
    * ```
    */
   applyState(state: AudioStateEngine): void {
+    this.#releasePreloadIfNowPlaying(state);
     if (this.#noWebAudio) {
       this.#applyStateFallback(state);
       return;
@@ -591,6 +601,60 @@ export class AudioEngine implements AudioApi {
     return channel.muted || master.muted ? 0 : Math.max(0, Math.min(1, gain * channel.gain * master.gain));
   }
 
+  /** Begin prefetching `asset`'s stream ahead of an anticipated playlist advance (see
+   * `resolveNextTrackAsset`), so the advance itself has no audible gap while the browser
+   * fetches/decodes. Bounded to at most one preloaded track: a second call releases the first.
+   * The preload element is never connected to the mixer graph and never played — `load()` (never
+   * `play()`, which would make it audible) is the fetch trigger: assigning `src` alone queues a
+   * source but does not itself start fetching, so a detached `<audio>` element with no other
+   * live reference may never fetch at all on iOS Safari without an explicit `load()` call. A
+   * no-op before `unlock()` (nothing to preload into before a device gesture) — unlike transport
+   * state, a missed preload window is not queued, since the caller re-issues it on every
+   * relevant `audio-state`/`playlist` change.
+   * @param asset Asset id to prefetch.
+   * @example
+   * ```ts
+   * // implements `AudioApi.preload` — see that interface's own doc
+   * ```
+   */
+  preload(asset: string): void {
+    if (!this.#context && !this.#noWebAudio) return;
+    if (this.#preload?.asset === asset) return;
+    this.#releasePreload();
+    const el = createMediaElement();
+    el.src = pickStreamSrc(el, this.#opts.resolver.audioUrl(asset));
+    el.load(); // triggers the fetch; never play() — this element must stay inaudible
+    this.#preload = { asset, el };
+  }
+
+  /** Release the in-flight preload, if any (idempotent).
+   * @example
+   * ```
+   * // private helper; exercised through `engine.test.ts`'s preload cases
+   * ```
+   */
+  #releasePreload(): void {
+    if (this.#preload) {
+      this.#preload.el.pause();
+      this.#preload = null;
+    }
+  }
+
+  /** Release the in-flight preload once its asset appears in a fresh `AudioStateEngine.playing`
+   * set — a real `TrackPlayer`/`FallbackTrackPlayer` is about to stream that same asset, so the
+   * preload element would otherwise sit forever as an unused duplicate fetch.
+   * @param state The world's current `AudioStateEngine`.
+   * @example
+   * ```
+   * // private helper; exercised through `engine.test.ts`'s preload cases
+   * ```
+   */
+  #releasePreloadIfNowPlaying(state: AudioStateEngine): void {
+    if (this.#preload && state.playing.some((entry) => entry.asset === this.#preload!.asset)) {
+      this.#releasePreload();
+    }
+  }
+
   /** Release every node, player, and the duck-loop `raf` handle; the `AudioContext` itself is
    * left to the shell (one `AudioEngine` per world session — the context's own lifecycle is the
    * shell's, not this class's, since `unlock()` may be called again on rejoin).
@@ -608,6 +672,7 @@ export class AudioEngine implements AudioApi {
     this.#fallbackPlayers.clear();
     for (const entry of this.#fallbackEmitters.values()) entry.el.pause();
     this.#fallbackEmitters.clear();
+    this.#releasePreload();
     if (this.#duckLoopHandle !== null) {
       this.#opts.caf(this.#duckLoopHandle);
       this.#duckLoopHandle = null;

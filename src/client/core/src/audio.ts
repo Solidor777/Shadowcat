@@ -109,6 +109,14 @@ export interface AudioApi {
    * `onAudioError`.
    * @param op The transport operation to apply. */
   transport(op: WireAudioOp): void;
+  /** Begin prefetching `asset`'s stream ahead of an anticipated playlist advance (see
+   * `resolveNextTrackAsset`), so the advance itself has no audible gap while the browser
+   * fetches/decodes. Never a playback command — the asset is not connected to the mixer graph
+   * and never plays. Bounded to at most one preloaded track at a time: calling this again with
+   * a different asset releases the currently-preloaded one unless real playback has already
+   * taken it over. A no-op before `unlock()` (nothing to preload into before a device gesture).
+   * @param asset Asset id to prefetch. */
+  preload(asset: string): void;
   /** GM-only: set (or clear) this device's spatial-audio listening token — a preview seam
    * independent of any token this connection owns (`ClientMsg::AudioListenAs`). Fire-and-forget,
    * no correlated reply (mirrors `transport`'s own contract): takes effect on the next

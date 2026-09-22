@@ -29,6 +29,7 @@ import {
   type AudibilityPayload,
   CombatController,
   defineCombatHooks,
+  defineChatComposerHooks,
   CombatHookEmitter,
   commandTouchesCombat,
   deriveCombatHookEvents,
@@ -64,12 +65,17 @@ import {
   getEnabledModules,
   listWorldMembers,
   AUDIO_STATE_DOC_TYPE,
+  PLAYLIST_DOC_TYPE,
+  resolveNextTrackAsset,
   type AudioApi,
   type AudioChannelId,
   type AudioStateEngine,
+  type PlaylistEngine,
+  type HookFaultPayload,
 } from "@shadowcat/core";
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
+import type { HooksEmitApi } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -423,7 +429,17 @@ export class WorldSession {
       serverNow: () => engine.serverNow(),
       transport: (op) => engine.transport(op),
       listenAs: (token) => engine.listenAs(token),
+      preload: (asset) => engine.preload(asset),
     };
+  }
+
+  /** The component-facing hook-emission seam (`AppContext.hooks`) — a thin forwarder onto the
+   * session's own `HookBus` for statically-declared (`CoreHooks`) hook names. Built-in UI (the
+   * chat composer's pre-send interception) emits through this; a module still LISTENS via its
+   * own `ModuleContext.hooks.on` in `register()`, never through this getter.
+   * @returns The hook-emission surface the shell publishes on `AppContext.hooks`. */
+  get hooks(): HooksEmitApi {
+    return { emitMutate: (name, payload) => this.#hooks.emitMutate(name, payload) };
   }
 
   /** GM local roam: view any scene without moving players. Ignored (warned) for a non-GM —
@@ -718,6 +734,14 @@ export class WorldSession {
     this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
     this.#hooks = new HookBus(this.#logger);
     defineCombatHooks(this.#hooks);
+    defineChatComposerHooks(this.#hooks);
+    // Real consumer of core:hook-fault (see HookBus's own doc): a faulting listener is already
+    // isolated from the hook it faulted on, but this session-wide sink is what makes the fault
+    // itself observable in this world's diagnostics, same sink `#onWelcome`'s own catch-all uses.
+    this.#hooks.on("core:hook-fault", (p) => {
+      const fault = p as HookFaultPayload;
+      this.#logger.error(`hook ${fault.hook} handler faulted`, fault.error);
+    });
     this.#services = new ServiceRegistry();
     this.#combat = new CombatController({
       documents: this.#optimistic,
@@ -1433,14 +1457,43 @@ export class WorldSession {
     // immediately for the state already in the snapshot.
     this.#audioUnsub = this.documents.subscribe(() => {
       const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
-      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+      if (doc?.engine) {
+        this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+        this.#preloadNextTracks(doc.engine as AudioStateEngine);
+      }
     });
     {
       const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
-      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+      if (doc?.engine) {
+        this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+        this.#preloadNextTracks(doc.engine as AudioStateEngine);
+      }
     }
     await this.#ws.start();
     this.state = "open";
+  }
+
+  /** Preloads each currently-playing streaming entry's resolvable next track
+   * (`resolveNextTrackAsset`), so a sequential/loop-all advance has no audible gap. Looks up
+   * each entry's source playlist document locally (no network round trip) — an entry with no
+   * playlist, or whose playlist has since been deleted, is skipped. `AudioEngine.preload` is
+   * itself bounded to one in-flight preload, so only the LAST entry processed here actually
+   * stays preloaded when several tracks play across different channels simultaneously; this is
+   * an accepted narrowing (typical worlds run one music track at a time) rather than a queue.
+   * @param engineState The world's current `AudioStateEngine`.
+   * @example
+   * ```
+   * // private helper; exercised through `worldSession.test.ts`'s preload cases
+   * ```
+   */
+  #preloadNextTracks(engineState: AudioStateEngine): void {
+    for (const entry of engineState.playing) {
+      if (!entry.playlist) continue;
+      const doc = this.documents.query(PLAYLIST_DOC_TYPE).find((d) => d.id === entry.playlist);
+      if (!doc?.engine) continue;
+      const next = resolveNextTrackAsset(doc.engine as PlaylistEngine, entry.trackIndex);
+      if (next) this.#audioEngine.preload(next);
+    }
   }
 
   /** Handle a `welcome` frame (first connect or a reconnect): sets `role`/`#worldGrants`/

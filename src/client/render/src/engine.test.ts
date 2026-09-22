@@ -1867,6 +1867,26 @@ describe("idle-skip", () => {
     expect(scaleSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("applies the texture budget at start and re-pushes only on change", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, textureBudgetBytes: 111 };
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const budgetSpy = vi.spyOn(backend, "setTextureBudget");
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => settings,
+    });
+    engine.start();
+    expect(budgetSpy).toHaveBeenCalledTimes(1);
+    expect(backend.textureBudgetBytes).toBe(111);
+    backend.runTicker(16);
+    expect(budgetSpy).toHaveBeenCalledTimes(1); // unchanged: no re-push
+    settings.textureBudgetBytes = 222;
+    backend.runTicker(16);
+    expect(budgetSpy).toHaveBeenCalledTimes(2);
+    expect(backend.textureBudgetBytes).toBe(222);
+  });
+
   it("a renderScale change on an idle engine renders on that tick (the backing-store realloc blanks the canvas)", () => {
     const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true, renderScale: 1 };
     const { backend } = makeLiveIdleEngine(settings);

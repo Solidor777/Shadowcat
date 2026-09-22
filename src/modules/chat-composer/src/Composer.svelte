@@ -196,6 +196,15 @@
   const showCounter = $derived(trimmed.length > COUNTER_THRESHOLD);
   const canSend = $derived(trimmed.length > 0 && !overLimit);
 
+  // In-flight guard: a second Enter/click while the `chat:composer-send` hook chain is still
+  // running must not send the draft twice. Checked alongside `canSend` and reflected in the
+  // Send button's `disabled`. Scoped to the HOOK's own await, not the wire round-trip: an
+  // ordinary accepted chat op carries no ack frame and its promise settles only on the
+  // client's silence timeout (`WsClient.trackChatOp`'s multi-second window), so gating on
+  // that resolution would leave every message's Send control disabled for the whole timeout
+  // window on the common, successful path — see `send`'s own doc for the guard's exact scope.
+  let sending = $state(false);
+
   const placeholder = $derived(audience.kind === "gm_only" ? t("chat.composer.placeholderGm") : t("chat.composer.placeholder", { name: placeholderName }));
 
   // Speak-as-token indicator: mirrors how the sticky actor `<select>` above surfaces its own
@@ -224,37 +233,90 @@
     textarea.style.height = `${textarea.scrollHeight}px`;
   }
 
+  /** Identity of the most recent send attempt, claimed when `send` starts — before the
+   * `chat:composer-send` hook's await, and kept even if the hook vetoes. A rejection restores its
+   * own draft only while its attempt is still the latest one, so an earlier rejection can never
+   * overwrite the composer once a later attempt has begun, whether that attempt is still in its
+   * hook, was vetoed, or has been dispatched. */
+  let latestSend = 0;
+
   /** Sends the trimmed draft, clears the input optimistically, and surfaces a server
-   * rejection inline via `errorMsg` instead of the message vanishing.
+   * rejection inline via `errorMsg` instead of the message vanishing. Before the frame is
+   * built, runs the draft through the `chat:composer-send` hook (`ctx.hooks.emitMutate`) —
+   * a module-authored system command implementation may rewrite the text or veto the send
+   * entirely; this composer applies whichever outcome the hook chain settled on and never
+   * inspects the text itself. The optimistic clear only fires when `value` still equals the
+   * snapshot taken before that hook's await — a slow hook must not discard text the author
+   * typed while it was in flight. INVARIANT: `sending` is scoped to the hook's own await, not
+   * to `ctx.chat.send`'s returned promise — an ordinary accepted chat op resolves that promise
+   * only on `WsClient.trackChatOp`'s silence timeout (there is no ack frame for a successful
+   * send), so awaiting it inside the guard would disable the Send control for that whole
+   * timeout window on every ordinary message. The hook call and the frame build run inside a
+   * `try`/`finally` that resets `sending` on every exit from THAT region, including a
+   * SYNCHRONOUS throw from the hook (a `.finally()` attached only to a promise can never
+   * observe a throw that happens before any promise exists to attach to). The dispatched send
+   * itself settles independently, fire-and-forget with its own `.catch` surfacing a later
+   * rejection via `errorMsg` and restoring `draftAtSend` into the composer — but ONLY when no
+   * later send attempt has started (`latestSend`) and the composer is still empty, so neither
+   * text the author typed while the rejection was in flight nor a later attempt's state is ever
+   * overwritten.
    * @example
    * ```
    * // internal; wired to the send button and Enter (see onKeydown)
-   * send();
+   * void send();
    * ```
    */
-  function send(): void {
-    if (!canSend) return;
+  async function send(): Promise<void> {
+    if (!canSend || sending) return;
+    sending = true;
     errorMsg = null;
-    // /-commands (e.g. "/roll 1d6") ride verbatim — the server (chat::parse_command) is the
-    // sole parser that decides what a command MEANS (MessageKind, whisper targets); this
-    // composer never inspects or branches on content shape before sending. (MessageCard's
-    // own ROLL_COMMAND_PREFIXES strips a prefix purely for DISPLAY of an already-server-
-    // classified roll message — a separate, read-only concern from parsing at send time.)
-    const pendingToken = ctx.speakAsToken.consume();
-    const actorOwner: WireActorOwnerRef | undefined = pendingToken
-      ? { kind: "token_instance", token_id: pendingToken }
-      : ctx.speakAs.actorId
-        ? { kind: "actor", actor_id: ctx.speakAs.actorId }
-        : undefined;
-    // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
-    // (correlated by request_id under the seam) instead of the message vanishing.
-    Promise.resolve(
-      ctx.chat.send(actorOwner ? { channel, content: trimmed, audience, actorOwner } : { channel, content: trimmed, audience }),
-    ).catch((e: unknown) => {
+    const thisSend = ++latestSend;
+    // Snapshot the draft actually being sent, taken before the hook's await — compared against
+    // `value` after the await to decide whether the optimistic clear is still safe to apply.
+    const draftAtSend = value;
+    try {
+      const outgoing = await ctx.hooks.emitMutate("chat:composer-send", { text: trimmed, cancel: false });
+      if (outgoing.cancel) return;
+      // /-commands (e.g. "/roll 1d6") ride verbatim past THIS composer — the server
+      // (chat::parse_command) is the sole parser that decides what a command MEANS
+      // (MessageKind, whisper targets); a module may still rewrite the text above via the hook
+      // (e.g. to implement its own client-only slash command), but whatever text results is
+      // never itself inspected or branched on here. (MessageCard's own ROLL_COMMAND_PREFIXES
+      // strips a prefix purely for DISPLAY of an already-server-classified roll message — a
+      // separate, read-only concern from parsing at send time.)
+      const pendingToken = ctx.speakAsToken.consume();
+      const actorOwner: WireActorOwnerRef | undefined = pendingToken
+        ? { kind: "token_instance", token_id: pendingToken }
+        : ctx.speakAs.actorId
+          ? { kind: "actor", actor_id: ctx.speakAs.actorId }
+          : undefined;
+      // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
+      // (correlated by request_id under the seam) instead of the message vanishing. Not
+      // awaited here — see the guard's own doc for why blocking on the wire round-trip would
+      // disable Send for the ordinary-success silence-timeout window.
+      Promise.resolve(
+        ctx.chat.send(actorOwner ? { channel, content: outgoing.text, audience, actorOwner } : { channel, content: outgoing.text, audience }),
+      ).catch((e: unknown) => {
+        errorMsg = e instanceof Error ? e.message : t("chat.composer.sendFailed");
+        // Restore the sent draft only if no later send attempt has started and the composer is
+        // still empty — text typed since the optimistic clear, or anything a later attempt
+        // owns, must never be overwritten by a rejection surfacing for this earlier send.
+        if (thisSend === latestSend && value === "") {
+          value = draftAtSend;
+          queueMicrotask(autoGrow);
+        }
+      });
+      // Only clear a draft the author has not since changed — text typed during the hook's
+      // await must survive rather than being silently discarded by this optimistic clear.
+      if (value === draftAtSend) {
+        value = "";
+        queueMicrotask(autoGrow);
+      }
+    } catch (e: unknown) {
       errorMsg = e instanceof Error ? e.message : t("chat.composer.sendFailed");
-    });
-    value = "";
-    queueMicrotask(autoGrow);
+    } finally {
+      sending = false;
+    }
   }
 
   /** Clears a stale rejection notice as soon as the author starts a fresh message, and
@@ -285,7 +347,7 @@
     if (e.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      void send();
     }
     // Shift+Enter falls through to the textarea's default newline insertion.
   }
@@ -316,7 +378,7 @@
   {#if imagesEnabled}
     <button type="button" data-testid="image-insert" title={t("chat.composer.insertImage")} onclick={() => void insertImage()}>🖼</button>
   {/if}
-  <button type="button" onclick={send} disabled={!canSend}>{t("chat.composer.send")}</button>
+  <button type="button" onclick={() => void send()} disabled={!canSend || sending}>{t("chat.composer.send")}</button>
 </div>
 {#if docPickerOpen}
   <div class="doc-picker">

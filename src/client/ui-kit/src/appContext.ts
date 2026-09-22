@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -15,6 +15,14 @@ import type { PerformanceController } from "./performance.svelte";
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
+/** Plural-selection function shape, matching `I18n.plural` (framework-neutral; the Svelte
+ * adapter supplies a reactive implementation). */
+export type PluralFunc = (key: string, count: number, params?: Record<string, string | number>) => string;
+
+/** Locale-aware string comparator shape, matching `I18n.compare` (framework-neutral; the Svelte
+ * adapter supplies a reactive implementation). */
+export type CompareFunc = (a: string, b: string) => number;
 
 /** Options for `AppContext.subscribeScene`. Shares its one field's shape with `@shadowcat/shell`'s
  * `SubscribeSceneOpts` by coincidence, not by a package-boundary dependency — check that type too
@@ -172,6 +180,14 @@ export interface AppContext {
   members: Map<string, string>;
   /** Translate a key to the active locale's string. */
   t: TFunc;
+  /** Select a plural-category message for `count` — see `I18n.plural`. Every module that needs
+   * plural-aware text goes through this seam (never the ui-kit `i18n` singleton directly), so a
+   * test can fixture-override it exactly like `t`. */
+  plural: PluralFunc;
+  /** Compare two strings under the active locale's collation order — see `I18n.compare`. Every
+   * module that needs a locale-aware sort goes through this seam (never the ui-kit `i18n`
+   * singleton directly), so a test can fixture-override it exactly like `t`. */
+  compare: CompareFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;
   /** Pick-mode orchestration (stable ref). The asset-browser overlay renders
@@ -385,6 +401,25 @@ export interface AppContext {
      * @returns A function that removes this listener. */
     onVfx(cb: (msg: VfxNotice) => void): () => void;
   };
+  /** Emit surface onto the shared `HookBus` for statically-declared (`CoreHooks`) hook names —
+   * a component-facing counterpart to `ModuleContext.hooks`, which a module's `register` uses
+   * for LISTENING (`ctx.hooks.on`). A Svelte component has no `ModuleContext` of its own, so
+   * this is the one seam through which built-in UI (e.g. the chat composer) emits a hook a
+   * module registered against. */
+  hooks: HooksEmitApi;
+}
+
+/** The component-facing hook-emission surface (see `AppContext.hooks`). Deliberately narrower
+ * than `ModuleContext.hooks`: emitting is a host/built-in-UI concern, while `defineHook`/`on`
+ * stay module-only (declared once by the seam that owns the hook, e.g.
+ * `defineChatComposerHooks`, and subscribed to via a module's own `register`). */
+export interface HooksEmitApi {
+  /** Emits a mutate-kind hook by its statically-known `CoreHooks` name, threading `payload`
+   * through every registered listener in priority order.
+   * @param name A key declared on `CoreHooks`.
+   * @param payload The initial payload, declared for `name` on `CoreHooks`.
+   * @returns The payload after every listener has had a chance to transform it. */
+  emitMutate<K extends keyof CoreHooks>(name: K, payload: CoreHooks[K]): Promise<CoreHooks[K]>;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

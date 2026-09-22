@@ -63,7 +63,7 @@ async function enableImages(baseUrl: string, world: string, cookie: string, ws: 
   const doc = docs[0];
   const intent: ClientMsg = {
     type: "intent",
-    intent_id: "22222222-2222-2222-2222-222222222222",
+    intent_id: "22222222-2222-4222-8222-222222222222",
     ops: [{ op: "update", doc_id: doc.id, changes: [{ path: "/engine/images", old: doc.engine.images, new: true }] }],
   };
   ws.send(intent);
@@ -166,7 +166,7 @@ test("[[asset:<nonexistent-id>]] is refused with UnknownAsset's text, as a whisp
   // this suite's existing `recalc-roll.e2e.test.ts` precedent of awaiting the
   // send directly rather than racing a shorter timeout.
   let sawChatError = false;
-  const nonexistentId = "44444444-4444-4444-4444-444444444444";
+  const nonexistentId = "44444444-4444-4444-8444-444444444444";
   try {
     await gm.sendChatMessage({ channel: "general", content: `[[asset:${nonexistentId}]]` });
   } catch {

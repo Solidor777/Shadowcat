@@ -123,6 +123,11 @@ export interface MediaElementLike {
   play(): Promise<void>;
   /** Pause playback in place. */
   pause(): void;
+  /** Trigger the browser's fetch of `src` without starting playback — assigning `src` alone
+   * queues a source but does not itself guarantee a fetch begins; `load()` is the explicit
+   * trigger, needed by a detached element (nothing else references/plays it) such as
+   * `AudioEngine.preload`'s prefetch element. */
+  load(): void;
   /** Natural-end callback (playback reached the resource's end — never fired by `pause()`).
    * `TrackPlayer` uses it for the client-observed track-end report (`AudioOp::TrackEnded`).
    * The parameter is the DOM `Event` (typed so both the DOM handler signature and a bare

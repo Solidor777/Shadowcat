@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
-  import { getPointer, firstChannel, parseNoteBody, buildNoteDoc, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
+  import { getPointer, firstChannel, parseNoteBody, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
 
   // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
@@ -194,7 +194,8 @@
    * ```
    */
   function newChild(): void {
-    const child = buildNoteDoc(ctx.world, t("sheetNote.untitled"), "", { parentId: docId, owner: ctx.selfId });
+    const sort = appendNoteSortKey(ctx.documents.query(NOTE_DOC_TYPE), docId);
+    const child = buildNoteDoc(ctx.world, t("sheetNote.untitled"), "", { parentId: docId, owner: ctx.selfId, sort });
     ctx.dispatchIntent([{ op: "create", doc: child }]);
     ctx.openDocument({ docId: child.id });
   }

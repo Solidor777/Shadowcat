@@ -78,7 +78,7 @@ function createActorIntent(world: string, id: string, name: string): ClientMsg {
           parent_id: null,
           engine: {
             displayName: name,
-            visual: { kind: "image", asset: "a.png" },
+            visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" },
             size: { w: 1, h: 1 },
             shape: "square",
             faction: null,
@@ -143,8 +143,8 @@ test("doc_types narrows a search to the listed types", async () => {
   await sleep(400);
 
   const word = "wyverncrest";
-  gm.send(createActorIntent(world, "cccccccc-cccc-cccc-cccc-cccccccccccc", `Actor ${word}`));
-  gm.send(createNoteIntent(world, "dddddddd-dddd-dddd-dddd-dddddddddddd", `A note about ${word}`));
+  gm.send(createActorIntent(world, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", `Actor ${word}`));
+  gm.send(createNoteIntent(world, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", `A note about ${word}`));
   await sleep(400); // settle both creates
 
   const notesOnly = await gm.search(word, { limit: 20, docTypes: ["note"] });

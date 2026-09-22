@@ -5,14 +5,21 @@
   let { groups, onApply, onCancel }: {
     /** The conflict groups to present, one per instance. */
     groups: ConflictGroup[];
-    /** Called with the chosen "theirs" paths per group key when the user applies. */
-    onApply: (theirsByGroup: Map<string, Set<string>>) => void;
+    /** Called with the chosen "theirs" paths per group key when the user applies. May return a
+     * promise; Apply/Cancel stay disabled until it settles, so a caller whose dispatch is
+     * genuinely asynchronous (unlike the eager-close production wiring) gets a submit guard. */
+    onApply: (theirsByGroup: Map<string, Set<string>>) => void | Promise<void>;
     /** Called when the user cancels (Escape or the cancel button) with no changes applied. */
     onCancel: () => void;
   } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  // Guards Apply/Cancel against a second submit while `onApply`'s dispatch is in flight;
+  // re-enabled unconditionally on settle (success or failure) so a rejected dispatch never
+  // strands the modal.
+  let submitting = $state(false);
 
   // Radio group name per (group,field). Group keys are opaque document/instance UUIDs
   // and never contain a space, so the join is unambiguous in practice; a NUL-byte join
@@ -53,14 +60,22 @@
    * `"theirs"` choices is omitted entirely (its conflicts all resolve to "mine" implicitly).
    * @example apply();
    */
-  function apply(): void {
+  async function apply(): Promise<void> {
     const out = new Map<string, Set<string>>();
     for (const g of groups) {
       const set = new Set<string>();
       for (const c of g.conflicts) if (choice[rowKey(g.key, c.path)] === "theirs") set.add(c.path);
       if (set.size > 0) out.set(g.key, set);
     }
-    onApply(out);
+    submitting = true;
+    try {
+      await onApply(out);
+    } catch {
+      // Re-enable regardless of cause; this modal has no error-presentation surface of its
+      // own — a caller needing failure feedback surfaces it through the notification channel.
+    } finally {
+      submitting = false;
+    }
   }
 </script>
 
@@ -95,8 +110,8 @@
       </ul>
     {/each}
     <div class="actions">
-      <button type="button" class="cancel" onclick={onCancel}>{t("templates.conflict.cancel")}</button>
-      <button type="button" class="apply" onclick={apply}>{t("templates.conflict.apply")}</button>
+      <button type="button" class="cancel" disabled={submitting} onclick={onCancel}>{t("templates.conflict.cancel")}</button>
+      <button type="button" class="apply" disabled={submitting} onclick={apply}>{t("templates.conflict.apply")}</button>
     </div>
   </div>
 </div>

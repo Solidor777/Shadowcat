@@ -57,7 +57,7 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           // the ingress gate. `system` is unused by this test.
           engine: {
             displayName: name,
-            visual: { kind: "image", asset: "a.png" },
+            visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" },
             size: { w: 1, h: 1 },
             shape: "square",
             faction: null,
@@ -98,8 +98,8 @@ test("a player's live subscription updates on a readable create and never leaks 
   });
   await gm.start();
   await sleep(300);
-  gm.send(createIntent(world, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Readable Griffon", "observer"));
-  gm.send(createIntent(world, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Secret Griffon", "none"));
+  gm.send(createIntent(world, "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", "Readable Griffon", "observer"));
+  gm.send(createIntent(world, "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", "Secret Griffon", "none"));
 
   // Within the debounce window the player gets an update with ONLY the readable one.
   await sleep(900);

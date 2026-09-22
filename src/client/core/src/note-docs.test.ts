@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { buildNoteDoc, parseNoteBody, NOTE_DOC_TYPE } from "./note-docs";
+import { buildNoteDoc, parseNoteBody, appendNoteSortKey, NOTE_DOC_TYPE } from "./note-docs";
 import { AUTHOR_CAPS } from "./scene-docs";
 import type { WireDocument } from "./wire";
 
@@ -43,6 +43,21 @@ describe("buildNoteDoc", () => {
   test("the whole document is JSON.stringify-friendly (no bigint reaches the wire)", () => {
     const doc = buildNoteDoc("w1", null, "hello", { sort: 5 });
     expect(() => JSON.stringify(doc)).not.toThrow();
+  });
+});
+
+describe("appendNoteSortKey", () => {
+  test("allocates the density constant for the first child of an empty parent", () => {
+    expect(appendNoteSortKey([], null)).toBe(1000);
+  });
+
+  test("allocates one density step past the highest existing sibling, ignoring other doc_types and other parents", () => {
+    const a = buildNoteDoc("w1", "A", "", { id: "a", sort: 0 });
+    const b = buildNoteDoc("w1", "B", "", { id: "b", sort: 1000 });
+    const child = buildNoteDoc("w1", "C", "", { id: "c", parentId: "a", sort: 500 });
+    const other = { ...buildNoteDoc("w1", "Other", "", { id: "o" }), doc_type: "item" };
+    expect(appendNoteSortKey([a, b, child, other], null)).toBe(2000);
+    expect(appendNoteSortKey([a, b, child, other], "a")).toBe(1500);
   });
 });
 

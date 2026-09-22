@@ -510,6 +510,9 @@ export class RenderEngine implements SceneToolHost {
         this.dirty = true;
         this.backend.setRenderScale(perf.renderScale);
       }
+      if (lastPerf === null || perf.textureBudgetBytes !== lastPerf.textureBudgetBytes) {
+        this.backend.setTextureBudget(perf.textureBudgetBytes);
+      }
       // Live budget flips: the overlay and the token projection must react on THIS tick, not on
       // the next committed frame / document commit (which may never come).
       if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
@@ -554,6 +557,7 @@ export class RenderEngine implements SceneToolHost {
     const initialPerf = this.perf();
     this.backend.setFrameCap(fpsCapToTickerValue(initialPerf.fpsCap));
     this.backend.setRenderScale(initialPerf.renderScale);
+    this.backend.setTextureBudget(initialPerf.textureBudgetBytes);
     this.lastPerf = { ...initialPerf }; // snapshot, not the getter's reference — see the ticker
     // One unconditional initial frame: the reconciles above pushed every initial draw (each one
     // marked the dirty flag through `wrapDirtyTracking`). Rendering now — rather than waiting

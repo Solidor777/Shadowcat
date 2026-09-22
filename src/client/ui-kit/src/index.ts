@@ -2,9 +2,9 @@
 // import these seams from here — never from each other (the contract-only
 // element boundary).
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
-export type { AppContext, TFunc } from "./appContext";
+export type { AppContext, TFunc, HooksEmitApi } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
-export { t, locale, i18n } from "./i18n.svelte";
+export { t, locale, i18n, plural, compare } from "./i18n.svelte";
 export { notifications, activeNotifications } from "./notifications.svelte";
 export { default as NotificationHost } from "./NotificationHost.svelte";
 export { SceneInteractionBridge } from "./sceneInteraction";

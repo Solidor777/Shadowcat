@@ -65,6 +65,12 @@ export default defineConfig({
       SHADOWCAT_LOGIN_PER_MIN_PER_IP: "10000",
       SHADOWCAT_INVITE_PER_MIN_PER_ACCOUNT: "10000",
       SHADOWCAT_INVITE_PER_MIN_PER_IP: "10000",
+      // Same reasoning as the login/invite overrides above, for `POST /api/worlds`'s
+      // per-account budget (`WORLD_CREATE_PER_MIN_PER_ACCOUNT=10`): each worker's
+      // seeded identity creates far more than 10 worlds across the whole suite, and
+      // `reuseExistingServer` keeps one server (and its sliding-window throttle state)
+      // alive across repeated local invocations of a subset of specs.
+      SHADOWCAT_WORLD_CREATE_PER_MIN_PER_ACCOUNT: "10000",
     },
   },
   // `trace` is the only forensic channel for a CI-only failure: the suite runs

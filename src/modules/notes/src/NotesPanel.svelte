@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { NOTE_DOC_TYPE, buildNoteDoc, type WireDocument, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { NOTE_DOC_TYPE, buildNoteDoc, appendNoteSortKey, type WireDocument, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import NoteTree from "./NoteTree.svelte";
   import { buildNoteTree, type NoteTreeNode } from "./tree";
 
@@ -54,7 +54,8 @@
   function create(): void {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const doc = buildNoteDoc(ctx.world, trimmed, "", { owner: ctx.selfId });
+    const sort = appendNoteSortKey(allNotes, null);
+    const doc = buildNoteDoc(ctx.world, trimmed, "", { owner: ctx.selfId, sort });
     ctx.dispatchIntent([{ op: "create", doc }]);
     ctx.openDocument({ docId: doc.id });
     name = "";

@@ -106,8 +106,8 @@ test("draw_table: a nested Draw fans out to row.nested, redacted spec/raw at eve
   const plCookie = await login(server.baseUrl, "pl", "pw");
   const { world } = server.fixture;
 
-  const tableB = "10000000-0000-0000-0000-0000000000b1";
-  const tableA = "10000000-0000-0000-0000-0000000000a1";
+  const tableB = "10000000-0000-4000-8000-0000000000b1";
+  const tableA = "10000000-0000-4000-8000-0000000000a1";
 
   const gm = new WsClient({ world, connect: nodeConnect(server.wsUrl, world, gmCookie), handlers: { onCommand: () => {} } });
   await gm.start();
@@ -203,7 +203,7 @@ test("draw_table: a player draw against a permissions.default:'none' table is re
   const plCookie = await login(server.baseUrl, "pl", "pw");
   const { world } = server.fixture;
 
-  const hiddenTable = "10000000-0000-0000-0000-0000000000e1";
+  const hiddenTable = "10000000-0000-4000-8000-0000000000e1";
 
   const gm = new WsClient({ world, connect: nodeConnect(server.wsUrl, world, gmCookie), handlers: { onCommand: () => {} } });
   await gm.start();
@@ -241,7 +241,7 @@ test("draw_table: a table whose row draws itself is refused as a cycle", async (
   const gmCookie = await login(server.baseUrl, "gm", "pw");
   const { world } = server.fixture;
 
-  const selfTable = "10000000-0000-0000-0000-0000000000c1";
+  const selfTable = "10000000-0000-4000-8000-0000000000c1";
 
   const gm = new WsClient({ world, connect: nodeConnect(server.wsUrl, world, gmCookie), handlers: { onCommand: () => {} } });
   await gm.start();
@@ -275,7 +275,7 @@ test("draw_table: a DrawRule::Formula table matches the row whose range contains
   const gmCookie = await login(server.baseUrl, "gm", "pw");
   const { world } = server.fixture;
 
-  const formulaTable = "10000000-0000-0000-0000-0000000000f1";
+  const formulaTable = "10000000-0000-4000-8000-0000000000f1";
 
   const gm = new WsClient({ world, connect: nodeConnect(server.wsUrl, world, gmCookie), handlers: { onCommand: () => {} } });
   await gm.start();

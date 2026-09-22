@@ -36,9 +36,26 @@ export const STOP: unique symbol = Symbol("hook.stop");
  * for `"mutate"`, and is checked against `false`/`STOP` for `"cancel"`. */
 export type Handler<P> = (payload: P) => unknown | Promise<unknown>;
 
+/** Payload for `core:hook-fault` — carries the faulting hook's name and the error a listener
+ * threw. Fire-and-forget observability, not a control surface: nothing about dispatch to the
+ * ORIGINAL hook's remaining listeners changes because of this (that isolation already existed;
+ * see `HookBus`'s own class doc). */
+export interface HookFaultPayload {
+  /** The hook name whose listener threw. */
+  hook: string;
+  /** The error the listener threw (or rejected with). */
+  error: unknown;
+}
+
 /** Declaration-merge `name -> payload` here to type a first-party hook. */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface CoreHooks {}
+export interface CoreHooks {
+  /** Fires whenever any hook's listener throws or rejects, across `emitInfo`/`emitMutate`/
+   * `emitCancel` alike — see `HookFaultPayload`. Pre-declared on every `HookBus` instance (no
+   * `defineHook` call needed before listening). Recursion-guarded: a listener registered on
+   * THIS hook that itself throws is isolated by the ordinary per-listener catch and never
+   * produces a second `core:hook-fault` dispatch. */
+  "core:hook-fault": HookFaultPayload;
+}
 
 /** A registered listener, as stored internally per hook name (not exported). */
 interface Listener {
@@ -68,6 +85,8 @@ export class HookBus {
   private seqCounter = 0;
 
   /** Builds a hook bus that logs handler failures and undefined-hook emits to `logger`.
+   * Pre-declares `core:hook-fault` (see `HookFaultPayload`) so a listener may register against
+   * it immediately, with no `defineHook` call required first.
    * @param logger Diagnostic sink for a throwing handler or an emit on an undefined/
    * wrong-kind hook.
    * @example
@@ -77,7 +96,34 @@ export class HookBus {
    * const hooks = new HookBus(silentLogger);
    * ```
    */
-  constructor(private readonly logger: Logger) {}
+  constructor(private readonly logger: Logger) {
+    this.defs.set("core:hook-fault", { version: "1.0.0", kind: "info" });
+    this.listeners.set("core:hook-fault", []);
+  }
+
+  /** Fire-and-forget `core:hook-fault` dispatch for a listener that threw on `name`. Guards only
+   * GENUINE re-entrancy: a fault raised BY a listener registered on `core:hook-fault` itself
+   * (`name === "core:hook-fault"`) is dropped, since dispatching a second fault for it would
+   * recurse forever — that throw is still isolated by the ordinary per-listener catch in
+   * `emitInfo`, just without a further fault dispatch. Every other case dispatches
+   * unconditionally: a second synchronous fault from a DIFFERENT listener on the SAME hook, a
+   * concurrent fault on a DIFFERENT hook, and a fault raised while an earlier `core:hook-fault`
+   * dispatch is still in flight (including one that never resolves) all still produce their own
+   * `core:hook-fault` dispatch — a persistent "one fault at a time" flag would instead drop the
+   * first two cases and let a single hung `core:hook-fault` listener silently disable fault
+   * reporting for the rest of the session.
+   * @param name The hook name whose listener threw.
+   * @param error The error the listener threw (or rejected with).
+   * @example
+   * ```
+   * // internal; called from each emit* method's catch block
+   * this.emitFault("example:event", new Error("boom"));
+   * ```
+   */
+  private emitFault(name: string, error: unknown): void {
+    if (name === "core:hook-fault") return;
+    void this.emitInfo("core:hook-fault", { hook: name, error });
+  }
 
   /** Declares a hook name's kind and version. Re-declaring an existing name only
    * throws if `def.version` differs from the version already on record — a
@@ -243,6 +289,7 @@ export class HookBus {
         await l.handler(payload);
       } catch (err) {
         this.logger.error(`hook ${name} handler threw`, err);
+        this.emitFault(name, err);
       }
     }
   }
@@ -300,6 +347,7 @@ export class HookBus {
         cur = (await l.handler(cur)) as P;
       } catch (err) {
         this.logger.error(`hook ${name} handler threw; carrying prior payload`, err);
+        this.emitFault(name, err);
       }
     }
     return cur;
@@ -343,6 +391,7 @@ export class HookBus {
         }
       } catch (err) {
         this.logger.error(`hook ${name} handler threw`, err);
+        this.emitFault(name, err);
       }
     }
     return { cancelled: false };

@@ -64,7 +64,7 @@ async function tryCreate(
 
   const intent: ClientMsg = {
     type: "intent",
-    intent_id: "22222222-2222-2222-2222-222222222222",
+    intent_id: "22222222-2222-4222-8222-222222222222",
     ops: [{ op: "create", doc }],
   };
   client.send(intent);
@@ -108,7 +108,7 @@ test("Create token with an unknown engine field is rejected (invalid)", async ()
   const cookie = await login(server.baseUrl, "gm", "pw");
   const { world } = server.fixture;
 
-  const doc = baseDoc("33333333-3333-3333-3333-333333333333", world, "token", {
+  const doc = baseDoc("33333333-3333-4333-8333-333333333333", world, "token", {
     engine: {
       x: 0,
       y: 0,
@@ -128,7 +128,7 @@ test("Create item with an engine body is rejected (item is not engine-defined)",
   const cookie = await login(server.baseUrl, "gm", "pw");
   const { world } = server.fixture;
 
-  const doc = baseDoc("44444444-4444-4444-4444-444444444444", world, "item", {
+  const doc = baseDoc("44444444-4444-4444-8444-444444444444", world, "item", {
     // "item" is a client-only doc_type — the server has no engine
     // struct for it, so ANY populated `engine` body is rejected.
     engine: {},
