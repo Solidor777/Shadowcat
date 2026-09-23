@@ -1,4 +1,4 @@
-import type { ReadableDocuments, WireDocument, RegionEngine } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, RegionEngine, RegionShape, CompoundShapePart } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { rectPoints, circlePoints } from "./geometry";
@@ -83,15 +83,54 @@ export class RegionView {
 }
 
 /**
+ * Tessellates ONE wire `RegionShape` (`{kind, points}`) into a flat-point closed ring:
+ * `rect`/`circle`/`polygon` each require an exact-or-minimum `points` count for that kind
+ * (bbox corners, center+radius, or `>=3` vertices respectively) and tessellate via
+ * `rectPoints`/`circlePoints`, or pass authored polygon points through unchanged. Returns
+ * `null` for a missing/malformed shape, an unrecognized `kind`, a wrong point count, or any
+ * non-finite coordinate. Exported so `regionShapeSpec` (per region part) and scene-tools'
+ * compound-authoring preview tessellate through the ONE outline rule, never a forked copy.
+ * @param shape The wire shape to tessellate.
+ * @returns The flat ring points, or `null` when the shape can't be outlined.
+ * @example
+ * ```ts
+ * import { regionShapeOutline } from "@shadowcat/render";
+ *
+ * regionShapeOutline({ kind: "rect", points: [0, 0, 10, 10] }); // [0,0, 10,0, 10,10, 0,10]
+ * regionShapeOutline({ kind: "hexagon", points: [] }); // null
+ * ```
+ */
+export function regionShapeOutline(shape: RegionShape | undefined): number[] | null {
+  if (!shape?.kind || !Array.isArray(shape.points)) return null;
+  const pts = shape.points;
+  if (!pts.every((n) => Number.isFinite(n))) return null;
+  switch (shape.kind) {
+    case "rect":
+      return pts.length === 4 ? rectPoints(pts[0], pts[1], pts[2], pts[3]) : null;
+    case "circle":
+      return pts.length === 3 ? circlePoints(pts[0], pts[1], pts[2]) : null;
+    case "polygon":
+      return pts.length >= 6 && pts.length % 2 === 0 ? pts : null;
+    default:
+      return null;
+  }
+}
+
+/**
  * Tessellates a `region` doc's `engine.shape` into a flat-point `ShapeNodeSpec`, tinted by
  * `behavior` via `BEHAVIOR_FILL` (an unrecognized/absent `behavior` falls back to the
- * `terrain` color). `rect`/`circle`/`polygon` each require an exact-or-minimum `points`
- * count for that kind (bbox corners, center+radius, or `>=3` vertices respectively) and
- * tessellate via `rectPoints`/`circlePoints`, or pass authored polygon points through
- * unchanged. Returns `null` for a missing/malformed `engine.shape`, an unrecognized
- * `kind`, a wrong point count, or any non-finite coordinate — a malformed doc simply
- * doesn't render. Exported so `scene-tools`' hit-test can reuse the SAME tessellation
- * this view draws from, rather than forking a second copy of the shape math.
+ * `terrain` color). `engine.shape` is the untagged `RegionGeometry` union: a bare
+ * `RegionShape` object (the legacy singular wire form — one additive ring) or an array of
+ * `{shape, hole}` parts. Parts compose as the
+ * union of additive rings minus the hole rings: additive rings fill/stroke as one node
+ * (`points` = the first, `extraParts` = the rest), hole rings ride `holes` and are
+ * subtracted at draw time by the backend's per-shape inverse mask (the fog sheets' own
+ * `setMask({ inverse: true })` mechanism — NOT a winding-reversal, which Pixi's per-subpath
+ * tessellation does not honor). One malformed part nulls the WHOLE spec (mirroring the
+ * server's whole-region fail-closed parse), as does a compound with no additive part (a
+ * holes-only region covers nothing, so nothing renders). Exported so `scene-tools`' hit-test
+ * can reuse the SAME tessellation this view draws from, rather than forking a second copy
+ * of the shape math.
  * @param doc The `region` document to convert.
  * @returns A `ShapeNodeSpec` for the `regions` layer, or `null` if it can't be rendered.
  * @example
@@ -105,33 +144,31 @@ export class RegionView {
  */
 export function regionShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as RegionEngine | undefined;
-  const shape = s?.shape;
-  if (!shape?.kind || !Array.isArray(shape.points)) return null;
-  const pts = shape.points;
-  if (!pts.every((n) => Number.isFinite(n))) return null;
-
-  let points: number[];
-  switch (shape.kind) {
-    case "rect":
-      if (pts.length !== 4) return null;
-      points = rectPoints(pts[0], pts[1], pts[2], pts[3]);
-      break;
-    case "circle":
-      if (pts.length !== 3) return null;
-      points = circlePoints(pts[0], pts[1], pts[2]);
-      break;
-    case "polygon":
-      if (pts.length < 6 || pts.length % 2 !== 0) return null;
-      points = pts;
-      break;
-    default:
-      return null;
+  const geometry = s?.shape;
+  if (!geometry) return null;
+  // Elements typed nullable: the optimistic store can hold unvalidated engine data
+  // pre-rejection, so a `null` array element must fail the whole spec closed rather than
+  // throw inside the reconciler or the hit-test — the same "one malformed part drops the
+  // whole spec" rule as any other structural defect.
+  const parts: (CompoundShapePart | null)[] = Array.isArray(geometry)
+    ? geometry
+    : [{ shape: geometry, hole: false }];
+  const additive: number[][] = [];
+  const holes: number[][] = [];
+  for (const part of parts) {
+    const outline = regionShapeOutline(part?.shape);
+    if (!outline) return null;
+    if (part?.hole === true) holes.push(outline);
+    else additive.push(outline);
   }
+  if (additive.length === 0) return null;
 
   const color = BEHAVIOR_FILL[s?.behavior ?? ""] ?? BEHAVIOR_FILL.terrain;
   return {
     layer: "regions",
-    points,
+    points: additive[0],
+    extraParts: additive.length > 1 ? additive.slice(1) : undefined,
+    holes: holes.length > 0 ? holes : undefined,
     closed: true,
     stroke: { color, width: STROKE_WIDTH },
     fill: { color, alpha: FILL_ALPHA },

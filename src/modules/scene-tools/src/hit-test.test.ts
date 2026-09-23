@@ -102,6 +102,26 @@ test("topRegionAt: a malformed shape (bad point count) never renders or picks", 
   expect(topRegionAt([region], { x: 5, y: 5 })).toBeNull();
 });
 
+test("topRegionAt: a compound region hits its additive parts but never a hole", () => {
+  // Compound wire form: additive bbox [0,0]-[10,10] with a [2,2]-[4,4] hole. A click in the
+  // hole must hit whatever lies BENEATH the region (the server's post-hole coverage read),
+  // a click in the ring picks the region, and a second disjoint additive part also picks.
+  const compound = buildRegionDoc(
+    "w1", "scene1",
+    regionEngine({
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 10, 10] }, hole: false },
+        { shape: { kind: "rect", points: [20, 20, 30, 30] }, hole: false },
+        { shape: { kind: "rect", points: [2, 2, 4, 4] }, hole: true },
+      ],
+    }),
+    "r1",
+  );
+  expect(topRegionAt([compound], { x: 5, y: 5 })).toBe("r1");
+  expect(topRegionAt([compound], { x: 25, y: 25 })).toBe("r1");
+  expect(topRegionAt([compound], { x: 3, y: 3 })).toBeNull();
+});
+
 // --- topDrawingAt ---
 
 const drawingEngine = (over: Partial<DrawingEngine> = {}): DrawingEngine => ({

@@ -294,8 +294,20 @@ export interface ShapeNodeSpec {
    * `CORE_LAYERS`. */
   layer: string;
   /** Flat `[x0,y0,x1,y1,…]` scene-coord points, already tessellated before reaching the
-   * backend. */
+   * backend. For a compound (multi-part) shape this is the FIRST additive ring; the rest
+   * are `extraParts`. */
   points: number[];
+  /** Additional additive rings unioned with `points` in the same fill/stroke (a compound
+   * region's second-and-later additive parts). Absent for every single-shape node; the
+   * rings overlap-blend under the shared fill alpha, which is the accepted rendering of two
+   * overlapping parts of ONE authored region (the parts' union is what the server composes
+   * cell-wise — this is a drawing, not the coverage read). */
+  extraParts?: number[][];
+  /** Hole rings subtracted from the additive union, rendered by the backend through an
+   * inverse mask (the fog sheets' own `setMask({ inverse: true })` mechanism, per-region)
+   * and excluded from hit-testing — a point inside a hole is NOT inside the shape. Absent
+   * for every shape with no hole parts. */
+  holes?: number[][];
   /** `true` draws the point list as a closed polygon (fill-eligible); `false` as an open
    * polyline (no fill). */
   closed: boolean;

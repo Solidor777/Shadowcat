@@ -132,6 +132,8 @@ export type { ElevationBand } from "./generated/engine/ElevationBand";
 export type { Seg } from "./generated/engine/Seg";
 export type { RegionEngine } from "./generated/engine/RegionEngine";
 export type { RegionShape } from "./generated/engine/RegionShape";
+export type { RegionGeometry } from "./generated/engine/RegionGeometry";
+export type { CompoundShapePart } from "./generated/engine/CompoundShapePart";
 export type { RegionTrigger } from "./generated/engine/RegionTrigger";
 export type { TriggerEvent } from "./generated/engine/TriggerEvent";
 export type { TriggerEffect } from "./generated/engine/TriggerEffect";

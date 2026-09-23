@@ -7,7 +7,7 @@ export { TokenView } from "./token-view";
 export { DrawingView, drawingShapeSpec } from "./drawing-view";
 export { TemplateView, templateShapeSpec } from "./template-view";
 export { WallView } from "./wall-view";
-export { RegionView, regionShapeSpec } from "./region-view";
+export { RegionView, regionShapeSpec, regionShapeOutline } from "./region-view";
 export { LightView } from "./light-view";
 export { PingView, type PingRing } from "./ping-view";
 export { EmoteView, type EmoteGlyph } from "./emote-view";

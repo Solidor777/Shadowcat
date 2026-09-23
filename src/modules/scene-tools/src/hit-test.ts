@@ -241,7 +241,13 @@ function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) 
     const spec = toSpec(doc);
     if (!spec) continue;
     if (spec.closed) {
-      if (pointInPolygon(spec.points, p)) closedHit = doc.id;
+      // Compound containment: inside the additive union (the primary ring or any extra
+      // part) and NOT inside any hole ring — a click in a region's hole hits whatever
+      // lies beneath the region, matching the server's post-hole coverage read.
+      const inAdditive =
+        pointInPolygon(spec.points, p) || (spec.extraParts ?? []).some((ring) => pointInPolygon(ring, p));
+      const inHole = (spec.holes ?? []).some((ring) => pointInPolygon(ring, p));
+      if (inAdditive && !inHole) closedHit = doc.id;
     } else {
       const d = distanceToPolyline(spec.points, p);
       if (d <= openBest) {

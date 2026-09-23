@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
@@ -1059,4 +1059,62 @@ test("the rail renders one button per SCENE_TOOL_CONTRACT contribution and click
   // A built-in activation clears the contributed one (mutual exclusion).
   await fireEvent.click(screen.getByTestId("tool-ping"));
   expect(fx.getAttribute("aria-pressed")).toBe("false");
+});
+
+// The compound-region part-list gesture, driven through the REAL rail: arming via
+// `region-part-add` switches the region tool's drags from immediate single-shape persists
+// to staged parts (no document until commit), the per-row hole checkbox flips that part's
+// flag, and `region-create-commit` folds the whole list into ONE compound region doc.
+test("the compound region gesture stages parts via the rail and commits one compound region", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  const tool = tools.at(-1)!;
+  const ev = {} as PointerEvent;
+
+  // Arm the compound gesture, then drag two rects — nothing may persist yet.
+  await fireEvent.click(screen.getByTestId("region-part-add"));
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  await fireEvent.click(screen.getByTestId("region-part-add"));
+  tool.onPointerDown({ x: 200, y: 200 }, ev);
+  tool.onPointerUp({ x: 300, y: 300 }, ev);
+  expect(dispatched).toEqual([]);
+
+  // The rail lists both staged parts with a hole checkbox each; flip the second row's.
+  await waitFor(() => expect(screen.getAllByTestId("region-part-hole")).toHaveLength(2));
+  const holeBoxes = screen.getAllByTestId("region-part-hole");
+  await fireEvent.click(holeBoxes[1]);
+
+  await fireEvent.click(screen.getByTestId("region-create-commit"));
+  expect(dispatched).toHaveLength(1);
+  const op = dispatched[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.doc_type).toBe("region");
+    expect(op.doc.engine).toMatchObject({
+      behavior: "terrain",
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "rect", points: [200, 200, 300, 300] }, hole: true },
+      ],
+    });
+  }
+  // The gesture reset: the part rows are gone, and a plain drag persists immediately again.
+  await waitFor(() => expect(screen.queryByTestId("region-part-hole")).toBeNull());
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 50, y: 50 }, ev);
+  expect(dispatched).toHaveLength(2);
+  const single = dispatched[1][0];
+  if (single.op === "create") {
+    expect(single.doc.engine).toMatchObject({ shape: { kind: "rect", points: [0, 0, 50, 50] } });
+  }
 });

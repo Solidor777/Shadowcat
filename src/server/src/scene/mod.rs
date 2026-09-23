@@ -2977,7 +2977,7 @@ impl SceneEcs {
             if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
                 continue;
             }
-            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
+            let Some(parts) = regions::parse_region_shape(&region_eng.shape) else {
                 continue;
             };
             let behavior = match region_eng.behavior.as_str() {
@@ -2986,14 +2986,14 @@ impl SceneEcs {
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
-            builder.add(&shape, behavior, cost, cell, &*grid);
+            builder.add_parts(&parts, behavior, cost, cell, &*grid);
         }
         Some(builder.build())
     }
 
     /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
-    /// per ENABLED region carrying at least one trigger, each row's cells rasterized through the
-    /// SAME `regions::rasterize` the composed `region_field` above uses — one geometry
+    /// per ENABLED region carrying at least one trigger, each row's cells composed through the
+    /// SAME `regions::rasterize_compound` the composed `region_field` above uses — one geometry
     /// derivation feeds both consumers, so this table and the authoritative field cannot
     /// disagree about a region's coverage (the parity battery pins that agreement). There is no
     /// per-requester form: triggers fire on the server's authoritative view, springing secret
@@ -3078,9 +3078,9 @@ impl SceneEcs {
                 return None;
             }
         }
-        let shape = regions::parse_region_shape(&region_eng.shape)?;
+        let parts = regions::parse_region_shape(&region_eng.shape)?;
         let grid = self.resolve_grid_shape(scene, cell);
-        let cells = regions::rasterize(&shape, cell, &*grid)?;
+        let cells = regions::rasterize_compound(&parts, cell, &*grid)?;
         Some(regions::TriggerRegion {
             region_id: doc.id,
             visible_to_all: engine_geometry_visible_to_world(doc),

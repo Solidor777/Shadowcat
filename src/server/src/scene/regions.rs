@@ -150,6 +150,53 @@ pub(crate) fn rasterize(
     Some(out)
 }
 
+/// Rasterize a region's normalized `(shape, hole)` part list into the COMPOSED cell set: the
+/// union of every additive (`hole: false`) part's cells, minus every hole part's cells. This is
+/// the one composition rule both region consumers read — `RegionFieldBuilder::add_parts` (the
+/// composed `RegionField`) and `SceneEcs::build_trigger_region` (the trigger identity rows) —
+/// so a token standing in a hole counts as outside the region for movement AND for triggers
+/// alike. Each part rasterizes through `rasterize` itself, so every part's own AABB is
+/// individually capped by the existing `MAX_REGION_CELLS` guard (bounding the WORK done before
+/// subtraction), and ANY part failing closed fails the WHOLE region to `None` — never a
+/// partially-composed set (a silently-dropped hole could silently make an impassable region
+/// passable in a spot the GM thought was excluded). The FINAL composed count is additionally
+/// capped at `MAX_REGION_CELLS` POST-subtraction: many individually-in-cap additive parts must
+/// not sum past the per-region bound (a huge additive shape with a huge hole that nets a small
+/// final area is NOT rejected — the cap applies to the result, not to any intermediate).
+/// Cells keep first-seen order across the additive parts (a single additive part therefore
+/// yields byte-identical output to `rasterize` alone).
+pub(crate) fn rasterize_compound(
+    parts: &[(RegionShape, bool)],
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Option<Vec<Cell>> {
+    let mut union: Vec<Cell> = Vec::new();
+    let mut membership: BTreeSet<Cell> = BTreeSet::new();
+    for (shape, hole) in parts {
+        if *hole {
+            continue;
+        }
+        for c in rasterize(shape, cell, grid)? {
+            if membership.insert(c) {
+                union.push(c);
+            }
+        }
+    }
+    for (shape, hole) in parts {
+        if !*hole {
+            continue;
+        }
+        for c in rasterize(shape, cell, grid)? {
+            membership.remove(&c);
+        }
+    }
+    union.retain(|c| membership.contains(c));
+    if union.len() as i64 > MAX_REGION_CELLS {
+        return None;
+    }
+    Some(union)
+}
+
 /// Whether point `p` (a cell center) lies inside `shape`. Rect/circle edges
 /// are inclusive; the polygon branch is even-odd PNPOLY, whose exact-boundary
 /// behavior is winding-dependent, not uniformly inclusive.
@@ -230,7 +277,7 @@ impl RegionField {
     ///
     /// ```text
     /// let mut b = RegionField::builder();
-    /// b.add(&shape, RegionBehavior::Terrain, 2.0, cell, grid);
+    /// b.add_parts(&[(shape, false)], RegionBehavior::Terrain, 2.0, cell, grid);
     /// let field = b.build();
     /// ```
     pub(crate) fn builder() -> RegionFieldBuilder {
@@ -304,6 +351,11 @@ pub(crate) struct RegionFieldBuilder {
 impl RegionFieldBuilder {
     /// Add one region's rasterized cells + behavior/cost. Skips (contributes nothing) on a
     /// fail-closed rasterization failure — never silently all-passes an over-cap/degenerate shape.
+    /// The single-shape convenience spelling of `add_parts` (a legacy one-part region), kept so
+    /// every additive contribution routes through the ONE composition rule. Production callers
+    /// always feed the normalized part list from `parse_region_shape`, so this spelling exists
+    /// for the single-shape fixtures only.
+    #[cfg(test)]
     pub(crate) fn add(
         &mut self,
         shape: &RegionShape,
@@ -312,7 +364,22 @@ impl RegionFieldBuilder {
         cell: f64,
         grid: &dyn crate::scene::grid_shape::GridShape,
     ) {
-        let Some(cells) = rasterize(shape, cell, grid) else {
+        self.add_parts(&[(shape.clone(), false)], behavior, cost, cell, grid);
+    }
+
+    /// Add one compound region's composed cells + behavior/cost: the union of its additive
+    /// parts minus its hole parts, through `rasterize_compound`. Skips (contributes nothing)
+    /// when the composition fails closed — never silently all-passes a region one of whose
+    /// parts is over-cap or degenerate.
+    pub(crate) fn add_parts(
+        &mut self,
+        parts: &[(RegionShape, bool)],
+        behavior: RegionBehavior,
+        cost: f64,
+        cell: f64,
+        grid: &dyn crate::scene::grid_shape::GridShape,
+    ) {
+        let Some(cells) = rasterize_compound(parts, cell, grid) else {
             return;
         };
         for c in cells {
@@ -332,13 +399,41 @@ impl RegionFieldBuilder {
     }
 }
 
-/// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionShape` — a raw
-/// `{kind, points}` pair, `deny_unknown_fields`-checked at write time) into this module's
+/// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionGeometry` — the
+/// untagged legacy/compound union, whose hand-written `Deserialize` routes each wire form
+/// through its inner struct's own `deny_unknown_fields` at write time) into
+/// the normalized `(shape, hole)` part list every downstream consumer reads. A legacy
+/// `RegionGeometry::Single` normalizes to a one-element additive list the moment parsing
+/// completes, so `rasterize_compound`, the composed `RegionField` and the trigger identity rows
+/// never branch on which wire form was stored. Fails closed to `None` for the WHOLE region when
+/// ANY part fails to parse (an unrecognized `kind` or a point count that doesn't match it) or a
+/// compound list is empty — a partially-valid compound region is NOT partially rasterized, since
+/// a silently-dropped hole could silently make an impassable region passable in a spot the GM
+/// thought was excluded, which is far worse than dropping the whole region.
+pub(crate) fn parse_region_shape(
+    shape: &crate::data::engine::RegionGeometry,
+) -> Option<Vec<(RegionShape, bool)>> {
+    match shape {
+        crate::data::engine::RegionGeometry::Single(s) => Some(vec![(parse_one_shape(s)?, false)]),
+        crate::data::engine::RegionGeometry::Compound(parts) => {
+            if parts.is_empty() {
+                return None;
+            }
+            let mut out = Vec::with_capacity(parts.len());
+            for part in parts {
+                out.push((parse_one_shape(&part.shape)?, part.hole));
+            }
+            Some(out)
+        }
+    }
+}
+
+/// Parse ONE wire `data::engine::RegionShape` (a raw `{kind, points}` pair) into this module's
 /// `RegionShape` enum. Still structural-only past this function's own kind/point-count
 /// dispatch: an
 /// unrecognized `kind` or a `points` length that doesn't match the kind fails closed to `None`
 /// (the caller then drops the region entirely, never half-parses it).
-pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
+fn parse_one_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
     let points = &shape.points;
     match shape.kind.as_str() {
         "rect" if points.len() == 4 => Some(RegionShape::Rect {
@@ -362,7 +457,7 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
 
 /// One trigger-bearing region's identity row: which cells it covers, which
 /// triggers it carries, and whether every world member can see its `/engine`
-/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize` the
+/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize_compound` the
 /// composed `RegionField` uses — one rasterizer feeds both consumers, so an
 /// identity row and the composed field can never disagree about a region's
 /// coverage (the parity battery pins this).

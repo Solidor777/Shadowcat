@@ -3,7 +3,7 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, buildRegionDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController, SnapModePreference } from "@shadowcat/ui-kit";
@@ -1128,4 +1128,59 @@ test("an antialias-flip backend re-init replaces the canvas element and the data
   expect(host.dataset.fpsCap).toBe("30");
   expect(host.dataset.renderScale).toBe("0.75");
   expect(host.dataset.idleSkip).toBe("1");
+});
+
+test("exposes the viewed scene's region geometry forms as data-region-shapes", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "sA", {
+          shape: [
+            { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+            { shape: { kind: "circle", points: [50, 50, 25] }, hole: true },
+          ],
+          behavior: "terrain",
+          cost: 1,
+          enabled: true,
+          triggers: [],
+          elevation: null,
+        }, "r-compound"),
+      },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "sA", {
+          shape: { kind: "circle", points: [50, 50, 25] },
+          behavior: "arrest",
+          cost: 1,
+          enabled: true,
+          triggers: [],
+          elevation: null,
+        }, "r-legacy"),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // Id-sorted; a `!` prefix marks the hole part of the compound form; the legacy singular
+  // form reports its bare kind.
+  expect(host.dataset.regionShapes).toBe("r-compound:rect+!circle;r-legacy:circle");
 });

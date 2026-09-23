@@ -1556,6 +1556,101 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     assert!(!rows.iter().any(|r| r.cells.contains(&(4, 0))));
 }
 
+/// A compound-region doc fixture: additive bar `[0,0]-[300,100]` with its middle cell
+/// `[100,0]-[200,100]` holed out, behavior `behavior`, carrying `triggers`.
+fn compound_region_doc(
+    id: u128,
+    scene_id: uuid::Uuid,
+    behavior: &str,
+    triggers: serde_json::Value,
+) -> crate::data::document::Document {
+    let mut d = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(id),
+        "region",
+    );
+    d.parent_id = Some(scene_id);
+    d.engine = Some(serde_json::json!({
+        "shape": [
+            { "shape": { "kind": "rect", "points": [0.0, 0.0, 300.0, 100.0] }, "hole": false },
+            { "shape": { "kind": "rect", "points": [100.0, 0.0, 200.0, 100.0] }, "hole": true }
+        ],
+        "behavior": behavior,
+        "cost": 1.0,
+        "enabled": true,
+        "triggers": triggers,
+    }));
+    d
+}
+
+#[test]
+fn region_field_composes_compound_parts_additive_minus_holes() {
+    // The composed field reads the POST-HOLE cell set: the additive bar's flanking cells are
+    // impassable, the holed-out middle cell is passable again.
+    let scene_id = crate::test_ids::test_uuid(10);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
+            compound_region_doc(20, scene_id, "impassable", serde_json::json!([])),
+        ],
+        0,
+    );
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
+    assert!(field.is_impassable((0, 0)));
+    assert!(field.is_impassable((2, 0)));
+    assert!(
+        !field.is_impassable((1, 0)),
+        "the holed cell subtracts out of the impassable region"
+    );
+}
+
+#[test]
+fn a_token_standing_in_a_hole_does_not_count_as_entered() {
+    // The trigger identity rows are built from the SAME composed (post-hole) cell set the
+    // movement field reads: a token whose entered cells are exactly a region's hole is NOT
+    // "in the region" for trigger purposes, and never fires its Enter trigger.
+    let scene_id = crate::test_ids::test_uuid(10);
+    let enter = serde_json::json!([
+        { "on": "enter", "effect": { "type": "condition_add", "condition": "x" } }
+    ]);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(
+                crate::test_ids::test_uuid(9),
+                scene_id,
+                "scene",
+            ),
+            compound_region_doc(20, scene_id, "terrain", enter),
+        ],
+        0,
+    );
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND)
+        .expect("scene exists");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert!(row.cells.contains(&(0, 0)) && row.cells.contains(&(2, 0)));
+    assert!(
+        !row.cells.contains(&(1, 0)),
+        "the trigger row's cells are the composed set, holes excluded"
+    );
+    assert!(
+        crate::scene::regions::fired_triggers(&rows, &[(1, 0)], None, &[]).is_empty(),
+        "a token standing in the hole is not standing in the region"
+    );
+    assert_eq!(
+        crate::scene::regions::fired_triggers(&rows, &[(0, 0)], None, &[]).len(),
+        1,
+        "positive control: the additive flank still fires the Enter trigger"
+    );
+}
+
 #[test]
 fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
     // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.

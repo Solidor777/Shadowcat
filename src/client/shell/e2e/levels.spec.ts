@@ -308,3 +308,42 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
     await playerCtx.close();
   }
 });
+
+// Compound-region authoring via the ToolRail part-list gesture: arm the gesture, drag an
+// additive shape, arm the next part, drag it too, mark the second part a hole, then commit —
+// the resulting region document's `shape` is the compound wire form (`RegionGeometry`'s
+// array of `{shape, hole}` parts) with the second part's `hole: true`, proven through the
+// stage's `data-region-shapes` observability attribute (the `data-wall-segments` precedent).
+// The plain single-drag flow persists a region immediately on release — exercised by the
+// teleport test above.
+test("compound region authoring: stage an additive part and a hole part, then commit", async ({
+  page,
+  account,
+}) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Compound Region World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = stageHost(page);
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await page.getByTestId("tool-region").click();
+  // Arm the compound gesture, then drag the first (additive) part; the drag stages the part
+  // instead of persisting — no region document exists until the whole list commits.
+  await page.getByTestId("region-part-add").click();
+  await dragScene(page, { x: 150, y: 150 }, { x: 350, y: 350 });
+  await expect(page.getByTestId("region-part-hole")).toHaveCount(1);
+  // Arm the next part and drag it; mark the second part the hole.
+  await page.getByTestId("region-part-add").click();
+  await dragScene(page, { x: 200, y: 200 }, { x: 300, y: 300 });
+  const holeBoxes = page.getByTestId("region-part-hole");
+  await expect(holeBoxes).toHaveCount(2);
+  await holeBoxes.nth(1).check();
+
+  await page.getByTestId("region-create-commit").click();
+
+  // One region doc in the compound wire form: additive rect + hole rect (authored order).
+  await expect(host).toHaveAttribute("data-region-shapes", /:rect\+!rect/, { timeout: 15_000 });
+  // The gesture reset: the part list cleared, so the rail shows no staged rows.
+  await expect(page.getByTestId("region-part-hole")).toHaveCount(0);
+});

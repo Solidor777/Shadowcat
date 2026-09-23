@@ -280,11 +280,39 @@ fn token_and_light_elevation_absent_default_to_none() {
 
 #[test]
 fn region_unknown_field_is_rejected() {
+    // A structurally-valid shape, so the ONLY defect is the smuggled top-level key —
+    // the rejection must key on the unknown field, not the shape.
     let v = json!({
-        "shape": { "kind": "rect", "points": [] },
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
         "behavior": "terrain", "cost": 1.0, "enabled": true, "bogus": 1
     });
     assert!(validate_engine("region", Some(&v)).is_err());
+}
+
+#[test]
+fn region_legacy_shape_unknown_key_is_rejected() {
+    // The same unknown-key discipline INSIDE the legacy singular `shape` object: a key
+    // `RegionShape` does not declare must reject at ingress, not deserialize-and-strip.
+    let v = region_engine_json(json!({
+        "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0], "bogus": 1
+    }));
+    assert!(validate_engine("region", Some(&v)).is_err());
+}
+
+#[test]
+fn region_compound_part_unknown_key_is_rejected() {
+    // A misspelled `hole` key is authored-intent-destroying if silently ignored (the part
+    // would read as additive): an unknown key inside a compound part must reject at
+    // ingress, never deserialize to `hole: false` by default.
+    let v = region_engine_json(json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] }, "hloe": true }
+    ]));
+    assert!(validate_engine("region", Some(&v)).is_err());
+    // Positive control: the correctly-spelled part list is admitted.
+    let ok = region_engine_json(json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] }, "hole": true }
+    ]));
+    assert!(validate_engine("region", Some(&ok)).is_ok());
 }
 
 #[test]
@@ -2117,10 +2145,10 @@ fn portal_target_rejects_a_non_finite_elevation_and_an_empty_vfx() {
 /// A `RegionEngine` carrying one `Teleport` trigger whose target is the caller's.
 fn region_with_teleport(target: PortalTarget) -> RegionEngine {
     RegionEngine {
-        shape: RegionShape {
+        shape: RegionGeometry::Single(RegionShape {
             kind: "rect".to_string(),
             points: vec![0.0, 0.0, 1.0, 1.0],
-        },
+        }),
         behavior: "terrain".to_string(),
         cost: 1.0,
         enabled: true,
@@ -2161,4 +2189,74 @@ fn teleport_effect_round_trips_through_the_engine_wire_shape() {
         n["triggers"][0]["effect"]["target"]["vfx"],
         "11111111-1111-1111-1111-111111111111"
     );
+}
+
+/// A base region engine body in the legacy singular wire form; `shape` is replaceable.
+fn region_engine_json(shape: serde_json::Value) -> serde_json::Value {
+    json!({
+        "shape": shape,
+        "behavior": "terrain", "cost": 1.0, "enabled": true, "triggers": [],
+    })
+}
+
+#[test]
+fn region_geometry_round_trips_both_wire_forms_byte_identically() {
+    // The untagged-union migration-freedom contract: a legacy singular `shape` object and a
+    // compound `shape` array each deserialize into `RegionEngine` AND re-serialize to their
+    // OWN form — `normalize_engine`'s typed round-trip can never silently rewrite a stored
+    // document from one form to the other. This is the server-side half of the wire
+    // round-trip the client's generated types also pin.
+    let legacy = json!({ "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] });
+    let n = normalize_engine_opt("region", Some(&region_engine_json(legacy.clone())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        n["shape"], legacy,
+        "the legacy form survives ingress unchanged"
+    );
+
+    let compound = json!([
+        { "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false },
+        { "shape": { "kind": "circle", "points": [2.0, 2.0, 1.0] }, "hole": true }
+    ]);
+    let n = normalize_engine_opt("region", Some(&region_engine_json(compound.clone())))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        n["shape"], compound,
+        "the compound form survives ingress unchanged"
+    );
+}
+
+#[test]
+fn region_validate_shape_structure_and_part_bounds() {
+    // The ONE structural shape check: an unrecognized kind is rejected at ingress for BOTH
+    // wire forms (it would otherwise be stored and silently dropped read-side — the same
+    // fail-closed outcome, moved to the earliest boundary).
+    assert!(validate_engine(
+        "region",
+        Some(&region_engine_json(
+            json!({ "kind": "hexagon", "points": [] })
+        ))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&region_engine_json(json!([
+            { "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false },
+            { "shape": { "kind": "hexagon", "points": [] }, "hole": true }
+        ])))
+    )
+    .is_err());
+
+    // A compound list must declare at least one part and at most MAX_REGION_SHAPE_PARTS.
+    assert!(validate_engine("region", Some(&region_engine_json(json!([])))).is_err());
+    let over: Vec<serde_json::Value> = (0..=crate::data::engine::MAX_REGION_SHAPE_PARTS)
+        .map(|_| json!({ "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false }))
+        .collect();
+    assert!(validate_engine("region", Some(&region_engine_json(json!(over)))).is_err());
+    let at_cap: Vec<serde_json::Value> = (0..crate::data::engine::MAX_REGION_SHAPE_PARTS)
+        .map(|_| json!({ "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false }))
+        .collect();
+    assert!(validate_engine("region", Some(&region_engine_json(json!(at_cap)))).is_ok());
 }

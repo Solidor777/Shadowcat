@@ -85,3 +85,62 @@ test("with viewedLevelBand unset, a new region's engine body's elevation stays n
   const op = sent[0][0];
   if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });
+
+test("the armed compound gesture stages parts and commits ONE compound region doc", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true; // the rail's region-part-add arms the gesture
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  tool.onPointerDown({ x: 200, y: 200 }, ev);
+  tool.onPointerUp({ x: 300, y: 300 }, ev);
+  expect(sent).toHaveLength(0); // nothing exists as a document until the whole list commits
+  expect(controller.regionParts).toHaveLength(2);
+  expect(controller.regionParts[0]).toEqual({ shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false });
+
+  // The row's hole checkbox flips the part's flag in place (region-part-hole).
+  controller.regionParts[1].hole = true;
+  controller.commitRegionParts();
+
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.doc_type).toBe("region");
+    expect(op.doc.engine).toMatchObject({
+      behavior: "terrain",
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "rect", points: [200, 200, 300, 300] }, hole: true },
+      ],
+    });
+  }
+  // The gesture resets after commit: the next plain drag is an immediate single-shape
+  // persist again (the unchanged default flow).
+  expect(controller.regionParts).toHaveLength(0);
+  expect(controller.regionCompound).toBe(false);
+});
+
+test("a staged list discarded by onDeactivate leaves the plain drag flow untouched", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(controller.regionParts).toHaveLength(1);
+
+  tool.onDeactivate?.();
+  expect(controller.regionParts).toHaveLength(0);
+  expect(controller.regionCompound).toBe(false);
+  expect(sent).toHaveLength(0);
+
+  // The very next drag is the plain single-shape flow again — an armed-but-uncommitted
+  // list must never silently change what a later drag does.
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 50, y: 50 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ shape: { kind: "rect", points: [0, 0, 50, 50] } });
+  }
+});

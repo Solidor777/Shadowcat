@@ -306,36 +306,51 @@ fn eng_shape(kind: &str, points: Vec<f64>) -> crate::data::engine::RegionShape {
 #[test]
 fn parse_region_shape_rect_circle_polygon() {
     assert_eq!(
-        parse_region_shape(&eng_shape("rect", vec![0.0, 0.0, 100.0, 100.0])),
-        Some(RegionShape::Rect {
-            x0: 0.0,
-            y0: 0.0,
-            x1: 100.0,
-            y1: 100.0
-        })
+        parse_region_shape(&crate::data::engine::RegionGeometry::Single(eng_shape(
+            "rect",
+            vec![0.0, 0.0, 100.0, 100.0]
+        ))),
+        Some(vec![(
+            RegionShape::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0
+            },
+            false
+        )])
     );
     assert_eq!(
-        parse_region_shape(&eng_shape("circle", vec![50.0, 50.0, 25.0])),
-        Some(RegionShape::Circle {
-            cx: 50.0,
-            cy: 50.0,
-            r: 25.0
-        })
+        parse_region_shape(&crate::data::engine::RegionGeometry::Single(eng_shape(
+            "circle",
+            vec![50.0, 50.0, 25.0]
+        ))),
+        Some(vec![(
+            RegionShape::Circle {
+                cx: 50.0,
+                cy: 50.0,
+                r: 25.0
+            },
+            false
+        )])
     );
     assert_eq!(
-        parse_region_shape(&eng_shape(
+        parse_region_shape(&crate::data::engine::RegionGeometry::Single(eng_shape(
             "polygon",
             vec![0.0, 0.0, 100.0, 0.0, 0.0, 100.0]
-        )),
-        Some(RegionShape::Polygon {
-            points: vec![(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)]
-        })
+        ))),
+        Some(vec![(
+            RegionShape::Polygon {
+                points: vec![(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)]
+            },
+            false
+        )])
     );
 }
 
 // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry cannot
 // reach this function at all: `parse_region_shape` takes the typed, already
-// ingress-validated `engine::RegionShape { kind: String, points: Vec<f64> }` directly (a
+// ingress-validated `engine::RegionGeometry` directly (a
 // document carrying either defect fails ingress validation before persistence, so no caller
 // of this function can ever hand it one). Only the two structural checks internal to this
 // function's own dispatch — an unrecognized `kind`, or a `points` length that doesn't match
@@ -343,15 +358,251 @@ fn parse_region_shape_rect_circle_polygon() {
 #[test]
 fn parse_region_shape_malformed_is_none() {
     assert_eq!(
-        parse_region_shape(&eng_shape("rect", vec![1.0, 2.0])),
+        parse_region_shape(&crate::data::engine::RegionGeometry::Single(eng_shape(
+            "rect",
+            vec![1.0, 2.0]
+        ))),
         None,
         "rect requires exactly 4 points"
     );
     assert_eq!(
-        parse_region_shape(&eng_shape("hexagon", vec![])),
+        parse_region_shape(&crate::data::engine::RegionGeometry::Single(eng_shape(
+            "hexagon",
+            vec![]
+        ))),
         None,
         "unknown kind"
     );
+}
+
+// -----------------------------------------------------------------------
+// Compound parts: normalization + composition
+// -----------------------------------------------------------------------
+
+fn eng_geometry(parts: &[(&str, Vec<f64>, bool)]) -> crate::data::engine::RegionGeometry {
+    crate::data::engine::RegionGeometry::Compound(
+        parts
+            .iter()
+            .map(
+                |(kind, points, hole)| crate::data::engine::CompoundShapePart {
+                    shape: eng_shape(kind, points.clone()),
+                    hole: *hole,
+                },
+            )
+            .collect(),
+    )
+}
+
+#[test]
+fn parse_region_shape_single_legacy_document_still_parses() {
+    // The migration-freedom pin: a region document stored with the pre-compound wire form
+    // (`shape` as a bare `{kind, points}` object) deserializes into `RegionGeometry::Single`
+    // and normalizes to the identical one-part list the singular parser produced before —
+    // zero migration, zero read-side behavior change.
+    let legacy = serde_json::json!({ "kind": "rect", "points": [0.0, 0.0, 100.0, 100.0] });
+    let geometry: crate::data::engine::RegionGeometry = serde_json::from_value(legacy.clone())
+        .expect("the legacy singular form must still deserialize");
+    assert!(matches!(
+        geometry,
+        crate::data::engine::RegionGeometry::Single(_)
+    ));
+    // Re-serialization preserves the legacy form exactly (the untagged union round-trips
+    // each variant to its own wire shape — `normalize_engine` cannot silently rewrite a
+    // stored document's form).
+    assert_eq!(serde_json::to_value(&geometry).unwrap(), legacy);
+    assert_eq!(
+        parse_region_shape(&geometry),
+        Some(vec![(
+            RegionShape::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0
+            },
+            false
+        )]),
+        "the legacy form normalizes to one additive part"
+    );
+}
+
+#[test]
+fn parse_region_shape_fails_closed_on_one_bad_part_in_a_compound_list() {
+    // One structurally-invalid part (a rect with 2 points) drops the WHOLE region: a
+    // partially-valid compound is never partially rasterized (a silently-dropped hole could
+    // silently make an impassable region passable in a spot the GM thought was excluded).
+    assert_eq!(
+        parse_region_shape(&eng_geometry(&[
+            ("rect", vec![0.0, 0.0, 100.0, 100.0], false),
+            ("rect", vec![1.0, 2.0], true),
+        ])),
+        None,
+        "one bad part fails the whole region, whichever side of the hole flag it sits on"
+    );
+    assert_eq!(
+        parse_region_shape(&crate::data::engine::RegionGeometry::Compound(vec![])),
+        None,
+        "an empty compound list is degenerate"
+    );
+    // The same list with the bad part fixed parses both parts, preserving the hole flags.
+    assert_eq!(
+        parse_region_shape(&eng_geometry(&[
+            ("rect", vec![0.0, 0.0, 100.0, 100.0], false),
+            ("circle", vec![50.0, 50.0, 25.0], true),
+        ]))
+        .map(|parts| parts.iter().map(|(_, hole)| *hole).collect::<Vec<_>>()),
+        Some(vec![false, true]),
+        "each part's own hole flag survives normalization"
+    );
+}
+
+#[test]
+fn rasterize_compound_unions_additive_parts() {
+    // Two overlapping rects: the overlapping cell appears exactly once (a union, not a
+    // concatenation), and both rects' exclusive cells are covered.
+    let a = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 200.0,
+        y1: 100.0,
+    };
+    let b = RegionShape::Rect {
+        x0: 100.0,
+        y0: 0.0,
+        x1: 300.0,
+        y1: 100.0,
+    };
+    let cells = rasterize_compound(&[(a.clone(), false), (b, false)], 100.0, &sq(100.0)).unwrap();
+    assert_eq!(
+        cells.iter().filter(|c| **c == (1, 0)).count(),
+        1,
+        "the overlap cell is deduplicated"
+    );
+    for expected in [(0, 0), (1, 0), (2, 0)] {
+        assert!(cells.contains(&expected), "union must cover {expected:?}");
+    }
+    // A single additive part yields exactly `rasterize`'s own output (byte-identical, order
+    // included) — the legacy single-shape path composes to itself.
+    assert_eq!(
+        rasterize_compound(&[(a.clone(), false)], 100.0, &sq(100.0)).unwrap(),
+        rasterize(&a, 100.0, &sq(100.0)).unwrap(),
+        "one additive part composes to the single-shape rasterization"
+    );
+}
+
+#[test]
+fn rasterize_compound_subtracts_hole_parts() {
+    // A 3-cell additive bar with its middle cell holed out: the holed cell is excluded from
+    // the composed set, the flanking cells survive.
+    let bar = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 300.0,
+        y1: 100.0,
+    };
+    let notch = RegionShape::Rect {
+        x0: 100.0,
+        y0: 0.0,
+        x1: 200.0,
+        y1: 100.0,
+    };
+    let cells = rasterize_compound(&[(bar, false), (notch, true)], 100.0, &sq(100.0)).unwrap();
+    assert_eq!(
+        cells,
+        vec![(0, 0), (2, 0)],
+        "the hole subtracts exactly its own cells"
+    );
+    // A compound of ONLY hole parts composes to an empty (but valid) set — the region
+    // covers nothing and contributes nothing, never an error.
+    assert_eq!(
+        rasterize_compound(
+            &[(
+                RegionShape::Circle {
+                    cx: 0.0,
+                    cy: 0.0,
+                    r: 150.0
+                },
+                true
+            )],
+            100.0,
+            &sq(100.0)
+        ),
+        Some(vec![]),
+        "a holes-only compound is an empty coverage set, not a failure"
+    );
+}
+
+#[test]
+fn rasterize_compound_a_hole_outside_every_additive_part_changes_nothing() {
+    // A hole that overlaps NO additive cell is a no-op: the composed set is exactly the
+    // additive union (authoring a hole "just in case" must never widen or shrink coverage).
+    let bar = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 200.0,
+        y1: 100.0,
+    };
+    let far_hole = RegionShape::Rect {
+        x0: 900.0,
+        y0: 900.0,
+        x1: 1000.0,
+        y1: 1000.0,
+    };
+    assert_eq!(
+        rasterize_compound(&[(bar.clone(), false), (far_hole, true)], 100.0, &sq(100.0)),
+        rasterize(&bar, 100.0, &sq(100.0)),
+        "a disjoint hole changes nothing"
+    );
+    // ANY part failing closed (an over-cap AABB here) fails the whole region, even when the
+    // failing part is a hole that would have changed nothing.
+    let extreme = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 1e12,
+        y1: 1e12,
+    };
+    assert_eq!(
+        rasterize_compound(&[(bar, false), (extreme, true)], 100.0, &sq(100.0)),
+        None,
+        "a fail-closed hole part fails the whole region"
+    );
+}
+
+#[test]
+fn rasterize_compound_final_count_is_capped_post_composition() {
+    // Two disjoint additive rects, EACH individually under the per-part AABB cap
+    // (316×316 = 99,856 candidate cells), compose to 199,712 cells — over the per-region
+    // `MAX_REGION_CELLS` bound. The final composed count must fail closed, or a
+    // `MAX_REGION_SHAPE_PARTS`-sized list of at-cap parts would relax the DoS bound 32×.
+    let a = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 31_599.0,
+        y1: 31_599.0,
+    };
+    let b = RegionShape::Rect {
+        x0: 100_000.0,
+        y0: 100_000.0,
+        x1: 131_599.0,
+        y1: 131_599.0,
+    };
+    assert_eq!(
+        rasterize_compound(&[(a.clone(), false), (b, false)], 100.0, &sq(100.0)),
+        None,
+        "individually-in-cap parts must not sum past the per-region cell bound"
+    );
+    // Positive control: the same at-cap additive part with a near-full hole nets a small
+    // final area and is NOT spuriously rejected — the cap reads the POST-subtraction count.
+    let hole = RegionShape::Rect {
+        x0: 100.0,
+        y0: 0.0,
+        x1: 31_599.0,
+        y1: 31_599.0,
+    };
+    let cells = rasterize_compound(&[(a, false), (hole, true)], 100.0, &sq(100.0))
+        .expect("a huge additive shape with a huge hole netting a small area is admitted");
+    assert_eq!(cells.len(), 316, "only the left column survives the hole");
+    assert!(cells.contains(&(0, 0)));
+    assert!(!cells.contains(&(1, 0)));
 }
 
 // -----------------------------------------------------------------------

@@ -379,6 +379,128 @@ pub struct RegionShape {
     pub points: Vec<f64>,
 }
 
+/// Upper bound on a compound region's authored shape-part count (`RegionGeometry::Compound`).
+/// DoS-bounds how many shapes ONE region document can declare, independent of the per-part
+/// raster-work caps (`regions::rasterize`'s `MAX_REGION_CELLS` AABB guard, applied per part).
+pub const MAX_REGION_SHAPE_PARTS: usize = 32;
+
+/// One part of a compound region's geometry: a vector shape plus whether it CUTS a hole out of
+/// the region. `hole: false` (the default) contributes the shape additively; `hole: true`
+/// subtracts its cells from the union of the list's additive parts at rasterization time
+/// (`regions::rasterize_compound`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{CompoundShapePart, RegionShape};
+///
+/// let part = CompoundShapePart {
+///     shape: RegionShape { kind: "circle".to_string(), points: vec![5.0, 5.0, 2.0] },
+///     hole: true,
+/// };
+/// let json = serde_json::to_value(&part).unwrap();
+/// assert_eq!(json["hole"], true);
+/// // `hole` defaults to `false` when absent from the wire form.
+/// let bare: CompoundShapePart = serde_json::from_value(
+///     serde_json::json!({ "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] } }),
+/// )
+/// .unwrap();
+/// assert!(!bare.hole);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct CompoundShapePart {
+    /// The part's vector geometry.
+    pub shape: RegionShape,
+    /// `true` = subtract this shape's cells from the union of the additive parts.
+    #[serde(default)]
+    pub hole: bool,
+}
+
+/// A region document's geometry on the wire: EITHER the legacy singular `RegionShape` (every
+/// document authored before compound regions) OR a list of parts carrying per-part `hole`
+/// flags. Untagged so both forms share the one `shape` field with no document migration: an
+/// object value parses as `Single`, an array value as `Compound`, and each re-serializes to its
+/// own form, so a stored document's wire shape is preserved byte-for-byte through
+/// `normalize_engine`'s round-trip. `regions::parse_region_shape` normalizes BOTH forms to the
+/// same `(shape, hole)` part list the moment parsing completes, so every downstream consumer
+/// (rasterization, the composed `RegionField`, the trigger identity rows) sees one shape — the
+/// "ONE resolver" discipline applied to a data-shape migration rather than a flag.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RegionGeometry;
+///
+/// // The legacy singular form parses unchanged (zero migration).
+/// let legacy: RegionGeometry = serde_json::from_value(
+///     serde_json::json!({ "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }),
+/// )
+/// .unwrap();
+/// assert!(matches!(legacy, RegionGeometry::Single(_)));
+/// assert_eq!(
+///     serde_json::to_value(&legacy).unwrap(),
+///     serde_json::json!({ "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] })
+/// );
+///
+/// // The compound form is an array of `{shape, hole}` parts.
+/// let compound: RegionGeometry = serde_json::from_value(serde_json::json!([
+///     { "shape": { "kind": "rect", "points": [0.0, 0.0, 5.0, 5.0] }, "hole": false },
+///     { "shape": { "kind": "circle", "points": [2.0, 2.0, 1.0] }, "hole": true }
+/// ]))
+/// .unwrap();
+/// assert!(matches!(compound, RegionGeometry::Compound(ref parts) if parts.len() == 2));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(untagged)]
+pub enum RegionGeometry {
+    /// Legacy: one solid shape, no holes.
+    Single(RegionShape),
+    /// Compound: the union of the additive parts minus every hole part.
+    Compound(Vec<CompoundShapePart>),
+}
+
+impl<'de> Deserialize<'de> for RegionGeometry {
+    // Hand-written (the `AdditionalProperties` precedent) rather than a derive: the JSON
+    // SHAPE selects the variant — an object routes straight into `RegionShape` via
+    // `MapAccessDeserializer`, an array into `Vec<CompoundShapePart>` — so each inner
+    // struct's own `deny_unknown_fields` runs against real map access with its own error
+    // message (an unknown key inside either form names the offending key instead of the
+    // untagged derive's generic "did not match any variant" mismatch).
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct GeometryVisitor;
+        impl<'de> serde::de::Visitor<'de> for GeometryVisitor {
+            type Value = RegionGeometry;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a region shape object or a list of {shape, hole} parts")
+            }
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let shape =
+                    RegionShape::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(RegionGeometry::Single(shape))
+            }
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let parts = Vec::<CompoundShapePart>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )?;
+                Ok(RegionGeometry::Compound(parts))
+            }
+        }
+        deserializer.deserialize_any(GeometryVisitor)
+    }
+}
+
 /// Upper bound (chars) for a trigger's condition/resource id. Ids are
 /// free-form strings naming registry entries; the bound exists because a
 /// trigger is an engine-EXECUTED payload, so its fields are validated at
@@ -629,10 +751,13 @@ pub struct RegionTrigger {
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::engine::{RegionEngine, RegionShape};
+/// use shadowcat::data::engine::{RegionEngine, RegionGeometry, RegionShape};
 ///
 /// let region = RegionEngine {
-///     shape: RegionShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 5.0, 5.0] },
+///     shape: RegionGeometry::Single(RegionShape {
+///         kind: "rect".to_string(),
+///         points: vec![0.0, 0.0, 5.0, 5.0],
+///     }),
 ///     behavior: "terrain".to_string(),
 ///     cost: 2.0,
 ///     enabled: true,
@@ -645,8 +770,10 @@ pub struct RegionTrigger {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct RegionEngine {
-    /// The zone's vector geometry, scene units.
-    pub shape: RegionShape,
+    /// The zone's geometry, scene units: a single shape (the legacy wire form,
+    /// still emitted by the default authoring gesture) or a compound list of
+    /// parts with per-part hole flags — see `RegionGeometry`.
+    pub shape: RegionGeometry,
     /// "terrain" | "impassable" | "arrest" — kept a `String` in v1 (asserted
     /// by the battery).
     pub behavior: String,
@@ -670,22 +797,29 @@ pub struct RegionEngine {
 }
 
 impl RegionEngine {
-    /// Ingress validation for the trigger payloads — the one engine-EXECUTED
-    /// part of this body (the movement fields keep their read-side
-    /// fail-closed semantics and are not re-validated here). Ids must be
-    /// non-empty and `MAX_TRIGGER_ID_CHARS`-bounded, `amount` must satisfy
-    /// `Formula::validate` (finite literal or parseable formula source), and
-    /// notice text is bounded by `chat::MAX_MESSAGE_CHARS`.
+    /// Ingress validation: the shape geometry must be structurally rasterizable
+    /// (`regions::parse_region_shape`'s own kind/point-count dispatch — the ONE structural
+    /// shape check, shared so ingress and the read-side can never drift), a compound list
+    /// must declare at least one part and no more than `MAX_REGION_SHAPE_PARTS`, and the
+    /// trigger payloads — the one engine-EXECUTED part of this body (the movement fields
+    /// keep their read-side fail-closed semantics and are not re-validated here) — must
+    /// satisfy the per-effect rules. Ids must be non-empty and
+    /// `MAX_TRIGGER_ID_CHARS`-bounded, `amount` must satisfy `Formula::validate` (finite
+    /// literal or parseable formula source), and notice text is bounded by
+    /// `chat::MAX_MESSAGE_CHARS`.
     ///
     /// # Examples
     ///
     /// ```
     /// use shadowcat::data::engine::{
-    ///     RegionEngine, RegionShape, RegionTrigger, TriggerEffect, TriggerEvent,
+    ///     RegionEngine, RegionGeometry, RegionShape, RegionTrigger, TriggerEffect, TriggerEvent,
     /// };
     ///
     /// let region = RegionEngine {
-    ///     shape: RegionShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 5.0, 5.0] },
+    ///     shape: RegionGeometry::Single(RegionShape {
+    ///         kind: "rect".to_string(),
+    ///         points: vec![0.0, 0.0, 5.0, 5.0],
+    ///     }),
     ///     behavior: "terrain".to_string(),
     ///     cost: 1.0,
     ///     enabled: true,
@@ -698,6 +832,22 @@ impl RegionEngine {
     /// assert!(region.validate().is_err()); // empty condition id
     /// ```
     pub fn validate(&self) -> Result<(), String> {
+        if let RegionGeometry::Compound(parts) = &self.shape {
+            if parts.is_empty() {
+                return Err("compound region declares no shape parts".to_string());
+            }
+            if parts.len() > MAX_REGION_SHAPE_PARTS {
+                return Err(format!(
+                    "compound region exceeds {MAX_REGION_SHAPE_PARTS} shape parts"
+                ));
+            }
+        }
+        if crate::scene::regions::parse_region_shape(&self.shape).is_none() {
+            return Err(
+                "shape has an unrecognized kind or a point count that does not match it"
+                    .to_string(),
+            );
+        }
         for trigger in &self.triggers {
             match &trigger.effect {
                 TriggerEffect::ConditionAdd { condition }

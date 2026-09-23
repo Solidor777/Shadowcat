@@ -62,6 +62,71 @@ test("skips a doc with malformed shape geometry rather than pushing NaN", () => 
   expect(backend.shapes.has("r1")).toBe(false);
 });
 
+test("a compound region reconciles to one node: additive rings plus hole rings", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  // Additive bar [0,0]-[30,10] in two disjoint rects, with a hole punched out of the first.
+  const compound = regionDoc(
+    "r1",
+    [
+      { shape: { kind: "rect", points: [0, 0, 10, 10] }, hole: false },
+      { shape: { kind: "rect", points: [20, 0, 30, 10] }, hole: false },
+      { shape: { kind: "rect", points: [2, 2, 4, 4] }, hole: true },
+    ],
+    "impassable",
+  );
+  store.applyCommand(cmd(1, [{ op: "create", doc: compound }]));
+  new RegionView(store, backend).reconcile();
+  const s = backend.shapes.get("r1")!;
+  expect(s.layer).toBe("regions");
+  expect(s.closed).toBe(true);
+  expect(s.points).toEqual([0, 0, 10, 0, 10, 10, 0, 10]);
+  expect(s.extraParts).toEqual([[20, 0, 30, 0, 30, 10, 20, 10]]);
+  expect(s.holes).toEqual([[2, 2, 4, 2, 4, 4, 2, 4]]);
+});
+
+test("a legacy singular-shape region carries no extraParts or holes", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: regionDoc("r1", { kind: "rect", points: [0, 0, 10, 10] }, "terrain") }]));
+  new RegionView(store, backend).reconcile();
+  const s = backend.shapes.get("r1")!;
+  expect(s.extraParts).toBeUndefined();
+  expect(s.holes).toBeUndefined();
+});
+
+test("one malformed part drops the whole compound spec; a holes-only region renders nothing", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: regionDoc("bad", [
+      { shape: { kind: "rect", points: [0, 0, 10, 10] }, hole: false },
+      { shape: { kind: "hexagon", points: [] }, hole: true },
+    ], "terrain") },
+    { op: "create", doc: regionDoc("holes-only", [
+      { shape: { kind: "rect", points: [0, 0, 10, 10] }, hole: true },
+    ], "terrain") },
+  ]));
+  new RegionView(store, backend).reconcile();
+  expect(backend.shapes.has("bad")).toBe(false);
+  expect(backend.shapes.has("holes-only")).toBe(false);
+});
+
+test("a null part element in unvalidated engine data renders nothing instead of throwing", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  // The optimistic store can hold unvalidated engine data pre-rejection; a null array
+  // element must fail the whole spec closed, never raise inside the reconciler.
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: regionDoc("r1", [
+      { shape: { kind: "rect", points: [0, 0, 10, 10] }, hole: false },
+      null,
+    ], "terrain") },
+  ]));
+  expect(() => new RegionView(store, backend).reconcile()).not.toThrow();
+  expect(backend.shapes.has("r1")).toBe(false);
+});
+
 test("a viewedLevel function scopes reconcile() to that level's band", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

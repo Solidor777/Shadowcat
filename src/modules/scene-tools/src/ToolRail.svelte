@@ -441,6 +441,23 @@
     controller.regionTriggers.push({ on: "enter", effect: { type: "condition_add", condition: "" } });
   }
 
+  /** Arm the compound-region gesture: the region tool's drags then STAGE parts into the
+   * `regionParts` list instead of persisting a single-shape region. A second click with
+   * nothing staged yet cancels the gesture (the only escape hatch before the first drag —
+   * an armed-but-empty list commits nothing either way).
+   * @example
+   * ```
+   * toggleRegionCompound();
+   * ```
+   */
+  function toggleRegionCompound(): void {
+    if (controller.regionCompound && controller.regionParts.length === 0) {
+      controller.discardRegionParts();
+    } else {
+      controller.regionCompound = true;
+    }
+  }
+
   /** Re-seat a row's effect when its type select changes. Each effect kind carries disjoint
    * fields, so a kind switch starts that row's payload fresh rather than carrying stale keys.
    * @param trig The trigger row being edited.
@@ -620,6 +637,28 @@
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
+        <button type="button" data-testid="region-part-add" onclick={toggleRegionCompound}>{t("tools.regionPartAdd")}</button>
+        {#if controller.regionCompound || controller.regionParts.length > 0}
+          <!-- The compound part-list gesture: each row is one staged drag (additive unless its
+               hole checkbox is set); nothing exists as a document until commit folds the
+               whole list into ONE compound region. -->
+          {#each controller.regionParts as part, i (i)}
+            <div class="trigger-row">
+              <span>{part.shape.kind}</span>
+              <label>
+                <input type="checkbox" data-testid="region-part-hole" bind:checked={part.hole} />
+                {t("tools.regionPartHole")}
+              </label>
+              <button type="button" data-testid="region-part-remove" aria-label={t("tools.regionPartRemove")} title={t("tools.regionPartRemove")} onclick={() => controller.removeRegionPartAt(i)}>×</button>
+            </div>
+          {/each}
+          <button
+            type="button"
+            data-testid="region-create-commit"
+            disabled={controller.regionParts.length === 0}
+            onclick={() => controller.commitRegionParts()}
+          >{t("tools.regionCreateCommit")}</button>
+        {/if}
         {#each controller.regionTriggers as trig, i (i)}
           <div class="trigger-row">
             <select data-testid="region-trigger-on" aria-label={t("tools.triggerOn")} bind:value={trig.on}>

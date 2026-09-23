@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -404,6 +404,26 @@
             return seg ? `${seg.x1},${seg.y1}>${seg.x2},${seg.y2}` : null;
           })
           .filter((s): s is string => s !== null)
+          .sort()
+          .join(";");
+        // Read-only observability signal: each viewed-scene region's committed geometry as
+        // `id:part+part` in authored order (a `!` prefix marks a hole part), id-sorted like
+        // data-wall-segments — lets an e2e confirm which shape form (a bare kind for the
+        // legacy singular form, a `+`-joined part list for a compound) and which parts are
+        // holes a region doc stored, without inspecting WebGL pixels.
+        host.dataset.regionShapes = documents
+          .query("region")
+          .filter((r) => !vsid || r.parent_id === vsid)
+          .map((r) => {
+            const geometry = (r.engine as {
+              /** Mirrors `RegionEngine.shape`: a bare shape object (legacy singular form) or
+               * an array of `{shape, hole}` parts (compound form). */
+              shape?: RegionGeometry;
+            } | undefined)?.shape;
+            const parts = Array.isArray(geometry) ? geometry : geometry ? [{ shape: geometry, hole: false }] : [];
+            const summary = parts.map((p) => `${p.hole === true ? "!" : ""}${p.shape.kind}`).join("+");
+            return `${r.id}:${summary}`;
+          })
           .sort()
           .join(";");
         // Read-only observability signal: each viewed-scene token's last-projected badge chips

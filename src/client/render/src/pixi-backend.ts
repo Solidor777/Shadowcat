@@ -344,6 +344,12 @@ export class PixiBackend implements DisplayBackend {
   private readonly lightingGraphics = new Graphics();
   /** Shape document id → its Graphics, populated by `setShape`. */
   private readonly shapes = new Map<string, Graphics>();
+  /** Shape document id → the inverse-mask Graphics subtracting that shape's hole rings
+   * (`ShapeNodeSpec.holes`), populated by `setShape` only for shapes that carry holes and
+   * destroyed on `removeShape`/when the holes go away. Mirrors the fog sheets' own
+   * `setMask({ inverse: true })` mechanism, per shape — Pixi's per-subpath tessellation
+   * honors no winding rule, so a hole must be masked, not counter-wound. */
+  private readonly shapeMasks = new Map<string, Graphics>();
   /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
   /** VFX node id → its render node, populated by `setVfx`. */
@@ -1584,6 +1590,36 @@ export class PixiBackend implements DisplayBackend {
     if (layer && g.parent !== layer) layer.addChild(g);
     g.clear();
     paintShape(g, tokenSpec);
+    // Hole rings subtract through a per-shape inverse mask (the fog sheets' mechanism):
+    // rebuilt with the shape so an edited hole list tracks the document, and dropped
+    // entirely when the shape carries no holes. The mask is PARENTED into the shape's own
+    // layer (the fog `litHoles`/`exploredHoles` precedent) so it shares the layer's camera
+    // transform chain with the masked shape — a parentless mask keeps an identity world
+    // transform and the holes would misalign under pan/zoom. It is never drawn itself:
+    // `StencilMask.init` sets `includeInBuild = false` on the mask object (restored by
+    // `reset` when the mask detaches). No transform copy is needed — unlike the fog
+    // cross-fade capture (which renders a DETACHED container and must replicate `world`'s
+    // transform manually), the mask sits in the same subtree as the shape it masks.
+    const holes = tokenSpec.holes ?? [];
+    let mask = this.shapeMasks.get(id);
+    if (holes.length > 0) {
+      if (!mask) {
+        mask = new Graphics();
+        this.shapeMasks.set(id, mask);
+      }
+      if (layer && mask.parent !== layer) layer.addChild(mask);
+      mask.clear();
+      for (const ring of holes) {
+        if (ring.length >= 6) mask.poly(ring).fill({ color: 0xffffff });
+      }
+      g.setMask({ mask, inverse: true });
+    } else {
+      g.mask = null;
+      if (mask) {
+        mask.destroy();
+        this.shapeMasks.delete(id);
+      }
+    }
   }
 
   /** `DisplayBackend.removeShape`: destroy a drawn shape node and drop it from `this.shapes`. A
@@ -1602,6 +1638,11 @@ export class PixiBackend implements DisplayBackend {
     if (g) {
       g.destroy();
       this.shapes.delete(id);
+    }
+    const mask = this.shapeMasks.get(id);
+    if (mask) {
+      mask.destroy();
+      this.shapeMasks.delete(id);
     }
   }
 
@@ -1948,13 +1989,31 @@ export class PixiBackend implements DisplayBackend {
  * ```
  */
 function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void {
-  const p = tokenSpec.points;
+  paintRing(g, tokenSpec.points, tokenSpec.closed);
+  // Compound additive rings are always closed fills (a region is always an area).
+  for (const ring of tokenSpec.extraParts ?? []) paintRing(g, ring, true);
+  if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
+  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
+}
+
+/** Trace one ring onto `g` without filling or stroking — one shape primitive per ring, so a
+ * compound shape's additive rings share the caller's single fill/stroke.
+ * @param g The graphics context to trace into.
+ * @param p The ring's flat point list (`[x0, y0, x1, y1, ...]`); fewer than two points traces nothing.
+ * @param closed Whether the ring is closed back to its first point.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * import { Graphics } from "pixi.js";
+ * const g = new Graphics();
+ * paintRing(g, [0, 0, 10, 0, 10, 10], false);
+ * ```
+ */
+function paintRing(g: Graphics, p: number[], closed: boolean): void {
   if (p.length < 4) return; // need at least two points
   g.moveTo(p[0], p[1]);
   for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
-  if (tokenSpec.closed) g.closePath();
-  if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
-  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
+  if (closed) g.closePath();
 }
 
 /** Paint the three-state fog (unexplored darkest / explored dimmed / visible clear) onto the

@@ -447,6 +447,44 @@ describe("buildRegionDoc", () => {
     setRegionVisibility(doc, false);
     expect(doc.permissions.property_overrides["/engine"]).toBeUndefined();
   });
+
+  it("round-trips both region geometry wire forms through JSON byte-identically", () => {
+    // The untagged `RegionGeometry` union's client contract, mirroring the server-side
+    // serde round-trip (the docs-permissions "ts-rs + Zod mirror" invariant's honest
+    // form here — region engine bodies carry NO client Zod schema; the generated union
+    // type plus this JSON round-trip is the parity surface): a legacy singular shape
+    // object and a compound parts array each survive a store/JSON cycle unchanged, and
+    // the array form is distinguishable from the object form by Array.isArray alone.
+    const legacy: RegionEngine = {
+      shape: { kind: "rect", points: [0, 0, 100, 100] },
+      behavior: "terrain",
+      cost: 1,
+      enabled: true,
+      triggers: [],
+      elevation: null,
+    };
+    const compound: RegionEngine = {
+      shape: [
+        { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
+        { shape: { kind: "circle", points: [50, 50, 25] }, hole: true },
+      ],
+      behavior: "impassable",
+      cost: 1,
+      enabled: true,
+      triggers: [],
+      elevation: null,
+    };
+    for (const engine of [legacy, compound]) {
+      const revived = JSON.parse(JSON.stringify(buildRegionDoc("world1", "scene1", engine))) as { engine: RegionEngine };
+      expect(revived.engine).toEqual(engine);
+    }
+    const shape = (JSON.parse(JSON.stringify(compound.shape)) as RegionEngine["shape"]);
+    expect(Array.isArray(shape)).toBe(true);
+    if (Array.isArray(shape)) {
+      expect(shape.map((p) => p.hole)).toEqual([false, true]);
+      expect(shape.map((p) => p.shape.kind)).toEqual(["rect", "circle"]);
+    }
+  });
 });
 
 describe("TokenVisual union", () => {

@@ -2,8 +2,8 @@
 // only through the public AppContext seams (the scene bridge for tool activation/snap,
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
-import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine } from "@shadowcat/core";
+import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, regionShapeOutline, type SceneTool, type Point, type ShapeNodeSpec } from "@shadowcat/render";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
@@ -319,6 +319,22 @@ export class ToolController {
    * empty list persists a plain movement-only region). Editing a row in the rail must never
    * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
   regionTriggers = $state<RegionTrigger[]>([]);
+  /** The staged parts of an in-progress COMPOUND region (the ToolRail part-list gesture):
+   * each entry is one dragged shape plus its `hole` flag, held here — NOT in any document —
+   * until `commitRegionParts` folds the whole list into ONE region doc (`RegionGeometry`'s
+   * compound wire form). Empty in the default single-shape flow (a plain drag persists
+   * immediately and never touches this list). */
+  regionParts = $state<CompoundShapePart[]>([]);
+  /** Whether the region tool is in the compound part-staging gesture (armed via the rail's
+   * `region-part-add` button). While true, a drag with the region tool STAGES a part into
+   * `regionParts` instead of persisting a region; while false, a drag persists a legacy
+   * singular-shape region immediately (the default flow). Cleared by
+   * `commitRegionParts`, by removing the last staged part, and by the tool's `onDeactivate`. */
+  regionCompound = $state<boolean>(false);
+  /** The scene the staged `regionParts` were dragged in (their coordinates are meaningful
+   * only there). A stage in a different scene restarts the list; a commit against a
+   * different scene refuses — a part list can never silently land in the wrong scene. */
+  #regionPartsScene: string | null = null;
   /** The `regionTriggers` row index currently awaiting a stage click to capture a `Teleport`
    * trigger's target x/y, or `null` when no pick is in progress. `ToolRail` reads this to show
    * the in-progress "click on stage" prompt on the row's pick button. */
@@ -441,6 +457,103 @@ export class ToolController {
       this.#pickOriginalScene = null;
     }
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Stage one dragged shape as the next part of the in-progress compound region, marking it
+   * additive (`hole: false` — the row's own checkbox flips it in the rail). A stage whose
+   * scene differs from the list's existing parts RESTARTS the list in the new scene: the
+   * staged coordinates are scene-space, so parts from two scenes can never mix in one
+   * document. No-op shape validation here — the drag that produced the shape already ran the
+   * mode's own extent/point-count guards (`makeRegionTool`).
+   * @param shape The dragged shape's wire form (`{kind, points}`).
+   * @param sceneId The active scene the drag happened in.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * ```
+   */
+  stageRegionPart(shape: RegionShape, sceneId: string): void {
+    if (this.#regionPartsScene !== null && this.#regionPartsScene !== sceneId) {
+      this.regionParts = [];
+    }
+    this.#regionPartsScene = sceneId;
+    this.regionParts.push({ shape, hole: false });
+  }
+
+  /** Remove one staged part row and refresh the staged preview overlay to match. Removing
+   * the LAST part leaves the compound gesture entirely via `discardRegionParts` (an empty
+   * list is not a flow — the next drag is a plain single-shape region again).
+   * @param i Index into `regionParts` to splice out.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.removeRegionPartAt(0);
+   * ```
+   */
+  removeRegionPartAt(i: number): void {
+    this.regionParts.splice(i, 1);
+    if (this.regionParts.length === 0) {
+      this.discardRegionParts();
+    } else {
+      this.ctx.scene.previewOverlay(stagedPartPreviews(this));
+    }
+  }
+
+  /** Discard the staged part list and leave the compound gesture (the tool's `onDeactivate`
+   * path and the remove-the-last-part path both funnel here, so "an empty list is not a
+   * compound flow" holds everywhere). Also clears the stage overlay the staged preview
+   * painted.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.discardRegionParts();
+   * ```
+   */
+  discardRegionParts(): void {
+    this.regionParts = [];
+    this.regionCompound = false;
+    this.#regionPartsScene = null;
+    this.ctx.scene.clearOverlay();
+  }
+
+  /** Persist the staged part list as ONE compound region doc (`RegionGeometry`'s compound
+   * wire form — an array of `{shape, hole}` parts) into the active scene, then leave the
+   * compound gesture. No-op when nothing is staged or no scene is active; refuses (with a
+   * toast) when the active scene changed since the parts were dragged, discarding the list
+   * rather than writing scene-A coordinates into scene B. Behavior/cost/secrecy/triggers/
+   * elevation read the same controller fields the single-shape flow persists, so a compound
+   * region is configured exactly like a plain one.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.commitRegionParts();
+   * ```
+   */
+  commitRegionParts(): void {
+    const scene = activeScene(this.ctx);
+    if (!scene || this.regionParts.length === 0) return;
+    if (this.#regionPartsScene !== null && this.#regionPartsScene !== scene.id) {
+      this.ctx.notify?.(this.ctx.t("tools.regionPartsDiscarded"));
+      this.discardRegionParts();
+      return;
+    }
+    const engine: RegionEngine = {
+      // Deep copy (`$state.snapshot`, the `regionTriggers` precedent): the rail's list is
+      // cleared right after, and a reactive proxy must never reach the persisted doc.
+      shape: $state.snapshot(this.regionParts),
+      behavior: this.regionBehavior,
+      cost: Math.max(1, this.regionCost),
+      enabled: true,
+      triggers: $state.snapshot(this.regionTriggers),
+      elevation: this.ctx.viewedLevelBand?.() ?? null,
+    };
+    const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
+    if (this.regionSecret) setRegionVisibility(doc, true);
+    this.ctx.dispatchIntent([{ op: "create", doc }]);
+    this.discardRegionParts();
   }
 
   /** Toggle a contributed scene tool: re-selecting the active one clears it (back to camera),
@@ -762,17 +875,21 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
- * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only for shape/behavior/cost/secrecy/triggers (no edit UI for those — a GM re-authors
- * by delete+recreate, or toggles `enabled` server-side); the ELEVATION band is editable after
- * placement, like walls/lights: the select tool picks a region into
- * `ToolController.editingEntity` and the rail's region editor writes `/engine/elevation`.
- * The tool rail hides this tool from non-GMs (`ToolRail`'s
+ * In the default flow, release persists a single-shape `region` doc immediately (the
+ * `RegionGeometry` singular wire form) with the controller's configured behavior/cost/secrecy.
+ * The COMPOUND flow is the ToolRail part-list gesture: while `controller.regionCompound` is
+ * armed, each drag STAGES one part into `controller.regionParts` (no document yet — the
+ * region does not exist until `ToolController.commitRegionParts` folds the whole list into
+ * ONE compound `region` doc). Create-only for shape/behavior/cost/secrecy/triggers (no edit
+ * UI for those — a GM re-authors by delete+recreate, or toggles `enabled` server-side); the
+ * ELEVATION band is editable after placement, like walls/lights: the select tool picks a
+ * region into `ToolController.editingEntity` and the rail's region editor writes
+ * `/engine/elevation`. The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
  * @param controller Supplies the configured `regionShapeMode`/`regionBehavior`/`regionCost`/
- * `regionSecret`/`regionTriggers`.
+ * `regionSecret`/`regionTriggers` and the compound-flow `regionCompound`/`regionParts`.
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
@@ -797,7 +914,12 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
       const b = ctx.scene.snap(p);
       if (controller.regionShapeMode === "polygon") freehand.push(b.x, b.y);
       const { points, closed } = regionShapePath(controller.regionShapeMode, anchor, b, freehand);
-      ctx.scene.previewOverlay([{ points, closed, stroke: { color: REGION_PREVIEW_COLOR, width: 2 }, fill: null }]);
+      ctx.scene.previewOverlay([
+        // The already-staged parts stay visible behind the in-progress drag, so a compound
+        // author sees the accumulated coverage while drawing the next part.
+        ...stagedPartPreviews(controller),
+        { points, closed, stroke: { color: REGION_PREVIEW_COLOR, width: 2 }, fill: null },
+      ]);
     },
     onPointerUp(p: Point): void {
       if (!anchor) return;
@@ -808,27 +930,75 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
         mode === "polygon" ? freehand.length >= 6 : Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1;
       if (scene && hasExtentForRegion) {
         const shapePoints = regionShapeGeometry(mode, anchor, b, freehand);
-        const engine: RegionEngine = {
-          shape: { kind: mode, points: shapePoints },
-          behavior: controller.regionBehavior,
-          cost: Math.max(1, controller.regionCost),
-          enabled: true,
-          // Deep copy: the rail's list stays editable for the NEXT region, and a later
-          // row edit must never mutate the doc this persist already handed out.
-          // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
-          // array wraps its contents in is not cloneable.
-          triggers: $state.snapshot(controller.regionTriggers),
-          elevation: ctx.viewedLevelBand?.() ?? null,
-        };
-        const doc = buildRegionDoc(ctx.world, scene.id, engine);
-        if (controller.regionSecret) setRegionVisibility(doc, true);
-        ctx.dispatchIntent([{ op: "create", doc }]);
+        if (controller.regionCompound) {
+          // The compound gesture: stage the part, persist nothing — the region document is
+          // created only by `commitRegionParts`, carrying the whole list.
+          controller.stageRegionPart({ kind: mode, points: shapePoints }, scene.id);
+          ctx.scene.previewOverlay(stagedPartPreviews(controller));
+        } else {
+          const engine: RegionEngine = {
+            shape: { kind: mode, points: shapePoints },
+            behavior: controller.regionBehavior,
+            cost: Math.max(1, controller.regionCost),
+            enabled: true,
+            // Deep copy: the rail's list stays editable for the NEXT region, and a later
+            // row edit must never mutate the doc this persist already handed out.
+            // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
+            // array wraps its contents in is not cloneable.
+            triggers: $state.snapshot(controller.regionTriggers),
+            elevation: ctx.viewedLevelBand?.() ?? null,
+          };
+          const doc = buildRegionDoc(ctx.world, scene.id, engine);
+          if (controller.regionSecret) setRegionVisibility(doc, true);
+          ctx.dispatchIntent([{ op: "create", doc }]);
+          ctx.scene.clearOverlay();
+        }
+      } else if (!controller.regionCompound || controller.regionParts.length === 0) {
+        ctx.scene.clearOverlay();
       }
-      ctx.scene.clearOverlay();
       anchor = null;
       freehand = [];
     },
+    onDeactivate(): void {
+      // Mid-gesture-clear: drop the in-progress drag's state, and discard any staged
+      // compound list — an armed-but-uncommitted list must never silently change what the
+      // NEXT plain drag does after a tool swap.
+      anchor = null;
+      freehand = [];
+      if (controller.regionCompound || controller.regionParts.length > 0) {
+        controller.discardRegionParts();
+      }
+      ctx.scene.clearOverlay();
+    },
   };
+}
+
+/** Preview shapes for the parts already staged in a compound gesture: additive parts get a
+ * light fill of the region preview color, hole parts render stroke-only (a cut reads as an
+ * outline with no fill). Tessellated through the ONE outline rule (`regionShapeOutline`)
+ * the render layer draws from.
+ * @param controller The tool controller holding the staged part list.
+ * @returns One preview shape per staged part whose outline tessellates (a part that fails to outline is skipped), in list order.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/module-scene-tools
+ * declare const controller: ToolController;
+ * const previews = stagedPartPreviews(controller);
+ * ```
+ */
+function stagedPartPreviews(controller: ToolController): Omit<ShapeNodeSpec, "layer">[] {
+  const out: Omit<ShapeNodeSpec, "layer">[] = [];
+  for (const part of controller.regionParts) {
+    const points = regionShapeOutline(part.shape);
+    if (!points) continue;
+    out.push({
+      points,
+      closed: true,
+      stroke: { color: REGION_PREVIEW_COLOR, width: 2 },
+      fill: part.hole ? null : { color: REGION_PREVIEW_COLOR, alpha: 0.2 },
+    });
+  }
+  return out;
 }
 
 /** Preview points for the in-progress region drag (closed for all three shape kinds — a region
