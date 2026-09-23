@@ -562,9 +562,13 @@ pub enum SchemaType {
 /// `additionalProperties`: a bool (`false` = closed, `true` = any) or a subschema
 /// every non-`properties` key must match. Serialized untagged (`boolean | Schema`);
 /// the hand-written `Deserialize` routes a JSON object straight into `Schema` via
-/// `MapAccessDeserializer` so the inner schema's `deny_unknown_fields` is enforced
-/// (an untagged/internally-tagged derive would buffer through `Content` and drop
-/// that check — the same serde limitation documented for `TokenVisual`).
+/// `MapAccessDeserializer` so errors name the offending key, and so the inner
+/// schema's `deny_unknown_fields` enforcement never depends on derive-buffering
+/// behavior. (The serde gap this tree works around applies to INTERNALLY-TAGGED
+/// enums — the injected tag key collides with `deny_unknown_fields`, see
+/// `TokenVisual`; an untagged derive over newtype-struct variants retains the
+/// inner check, as `data::engine::RegionGeometry`'s ingress pins witness, but
+/// reports only the generic variant-mismatch error.)
 ///
 /// # Examples
 ///
