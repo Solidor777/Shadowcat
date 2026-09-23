@@ -65,9 +65,9 @@ blocksMove: boolean | null,
  */
 blocksSound: boolean | null, 
 /**
- * The elevation band this wall's sight/light occlusion applies to;
+ * The elevation band this wall's sight/light/sound occlusion applies to;
  * absent = occludes every elevation. Consulted by the movement gate exactly
- * as it is by sight/light occlusion — see `scene::elevation::band_contains`
+ * as it is by sight/light/sound occlusion — see `scene::elevation::band_contains`
  * and `SceneEcs::move_wall_entries`.
  */
 elevation: ElevationBand | null, 

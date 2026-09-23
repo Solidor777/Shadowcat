@@ -424,7 +424,7 @@
     controller.editingEntity = null;
   }
 
-  const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
+  const triggerEvents: TriggerEvent[] = ["enter", "arrest", "exit"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
   const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport"];

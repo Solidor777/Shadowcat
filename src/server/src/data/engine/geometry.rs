@@ -393,6 +393,7 @@ pub const MAX_TRIGGER_ID_CHARS: usize = 128;
 /// use shadowcat::data::engine::TriggerEvent;
 ///
 /// assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
+/// assert_ne!(TriggerEvent::Arrest, TriggerEvent::Exit);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -403,6 +404,13 @@ pub enum TriggerEvent {
     Enter,
     /// The walk was arrested while inside the region.
     Arrest,
+    /// The token's post-event OCCUPANCY no longer intersects the region while
+    /// its stored membership (`SceneEcs::region_membership`, the prior event's
+    /// occupancy-derived set) still named it — the token left the region.
+    /// "Occupancy" is the firing report's own Enter basis
+    /// (`TriggerReport::occupancy`): a move's stop center cell, a placement's
+    /// footprint.
+    Exit,
 }
 
 /// Who a trigger's chat notice may reach. `Owner` means the token's
@@ -480,8 +488,10 @@ pub enum TriggerEffect {
         audience: NoticeAudience,
     },
     /// Move the entering token to `target` — within the same scene
-    /// (`target.scene: None`) or to another scene entirely. Fires from
-    /// `TriggerEvent::Enter` only; see `ws::room::Room::fire_region_triggers`
+    /// (`target.scene: None`) or to another scene entirely. Fires wherever its
+    /// trigger's `on` event matches (conventionally `TriggerEvent::Enter`; an
+    /// `Exit`-authored teleport snaps a leaving token back); see
+    /// `ws::room::Room::fire_region_triggers`
     /// for application (same-scene Update vs cross-scene Move+Update) and the
     /// one-hop anti-loop (a destination's OWN `Enter` effects fire except
     /// another `Teleport`).
@@ -613,8 +623,9 @@ pub struct RegionEngine {
     pub cost: f64,
     /// GM toggle; a disabled region is dropped entirely at read time.
     pub enabled: bool,
-    /// Effects fired on tokens entering (or arrested inside) the region.
-    /// Absent on documents written before triggers existed (serde default).
+    /// Effects fired on tokens entering, arrested inside, or leaving the
+    /// region. Absent on documents written before triggers existed (serde
+    /// default).
     #[serde(default)]
     pub triggers: Vec<RegionTrigger>,
     /// The elevation band this region's geometry occupies; absent = every

@@ -9,6 +9,7 @@
  * use shadowcat::data::engine::TriggerEvent;
  *
  * assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
+ * assert_ne!(TriggerEvent::Arrest, TriggerEvent::Exit);
  * ```
  */
-export type TriggerEvent = "enter" | "arrest";
+export type TriggerEvent = "enter" | "arrest" | "exit";

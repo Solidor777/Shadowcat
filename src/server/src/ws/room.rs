@@ -766,6 +766,9 @@ pub struct Room {
 /// One firing report: the token that entered, the scene it happened in, the cells it
 /// entered (`MoveOutcome::entered_cells` for a move, the new footprint cells for a
 /// placement), and the arrest stop position when the walk was region-arrested.
+/// `TriggerEvent::Exit` fires from the membership diff, not a per-cell crossing:
+/// `fire_region_triggers` replaces `SceneEcs::region_membership`'s stored set with the
+/// regions intersecting `occupancy` and fires `Exit` on whatever the stored set loses.
 pub(crate) struct TriggerReport {
     /// The scene the entry happened in (derived from the token, never the request).
     pub scene: Uuid,
@@ -776,6 +779,15 @@ pub(crate) struct TriggerReport {
     pub entered: Vec<(i32, i32)>,
     /// The arrest stop position, `Some` only when the walk was region-arrested.
     pub arrest_stop: Option<(f64, f64)>,
+    /// The path-end OCCUPANCY basis for the `Exit` membership diff: the cells whose
+    /// intersection with a region's cell set makes the token "inside" it after this
+    /// report. Each call site supplies the SAME cell basis its own Enter detection
+    /// uses — a move's stop cell (the move executor's region gate and `entered` are
+    /// center-cell keyed) or a placement's full footprint — so an `Enter` and its
+    /// later `Exit` for one report kind can never drift onto different bases (a
+    /// footprint bleed past the center cell would otherwise register membership a
+    /// center-keyed `Enter` never fired, and vice versa).
+    pub occupancy: Vec<(i32, i32)>,
 }
 
 impl Room {
@@ -1759,6 +1771,7 @@ impl Room {
         // Maps MoveReject → DataError::Forbidden (all reject reasons indicate the request
         // is invalid: unknown token, too-long path, bad start, non-adjacent step).
         let outcome;
+        let stop_cell;
         let duration_ms;
         let samples;
         let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
@@ -1787,6 +1800,12 @@ impl Room {
                 footprint,
             )
             .map_err(|_| DataError::Forbidden)?;
+            // The move report's occupancy basis for the Exit membership diff: the stop's
+            // center cell — the SAME center-cell basis the executor's region gate and the
+            // report's `entered` transitions key on (`TriggerReport::occupancy`).
+            stop_cell = scene
+                .resolve_grid_shape(token_scene, cell)
+                .cell_of(outcome.stop);
             let speed_cells_per_sec = scene.resolved_animation_speed();
             // Animation speed is authored in cells/sec, so the travelled distance converts
             // through the scene shape's per-cell world distance, not its indexing scale.
@@ -1857,6 +1876,10 @@ impl Room {
         // Zero-progress move (stop == start): return immediately without writing.
         // Invariant: render_path always contains at least `start` (path.len() >= 2 was
         // validated by execute_move), so this only fires when the very first step was blocked.
+        // Skipping the fire below also skips the `SceneEcs::region_membership` update —
+        // the token's occupancy provably did not change, which is correct, but it means a
+        // stale entry (e.g. a fresh post-restart table) is NOT healed by a zero-progress
+        // move: healing defers to the first move with real progress.
         if (outcome.stop.0 - start.0).abs() < 1e-9 && (outcome.stop.1 - start.1).abs() < 1e-9 {
             let zero_samples = vec![crate::scene::move_stream::PosSamplePt {
                 t_ms: 0.0,
@@ -1979,10 +2002,12 @@ impl Room {
         // `ResourceDelta` trigger can write the very combatant/resource the decrement just
         // wrote, so effects run last and read freshly committed state (the decrement's own
         // pre-image was captured pre-commit and must not be raced by an effect write). A
-        // SEPARATE commit under `WriteOrigin::CombatTransition`, never batched with the
+        // SEPARATE commit under `WriteOrigin::Trigger`, never batched with the
         // client-origin position write — the same split discipline the position commit above
         // states. The zero-progress early return above never reaches here, and it has no
-        // entered cells to report in any case.
+        // entered cells to report in any case — and its skipped membership update means a
+        // zero-progress move also does NOT heal a stale `SceneEcs::region_membership`
+        // entry (e.g. post-restart): healing defers to the first move with real progress.
         self.fire_region_triggers(
             repo,
             ctx,
@@ -1991,6 +2016,7 @@ impl Room {
                 token,
                 entered: outcome.entered_cells.clone(),
                 arrest_stop: outcome.arrested.then_some(outcome.stop),
+                occupancy: vec![stop_cell],
             },
             ts,
             true,
@@ -2267,9 +2293,17 @@ impl Room {
     /// Fire the region triggers a token report sets off: every enabled trigger-bearing region
     /// covering an `entered` cell fires its `Enter` effects, and when `arrest_stop` is `Some`
     /// (the executor reported a region-arrest), regions covering the arrest cell fire their
-    /// `Arrest` effects. This ONE application path serves both fire sites — `execute_move`
-    /// (entered-cell sequence from `MoveOutcome`) and `fire_placement_triggers` (footprint
-    /// cells of the new position) — so the two cannot drift on what an effect means.
+    /// `Arrest` effects. `Exit` effects fire from the membership diff: the regions
+    /// intersecting the report's `occupancy` basis (its own Enter basis — a move's stop
+    /// cell, a placement's footprint) replace `SceneEcs::region_membership`'s stored set
+    /// UNCONDITIONALLY, and any region the stored set loses fires its `Exit` triggers —
+    /// including, via `SceneEcs::trigger_region_row`'s unfiltered by-id rows, a region the
+    /// report's scene/elevation table no longer selects (a cross-scene portal or an
+    /// elevation-changing teleport). This ONE application path serves both fire sites —
+    /// `execute_move` (entered-cell sequence from `MoveOutcome`) and
+    /// `fire_placement_triggers` (footprint cells of the new position) — so the two cannot
+    /// drift on what an effect means, and it is the ONLY membership updater, so the
+    /// stored set can never skew from the firing decision.
     ///
     /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
     /// `WriteOrigin::Trigger` — never batched with the client-origin write that
@@ -2333,6 +2367,7 @@ impl Room {
             token,
             entered,
             arrest_stop,
+            occupancy,
         } = report;
         let entered: &[(i32, i32)] = &entered;
         use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
@@ -2365,11 +2400,12 @@ impl Room {
             .and_then(|v| serde_json::from_value(v).ok());
 
         // The authoritative identity table (the server springs secret regions), the arrest
-        // cell, and the token's effective owner — one read guard, no lock across an await.
-        // `trigger_regions` is filtered to the entering token's floor: a region banded to
-        // another level never fires on this token (`elevation::band_contains`).
-        let (regions, arrest_cell, effective_owner) = {
-            let ecs = self.scene.read().await;
+        // cell, the token's effective owner, and the Exit-firing inputs — one WRITE guard
+        // (the membership diff updates `SceneEcs::region_membership`), no lock across an
+        // await. `trigger_regions` is filtered to the entering token's floor: a region
+        // banded to another level never fires on this token (`elevation::band_contains`).
+        let (regions, arrest_cell, effective_owner, exited, stale_rows) = {
+            let mut ecs = self.scene.write().await;
             let regions = ecs
                 .trigger_regions(
                     scene,
@@ -2386,9 +2422,37 @@ impl Room {
                 None => None,
             };
             let owner = ecs.token_effective_owner(&token_doc);
-            (regions, arrest_cell, owner)
+            // Exit membership diff: the regions intersecting the report's OCCUPANCY basis
+            // (its own Enter basis — a move's stop cell, a placement's footprint) replace
+            // the stored set UNCONDITIONALLY, and whatever the stored set loses is this
+            // report's exited list. Unconditional even when nothing fires: a stored entry
+            // is dropped on the move out of its region whether or not the region carries
+            // an `Exit` trigger, so a later edit ADDING one can never fire an exit for a
+            // region the token had already left.
+            let exited = {
+                let now: std::collections::BTreeSet<Uuid> = regions
+                    .iter()
+                    .filter(|r| occupancy.iter().any(|c| r.cells.contains(c)))
+                    .map(|r| r.region_id)
+                    .collect();
+                ecs.diff_region_membership(token, now)
+            };
+            // Stale rows: exited ids the scene/elevation-filtered table no longer selects
+            // (a cross-scene portal or an elevation-changing teleport carried the token
+            // out of a region its stored membership still names). Their rows resolve by
+            // id WITHOUT the band filter (`SceneEcs::trigger_region_row`), so the exit
+            // still fires; fired below with an empty `entered` so no Enter/Arrest can
+            // fire from them. Partitioned from `regions` by construction, so no trigger
+            // can fire twice on one report.
+            let stale_rows: Vec<regions::TriggerRegion> = exited
+                .iter()
+                .filter(|id| !regions.iter().any(|r| r.region_id == **id))
+                .filter_map(|&id| ecs.trigger_region_row(id))
+                .collect();
+            (regions, arrest_cell, owner, exited, stale_rows)
         };
-        let fired = regions::fired_triggers(&regions, entered, arrest_cell);
+        let mut fired = regions::fired_triggers(&regions, entered, arrest_cell, &exited);
+        fired.extend(regions::fired_triggers(&stale_rows, &[], None, &exited));
         if fired.is_empty() {
             return;
         }
@@ -2729,12 +2793,20 @@ impl Room {
         }
 
         // --- Chat notices, in fired order ---
-        for (region, trigger) in &fired {
+        for (region_id, trigger) in &fired {
             if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {
                 // Secrecy: a region whose `/engine` band is not visible to every world member
                 // forces GM-only whatever the authored audience says — a wider notice would
-                // name or imply a region some recipients cannot see.
-                let forced = !region.visible_to_all;
+                // name or imply a region some recipients cannot see. The row is found by id
+                // across the scene table AND the stale exit rows (an Exit-fired notice rides
+                // the identical rule); an unresolvable row fails closed to forced.
+                let visible_to_all = regions
+                    .iter()
+                    .chain(&stale_rows)
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                let forced = !visible_to_all;
                 let wire_audience = if forced {
                     Audience::GmOnly
                 } else {
@@ -2819,33 +2891,27 @@ impl Room {
                 // another Teleport (`allow_teleport: false`): one hop per move, so a portal
                 // chain can never loop. The destination's other effects (conditions, resources,
                 // notices) fire exactly as if the token had been placed there.
-                if let Some(dest_scene) = teleported {
-                    let new_cells = {
+                if teleported.is_some() {
+                    let new_footprint = {
                         let ecs = self.scene.read().await;
-                        // The same footprint-cell computation `fire_placement_triggers` runs —
-                        // never a second footprint formula. `None` (the token or its scene
+                        // The ONE footprint-cell computation every fire site shares
+                        // (`SceneEcs::token_footprint_cells`), scene derived from the
+                        // token's committed document. `None` (the token or its scene
                         // unreadable, or a refused footprint) skips the re-fire silently,
                         // mirroring placement's own `continue`.
-                        (|| {
-                            let (_, pos, _) = ecs.token_move(token, &[])?;
-                            let &cell = ecs.scene_grid_sizes().get(&dest_scene)?;
-                            let radius = ecs.resolve_token_footprint(token, dest_scene)?;
-                            let grid = ecs.resolve_grid_shape(dest_scene, cell);
-                            Some(grid.footprint_cells(
-                                grid.cell_of(pos),
-                                pos,
-                                radius.max(0.0) * cell,
-                                cell,
-                            ))
-                        })()
+                        ecs.token_footprint_cells(token)
                     };
-                    if let Some(entered) = new_cells {
+                    if let Some((scene, entered)) = new_footprint {
                         Box::pin(self.fire_region_triggers(
                             repo,
                             ctx,
                             TriggerReport {
-                                scene: dest_scene,
+                                scene,
                                 token,
+                                // The destination re-fire is placement-shaped: its
+                                // occupancy basis is the destination footprint, the same
+                                // cells its Enter detection uses.
+                                occupancy: entered.clone(),
                                 entered,
                                 arrest_stop: None,
                             },
@@ -2890,21 +2956,17 @@ impl Room {
                 if !seen.insert(token) {
                     continue;
                 }
-                let Some((scene, pos, _)) = ecs.token_move(token, &[]) else {
+                // The ONE footprint-cell computation every fire site shares
+                // (`SceneEcs::token_footprint_cells`), scene derived from the token.
+                let Some((scene, cells)) = ecs.token_footprint_cells(token) else {
                     continue;
                 };
-                let Some(&cell) = ecs.scene_grid_sizes().get(&scene) else {
-                    continue;
-                };
-                let Some(radius) = ecs.resolve_token_footprint(token, scene) else {
-                    continue;
-                };
-                let grid = ecs.resolve_grid_shape(scene, cell);
-                let cells =
-                    grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell);
                 reports.push(TriggerReport {
                     scene,
                     token,
+                    // A placement's occupancy basis IS its footprint — the same cells its
+                    // Enter detection uses (`TriggerReport::occupancy`).
+                    occupancy: cells.clone(),
                     entered: cells,
                     arrest_stop: None,
                 });

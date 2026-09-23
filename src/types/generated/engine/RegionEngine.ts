@@ -47,8 +47,9 @@ cost: number,
  */
 enabled: boolean, 
 /**
- * Effects fired on tokens entering (or arrested inside) the region.
- * Absent on documents written before triggers existed (serde default).
+ * Effects fired on tokens entering, arrested inside, or leaving the
+ * region. Absent on documents written before triggers existed (serde
+ * default).
  */
 triggers: Array<RegionTrigger>, 
 /**

@@ -458,6 +458,577 @@ async fn a_secret_regions_notice_is_forced_gm_only_whatever_it_authored() {
     );
 }
 
+// --- Exit triggers (prior-tick membership) ---
+
+#[tokio::test]
+async fn a_condition_added_on_enter_is_removed_on_exit_across_two_separate_moves() {
+    // Fast animation so the per-token moving lock expires between the awaited moves.
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let actor_id = link_actor(&h, 0x6A0, vec![], json!({})).await;
+    place_region(
+        &h,
+        0x6A1,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "exit", "effect": { "type": "condition_remove", "condition": "prone" } },
+        ]),
+    )
+    .await;
+
+    // Move 1 enters: the add fires and the token's membership records the region.
+    move_token(&h, vec![h.start, h.adj]).await;
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["prone"]),
+        "enter adds the condition"
+    );
+
+    // Move 2 leaves: the stored membership names the region while the post-move
+    // footprint no longer intersects it, so the exit fires and removes the condition —
+    // the motivating scenario (`ConditionAdd` on entry gets its automatic
+    // `ConditionRemove` on leaving).
+    move_token(&h, vec![h.adj, h.start]).await;
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!([]),
+        "exit removes the condition across two separate moves"
+    );
+
+    // Move 3 (outside → outside) fires nothing: no stored membership, no stale exit.
+    move_token(&h, vec![h.start, h.lit_goal]).await;
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!([]),
+        "a move with no membership change fires no exit"
+    );
+}
+
+#[tokio::test]
+async fn region_membership_is_ephemeral_and_empty_after_a_fresh_ecs_hydration() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x6B0, vec![], json!({})).await;
+    place_region(
+        &h,
+        0x6B1,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "exit", "effect": { "type": "condition_remove", "condition": "prone" } },
+        ]),
+    )
+    .await;
+    move_token(&h, vec![h.start, h.adj]).await;
+    // Positive control (a green gate must not be inert): the live room's ECS recorded
+    // the membership, or the emptiness assertion below proves nothing.
+    assert!(
+        h.room
+            .scene()
+            .read()
+            .await
+            .region_membership_of(h.token_id)
+            .is_some(),
+        "the move recorded the token's region membership"
+    );
+
+    // A fresh hydration is what a server restart rebuilds from documents: the
+    // membership table starts EMPTY — derived runtime state, never persisted.
+    let reg2 = RoomRegistry::new();
+    let room2 = reg2
+        .get_or_create(&h.repo, h.world_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        room2
+            .scene()
+            .read()
+            .await
+            .region_membership_of(h.token_id)
+            .is_none(),
+        "a fresh ECS hydration carries no region membership"
+    );
+
+    // The accepted restart residual, pinned explicitly: the token walks straight out of
+    // the region it occupied across the restart and NO exit fires — the fresh table has
+    // no recorded membership to leave, so its enter-applied condition stays on (the same
+    // residual class as an in-flight move completing across a restart).
+    room2
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.adj, h.start],
+                ts: crate::ws::time::now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["prone"]),
+        "no exit fires from an empty post-restart membership"
+    );
+}
+
+#[tokio::test]
+async fn a_secret_regions_exit_notice_is_forced_gm_only_whatever_it_authored() {
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let region_id = crate::test_ids::test_uuid(0x6C0);
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.engine = Some(trigger_region_engine(
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "chat_notice", "text": "A trap springs.", "audience": "public" } },
+            { "on": "exit", "effect": { "type": "chat_notice", "text": "The trap resets.", "audience": "public" } },
+        ]),
+    ));
+    // World-readable at the document level — the `/engine` tier override alone makes the
+    // region secret, so the forcing is attributable to the tier, mirroring the
+    // enter-path battery's own fixture shape.
+    region.permissions.default = DocRole::Observer;
+    region
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), Visibility::GmOnly);
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+    move_token(&h, vec![h.adj, h.start]).await;
+
+    let notices = region_notices(&h).await;
+    assert_eq!(
+        notices.len(),
+        2,
+        "the enter AND the exit notice both committed"
+    );
+    for notice in &notices {
+        assert_eq!(
+            notice_engine(notice).audience,
+            Audience::GmOnly,
+            "an exit-fired notice rides the SAME secrecy forcing as enter/arrest"
+        );
+        assert_eq!(
+            notice.permissions.default,
+            DocRole::None,
+            "no world-readable default leaks the secret region's exit notice"
+        );
+    }
+    let texts: Vec<String> = notices.iter().map(notice_text).collect();
+    assert!(texts.contains(&"A trap springs.".to_string()));
+    assert!(texts.contains(&"The trap resets.".to_string()));
+}
+
+#[tokio::test]
+async fn placement_membership_updates_so_a_teleport_out_fires_exit() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x6D0, vec![], json!({})).await;
+    place_region(
+        &h,
+        0x6D1,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "exit", "effect": { "type": "condition_remove", "condition": "prone" } },
+        ]),
+    )
+    .await;
+
+    // A genuine position Update (a GM teleport, never a dense walk) lands the token
+    // inside the region: the enter fires AND the membership records the region.
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.token_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/x".into(),
+                        old: json!(50.0),
+                        new: json!(150.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/y".into(),
+                        old: json!(50.0),
+                        new: json!(50.0),
+                    },
+                ],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["prone"]),
+        "placement fires the enter"
+    );
+
+    // Teleporting back out fires the exit — placement updates membership exactly as a
+    // move does, or no exit could ever follow a placement entry. The destination must
+    // clear the region under the FOOTPRINT basis placements use: a 1x1 actor-backed
+    // token's disc (radius ~0.71 cells) still touches region cell (1,0) from (50,50),
+    // so the out-teleport lands two cells away.
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.token_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/x".into(),
+                        old: json!(150.0),
+                        new: json!(50.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/y".into(),
+                        old: json!(50.0),
+                        new: json!(250.0),
+                    },
+                ],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!([]),
+        "a teleport out after a placement entry fires the exit"
+    );
+}
+
+#[tokio::test]
+async fn a_cross_scene_portal_fires_the_source_regions_exit_effects() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x6E0, vec![], json!({})).await;
+    let dest = place_scene(&h, 0x6E1).await;
+    place_region(
+        &h,
+        0x6E2,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": dest.to_string(), "x": 250.0, "y": 250.0, "elevation": null, "vfx": null } } },
+            { "on": "exit", "effect": { "type": "condition_remove", "condition": "prone" } },
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    assert_eq!(token.parent_id, Some(dest), "the portal hop committed");
+    // The destination scene's identity table does not carry the source region, yet the
+    // exit still fires (the unfiltered by-id row): enter-add then exit-remove nets empty.
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!([]),
+        "the source region's exit fires even though the token left its scene"
+    );
+}
+
+#[tokio::test]
+async fn a_region_that_gains_an_exit_trigger_after_the_token_left_does_not_fire_a_stale_exit() {
+    // Fast animation so the per-token moving lock expires between the awaited moves.
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let region_id = place_region(
+        &h,
+        0x6F0,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "enter", "effect": { "type": "chat_notice", "text": "in", "audience": "public" } }]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+    // Leaving fires nothing (the region carries no Exit trigger yet) — but the
+    // UNCONDITIONAL membership update must still record the departure. This is the step
+    // a "diff only when something fires" optimization skips; the rest of the test exists
+    // to catch exactly that skip.
+    move_token(&h, vec![h.adj, h.start]).await;
+    assert_eq!(
+        region_notices(&h).await.len(),
+        1,
+        "enter fired; leaving an exit-less region fires nothing"
+    );
+
+    // The GM now adds an Exit trigger to the region the token ALREADY left.
+    let stored_triggers = h
+        .repo
+        .get_document(region_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap()["triggers"]
+        .clone();
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: region_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/triggers".into(),
+                    old: stored_triggers,
+                    new: json!([
+                        { "on": "enter", "effect": { "type": "chat_notice", "text": "in", "audience": "public" } },
+                        { "on": "exit", "effect": { "type": "chat_notice", "text": "out", "audience": "public" } },
+                    ]),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    // Any later move entirely outside fires NO exit: the membership was healed when the
+    // token left, so the new trigger has no stale entry to fire against.
+    move_token(&h, vec![h.start, h.lit_goal]).await;
+    let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
+    assert_eq!(
+        texts,
+        vec!["in".to_string()],
+        "no stale exit fires against a membership the token already left, got {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_elevation_changing_placement_fires_the_floor_banded_regions_exit() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x701, vec![], json!({})).await;
+    // A region banded to a non-ground floor [10, 20] — its triggers only exist for a
+    // mover inside the band.
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let region_id = crate::test_ids::test_uuid(0x702);
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.permissions.default = DocRole::Observer;
+    let mut engine = trigger_region_engine(
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "exit", "effect": { "type": "condition_remove", "condition": "prone" } },
+        ]),
+    );
+    engine["elevation"] = json!({ "bottom": 10.0, "top": 20.0 });
+    region.engine = Some(engine);
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    // Placement INTO the region AT elevation 15: the band contains the mover, so the
+    // enter fires and the membership records the region.
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.token_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/x".into(),
+                        old: json!(50.0),
+                        new: json!(150.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/elevation".into(),
+                        old: json!(null),
+                        new: json!(15.0),
+                    },
+                ],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["prone"]),
+        "the banded region's enter fires for a mover inside the band"
+    );
+
+    // Placement back to ground AND out of the region in one write: the ground-level
+    // identity table excludes the banded region, yet its exit must still fire — the
+    // by-id stale-row lookup (`SceneEcs::trigger_region_row`) deliberately carries no
+    // mover-elevation filter, because the membership was recorded under the PRIOR floor.
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.token_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/x".into(),
+                        old: json!(150.0),
+                        new: json!(50.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/y".into(),
+                        old: json!(50.0),
+                        new: json!(250.0),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/engine/elevation".into(),
+                        old: json!(15.0),
+                        new: json!(null),
+                    },
+                ],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!([]),
+        "the banded region's exit fires across an elevation change (unfiltered by-id row)"
+    );
+}
+
+#[tokio::test]
+async fn a_secret_regions_cross_scene_portal_exit_notice_is_forced_gm_only() {
+    let h = movement_scene("unrestricted", false).await;
+    let dest = place_scene(&h, 0x710).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let region_id = crate::test_ids::test_uuid(0x711);
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.engine = Some(trigger_region_engine(
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": dest.to_string(), "x": 250.0, "y": 250.0, "elevation": null, "vfx": null } } },
+            { "on": "exit", "effect": { "type": "chat_notice", "text": "The trap resets.", "audience": "public" } },
+        ]),
+    ));
+    // The `/engine` tier override alone makes the region secret, so the forcing is
+    // attributable to the tier — and the exit notice fires from the STALE-ROW plan (the
+    // destination scene's table never carries this region), pinning that the secrecy
+    // lookup resolves rows across BOTH sets, not just the scene table.
+    region.permissions.default = DocRole::Observer;
+    region
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), Visibility::GmOnly);
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let notices = region_notices(&h).await;
+    assert_eq!(notices.len(), 1, "the stale-row exit notice committed");
+    let engine = notice_engine(&notices[0]);
+    assert_eq!(notice_text(&notices[0]), "The trap resets.");
+    assert_eq!(
+        engine.audience,
+        Audience::GmOnly,
+        "an exit notice fired from a stale row rides the SAME secrecy forcing"
+    );
+    assert_eq!(
+        notices[0].permissions.default,
+        DocRole::None,
+        "no world-readable default leaks the secret region's exit notice"
+    );
+}
+
+#[tokio::test]
+async fn a_public_regions_cross_scene_portal_exit_notice_stays_public() {
+    let h = movement_scene("unrestricted", false).await;
+    let dest = place_scene(&h, 0x712).await;
+    place_region(
+        &h,
+        0x713,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": dest.to_string(), "x": 250.0, "y": 250.0, "elevation": null, "vfx": null } } },
+            { "on": "exit", "effect": { "type": "chat_notice", "text": "The gate stands open.", "audience": "public" } },
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let notices = region_notices(&h).await;
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notice_engine(&notices[0]).audience,
+        Audience::Public,
+        "a public region's stale-row exit notice honors its authored audience — the \
+         secrecy lookup must FIND the stale row, never default"
+    );
+}
+
 #[tokio::test]
 async fn placement_and_teleport_fire_enter_effects_but_region_edits_and_disabled_regions_do_not() {
     let h = movement_scene("unrestricted", false).await;

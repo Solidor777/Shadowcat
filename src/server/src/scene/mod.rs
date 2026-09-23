@@ -1043,6 +1043,30 @@ pub struct SceneEcs {
     /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
     /// doesn't linger indefinitely.
     engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
+    /// EPHEMERAL token→region membership table: token id → the set of
+    /// trigger-bearing region ids the token currently OCCUPIES — the
+    /// authoritative `trigger_regions` identity rows intersecting the firing
+    /// report's occupancy basis (`TriggerReport::occupancy`: a move's stop
+    /// cell, a placement's footprint). This is the prior-event
+    /// state `TriggerEvent::Exit` firing diffs the post-event occupancy
+    /// against (`Room::fire_region_triggers` updates it unconditionally after
+    /// every move and every placement/teleport fire). Derived runtime state,
+    /// never persisted: documents are the source of truth and this table is
+    /// rebuilt event-by-event — the same shape as `Room::moving`'s
+    /// in-flight-registry, also ephemeral and rebuilt from documents. Restart
+    /// residual (accepted, the same class as `Room::moving`'s own): a fresh
+    /// ECS hydrates with an EMPTY table, so a token standing inside a region
+    /// across a server restart has no recorded membership to leave — its
+    /// first post-restart move fires no `Exit` for that region (correct: as
+    /// far as the fresh derivation knows it never left), which also means an
+    /// `Enter` effect it carried across the restart stays applied until it
+    /// re-enters and genuinely leaves again. Pruned when a token document is
+    /// deleted (`apply_op`); an entry naming a deleted/disabled region
+    /// self-heals on the token's next fire (the diff drops it, and
+    /// `regions::fired_triggers` matches exited ids only against live rows).
+    /// Plain field, no interior mutability: written only under the room's
+    /// `scene.write()` guard.
+    region_membership: HashMap<Uuid, std::collections::BTreeSet<Uuid>>,
     /// `visible_cells_cached`'s per-`(user, scene)` mask cache for the movement gate.
     /// Keyed `(user, scene)`, NOT `(user, scene, lenient)` — a `lenient` flip is just another
     /// fingerprint field, so it naturally invalidates the entry rather than needing a wider key
@@ -1320,6 +1344,7 @@ impl SceneEcs {
             vision_modes: None,
             actors: HashMap::new(),
             combats: HashMap::new(),
+            region_membership: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
             engine_cache: std::sync::Mutex::new(HashMap::new()),
             visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
@@ -1692,6 +1717,11 @@ impl SceneEcs {
                     if leaves_scene_runtime {
                         let _ = self.world.despawn(e);
                         self.index.remove(doc_id);
+                        // A token that leaves scene runtime entirely also leaves every
+                        // region: drop its trigger-region membership with it, the same
+                        // rule the Delete arm applies — it has no committed position any
+                        // fire site could diff, so nothing may fire an `Exit` for it.
+                        self.region_membership.remove(doc_id);
                     }
                 }
                 if let Some(a) = self.actors.get_mut(doc_id) {
@@ -1737,6 +1767,11 @@ impl SceneEcs {
                     }
                     "combat" => {
                         self.combats.remove(&doc.id);
+                    }
+                    "token" => {
+                        // A deleted token's trigger-region membership goes with it;
+                        // nothing may fire an `Exit` for a token that no longer exists.
+                        self.region_membership.remove(&doc.id);
                     }
                     _ => {}
                 }
@@ -2974,38 +3009,108 @@ impl SceneEcs {
         scene: Uuid,
         elevation: f64,
     ) -> Option<Vec<regions::TriggerRegion>> {
-        let cell = self.scene_grid_sizes().get(&scene).copied()?;
-        let grid = self.resolve_grid_shape(scene, cell);
-        let mut out = Vec::new();
-        for e in self.world.query::<&SceneEntity>().iter() {
-            let doc = &e.doc;
-            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
-                continue;
-            }
-            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
-                continue;
-            };
-            if !region_eng.enabled || region_eng.triggers.is_empty() {
-                continue;
-            }
-            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
-                continue;
-            }
-            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
-                continue;
-            };
-            let Some(cells) = regions::rasterize(&shape, cell, &*grid) else {
-                continue;
-            };
-            out.push(regions::TriggerRegion {
-                region_id: doc.id,
-                visible_to_all: engine_geometry_visible_to_world(doc),
-                triggers: region_eng.triggers,
-                cells: cells.into_iter().collect(),
-            });
-        }
+        // The `Option` contract (refuse a scene with no live document) is this
+        // method's own; the shared builder refuses per-row on the same lookup.
+        self.scene_grid_sizes().get(&scene)?;
+        let mut out: Vec<_> = self
+            .world
+            .query::<&SceneEntity>()
+            .iter()
+            .filter(|e| e.doc.doc_type == "region" && e.doc.parent_id == Some(scene))
+            .filter_map(|e| self.build_trigger_region(&e.doc, Some(elevation)))
+            .collect();
         out.sort_by_key(|r| r.region_id);
         Some(out)
+    }
+
+    /// The one `regions::TriggerRegion` row for a single region document, looked up BY ID
+    /// with no scene or elevation filter. Exists for `TriggerEvent::Exit` firing only
+    /// (`Room::fire_region_triggers`'s stale-row plan): a region the token LEFT must fire
+    /// its `Exit` triggers even when the report's per-scene, elevation-filtered table no
+    /// longer selects it — a cross-scene portal carries the token off the region's scene,
+    /// and an elevation-changing teleport carries it off the region's floor, while the
+    /// stored `region_membership` entry still names the region. Re-filtering by the
+    /// token's NEW elevation would drop exactly those legitimate exits, so this lookup
+    /// skips the band filter the membership entry was recorded under. Never an Enter/
+    /// Arrest source: its only caller passes an empty `entered` to `regions::fired_triggers`,
+    /// so no cell-crossing event can fire from it.
+    ///
+    /// Returns `None` when the id names no live, enabled, trigger-bearing region
+    /// (fail-closed — a deleted or disabled region fires nothing, and the stored
+    /// membership entry self-heals on the same pass).
+    pub(crate) fn trigger_region_row(&self, region: Uuid) -> Option<regions::TriggerRegion> {
+        let &e = self.index.get(&region)?;
+        let doc = &self.world.get::<&SceneEntity>(e).ok()?.doc;
+        if doc.doc_type != "region" {
+            return None;
+        }
+        self.build_trigger_region(doc, None)
+    }
+
+    /// The shared row-construction behind `trigger_regions` and `trigger_region_row` —
+    /// ONE builder so the per-scene table and the by-id exit lookup can never drift on
+    /// what makes a region trigger-bearing (enabled, triggers non-empty, parseable shape,
+    /// rasterizable on its parent scene's live grid). `mover_elevation: Some(e)` applies
+    /// the mover's-floor band filter (`elevation::band_contains`); `None` skips it (see
+    /// `trigger_region_row` for why Exit firing must not re-filter). Returns `None` for
+    /// any document that fails those checks (fail-closed).
+    fn build_trigger_region(
+        &self,
+        doc: &Document,
+        mover_elevation: Option<f64>,
+    ) -> Option<regions::TriggerRegion> {
+        let scene = doc.parent_id?;
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
+        let region_eng = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc)?;
+        if !region_eng.enabled || region_eng.triggers.is_empty() {
+            return None;
+        }
+        if let Some(elevation) = mover_elevation {
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
+                return None;
+            }
+        }
+        let shape = regions::parse_region_shape(&region_eng.shape)?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let cells = regions::rasterize(&shape, cell, &*grid)?;
+        Some(regions::TriggerRegion {
+            region_id: doc.id,
+            visible_to_all: engine_geometry_visible_to_world(doc),
+            triggers: region_eng.triggers,
+            cells: cells.into_iter().collect(),
+        })
+    }
+
+    /// Replace `token`'s stored trigger-region membership with `now` and return the ids
+    /// that LEFT (stored minus `now`, sorted) — the `TriggerEvent::Exit` candidate list
+    /// for the report being fired. THE single writer of `region_membership`, so the
+    /// diff-and-update rule lives in exactly one place: an empty `now` drops the entry
+    /// outright, keeping the table bounded to tokens currently inside at least one
+    /// trigger-bearing region, and a stale id (a region since deleted or disabled) is
+    /// dropped by the same replacement. Called unconditionally after every move and
+    /// every placement/teleport fire by `Room::fire_region_triggers`.
+    pub(crate) fn diff_region_membership(
+        &mut self,
+        token: Uuid,
+        now: std::collections::BTreeSet<Uuid>,
+    ) -> Vec<Uuid> {
+        let old = self.region_membership.remove(&token).unwrap_or_default();
+        let exited = old.difference(&now).copied().collect();
+        if !now.is_empty() {
+            self.region_membership.insert(token, now);
+        }
+        exited
+    }
+
+    /// The stored trigger-region membership set for `token` (`None` when the token is
+    /// inside no trigger-bearing region, including after a fresh hydration — the
+    /// ephemeral-table restart residual the field's own doc states).
+    #[cfg(test)]
+    pub(crate) fn region_membership_of(
+        &self,
+        token: Uuid,
+    ) -> Option<&std::collections::BTreeSet<Uuid>> {
+        self.region_membership.get(&token)
     }
 
     /// The user this token effectively belongs to — the SAME rule the write-authz
@@ -3327,6 +3432,26 @@ impl SceneEcs {
                 None
             }
         }
+    }
+
+    /// The token's live footprint cells at its COMMITTED position, paired with the
+    /// token-derived scene id: the SAME `token_move` + `resolve_token_footprint` +
+    /// `GridShape::footprint_cells` chain the move gate and every region-trigger fire
+    /// site (`Room::fire_placement_triggers`'s report building and
+    /// `Room::fire_region_triggers`'s teleport re-fire) uses — ONE formula, never a
+    /// second footprint derivation. The scene is derived from the token's own document,
+    /// never from a caller's claim. Returns `None` when the token, its scene's live
+    /// grid, or its footprint resolution fails (the fire sites' fail-closed "fires
+    /// nothing" refusal).
+    pub(crate) fn token_footprint_cells(&self, token: Uuid) -> Option<(Uuid, Vec<regions::Cell>)> {
+        let (scene, pos, _) = self.token_move(token, &[])?;
+        let &cell = self.scene_grid_sizes().get(&scene)?;
+        let radius = self.resolve_token_footprint(token, scene)?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        Some((
+            scene,
+            grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell),
+        ))
     }
 
     /// The scene's running combat, if any: the first `combats` entry (see that field's doc

@@ -380,27 +380,40 @@ pub(crate) struct TriggerRegion {
     pub cells: BTreeSet<Cell>,
 }
 
-/// The `(region, trigger)` pairs that fire for one move or placement report,
-/// in region-table order then authored engine order. `entered` is the
+/// The `(region id, trigger)` pairs that fire for one move or placement
+/// report, in region-table order then authored engine order. `entered` is the
 /// deduplicated cell-entry sequence (`MoveOutcome::entered_cells`) or a
 /// placement's footprint cells; `arrest_cell` is `Some` only when the walk
-/// was arrested (`MoveOutcome::arrested`). Each listed trigger fires at most
-/// once per report no matter how many of its region's cells were entered —
-/// the caller applies each returned pair exactly once.
-pub(crate) fn fired_triggers<'a>(
-    regions: &'a [TriggerRegion],
+/// was arrested (`MoveOutcome::arrested`); `exited` is the region-identity
+/// list the report's membership diff produced (`SceneEcs::region_membership`'s
+/// stored set minus the regions intersecting the report's post-event
+/// OCCUPANCY — `TriggerReport::occupancy`, the report kind's own Enter basis:
+/// a move's stop center cell, a placement's footprint — a set-difference
+/// event over whole regions, never a per-cell crossing like Enter/Arrest).
+/// Each listed trigger fires at most once per report no matter how many of
+/// its region's cells were entered, and an exited region id fires its
+/// region's `Exit` triggers at most once — the same per-report discipline.
+/// An exited id no row of `regions` carries (a deleted or disabled region, or
+/// one the report's elevation filter excludes) fires nothing: the table has
+/// already forgotten it. The pairs are owned (not row references) so a caller
+/// firing exits for regions OUTSIDE the passed table can concatenate a second
+/// call's plan without a lifetime tie — see `Room::fire_region_triggers`.
+pub(crate) fn fired_triggers(
+    regions: &[TriggerRegion],
     entered: &[Cell],
     arrest_cell: Option<Cell>,
-) -> Vec<(&'a TriggerRegion, &'a RegionTrigger)> {
+    exited: &[Uuid],
+) -> Vec<(Uuid, RegionTrigger)> {
     let mut out = Vec::new();
     for region in regions {
         for trigger in &region.triggers {
             let fires = match trigger.on {
                 TriggerEvent::Enter => entered.iter().any(|c| region.cells.contains(c)),
                 TriggerEvent::Arrest => arrest_cell.is_some_and(|c| region.cells.contains(&c)),
+                TriggerEvent::Exit => exited.contains(&region.region_id),
             };
             if fires {
-                out.push((region, trigger));
+                out.push((region.region_id, trigger.clone()));
             }
         }
     }

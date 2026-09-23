@@ -385,11 +385,11 @@ fn fired_triggers_enter_matches_only_covered_entered_cells() {
         trigger_region(1, &[(1, 0), (2, 0)], vec![on(TriggerEvent::Enter)]),
         trigger_region(2, &[(5, 5)], vec![on(TriggerEvent::Enter)]),
     ];
-    let fired = fired_triggers(&regions, &[(0, 0), (1, 0)], None);
+    let fired = fired_triggers(&regions, &[(0, 0), (1, 0)], None, &[]);
     assert_eq!(fired.len(), 1, "only the covered region's trigger fires");
-    assert_eq!(fired[0].0.region_id, crate::test_ids::test_uuid(1));
+    assert_eq!(fired[0].0, crate::test_ids::test_uuid(1));
 
-    let none = fired_triggers(&regions, &[(0, 0)], None);
+    let none = fired_triggers(&regions, &[(0, 0)], None, &[]);
     assert!(none.is_empty(), "no coverage, no fire");
 }
 
@@ -397,11 +397,11 @@ fn fired_triggers_enter_matches_only_covered_entered_cells() {
 fn fired_triggers_arrest_fires_only_on_arrest_inside_the_region() {
     let regions = vec![trigger_region(1, &[(2, 0)], vec![on(TriggerEvent::Arrest)])];
     // Entering the region without an arrest report does not fire an arrest trigger.
-    assert!(fired_triggers(&regions, &[(2, 0)], None).is_empty());
+    assert!(fired_triggers(&regions, &[(2, 0)], None, &[]).is_empty());
     // An arrest outside the region does not fire it either.
-    assert!(fired_triggers(&regions, &[(2, 0)], Some((9, 9))).is_empty());
+    assert!(fired_triggers(&regions, &[(2, 0)], Some((9, 9)), &[]).is_empty());
     // Only an arrest inside does.
-    let fired = fired_triggers(&regions, &[(2, 0)], Some((2, 0)));
+    let fired = fired_triggers(&regions, &[(2, 0)], Some((2, 0)), &[]);
     assert_eq!(fired.len(), 1);
 }
 
@@ -414,10 +414,65 @@ fn fired_triggers_fires_each_trigger_once_per_report() {
         &[(1, 0), (2, 0)],
         vec![on(TriggerEvent::Enter), on(TriggerEvent::Enter)],
     )];
-    let fired = fired_triggers(&regions, &[(1, 0), (2, 0)], None);
+    let fired = fired_triggers(&regions, &[(1, 0), (2, 0)], None, &[]);
     assert_eq!(
         fired.len(),
         2,
         "one firing per authored trigger, not per cell"
     );
+}
+
+#[test]
+fn fired_triggers_fires_exit_when_a_region_id_is_in_exited_but_not_entered() {
+    let regions = vec![
+        trigger_region(1, &[(1, 0)], vec![on(TriggerEvent::Exit)]),
+        trigger_region(2, &[(5, 5)], vec![on(TriggerEvent::Exit)]),
+    ];
+    // The exited id names region 1: its Exit trigger fires even though no cell of it was
+    // entered (exit is a set-difference event over whole regions, not a cell crossing).
+    let fired = fired_triggers(&regions, &[], None, &[crate::test_ids::test_uuid(1)]);
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].0, crate::test_ids::test_uuid(1));
+
+    // An exited id the table does not carry (a deleted or disabled region) fires nothing.
+    assert!(
+        fired_triggers(&regions, &[], None, &[crate::test_ids::test_uuid(0xDEAD)]).is_empty(),
+        "an exited id with no identity row fires nothing"
+    );
+    // A region whose id is not exited never fires its Exit trigger, even when its cells
+    // were entered — Enter/Arrest stay the only cell-crossing events.
+    assert!(
+        fired_triggers(&regions, &[(1, 0), (5, 5)], None, &[]).is_empty(),
+        "cell coverage alone never fires an Exit trigger"
+    );
+}
+
+#[test]
+fn fired_triggers_exit_and_enter_do_not_double_fire_on_the_same_report() {
+    // One report can carry BOTH an entered-cell coverage and an exited id for the same
+    // region (a token stored as a member whose walk crosses the region again and ends
+    // outside it): each authored trigger still fires at most once.
+    let regions = vec![trigger_region(
+        1,
+        &[(1, 0), (2, 0)],
+        vec![on(TriggerEvent::Enter), on(TriggerEvent::Exit)],
+    )];
+    let fired = fired_triggers(
+        &regions,
+        &[(1, 0), (2, 0)],
+        None,
+        &[crate::test_ids::test_uuid(1)],
+    );
+    assert_eq!(
+        fired.len(),
+        2,
+        "the Enter and the Exit each fire exactly once, got {fired:?}"
+    );
+    let mut events: Vec<TriggerEvent> = fired.iter().map(|(_, t)| t.on).collect();
+    events.sort_by_key(|e| match e {
+        TriggerEvent::Enter => 0,
+        TriggerEvent::Arrest => 1,
+        TriggerEvent::Exit => 2,
+    });
+    assert_eq!(events, vec![TriggerEvent::Enter, TriggerEvent::Exit]);
 }
