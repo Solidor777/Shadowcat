@@ -394,8 +394,26 @@ pub const MAX_TRIGGER_ID_CHARS: usize = 128;
 ///
 /// assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
 /// assert_ne!(TriggerEvent::Arrest, TriggerEvent::Exit);
+/// // The four turn/round variants spell exactly like `combat::transition`'s
+/// // own phase vocabulary (`phase_name`).
+/// assert_eq!(
+///     serde_json::to_value(TriggerEvent::TurnStart).unwrap(),
+///     serde_json::json!("turn_start")
+/// );
+/// assert_eq!(
+///     serde_json::to_value(TriggerEvent::TurnEnd).unwrap(),
+///     serde_json::json!("turn_end")
+/// );
+/// assert_eq!(
+///     serde_json::to_value(TriggerEvent::RoundStart).unwrap(),
+///     serde_json::json!("round_start")
+/// );
+/// assert_eq!(
+///     serde_json::to_value(TriggerEvent::RoundEnd).unwrap(),
+///     serde_json::json!("round_end")
+/// );
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerEvent {
@@ -411,6 +429,20 @@ pub enum TriggerEvent {
     /// (`TriggerReport::occupancy`): a move's stop center cell, a placement's
     /// footprint.
     Exit,
+    /// The combatant whose turn is starting has its token standing in the
+    /// region (by `SceneEcs::region_membership`) when `combat::transition`
+    /// reaches that combatant's `turn_start` boundary.
+    TurnStart,
+    /// The combatant whose turn is ending has its token standing in the
+    /// region when `combat::transition` reaches its `turn_end` boundary.
+    TurnEnd,
+    /// Any combatant of the combat has its token standing in the region when
+    /// `combat::transition` crosses a `round_start` boundary (once per round
+    /// boundary per member token, matching `round_wrap`'s structure).
+    RoundStart,
+    /// Any combatant of the combat has its token standing in the region when
+    /// `combat::transition` crosses a `round_end` boundary.
+    RoundEnd,
 }
 
 /// Who a trigger's chat notice may reach. `Owner` means the token's
@@ -624,8 +656,9 @@ pub struct RegionEngine {
     /// GM toggle; a disabled region is dropped entirely at read time.
     pub enabled: bool,
     /// Effects fired on tokens entering, arrested inside, or leaving the
-    /// region. Absent on documents written before triggers existed (serde
-    /// default).
+    /// region, or at a combat turn/round boundary while a combatant's token
+    /// stands in the region. Absent on documents written before triggers
+    /// existed (serde default).
     #[serde(default)]
     pub triggers: Vec<RegionTrigger>,
     /// The elevation band this region's geometry occupies; absent = every

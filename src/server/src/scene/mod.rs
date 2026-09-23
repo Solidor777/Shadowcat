@@ -1050,7 +1050,11 @@ pub struct SceneEcs {
     /// cell, a placement's footprint). This is the prior-event
     /// state `TriggerEvent::Exit` firing diffs the post-event occupancy
     /// against (`Room::fire_region_triggers` updates it unconditionally after
-    /// every move and every placement/teleport fire). Derived runtime state,
+    /// every move and every placement/teleport fire), AND the occupancy proof
+    /// the turn/round-scoped trigger family fires from
+    /// (`Room::fire_turn_round_triggers` reads it at each combat boundary the
+    /// transition reports — a clock boundary never WRITES it, since the clock
+    /// does not move tokens). Derived runtime state,
     /// never persisted: documents are the source of truth and this table is
     /// rebuilt event-by-event — the same shape as `Room::moving`'s
     /// in-flight-registry, also ephemeral and rebuilt from documents. Restart
@@ -3024,16 +3028,20 @@ impl SceneEcs {
     }
 
     /// The one `regions::TriggerRegion` row for a single region document, looked up BY ID
-    /// with no scene or elevation filter. Exists for `TriggerEvent::Exit` firing only
-    /// (`Room::fire_region_triggers`'s stale-row plan): a region the token LEFT must fire
+    /// with no scene or elevation filter. It has exactly two consumers, both of which must
+    /// NOT re-filter by the token's CURRENT scene or floor because the token's recorded
+    /// membership is already the occupancy proof:
+    /// `TriggerEvent::Exit` firing (`Room::fire_region_triggers`'s stale-row plan — a region
+    /// the token LEFT must fire
     /// its `Exit` triggers even when the report's per-scene, elevation-filtered table no
     /// longer selects it — a cross-scene portal carries the token off the region's scene,
     /// and an elevation-changing teleport carries it off the region's floor, while the
-    /// stored `region_membership` entry still names the region. Re-filtering by the
-    /// token's NEW elevation would drop exactly those legitimate exits, so this lookup
-    /// skips the band filter the membership entry was recorded under. Never an Enter/
-    /// Arrest source: its only caller passes an empty `entered` to `regions::fired_triggers`,
-    /// so no cell-crossing event can fire from it.
+    /// stored `region_membership` entry still names the region) and the turn/round fire
+    /// site's row resolution (`Room::fire_turn_round_triggers` — a clock boundary fires
+    /// against the same recorded membership, which a scene/elevation re-filter would only
+    /// wrongly narrow). Never an Enter/
+    /// Arrest source: the movement site passes an empty `entered` to `regions::fired_triggers`
+    /// for these rows, so no cell-crossing event can fire from them.
     ///
     /// Returns `None` when the id names no live, enabled, trigger-bearing region
     /// (fail-closed — a deleted or disabled region fires nothing, and the stored
@@ -3104,8 +3112,10 @@ impl SceneEcs {
 
     /// The stored trigger-region membership set for `token` (`None` when the token is
     /// inside no trigger-bearing region, including after a fresh hydration — the
-    /// ephemeral-table restart residual the field's own doc states).
-    #[cfg(test)]
+    /// ephemeral-table restart residual the field's own doc states). Read by
+    /// `Room::fire_turn_round_triggers` as the occupancy proof for the
+    /// turn/round-scoped trigger family (its only production caller besides the
+    /// firing funnel's own diff).
     pub(crate) fn region_membership_of(
         &self,
         token: Uuid,

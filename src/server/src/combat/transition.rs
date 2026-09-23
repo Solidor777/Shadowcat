@@ -1,7 +1,12 @@
 //! Pure combat-clock transitions: each public function takes a
 //! `CombatSnapshot` and returns the `Operation`s for ONE command. Nothing
 //! here touches a `Repository` or chooses a `WriteOrigin` — a later
-//! caller commits the returned ops.
+//! caller commits the returned ops. The one other thing a transition hands
+//! back is a RECORD, not an effect: `start_with_trigger_plan`/
+//! `advance_with_trigger_plan` also return the turn/round boundaries the
+//! walk crossed (`TurnRoundBoundary`), the firing plan the room applies
+//! turn/round-scoped region triggers from. Recording stays pure — region
+//! rows, membership, and effect application never reach this module.
 //!
 //! `advance`/`start` share one core mechanism (`settle_turn`): entering a
 //! combatant runs its `turn_start` boundary; an `Event` combatant, or a
@@ -160,7 +165,7 @@ pub(crate) fn is_hidden(c: &Combatant) -> bool {
 
 /// Which per-boundary `Recovery` formula applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
+pub(crate) enum Phase {
     /// A combatant's turn starting.
     TurnStart,
     /// A combatant's turn ending.
@@ -182,13 +187,60 @@ fn phase_formula(recover: &Recovery, phase: Phase) -> &Formula {
 }
 
 /// The chain-field name of `phase`, used in evaluation-failure details.
-fn phase_name(phase: Phase) -> &'static str {
+pub(crate) fn phase_name(phase: Phase) -> &'static str {
     match phase {
         Phase::TurnStart => "turn_start",
         Phase::TurnEnd => "turn_end",
         Phase::RoundStart => "round_start",
         Phase::RoundEnd => "round_end",
     }
+}
+
+/// The `data::engine::TriggerEvent` a region trigger author picks to fire at
+/// `phase` — the ONE mapping between the clock's phase vocabulary and the
+/// region-trigger event vocabulary, so the two are identical by construction
+/// rather than by two independently-typed spellings (the serde renames on
+/// `TriggerEvent` spell exactly what `phase_name` returns; the
+/// `turn_round_trigger_event_serde_spellings_match_the_phase_vocabulary`
+/// test pins that identity).
+pub(crate) fn phase_trigger_event(phase: Phase) -> crate::data::engine::TriggerEvent {
+    match phase {
+        Phase::TurnStart => crate::data::engine::TriggerEvent::TurnStart,
+        Phase::TurnEnd => crate::data::engine::TriggerEvent::TurnEnd,
+        Phase::RoundStart => crate::data::engine::TriggerEvent::RoundStart,
+        Phase::RoundEnd => crate::data::engine::TriggerEvent::RoundEnd,
+    }
+}
+
+/// One turn/round boundary a transition crossed, recorded for the
+/// turn/round-scoped region-trigger family (`TriggerEvent::TurnStart` & kin).
+/// `combat::transition` stays pure: it RECORDS the boundaries it runs
+/// (alongside the ops it already returns) and nothing more — region rows,
+/// membership, and effect application all live room-side
+/// (`Room::fire_turn_round_triggers`), so this module takes on no
+/// trigger-effect I/O it doesn't otherwise have. The boundaries recorded are
+/// exactly the ones recovery/tick ran for: a `history::fast_forward`
+/// short-circuit runs none and records none, and `roll`/`sort`/`resource`/
+/// `pause`/`end`/`rewind` never reach here either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnRoundBoundary {
+    /// The boundary's event, mapped through `phase_trigger_event`.
+    pub event: crate::data::engine::TriggerEvent,
+    /// The combatant whose TURN boundary this is; `None` for a round-scoped
+    /// boundary (`RoundStart`/`RoundEnd`), which `covered` describes instead.
+    pub combatant: Option<Uuid>,
+    /// Every combatant in `/engine/order` at the moment a ROUND boundary
+    /// crossed (empty for turn-scoped entries) — recorded at crossing time
+    /// because a later phase of the same transition (an exhausted `Event`'s
+    /// deletion) can shrink `order` before the room expands the boundary, and
+    /// the firing must cover exactly the combatants the boundary's own
+    /// recovery sweep covered.
+    pub covered: Vec<Uuid>,
+    /// The round the boundary belongs to: the turn identity for turn-scoped
+    /// entries (a `(round, combatant)` pair is one turn), the NEW round for a
+    /// `round_wrap` crossing. This is the boundary-instance component of the
+    /// room's once-per-turn/round dedup key.
+    pub round: u32,
 }
 
 /// Appends the resource-recovery `FieldChange`s `c` earns at `phase` to
@@ -281,6 +333,11 @@ struct Working {
     /// skipped write each); drained into ONE GM-only chat notice by
     /// `flush_eval_notices`.
     eval_failures: Vec<String>,
+    /// The turn/round boundaries this transition crossed, in crossing order —
+    /// the region-trigger firing plan `start_with_trigger_plan`/
+    /// `advance_with_trigger_plan` hand the room alongside the ops. Recording
+    /// is all this module does with region triggers; firing is room-side.
+    trigger_plan: Vec<TurnRoundBoundary>,
     /// Total `settle_turn` loop iterations taken. Test-only instrumentation
     /// for asserting the step budget stays linear in `order`'s initial
     /// length (see `settle_turn`'s own doc comment) — never read outside a
@@ -309,6 +366,7 @@ impl Working {
             registry: snap.registry.clone(),
             ops: Vec::new(),
             eval_failures: Vec::new(),
+            trigger_plan: Vec::new(),
             #[cfg(test)]
             settle_turn_steps: 0,
         };
@@ -543,6 +601,34 @@ impl Working {
         let failures = std::mem::take(&mut self.eval_failures);
         self.ops.extend(eval_notice(failures, world, author, now));
     }
+
+    /// Records one turn-scoped boundary `id` just crossed at the CURRENT
+    /// `engine.round` (the round is read at call time, so a boundary run
+    /// after `round_wrap`'s commit belongs to the new round — the correct
+    /// turn identity). Round-scoped boundaries call `record_round_boundary`
+    /// instead. Region-trigger firing consumes this record room-side; nothing
+    /// else here reads it.
+    fn record_turn_boundary(&mut self, phase: Phase, id: Uuid) {
+        self.trigger_plan.push(TurnRoundBoundary {
+            event: phase_trigger_event(phase),
+            combatant: Some(id),
+            covered: Vec::new(),
+            round: self.engine.round,
+        });
+    }
+
+    /// Records one round-scoped boundary covering the CURRENT `engine.order`
+    /// (the same list the boundary's own recovery sweep iterates), at the
+    /// CURRENT `engine.round` — `round_wrap` commits the new round BEFORE
+    /// recording, so the entry belongs to the round being entered.
+    fn record_round_boundary(&mut self, phase: Phase) {
+        self.trigger_plan.push(TurnRoundBoundary {
+            event: phase_trigger_event(phase),
+            combatant: None,
+            covered: self.engine.order.clone(),
+            round: self.engine.round,
+        });
+    }
 }
 
 /// ONE GM-only chat notice carrying every DISTINCT failure detail in
@@ -658,6 +744,7 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         DurationUnit::Turns,
         &mut HashSet::new(),
     )?;
+    w.record_turn_boundary(Phase::TurnEnd, id);
     if w.engine.effect_cleanup {
         let refs: Vec<EffectRef> = {
             let view = w.view();
@@ -686,7 +773,9 @@ fn run_turn_start(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         ExpiryPoint::TurnStart,
         DurationUnit::Turns,
         &mut HashSet::new(),
-    )
+    )?;
+    w.record_turn_boundary(Phase::TurnStart, id);
+    Ok(())
 }
 
 /// `id` ENTERING its turn: its own `turn_start` boundary, `/engine/turn` set
@@ -724,11 +813,17 @@ fn enter_turn(
 /// recovery/tick for every combatant in the CURRENT order. Each boundary
 /// category (`RoundEnd`, `RoundStart`) gets its OWN dedup set spanning the
 /// whole sweep, so a shared unanchored effect is ticked once per boundary
-/// category, never once per combatant that happens to share its host.
+/// category, never once per combatant that happens to share its host. The
+/// region-trigger plan mirrors that structure exactly: ONE round-scoped
+/// record per boundary category (never one per combatant — the room expands
+/// it across `covered`), recorded after the round commit so it belongs to
+/// the round being entered.
 fn round_wrap(w: &mut Working) -> Result<(), CombatError> {
     let new_round = w.engine.round + 1;
     let change = set_engine(&w.combat, "/engine/round", json!(new_round))?;
     w.commit_combat(vec![change])?;
+    w.record_round_boundary(Phase::RoundEnd);
+    w.record_round_boundary(Phase::RoundStart);
     let mut end_seen = HashSet::new();
     let mut start_seen = HashSet::new();
     for id in w.engine.order.clone() {
@@ -1060,6 +1155,21 @@ pub fn start(
     world: Uuid,
     author: Uuid,
 ) -> Result<Vec<Operation>, CombatError> {
+    start_with_trigger_plan(snap, now, world, author).map(|(ops, _)| ops)
+}
+
+/// `start` plus the turn/round boundary record the transition crossed — the
+/// region-trigger firing input `combat::run_intent` hands
+/// `Room::fire_turn_round_triggers` after the transition's own commit. The
+/// public `start` keeps its one-command-ops shape for callers that only
+/// apply the ops (the boundary record is derivable from nothing else — it
+/// exists only because the walk recorded it).
+pub(crate) fn start_with_trigger_plan(
+    snap: &CombatSnapshot,
+    now: i64,
+    world: Uuid,
+    author: Uuid,
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
     let mut w = Working::from_snapshot(snap)?;
     for other in &snap.other_active {
         let change = set_engine(other, "/engine/active", json!(false))?;
@@ -1114,6 +1224,7 @@ pub fn start(
         // One dedup set spans the whole sweep — see `round_wrap`'s identical
         // note: an unanchored effect shared by two combatants on the same
         // host is ticked once for the sweep, not once per combatant.
+        w.record_round_boundary(Phase::RoundStart);
         let mut seen = HashSet::new();
         for id in w.engine.order.clone() {
             run_boundary(
@@ -1131,23 +1242,27 @@ pub fn start(
     w.commit_combat(vec![active_change])?;
     w.flush_eval_notices(world, author, now);
     w.coalesce_updates(0);
-    Ok(w.ops)
+    Ok((w.ops, w.trigger_plan))
 }
 
 /// Shared implementation for `advance`: builds the ops for ending the
 /// current turn, advancing to the next combatant (wrapping the round when
 /// the order is exhausted), and settling the new turn. Returns the
-/// `settle_turn` step count alongside the ops so `advance_with_step_count`
-/// (test-only) can assert its linear bound without re-deriving `advance`'s
-/// own wiring separately.
+/// transition's turn/round boundary record (the region-trigger firing plan)
+/// and the `settle_turn` step count alongside the ops so
+/// `advance_with_trigger_plan` and `advance_with_step_count` (test-only) can
+/// expose each without re-deriving `advance`'s own wiring separately. A
+/// `history::fast_forward` short-circuit crosses no boundary, so it returns
+/// an EMPTY plan — recovery/tick do not run on a fast-forward and region
+/// triggers mirror that exactly.
 fn advance_impl(
     snap: &CombatSnapshot,
     world: Uuid,
     author: Uuid,
     now: i64,
-) -> Result<(Vec<Operation>, usize), CombatError> {
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>, usize), CombatError> {
     if let Some(ops) = history::fast_forward(snap, now)? {
-        return Ok((ops, 0));
+        return Ok((ops, Vec::new(), 0));
     }
     if !snap.engine.active {
         return Err(CombatError::NotRunning);
@@ -1172,7 +1287,7 @@ fn advance_impl(
     let steps = w.settle_turn_steps;
     #[cfg(not(test))]
     let steps = 0usize;
-    Ok((w.ops, steps))
+    Ok((w.ops, w.trigger_plan, steps))
 }
 
 /// Ends the current turn, advances to the next combatant (wrapping the
@@ -1285,7 +1400,20 @@ pub fn advance(
     author: Uuid,
     now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
-    advance_impl(snap, world, author, now).map(|(ops, _)| ops)
+    advance_impl(snap, world, author, now).map(|(ops, _, _)| ops)
+}
+
+/// `advance` plus the turn/round boundary record the transition crossed —
+/// the region-trigger firing plan `combat::run_intent` hands
+/// `Room::fire_turn_round_triggers` after the transition's own commit
+/// (`start_with_trigger_plan`'s advance twin).
+pub(crate) fn advance_with_trigger_plan(
+    snap: &CombatSnapshot,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
+    advance_impl(snap, world, author, now).map(|(ops, plan, _)| (ops, plan))
 }
 
 /// Test-only seam: identical to `advance`, but also returns the number of
@@ -1300,7 +1428,7 @@ pub(crate) fn advance_with_step_count(
     author: Uuid,
     now: i64,
 ) -> Result<(Vec<Operation>, usize), CombatError> {
-    advance_impl(snap, world, author, now)
+    advance_impl(snap, world, author, now).map(|(ops, _, steps)| (ops, steps))
 }
 
 /// Pauses a running combat: clears `active` only. `NotRunning` if it is not

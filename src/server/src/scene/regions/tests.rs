@@ -473,6 +473,73 @@ fn fired_triggers_exit_and_enter_do_not_double_fire_on_the_same_report() {
         TriggerEvent::Enter => 0,
         TriggerEvent::Arrest => 1,
         TriggerEvent::Exit => 2,
+        TriggerEvent::TurnStart
+        | TriggerEvent::TurnEnd
+        | TriggerEvent::RoundStart
+        | TriggerEvent::RoundEnd => 3,
     });
     assert_eq!(events, vec![TriggerEvent::Enter, TriggerEvent::Exit]);
+}
+
+#[test]
+fn fired_turn_round_triggers_filters_by_on_event_correctly() {
+    // One region carrying every event family plus a SECOND authored
+    // turn_start trigger: only triggers whose `on` matches the firing event
+    // fire, each distinct authored trigger firing once (its index is its
+    // identity — the duplicate turn_start rows are NOT collapsed).
+    let regions = vec![trigger_region(
+        1,
+        &[(1, 0)],
+        vec![
+            on(TriggerEvent::Enter),
+            on(TriggerEvent::TurnStart),
+            on(TriggerEvent::RoundEnd),
+            on(TriggerEvent::TurnStart),
+        ],
+    )];
+    let member: std::collections::BTreeSet<Uuid> =
+        [crate::test_ids::test_uuid(1)].into_iter().collect();
+
+    let fired = fired_turn_round_triggers(&regions, &member, TriggerEvent::TurnStart);
+    assert_eq!(
+        fired.iter().map(|(r, i, _)| (*r, *i)).collect::<Vec<_>>(),
+        vec![
+            (crate::test_ids::test_uuid(1), 1),
+            (crate::test_ids::test_uuid(1), 3)
+        ],
+        "both authored turn_start triggers fire, by authored index, and no other event does"
+    );
+
+    let fired = fired_turn_round_triggers(&regions, &member, TriggerEvent::RoundEnd);
+    assert_eq!(
+        fired.iter().map(|(_, i, _)| *i).collect::<Vec<_>>(),
+        vec![2],
+        "the round_end trigger fires at the round boundary"
+    );
+
+    // The filter is event-generic: asked for Enter it returns the Enter
+    // trigger like any other — the "a movement report never fires the
+    // turn/round family" invariant lives in the CALLERS (the transition's
+    // `phase_trigger_event` maps only the four combat phases, so movement
+    // events never reach this function in production; `fired_triggers`'s own
+    // arms keep the complementary direction).
+    assert_eq!(
+        fired_turn_round_triggers(&regions, &member, TriggerEvent::Enter).len(),
+        1
+    );
+    // A region the token is NOT a recorded member of fires nothing even at a
+    // matching event (the membership gate).
+    assert!(
+        fired_turn_round_triggers(
+            &regions,
+            &std::collections::BTreeSet::new(),
+            TriggerEvent::TurnStart
+        )
+        .is_empty(),
+        "no recorded membership, no fire"
+    );
+    // A member id with no identity row (a deleted/disabled region) fires nothing.
+    let orphan: std::collections::BTreeSet<Uuid> =
+        [crate::test_ids::test_uuid(0xDEAD)].into_iter().collect();
+    assert!(fired_turn_round_triggers(&regions, &orphan, TriggerEvent::TurnStart).is_empty());
 }

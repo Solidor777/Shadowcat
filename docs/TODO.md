@@ -133,6 +133,18 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: Turn/round-scoped region triggers (`TurnStart`/`TurnEnd`/`RoundStart`/`RoundEnd`) fired
   from `combat::transition` against `SceneEcs::trigger_regions`' cell identity rows, with
   once-per-turn dedup. (M-L)
+- TODO: Region-trigger failure diagnostics are authored by the mover/advancer, and
+  `build_message_doc` grants a message's author Owner read — so a player whose move or turn-end
+  fires a BROKEN trigger on a secret region learns that a trigger exists there (the GM-only
+  audience is pierced by authorship). Shape: author the diagnostic as a GM/seed author, or make
+  the failure notice's audience rule independent of the mover. Pre-existing for movement
+  triggers; the turn/round slice widened its reach. (S, mildly contested: the diagnostic is
+  genuinely useful to the acting player for non-secret regions)
+- TODO: A public `chat_notice` on a public region fired at a HIDDEN combatant's turn/round
+  boundary discloses by timing that a hidden combatant exists and crossed a boundary (including
+  compressed turn-start+turn-end pairs for auto-resolved hidden combatants, whose turns never
+  visibly park). Accept explicitly, or force GM-only when the firing combatant is hidden. (S,
+  design question)
 - TODO: Compound regions — `RegionEngine.shape` becomes a list of shapes each with a `hole`
   flag; `regions::rasterize` composes additive shapes minus holes. (M-L)
 - TODO: Volumetric sense-restriction regions (silence zone, darkness globe, sight-blocking fog)

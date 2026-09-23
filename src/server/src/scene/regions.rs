@@ -398,6 +398,9 @@ pub(crate) struct TriggerRegion {
 /// already forgotten it. The pairs are owned (not row references) so a caller
 /// firing exits for regions OUTSIDE the passed table can concatenate a second
 /// call's plan without a lifetime tie — see `Room::fire_region_triggers`.
+/// The four turn/round variants never fire from a movement report: they are
+/// combat-clock events, planned by `fired_turn_round_triggers` from
+/// `combat::transition`'s boundary record instead.
 pub(crate) fn fired_triggers(
     regions: &[TriggerRegion],
     entered: &[Cell],
@@ -411,9 +414,52 @@ pub(crate) fn fired_triggers(
                 TriggerEvent::Enter => entered.iter().any(|c| region.cells.contains(c)),
                 TriggerEvent::Arrest => arrest_cell.is_some_and(|c| region.cells.contains(&c)),
                 TriggerEvent::Exit => exited.contains(&region.region_id),
+                // Combat-clock events; a move/placement report never crosses one.
+                TriggerEvent::TurnStart
+                | TriggerEvent::TurnEnd
+                | TriggerEvent::RoundStart
+                | TriggerEvent::RoundEnd => false,
             };
             if fires {
                 out.push((region.region_id, trigger.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The `(region id, trigger index, trigger)` triples that fire for ONE token
+/// at ONE combat turn/round boundary: every trigger on a region the token is
+/// a recorded member of (`SceneEcs::region_membership` — the occupancy proof,
+/// written only by the movement/placement funnel; a clock boundary never
+/// re-derives it) whose `on` is exactly `event`. `rows` are the identity
+/// rows for the member regions, resolved by id WITHOUT the per-scene
+/// elevation filter (`SceneEcs::trigger_region_row` — the same rule Exit
+/// firing uses: membership is the occupancy proof, so re-filtering by the
+/// token's CURRENT floor or scene would wrongly drop a region the token was
+/// legitimately recorded inside). A member id with no live row (a deleted or
+/// disabled region) fires nothing, mirroring `fired_triggers`'s exited-id
+/// rule. The returned trigger INDEX is the trigger's position in its
+/// region's authored `triggers` list — the trigger-identity component of
+/// `Room::fire_turn_round_triggers`'s once-per-turn/round dedup key, which
+/// content-equality cannot supply (two identical authored triggers on one
+/// region are two distinct identities: a `resource_delta` authored twice
+/// applies twice). Each matching trigger fires at most once per call — one
+/// authored trigger, one firing — the per-report discipline
+/// `fired_triggers` already keeps.
+pub(crate) fn fired_turn_round_triggers(
+    rows: &[TriggerRegion],
+    member: &std::collections::BTreeSet<Uuid>,
+    event: TriggerEvent,
+) -> Vec<(Uuid, usize, RegionTrigger)> {
+    let mut out = Vec::new();
+    for row in rows {
+        if !member.contains(&row.region_id) {
+            continue;
+        }
+        for (index, trigger) in row.triggers.iter().enumerate() {
+            if trigger.on == event {
+                out.push((row.region_id, index, trigger.clone()));
             }
         }
     }

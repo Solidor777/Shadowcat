@@ -1709,3 +1709,453 @@ async fn teleporting_a_combatant_off_an_active_combats_scene_posts_a_notice() {
         "the combatant record is untouched by the teleport"
     );
 }
+
+// --- Turn/round-scoped triggers (combat-clock boundaries) ---
+
+/// Drives one combat intent as the GM and asserts the clock accepted it.
+async fn gm_combat_intent(h: &MovementHandle, msg: crate::ws::protocol::ClientMsg) {
+    let rate = crate::ws::PingRateLimiter::new();
+    let reply = crate::combat::handle_combat_intent(&h.room, &h.repo, &h.gm, msg, 0, &rate).await;
+    assert!(
+        matches!(
+            reply,
+            Some(crate::ws::protocol::ServerMsg::CombatResult { .. })
+        ),
+        "the combat intent succeeded, got {reply:?}"
+    );
+}
+
+/// Publishes an inactive combat on `h`'s scene with `order` as given and no
+/// recoveries, returning once committed. Combatant documents are the
+/// caller's own (this only builds the combat doc itself).
+async fn place_combat(h: &MovementHandle, id: u128, order: Vec<Uuid>) -> Uuid {
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let combat_id = crate::test_ids::test_uuid(id);
+    let mut combat = wdoc(h.world_id, combat_id, "combat");
+    combat.owner = Some(h.gm.user_id);
+    combat.engine = Some(json!({
+        "scene_id": h.scene_id,
+        "active": false,
+        "round": 0,
+        "turn": null,
+        "turn_control": "owner_may_end",
+        "order": order,
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true,
+        "rewind_restore": true,
+        "forward_restore": false,
+        "effect_lifecycle": {}
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: combat }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    combat_id
+}
+
+/// Publishes one combatant child document for `combat_id`. `engine` is the
+/// raw `CombatantEngine` JSON; `hidden` sets the `permissions.default: none`
+/// shape that marks a combatant hidden.
+async fn place_combatant(
+    h: &MovementHandle,
+    id: u128,
+    combat_id: Uuid,
+    hidden: bool,
+    engine: serde_json::Value,
+) -> Uuid {
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let combatant_id = crate::test_ids::test_uuid(id);
+    let mut combatant = wdoc(h.world_id, combatant_id, "combatant");
+    combatant.parent_id = Some(combat_id);
+    combatant.owner = Some(h.gm.user_id);
+    if hidden {
+        combatant.permissions.default = DocRole::None;
+    } else {
+        combatant.permissions.default = DocRole::Observer;
+    }
+    combatant.engine = Some(engine);
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: combatant }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    combatant_id
+}
+
+#[tokio::test]
+async fn a_token_leaving_the_region_before_its_turn_start_does_not_fire_the_turn_start_trigger() {
+    // Fast animation so the per-token moving lock expires between the awaited moves.
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let actor_id = link_actor(&h, 0x8A0, vec![], json!({})).await;
+    place_region(
+        &h,
+        0x8A1,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "turn_start", "effect": { "type": "condition_add", "condition": "blessed" } }]),
+    )
+    .await;
+    // Combat: [the token's combatant, an Event], not yet started.
+    let combatant_id = place_combatant(
+        &h,
+        0x8A3,
+        place_combat(
+            &h,
+            0x8A2,
+            vec![
+                crate::test_ids::test_uuid(0x8A3),
+                crate::test_ids::test_uuid(0x8A4),
+            ],
+        )
+        .await,
+        false,
+        json!({
+            "kind": { "type": "actor", "token_id": h.token_id, "actor_id": actor_id },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": {}
+        }),
+    )
+    .await;
+    let combat_id = crate::test_ids::test_uuid(0x8A2);
+    place_combatant(
+        &h,
+        0x8A4,
+        combat_id,
+        false,
+        json!({
+            "kind": { "type": "event", "lifespan": null, "message": null },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": {}
+        }),
+    )
+    .await;
+
+    // Enter the region (membership records it), then leave again (the
+    // membership diff drops it) — BEFORE the clock ever reaches the token's
+    // turn start.
+    move_token(&h, vec![h.start, h.adj]).await;
+    assert!(
+        h.room
+            .scene()
+            .read()
+            .await
+            .region_membership_of(h.token_id)
+            .is_some(),
+        "positive control: the move recorded the token's region membership"
+    );
+    move_token(&h, vec![h.adj, h.start]).await;
+
+    // CombatStart reaches the combatant's turn_start — but the token has
+    // LEFT the region, so the trigger must NOT fire: the firing is
+    // membership-gated, not merely phase-gated.
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatStart {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.clone().unwrap()["conditions"],
+        json!([]),
+        "a token that left the region before its turn start fires nothing"
+    );
+
+    // Positive control: re-enter the region, then advance the clock around
+    // to the combatant's NEXT turn start (its turn ends, the Event
+    // auto-resolves, the round wraps, its turn begins at round 2) — now the
+    // stored membership names the region and the trigger fires.
+    move_token(&h, vec![h.start, h.adj]).await;
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatAdvance {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["blessed"]),
+        "standing in the region at its turn start, the trigger fires"
+    );
+    let _ = combatant_id;
+}
+
+#[tokio::test]
+async fn turn_end_region_trigger_fires_once_per_turn_across_parked_auto_resolved_turns() {
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let actor_id = link_actor(&h, 0x8B0, vec![], json!({})).await;
+    // Registry: `hp` tracked, every recovery zero — only the region trigger
+    // moves the value, so the count of fires is directly observable.
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let registry_id = crate::test_ids::test_uuid(0x8B1);
+    let mut registry = wdoc(h.world_id, registry_id, "resource-registry");
+    registry.owner = Some(h.gm.user_id);
+    registry.engine = Some(json!({
+        "resources": {
+            "hp": { "name": "HP", "order": 0,
+                "binding": { "kind": "tracked", "max": 30.0,
+                    "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } } }
+        }
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: registry }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    place_region(
+        &h,
+        0x8B2,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "turn_end", "effect": { "type": "resource_delta", "resource": "hp", "amount": -3.0 } }]),
+    )
+    .await;
+    // Combat [Event, hidden token-bound B]: BOTH entries auto-resolve
+    // (Event always; the hidden combatant under OwnerMayEnd), so every
+    // advance walks the whole order and parks back on B — the exact shape
+    // whose NEXT advance re-ends the parked (round, B) turn a second time.
+    let combat_id = place_combat(
+        &h,
+        0x8B3,
+        vec![
+            crate::test_ids::test_uuid(0x8B4),
+            crate::test_ids::test_uuid(0x8B5),
+        ],
+    )
+    .await;
+    place_combatant(
+        &h,
+        0x8B4,
+        combat_id,
+        false,
+        json!({
+            "kind": { "type": "event", "lifespan": null, "message": null },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": {}
+        }),
+    )
+    .await;
+    let b_id = place_combatant(
+        &h,
+        0x8B5,
+        combat_id,
+        true,
+        json!({
+            "kind": { "type": "actor", "token_id": h.token_id, "actor_id": actor_id },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": { "hp": { "current": 10.0 } }
+        }),
+    )
+    .await;
+
+    let hp = async |h: &MovementHandle| -> f64 {
+        h.repo
+            .get_document(b_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap()["resources"]["hp"]["current"]
+            .as_f64()
+            .unwrap()
+    };
+
+    // The token stands in the region before the clock starts.
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    // CombatStart's walk ends B's round-1 turn exactly once: 10 -> 7. (B
+    // then parks: every entry auto-resolved within the step budget.)
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatStart {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    assert_eq!(
+        hp(&h).await,
+        7.0,
+        "turn_end fired once for the round-1 turn"
+    );
+
+    // CombatAdvance FIRST re-ends the PARKED (round 1, B) turn — the
+    // once-per-turn dedup suppresses that second fire — then wraps and ends
+    // B's genuinely NEW round-2 turn: 7 -> 4. Without the dedup the parked
+    // re-ending would apply a second -3 and hp would read 1.0.
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatAdvance {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    assert_eq!(
+        hp(&h).await,
+        4.0,
+        "the parked turn's re-ending was deduped; only the new round-2 turn fired"
+    );
+}
+
+#[tokio::test]
+async fn rewind_re_arms_the_turn_round_trigger_dedup_for_the_re_crossed_boundary() {
+    // Mirrors `turn_end_region_trigger_fires_once_per_turn_across_parked_auto_resolved_turns`'s
+    // fixture: a turn_end resource_delta(-3) region, [Event, hidden token-bound B], both
+    // auto-resolving. The point under test: a COMMITTED rewind clears the
+    // combat's dedup entry, so the re-crossed boundary's trigger re-fires —
+    // the same re-run recovery performs on the re-crossed boundary.
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let actor_id = link_actor(&h, 0x8C0, vec![], json!({})).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let registry_id = crate::test_ids::test_uuid(0x8C1);
+    let mut registry = wdoc(h.world_id, registry_id, "resource-registry");
+    registry.owner = Some(h.gm.user_id);
+    registry.engine = Some(json!({
+        "resources": {
+            "hp": { "name": "HP", "order": 0,
+                "binding": { "kind": "tracked", "max": 30.0,
+                    "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } } }
+        }
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: registry }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    place_region(
+        &h,
+        0x8C2,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "turn_end", "effect": { "type": "resource_delta", "resource": "hp", "amount": -3.0 } }]),
+    )
+    .await;
+    let combat_id = place_combat(
+        &h,
+        0x8C3,
+        vec![
+            crate::test_ids::test_uuid(0x8C4),
+            crate::test_ids::test_uuid(0x8C5),
+        ],
+    )
+    .await;
+    place_combatant(
+        &h,
+        0x8C4,
+        combat_id,
+        false,
+        json!({
+            "kind": { "type": "event", "lifespan": null, "message": null },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": {}
+        }),
+    )
+    .await;
+    let b_id = place_combatant(
+        &h,
+        0x8C5,
+        combat_id,
+        true,
+        json!({
+            "kind": { "type": "actor", "token_id": h.token_id, "actor_id": actor_id },
+            "initiative": null,
+            "tiebreak": 0.0,
+            "resources": { "hp": { "current": 10.0 } }
+        }),
+    )
+    .await;
+
+    let hp = async |h: &MovementHandle| -> f64 {
+        h.repo
+            .get_document(b_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap()["resources"]["hp"]["current"]
+            .as_f64()
+            .unwrap()
+    };
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    // CombatStart's walk ends B's round-1 turn once: 10 -> 7, recorded in
+    // the dedup set.
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatStart {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    assert_eq!(hp(&h).await, 7.0, "turn_end fired once at start");
+
+    // The rewind (rewind_restore resolves true from the engine-fallback
+    // chain) restores the combatant's record-captured hp — 10, since the
+    // trigger fired only post-commit — and crosses NO boundary itself, so it
+    // fires nothing.
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatRewind {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    assert_eq!(
+        hp(&h).await,
+        10.0,
+        "the rewind restored the pre-trigger record state and fired nothing itself"
+    );
+
+    // Re-advancing re-crosses B's round-1 turn_end. With the dedup entry
+    // cleared by the committed rewind, the trigger re-fires: 10 -> 7.
+    // WITHOUT the clear the retained key would suppress it (hp would read
+    // 10) while recovery re-runs regardless.
+    gm_combat_intent(
+        &h,
+        crate::ws::protocol::ClientMsg::CombatAdvance {
+            request_id: Uuid::nil(),
+            combat_id,
+        },
+    )
+    .await;
+    assert_eq!(
+        hp(&h).await,
+        7.0,
+        "the re-crossed round-1 turn_end re-fired after the rewind cleared the dedup entry"
+    );
+}

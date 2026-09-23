@@ -3,7 +3,12 @@
 //! INVARIANT: every formula a transition acts on is evaluated HERE, through
 //! `crate::formula` over the combatant's formula host (`eval`); an
 //! evaluation failure skips its one write and surfaces as a GM-only chat
-//! notice — the clock never stops on a bad formula.
+//! notice — the clock never stops on a bad formula. For the two intents
+//! that cross clock boundaries (`CombatStart`/`CombatAdvance`) the
+//! transition also returns the boundaries it crossed, which `run_intent`
+//! hands to `Room::fire_turn_round_triggers` after the commit — the
+//! turn/round-scoped region-trigger family (`scene::regions`), fired
+//! room-side so this module stays a pure state machine.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -43,6 +48,9 @@ pub use snapshot::{load_snapshot, CombatSnapshot, Combatant};
 pub(crate) use transition::advance_with_step_count;
 pub use transition::{
     advance, end, pause, rebuild_order, resource, rewind, roll, sort, start, ResourceOp, RollPost,
+};
+pub(crate) use transition::{
+    advance_with_trigger_plan, start_with_trigger_plan, TurnRoundBoundary,
 };
 
 /// Why a combat intent was refused. `Display` yields ONE wording for every
@@ -315,7 +323,22 @@ pub async fn handle_combat_intent(
 /// The load → authorize → resolve → commit pipeline for one combat intent,
 /// once `combat_id` has been extracted from `msg`. Returns the committed
 /// command's `seq` on success, so the caller can answer the originator with a
-/// correlated `ServerMsg::CombatResult`.
+/// correlated `ServerMsg::CombatResult`. When the transition crossed
+/// turn/round boundaries (`CombatStart`/`CombatAdvance`), the boundary
+/// record it returns is fired as turn/round-scoped region triggers by
+/// `Room::commit_combat_and_fire`, which commits the transition batch and
+/// runs the fire under ONE `publish_guard` acquisition — a queued write from
+/// another connection can never interleave between the two. The effect batch
+/// is still a SECOND commit under `WriteOrigin::Trigger` (the same split
+/// discipline `Room::execute_move`'s position commit and region-trigger
+/// effect batch keep): the effect ops' OCC pre-images must read committed
+/// post-transition state — `apply_intent` checks each op's pre-image against
+/// PRE-BATCH state and applies ops in order, so an effect op folded into the
+/// transition's batch with a pre-transition pre-image would not be rejected
+/// — it would silently overwrite the transition's own write to the same
+/// path. A committed `CombatRewind` also re-arms the combat's
+/// once-per-turn/round dedup entry (recovery re-runs on the re-crossed
+/// boundaries; the triggers riding them must re-fire too).
 async fn run_intent(
     room: &Room,
     repo: &dyn Repository,
@@ -336,8 +359,23 @@ async fn run_intent(
     // only the snapshot's own existence-hiding refusal.
     let world_defaults = repo.world_cap_defaults(room.world_id).await?;
     authorize(&snap, ctx, &msg, &world_defaults)?;
-    let ops = build_ops(room, repo, ctx, &snap, msg, now).await?;
-    let cmd = room.commit_combat(repo, ctx, ops, now).await?;
+    // Captured before `build_ops` consumes `msg`: a committed rewind's dedup
+    // re-arm rides the commit tail (`CombatTriggerTail::rewind`).
+    let rewind = matches!(msg, ClientMsg::CombatRewind { .. });
+    let (ops, boundaries) = build_ops(room, repo, ctx, &snap, msg, now).await?;
+    let cmd = room
+        .commit_combat_and_fire(
+            repo,
+            ctx,
+            ops,
+            now,
+            crate::ws::room::CombatTriggerTail {
+                snap: &snap,
+                plan: boundaries,
+                rewind,
+            },
+        )
+        .await?;
     Ok(cmd.seq)
 }
 
@@ -534,7 +572,10 @@ fn authorize(
 /// pure `transition` function (or, for `CombatRoll`, executing the named
 /// rolls first via the channel's resolved dice context). Every other
 /// refusal (`NotRunning`, `Unrewindable`, `Empty`, roll caps, ...) surfaces
-/// from the transition function's/roll executor's own `Result`.
+/// from the transition function's/roll executor's own `Result`. The second
+/// return half is the transition's turn/round boundary record — non-empty
+/// only for `CombatStart`/`CombatAdvance`, the two intents that cross clock
+/// boundaries; `run_intent` fires it as region triggers after the commit.
 async fn build_ops(
     room: &Room,
     repo: &dyn Repository,
@@ -542,14 +583,20 @@ async fn build_ops(
     snap: &CombatSnapshot,
     msg: ClientMsg,
     now: i64,
-) -> Result<Vec<Operation>, CombatError> {
+) -> Result<(Vec<Operation>, Vec<TurnRoundBoundary>), CombatError> {
     match msg {
-        ClientMsg::CombatStart { .. } => start(snap, now, room.world_id, ctx.user_id),
-        ClientMsg::CombatPause { .. } => pause(snap),
-        ClientMsg::CombatEnd { .. } => end(snap, room.world_id, ctx.user_id, now),
-        ClientMsg::CombatAdvance { .. } => advance(snap, room.world_id, ctx.user_id, now),
-        ClientMsg::CombatRewind { .. } => rewind(snap, now),
-        ClientMsg::CombatSort { .. } => sort(snap),
+        ClientMsg::CombatStart { .. } => {
+            start_with_trigger_plan(snap, now, room.world_id, ctx.user_id)
+        }
+        ClientMsg::CombatAdvance { .. } => {
+            advance_with_trigger_plan(snap, room.world_id, ctx.user_id, now)
+        }
+        ClientMsg::CombatPause { .. } => pause(snap).map(|ops| (ops, Vec::new())),
+        ClientMsg::CombatEnd { .. } => {
+            end(snap, room.world_id, ctx.user_id, now).map(|ops| (ops, Vec::new()))
+        }
+        ClientMsg::CombatRewind { .. } => rewind(snap, now).map(|ops| (ops, Vec::new())),
+        ClientMsg::CombatSort { .. } => sort(snap).map(|ops| (ops, Vec::new())),
         ClientMsg::CombatRoll { channel, rolls, .. } => {
             // INVARIANT: `transition::roll` requires at most one entry per
             // combatant id (its own doc comment names the wire-dispatch
@@ -593,6 +640,7 @@ async fn build_ops(
                 ));
             }
             roll(snap, &posts, room.world_id, ctx.user_id, &channel, now)
+                .map(|ops| (ops, Vec::new()))
         }
         ClientMsg::CombatResource {
             combatant_id,
@@ -604,7 +652,7 @@ async fn build_ops(
                 WireResourceOp::Delta { amount } => ResourceOp::Delta { amount },
                 WireResourceOp::Set { value } => ResourceOp::Set { value },
             };
-            resource(snap, combatant_id, &key, op)
+            resource(snap, combatant_id, &key, op).map(|ops| (ops, Vec::new()))
         }
         // Unreachable: `run_intent` is called only for the eight combat
         // variants extracted by `handle_combat_intent`.

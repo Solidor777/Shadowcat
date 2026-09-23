@@ -1,5 +1,14 @@
 use super::*;
 use crate::data::command::Operation;
+use crate::data::engine::TriggerEvent;
+use crate::test_ids::test_uuid;
+
+/// The `(event, round, combatant)` identity of one plan entry — the boundary
+/// half of `Room::turn_round_dedup`'s seen-set key (the region/trigger half
+/// exists only room-side, where regions are known).
+fn boundary_key(b: &TurnRoundBoundary) -> (TriggerEvent, u32, Option<Uuid>) {
+    (b.event, b.round, b.combatant)
+}
 
 #[test]
 fn start_initializes_round_one_and_runs_turn_start_recovery() {
@@ -121,11 +130,34 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
             .collect(),
         ..snap
     };
-    let docs2 = apply(&snap2, &advance(&snap2, WORLD, Uuid::nil(), 0).unwrap());
+    let (advance2_ops, advance2_plan) =
+        advance_with_trigger_plan(&snap2, WORLD, Uuid::nil(), 0).unwrap();
+    let docs2 = apply(&snap2, &advance2_ops);
     let c2: CombatEngine = engine_of(&docs2, combat);
     assert_eq!(
         (c2.round, c2.turn),
         (2, Some(crate::test_ids::test_uuid(10)))
+    );
+    // The wrap's region-trigger boundary record rides the same transition:
+    // ONE round-scoped entry per boundary category (the room expands it
+    // across `covered` — never one record per combatant), flanked by the
+    // outgoing turn's end and the incoming turn's start.
+    let events: Vec<TriggerEvent> = advance2_plan.iter().map(|b| b.event).collect();
+    assert_eq!(
+        events,
+        vec![
+            TriggerEvent::TurnEnd,
+            TriggerEvent::RoundEnd,
+            TriggerEvent::RoundStart,
+            TriggerEvent::TurnStart
+        ],
+        "turn_end(outgoing)@1, the wrap's round pair@2, turn_start(incoming)@2"
+    );
+    let wrap = &advance2_plan[1];
+    assert_eq!(
+        (wrap.round, wrap.combatant.is_none(), wrap.covered.len()),
+        (2, true, 2),
+        "the round-scoped record belongs to the new round and covers the whole order"
     );
 }
 
@@ -957,4 +989,203 @@ fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals
         !ops.is_empty(),
         "the walk did real work (removed at least one exhausted Event), not an early no-op"
     );
+}
+
+// --- Turn/round-scoped region triggers: the boundary record a transition
+// hands the room (`TurnRoundBoundary`; firing itself is room-side) ---
+
+#[test]
+fn turn_start_fires_a_region_trigger_for_the_active_combatants_token() {
+    // `start` settles the first order entry: the turn-scoped boundary record
+    // names ONLY that combatant (the token resolution itself is room-side,
+    // keyed off this combatant id), never the whole order.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], None, 0, false),
+        vec![a, b],
+        vec![],
+    );
+    let (ops, plan) = start_with_trigger_plan(&snap, 0, WORLD, Uuid::nil()).unwrap();
+    let docs = apply(&snap, &ops);
+    let c: CombatEngine = engine_of(&docs, combat);
+    assert!(c.active && c.round == 1, "the start itself still committed");
+
+    let turn_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::TurnStart)
+        .collect();
+    assert_eq!(
+        turn_starts.len(),
+        1,
+        "exactly one turn_start boundary — the settling entry's"
+    );
+    assert_eq!(
+        boundary_key(turn_starts[0]),
+        (TriggerEvent::TurnStart, 1, Some(test_uuid(10))),
+        "the active combatant's own turn start, in round 1"
+    );
+    assert!(
+        !plan.iter().any(|b| b.combatant == Some(test_uuid(11))),
+        "no boundary record names the combatant whose turn it is not"
+    );
+    // The round-scoped record covers the whole order ONCE (never one record
+    // per combatant — the room expands it across `covered`).
+    let round_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundStart)
+        .collect();
+    assert_eq!(round_starts.len(), 1);
+    assert_eq!(round_starts[0].combatant, None);
+    assert_eq!(
+        round_starts[0].covered,
+        vec![test_uuid(10), test_uuid(11)],
+        "the round boundary covers every combatant in order at crossing time"
+    );
+}
+
+#[test]
+fn round_end_fires_once_per_round_not_once_per_combatant_when_scoped_to_round() {
+    // Advance from the LAST order entry so the walk wraps the round. The
+    // round-scoped boundary record is ONE entry per round boundary (the
+    // firing is scoped to the round), never one per combatant the sweep
+    // visits — `round_wrap`'s own structure, which the recovery sweep's
+    // per-combatant iteration deliberately does NOT leak into the record.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(b.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let (_, plan) = advance_with_trigger_plan(&snap, WORLD, Uuid::nil(), 0).unwrap();
+
+    let round_ends: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundEnd)
+        .collect();
+    assert_eq!(
+        round_ends.len(),
+        1,
+        "one round_end record per round boundary, not one per combatant"
+    );
+    assert_eq!(
+        (round_ends[0].round, round_ends[0].combatant),
+        (2, None),
+        "scoped to the round being entered, not to any one combatant"
+    );
+    assert_eq!(
+        round_ends[0].covered,
+        vec![test_uuid(10), test_uuid(11)],
+        "the room expands the one record across the wrap-time order"
+    );
+    let round_starts: Vec<&TurnRoundBoundary> = plan
+        .iter()
+        .filter(|b| b.event == TriggerEvent::RoundStart)
+        .collect();
+    assert_eq!(round_starts.len(), 1, "round_start rides the same rule");
+    // The turn-scoped records around the wrap: the outgoing turn ends in the
+    // OLD round, the incoming turn starts in the NEW one.
+    let turn_keys: Vec<(TriggerEvent, u32, Option<Uuid>)> = plan
+        .iter()
+        .filter(|b| b.combatant.is_some())
+        .map(boundary_key)
+        .collect();
+    assert_eq!(
+        turn_keys,
+        vec![
+            (TriggerEvent::TurnEnd, 1, Some(test_uuid(11))),
+            (TriggerEvent::TurnStart, 2, Some(test_uuid(10))),
+        ],
+        "turn boundaries keep their (round, combatant) identity across the wrap"
+    );
+}
+
+#[test]
+fn turn_end_trigger_dedup_prevents_a_second_fire_within_the_same_turn() {
+    // An all-hidden order under `OwnerMayEnd` auto-resolves every entry, so
+    // the FIRST advance's walk ends both combatants' turns and parks back on
+    // `a` at round 2 — `turn` holds a combatant whose turn_end already ran.
+    // The SECOND advance then ends a's ROUND-2 turn AGAIN: the same
+    // (round, combatant) turn, presenting a byte-identical (event, round,
+    // combatant) boundary identity — exactly what the room's once-per-turn
+    // seen-set (`Room::turn_round_dedup`, the suppression itself e2e-pinned
+    // in `ws::room::tests::region_triggers`) keys on. This test pins the
+    // identity: without it colliding, no downstream dedup could ever catch
+    // the re-ended turn.
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, true, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, true, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let (ops1, plan1) = advance_with_trigger_plan(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let ended_a: Vec<(TriggerEvent, u32, Option<Uuid>)> = plan1
+        .iter()
+        .filter(|b| b.event == TriggerEvent::TurnEnd && b.combatant == Some(test_uuid(10)))
+        .map(boundary_key)
+        .collect();
+    assert_eq!(
+        ended_a,
+        vec![
+            (TriggerEvent::TurnEnd, 1, Some(test_uuid(10))),
+            (TriggerEvent::TurnEnd, 2, Some(test_uuid(10))),
+        ],
+        "a's turn ended at BOTH rounds of one walk — two DISTINCT turns, and \
+         distinct identities mean both must fire"
+    );
+
+    let docs = apply(&snap, &ops1);
+    let snap2 = CombatSnapshot {
+        engine: engine_of(&docs, combat),
+        combat: docs[&combat].clone(),
+        combatants: snap
+            .combatants
+            .iter()
+            .map(|x| Combatant {
+                doc: docs[&x.doc.id].clone(),
+                engine: engine_of(&docs, x.doc.id),
+            })
+            .collect(),
+        ..snap
+    };
+    let (_, plan2) = advance_with_trigger_plan(&snap2, WORLD, Uuid::nil(), 0).unwrap();
+    assert_eq!(
+        boundary_key(&plan2[0]),
+        (TriggerEvent::TurnEnd, 2, Some(test_uuid(10))),
+        "the parked turn is re-ended with the SAME boundary identity — the \
+         seen-set suppresses this second fire"
+    );
+    assert!(
+        plan2
+            .iter()
+            .any(|b| boundary_key(b) == (TriggerEvent::TurnEnd, 3, Some(test_uuid(10)))),
+        "the walk then settles a genuinely NEW (round 3, a) turn, whose \
+         differing identity the seen-set admits"
+    );
+}
+
+#[test]
+fn turn_round_trigger_event_serde_spellings_match_the_phase_vocabulary() {
+    // The region-trigger event vocabulary IS the clock's phase vocabulary:
+    // one mapping (`phase_trigger_event`), so a region author and a GM read
+    // identical names — never two independently-typed spellings that could
+    // drift. `phase_name`'s strings are the ones the recovery chain already
+    // uses for the same four boundaries.
+    for phase in [
+        crate::combat::transition::Phase::TurnStart,
+        crate::combat::transition::Phase::TurnEnd,
+        crate::combat::transition::Phase::RoundStart,
+        crate::combat::transition::Phase::RoundEnd,
+    ] {
+        assert_eq!(
+            serde_json::to_value(crate::combat::transition::phase_trigger_event(phase)).unwrap(),
+            serde_json::json!(crate::combat::transition::phase_name(phase)),
+            "the TriggerEvent serde spelling is the phase's own name"
+        );
+    }
 }

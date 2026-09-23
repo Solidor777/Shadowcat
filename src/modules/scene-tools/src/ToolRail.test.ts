@@ -734,15 +734,23 @@ async function openRegionTriggerRow(): Promise<void> {
   await fireEvent.click(screen.getByTestId("region-trigger-add"));
 }
 
-test("the trigger-event select offers enter, arrest, and exit, and the row binds the choice", async () => {
+test("the trigger-event select offers every event the server fires, and the row binds the choice", async () => {
   const { scene } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
   await openRegionTriggerRow();
   const select = screen.getByTestId("region-trigger-on") as HTMLSelectElement;
-  expect(Array.from(select.options).map((o) => o.value)).toEqual(["enter", "arrest", "exit"]);
+  expect(Array.from(select.options).map((o) => o.value)).toEqual([
+    "enter",
+    "arrest",
+    "exit",
+    "turn_start",
+    "turn_end",
+    "round_start",
+    "round_end",
+  ]);
 
-  await fireEvent.change(select, { target: { value: "exit" } });
-  expect(select.value).toBe("exit");
+  await fireEvent.change(select, { target: { value: "turn_start" } });
+  expect(select.value).toBe("turn_start");
 });
 
 test("selecting teleport seeds the default target (same scene, origin, no elevation/vfx override)", async () => {

@@ -48,8 +48,9 @@ cost: number,
 enabled: boolean, 
 /**
  * Effects fired on tokens entering, arrested inside, or leaving the
- * region. Absent on documents written before triggers existed (serde
- * default).
+ * region, or at a combat turn/round boundary while a combatant's token
+ * stands in the region. Absent on documents written before triggers
+ * existed (serde default).
  */
 triggers: Array<RegionTrigger>, 
 /**

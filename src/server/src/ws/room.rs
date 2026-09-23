@@ -761,6 +761,17 @@ pub struct Room {
     /// `ClientMsg::PlayVfx` frame and `/fx` already share, rather than a parallel unthrottled
     /// path (never-fork: one validation+authz/budget source per one-shot family).
     vfx_rate: Arc<PingRateLimiter>,
+    /// Ephemeral per-combat once-per-turn/round region-trigger dedup —
+    /// `fire_turn_round_triggers`'s seen-set, the SAME seen-set shape
+    /// `combat::transition`'s per-sweep recovery dedup keeps, living
+    /// room-side because the (combatant, region, trigger) identity it keys
+    /// on only exists at the firing pass (the pure transition never sees
+    /// regions). Never persisted: a restart clears it, which can only
+    /// re-permit a fire — the same accepted ephemeral-table residual class
+    /// as `SceneEcs::region_membership` and `Room::moving`. `Mutex`, never
+    /// locked across an `.await`... the firing pass holds `publish_guard`,
+    /// which serializes every updater anyway.
+    turn_round_dedup: Mutex<HashMap<Uuid, TurnRoundDedup>>,
 }
 
 /// One firing report: the token that entered, the scene it happened in, the cells it
@@ -788,6 +799,106 @@ pub(crate) struct TriggerReport {
     /// footprint bleed past the center cell would otherwise register membership a
     /// center-keyed `Enter` never fired, and vice versa).
     pub occupancy: Vec<(i32, i32)>,
+}
+
+/// One fired (event, round, combatant, region, trigger-index) tuple — the
+/// once-per-turn/round dedup identity for `Room::fire_turn_round_triggers`.
+/// Scoped to (combatant, region, trigger identity) — the same axes the
+/// recovery dedup's own sets key on — plus the boundary instance (`event`,
+/// `round`) so a genuinely NEW turn or round can never be suppressed by an
+/// earlier one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct TurnRoundFireKey {
+    /// The boundary event that fired (`TriggerEvent::TurnStart` & kin).
+    event: eng::TriggerEvent,
+    /// The round the firing boundary belongs to — the boundary instance:
+    /// `(round, combatant)` is one turn for turn-scoped events; for
+    /// round-scoped events it is the new round `round_wrap` committed.
+    round: u32,
+    /// The combatant whose token fired. Round-scoped boundaries expand to
+    /// one key per covered combatant, so two member tokens of one region
+    /// each fire once per round boundary.
+    combatant: Uuid,
+    /// The region carrying the fired trigger.
+    region: Uuid,
+    /// The trigger's index in the region's authored `triggers` list
+    /// (`regions::fired_turn_round_triggers` returns it) — the trigger
+    /// identity content-equality cannot supply: two identical authored
+    /// triggers on one region are two distinct identities (a `resource_delta`
+    /// authored twice applies twice).
+    trigger: usize,
+}
+
+/// Per-combat once-per-turn/round dedup state: the keys already fired within
+/// the current round window, and the highest round the firing pass has
+/// observed for the combat. A fresh instance sees every fire.
+#[derive(Default)]
+struct TurnRoundDedup {
+    /// Highest round observed for the combat; keys older than the previous
+    /// round are pruned against it on each pass (`k.round + 1 < last_round`
+    /// drops). A key's lifetime is therefore one boundary-to-boundary window
+    /// — the same rotation `combat::transition`'s per-sweep recovery dedup
+    /// sets keep, retained across commands because the double-fire this set
+    /// must catch is a CROSS-command shape: an auto-resolved entry the
+    /// `settle_turn` budget parks on has already run its `turn_end`, and the
+    /// next `CombatAdvance` ends that SAME (round, combatant) turn again.
+    /// A committed `CombatRewind` CLEARS the whole entry
+    /// (`Room::commit_combat_and_fire`'s `rewind` arm): the rewind re-runs
+    /// recovery when the clock re-crosses those boundaries, so the triggers
+    /// riding them re-arm in full — pruning alone would only re-arm rounds
+    /// outside the retained window, silently suppressing an ordinary
+    /// one-round rewind's re-crossing.
+    last_round: u32,
+    /// The fired keys inside the current/previous round window.
+    keys: std::collections::BTreeSet<TurnRoundFireKey>,
+}
+
+/// Combats retained in `Room::turn_round_dedup` before the whole map is
+/// cleared wholesale — over-invalidation is the safe direction (a cleared
+/// set can only re-permit a legitimate-looking fire, never suppress a first
+/// one), the same discipline `MAX_LIGHTING_INPUTS_CACHE_ENTRIES` keeps.
+/// Entries otherwise live for the room's lifetime: one small set per combat
+/// that ever crossed a boundary.
+const MAX_TURN_ROUND_DEDUP_COMBATS: usize = 64;
+
+/// The firing-plan input bundle for `Room::apply_region_trigger_effects` —
+/// what fires, the rows the secrecy forcing searches, the combat a
+/// `ResourceDelta` resolves against, and the one-hop teleport guard. Bundled
+/// to keep the application funnel under the >7-argument signature limit
+/// (`MoveRequestInputs`'s own discipline).
+struct TriggerEffectPlan<'a> {
+    /// The (region id, trigger) pairs to apply, in fire order.
+    fired: Vec<(Uuid, eng::RegionTrigger)>,
+    /// The identity rows a `ChatNotice`'s audience forcing searches (an
+    /// unresolvable row fails closed to forced-GM-only).
+    secrecy_rows: &'a [crate::scene::regions::TriggerRegion],
+    /// The combat a `ResourceDelta` resolves against: `Some` for the
+    /// turn/round fire site (the FIRING combat — correct even for a token
+    /// teleported off its combat's scene), `None` for the movement sites
+    /// (the token's scene's ACTIVE combat, the rule the movement sites have
+    /// always used).
+    combat_hint: Option<Uuid>,
+    /// Whether a `Teleport` effect may apply on this pass (the one-hop
+    /// anti-loop guard; `false` only on a teleport destination's own
+    /// re-fire).
+    allow_teleport: bool,
+}
+
+/// The post-commit tail of one combat intent — everything
+/// `Room::commit_combat_and_fire` does AFTER the transition's own commit.
+/// Bundled to keep the method under the >7-argument signature limit
+/// (`MoveRequestInputs`'s own discipline).
+pub(crate) struct CombatTriggerTail<'a> {
+    /// The snapshot the transition resolved from (combat id, combatant→token
+    /// kinds) — the firing pass's lookup table.
+    pub snap: &'a crate::combat::CombatSnapshot,
+    /// The transition's turn/round boundary record (empty for every intent
+    /// but a boundary-crossing `start`/`advance`).
+    pub plan: Vec<crate::combat::transition::TurnRoundBoundary>,
+    /// Whether the committed intent was a `CombatRewind`: its commit re-arms
+    /// the combat's `turn_round_dedup` entry (recovery re-runs on the
+    /// re-crossed boundaries, so the triggers riding them re-fire too).
+    pub rewind: bool,
 }
 
 impl Room {
@@ -819,6 +930,7 @@ impl Room {
             session_floors: Mutex::new(HashMap::new()),
             resync_floor_enforced_flag: resync_floor_enforced,
             vfx_rate,
+            turn_round_dedup: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1351,12 +1463,20 @@ impl Room {
     }
 
     /// Commits a server-authored combat-clock command: acquires `publish_guard` FRESH here (the
-    /// `CombatSnapshot` backing `ops` was loaded by the caller OUTSIDE any guard — combat intents
-    /// are the first production caller of this path), then delegates to `commit_ops_locked` under
-    /// `WriteOrigin::CombatTransition`. Because every op the pure `combat::transition` functions
+    /// `CombatSnapshot` backing `ops` was loaded by the caller OUTSIDE any guard), then delegates
+    /// to `commit_ops_locked` under `WriteOrigin::CombatTransition`. Because every op the pure
+    /// `combat::transition` functions
     /// produce carries an OCC pre-image (`FieldChange.old`), a write racing a concurrent change to
     /// the same document surfaces as a clean `DataError::Conflict` here rather than a lost or
     /// corrupted update — the snapshot-outside/guard-only-at-commit split is what makes that hold.
+    ///
+    /// The combat-INTENT pipeline (`combat::run_intent`) does NOT use this — it commits through
+    /// `commit_combat_and_fire`, whose single guard acquisition spans the transition commit AND
+    /// the turn/round region-trigger fire, so no queued write can interleave between them. This
+    /// self-contained acquire-commit-release form remains as the TEST SEAM for direct callers
+    /// that carry no boundary record to fire (the `sight_walls`/`light_walls` test-seam
+    /// precedent), hence `#[cfg(test)]`.
+    #[cfg(test)]
     pub(crate) async fn commit_combat(
         &self,
         repo: &dyn Repository,
@@ -1367,6 +1487,45 @@ impl Room {
         let _guard = self.publish_guard.lock().await;
         self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
             .await
+    }
+
+    /// THE one commit+fire tail for a combat intent (`combat::run_intent`'s
+    /// only commit path): commits the transition's ops under
+    /// `WriteOrigin::CombatTransition`, then fires its turn/round
+    /// region-trigger plan — under ONE `publish_guard` acquisition spanning
+    /// both, so a queued write from another connection can never interleave
+    /// between the clock commit and the fire (mutating a boundary token's
+    /// region membership, shifting a region's authored trigger list, or
+    /// deleting the token mid-pass). The split COMMIT (`Trigger`-origin
+    /// effect batch after the `CombatTransition`-origin clock batch) is
+    /// unchanged — the guard, not the batch, is what spans.
+    ///
+    /// `tail.rewind` clears the combat's `turn_round_dedup` entry: a
+    /// committed `CombatRewind` re-runs recovery when the clock re-crosses
+    /// those boundaries, so the region triggers riding them must re-arm too
+    /// (absence is the seen-set's ground state; the parked-turn suppression
+    /// it serves rebuilds from the next advance's own inserts).
+    pub(crate) async fn commit_combat_and_fire(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+        tail: CombatTriggerTail<'_>,
+    ) -> Result<Command, DataError> {
+        let _guard = self.publish_guard.lock().await;
+        let cmd = self
+            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .await?;
+        if tail.rewind {
+            self.turn_round_dedup
+                .lock()
+                .await
+                .remove(&tail.snap.combat.id);
+        }
+        self.fire_turn_round_triggers(repo, ctx, tail.snap, tail.plan, ts)
+            .await;
+        Ok(cmd)
     }
 
     /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
@@ -2299,11 +2458,13 @@ impl Room {
     /// UNCONDITIONALLY, and any region the stored set loses fires its `Exit` triggers —
     /// including, via `SceneEcs::trigger_region_row`'s unfiltered by-id rows, a region the
     /// report's scene/elevation table no longer selects (a cross-scene portal or an
-    /// elevation-changing teleport). This ONE application path serves both fire sites —
-    /// `execute_move` (entered-cell sequence from `MoveOutcome`) and
-    /// `fire_placement_triggers` (footprint cells of the new position) — so the two cannot
-    /// drift on what an effect means, and it is the ONLY membership updater, so the
-    /// stored set can never skew from the firing decision.
+    /// elevation-changing teleport). This is the membership-diff's ONLY writer, so the
+    /// stored set can never skew from the firing decision. Effects themselves apply through
+    /// `apply_region_trigger_effects`, THE one application path every fire site funnels
+    /// into — `execute_move` (entered-cell sequence from `MoveOutcome`),
+    /// `fire_placement_triggers` (footprint cells of the new position), and
+    /// `fire_turn_round_triggers` (the combat boundary plan) — so the sites
+    /// cannot drift on what an effect means.
     ///
     /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
     /// `WriteOrigin::Trigger` — never batched with the client-origin write that
@@ -2370,9 +2531,6 @@ impl Room {
             occupancy,
         } = report;
         let entered: &[(i32, i32)] = &entered;
-        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
-        use crate::combat::transition::{resource as resource_transition, ResourceOp};
-        use crate::combat::CombatError;
         use crate::scene::regions;
 
         // The entering token's document, loaded AFTER the triggering write committed, so the
@@ -2400,11 +2558,11 @@ impl Room {
             .and_then(|v| serde_json::from_value(v).ok());
 
         // The authoritative identity table (the server springs secret regions), the arrest
-        // cell, the token's effective owner, and the Exit-firing inputs — one WRITE guard
+        // cell, and the Exit-firing inputs — one WRITE guard
         // (the membership diff updates `SceneEcs::region_membership`), no lock across an
         // await. `trigger_regions` is filtered to the entering token's floor: a region
         // banded to another level never fires on this token (`elevation::band_contains`).
-        let (regions, arrest_cell, effective_owner, exited, stale_rows) = {
+        let (regions, arrest_cell, exited, stale_rows) = {
             let mut ecs = self.scene.write().await;
             let regions = ecs
                 .trigger_regions(
@@ -2421,7 +2579,6 @@ impl Room {
                     .map(|&cell| ecs.resolve_grid_shape(scene, cell).cell_of(pos)),
                 None => None,
             };
-            let owner = ecs.token_effective_owner(&token_doc);
             // Exit membership diff: the regions intersecting the report's OCCUPANCY basis
             // (its own Enter basis — a move's stop cell, a placement's footprint) replace
             // the stored set UNCONDITIONALLY, and whatever the stored set loses is this
@@ -2449,13 +2606,85 @@ impl Room {
                 .filter(|id| !regions.iter().any(|r| r.region_id == **id))
                 .filter_map(|&id| ecs.trigger_region_row(id))
                 .collect();
-            (regions, arrest_cell, owner, exited, stale_rows)
+            (regions, arrest_cell, exited, stale_rows)
         };
         let mut fired = regions::fired_triggers(&regions, entered, arrest_cell, &exited);
         fired.extend(regions::fired_triggers(&stale_rows, &[], None, &exited));
+        // The rows a notice's secrecy forcing searches: the scene table AND the stale
+        // exit rows (an Exit-fired notice rides the identical rule).
+        let mut secrecy_rows = regions;
+        secrecy_rows.extend(stale_rows);
+        self.apply_region_trigger_effects(
+            repo,
+            ctx,
+            token_doc,
+            TriggerEffectPlan {
+                fired,
+                secrecy_rows: &secrecy_rows,
+                combat_hint: None,
+                allow_teleport,
+            },
+            ts,
+        )
+        .await;
+    }
+
+    /// The effect-application half of region-trigger firing — THE one path
+    /// every fire site shares, so a move entry, a placement/teleport, and a
+    /// combat turn/round boundary can never drift on what an effect MEANS:
+    /// `fire_region_triggers` (movement/placement reports) and
+    /// `fire_turn_round_triggers` (the combat boundary plan) both end here.
+    /// The caller computes the firing set; this function never re-decides
+    /// WHAT fires, only applies it: condition/resource/notice/teleport
+    /// effects against `plan.fired`, then ONE batch commit via
+    /// `commit_ops_locked` under `WriteOrigin::Trigger` — never batched with
+    /// the write whose firing set this was (the `execute_move` split
+    /// discipline). A commit failure is logged and swallowed rather than
+    /// propagated: the triggering write already stands, and failing the
+    /// caller over a lost effect would desync it from what was actually
+    /// written (the movement decrement's own precedent).
+    ///
+    /// `token_doc` is the entering token's committed document (each caller
+    /// loads it AFTER the triggering write committed, so the actor join and
+    /// every pre-image read committed state); the token's scene is derived
+    /// from its `parent_id` — the same value every caller's own derivation
+    /// already produces, stated once here instead.
+    ///
+    /// PRECONDITION: caller holds `publish_guard` (`commit_ops_locked` requires it).
+    async fn apply_region_trigger_effects(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        token_doc: Document,
+        plan: TriggerEffectPlan<'_>,
+        ts: i64,
+    ) {
+        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
+        use crate::combat::transition::{resource as resource_transition, ResourceOp};
+        use crate::combat::CombatError;
+
+        let TriggerEffectPlan {
+            fired,
+            secrecy_rows,
+            combat_hint,
+            allow_teleport,
+        } = plan;
         if fired.is_empty() {
             return;
         }
+        let token = token_doc.id;
+        // The token's scene, derived from its committed document (a caller's
+        // own scene derivation — `execute_move`'s `token_move`, a placement's
+        // footprint — resolves to this same value post-commit).
+        let scene = token_doc.parent_id;
+        // The token's own engine body (position/elevation for a Teleport,
+        // `actor_id` for the resource combatant join) — parsed here rather
+        // than handed in, so both fire sites share one derivation.
+        let token_eng: Option<eng::TokenEngine> = token_doc
+            .engine
+            .clone()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let effective_owner = { self.scene.read().await.token_effective_owner(&token_doc) };
 
         let mut ops: Vec<Operation> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
@@ -2539,10 +2768,24 @@ impl Room {
             .iter()
             .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::ResourceDelta { .. }));
         if needs_resources {
-            let active = { self.scene.read().await.active_combat_for_scene(scene) };
-            match active {
+            // The combat the delta resolves against: the FIRING combat when
+            // the turn/round site named one (`combat_hint` — a boundary's
+            // combatant is resolved there even when the token was teleported
+            // off that combat's scene), else the token's scene's active
+            // combat (the movement sites' rule).
+            let combat_id = match combat_hint {
+                Some(id) => Some(id),
+                None => match scene {
+                    Some(scene) => {
+                        let active = { self.scene.read().await.active_combat_for_scene(scene) };
+                        active.map(|(id, _)| id)
+                    }
+                    None => None,
+                },
+            };
+            match combat_id {
                 None => failures.push("no active combat on the scene".to_string()),
-                Some((combat_id, _)) => {
+                Some(combat_id) => {
                     match crate::combat::load_snapshot(repo, self.world_id, combat_id).await {
                         Err(_) => {
                             failures
@@ -2590,8 +2833,12 @@ impl Room {
                                         }
                                     }
                                     // Every key's FieldChange folds into ONE Update on the
-                                    // combatant: the store admits at most one Update per
-                                    // document per batch.
+                                    // combatant: the store checks EACH op's pre-image against
+                                    // PRE-BATCH state and applies ops in order (two Updates to
+                                    // one document are admitted, never chained), so a second
+                                    // per-key Update carrying the pre-fire value as its `old`
+                                    // would silently overwrite the first's write instead of
+                                    // composing with it.
                                     let mut changes = Vec::new();
                                     for (key, sum) in sums {
                                         match resource_transition(
@@ -2646,7 +2893,12 @@ impl Room {
                 let eng::TriggerEffect::Teleport { target } = &trigger.effect else {
                     unreachable!("the find matched a Teleport effect")
                 };
-                let dest_scene = target.scene.unwrap_or(scene);
+                // The destination scene: the target's own when it names one,
+                // else the token's current scene (a same-scene hop). A token
+                // on NO scene (reachable only from the turn/round fire site,
+                // whose token may sit outside every scene) can hop only to a
+                // named target.
+                let dest_scene = target.scene.or(scene);
                 // Scene existence AND same-world membership are checked here (fire time), never
                 // at ingress (`validate_engine_tree` is pure — no repository access). Without the
                 // world check, a cross-world (or otherwise wrong-world) portal target still
@@ -2657,18 +2909,27 @@ impl Room {
                 // the failure through `failures` like every other teleport refusal, so the
                 // batch's OTHER effects still commit and the GM is told specifically why the
                 // portal itself failed.
-                let scene_exists = match repo.get_document(dest_scene).await {
-                    Ok(Some(doc)) => {
-                        doc.doc_type == "scene"
-                            && crate::data::document::world_of(&doc) == Some(self.world_id)
-                    }
-                    _ => false,
+                let scene_exists = match dest_scene {
+                    Some(dest) => match repo.get_document(dest).await {
+                        Ok(Some(doc)) => {
+                            doc.doc_type == "scene"
+                                && crate::data::document::world_of(&doc) == Some(self.world_id)
+                        }
+                        _ => false,
+                    },
+                    None => false,
                 };
                 if !scene_exists {
-                    failures.push(format!("teleport target scene {dest_scene} does not exist"));
+                    failures.push(match dest_scene {
+                        Some(dest) => format!("teleport target scene {dest} does not exist"),
+                        None => "the token is on no scene to teleport from".to_string(),
+                    });
                 } else if token_eng.is_none() {
                     failures.push("token has no engine body to teleport".to_string());
                 } else {
+                    let Some(dest_scene) = dest_scene else {
+                        unreachable!("scene_exists is false for a None destination");
+                    };
                     let t = token_eng.as_ref().expect("checked non-None above");
                     let mut update_changes = Vec::new();
                     update_changes.push(crate::data::command::FieldChange {
@@ -2691,40 +2952,42 @@ impl Room {
                             remove: false,
                         });
                     }
-                    if dest_scene != scene {
+                    if Some(dest_scene) != scene {
                         ops.push(Operation::Move {
                             doc_id: token,
                             parent_id: Some(dest_scene),
-                            old_parent_id: Some(scene),
+                            old_parent_id: scene,
                         });
                         // Active-combat visibility: the budget decrement for the walk that
                         // entered the portal already happened; this notice only makes the
                         // scene-change visible.
-                        if self
-                            .scene
-                            .read()
-                            .await
-                            .active_combat_for_scene(scene)
-                            .is_some()
-                        {
-                            let notice = build_message_doc(
-                                self.world_id,
-                                ctx.user_id,
-                                MessageDraft {
-                                    channel: "region".to_string(),
-                                    actor_owner: None,
-                                    audience: Audience::GmOnly,
-                                    kind: MessageKind::System,
-                                    content: vec![Segment::Text {
-                                        text: format!(
-                                            "Token {token} teleported off scene {scene} while an active combat is running there"
-                                        ),
-                                    }],
-                                    source: None,
-                                },
-                                ts,
-                            );
-                            ops.push(Operation::Create { doc: notice });
+                        if let Some(source_scene) = scene {
+                            if self
+                                .scene
+                                .read()
+                                .await
+                                .active_combat_for_scene(source_scene)
+                                .is_some()
+                            {
+                                let notice = build_message_doc(
+                                    self.world_id,
+                                    ctx.user_id,
+                                    MessageDraft {
+                                        channel: "region".to_string(),
+                                        actor_owner: None,
+                                        audience: Audience::GmOnly,
+                                        kind: MessageKind::System,
+                                        content: vec![Segment::Text {
+                                            text: format!(
+                                                "Token {token} teleported off scene {source_scene} while an active combat is running there"
+                                            ),
+                                        }],
+                                        source: None,
+                                    },
+                                    ts,
+                                );
+                                ops.push(Operation::Create { doc: notice });
+                            }
                         }
                     }
                     ops.push(Operation::Update {
@@ -2754,19 +3017,21 @@ impl Room {
                             None => true,
                         };
                         if vfx_admitted {
-                            self.broadcast_aux(ServerMsg::Vfx {
-                                scene,
-                                user: ctx.user_id,
-                                asset: asset.clone(),
-                                x: t.x,
-                                y: t.y,
-                                scale: None,
-                                rotation: None,
-                                duration_ms: None,
-                                sound: None,
-                                elevation: t.elevation,
-                                id: Uuid::new_v4(),
-                            });
+                            if let Some(source_scene) = scene {
+                                self.broadcast_aux(ServerMsg::Vfx {
+                                    scene: source_scene,
+                                    user: ctx.user_id,
+                                    asset: asset.clone(),
+                                    x: t.x,
+                                    y: t.y,
+                                    scale: None,
+                                    rotation: None,
+                                    duration_ms: None,
+                                    sound: None,
+                                    elevation: t.elevation,
+                                    id: Uuid::new_v4(),
+                                });
+                            }
                             self.broadcast_aux(ServerMsg::Vfx {
                                 scene: dest_scene,
                                 user: ctx.user_id,
@@ -2798,11 +3063,11 @@ impl Room {
                 // Secrecy: a region whose `/engine` band is not visible to every world member
                 // forces GM-only whatever the authored audience says — a wider notice would
                 // name or imply a region some recipients cannot see. The row is found by id
-                // across the scene table AND the stale exit rows (an Exit-fired notice rides
-                // the identical rule); an unresolvable row fails closed to forced.
-                let visible_to_all = regions
+                // across `secrecy_rows` (the caller's full row set — the movement site's
+                // scene table AND its stale exit rows, so an Exit-fired notice rides the
+                // identical rule); an unresolvable row fails closed to forced.
+                let visible_to_all = secrecy_rows
                     .iter()
-                    .chain(&stale_rows)
                     .find(|r| &r.region_id == region_id)
                     .map(|r| r.visible_to_all)
                     .unwrap_or(false);
@@ -2881,7 +3146,7 @@ impl Room {
         {
             Err(err) => {
                 tracing::debug!(
-                    %scene, %token, ?err,
+                    ?scene, %token, ?err,
                     "region-trigger commit failed after the triggering write already committed; \
                      the write stands, the effects were not applied"
                 );
@@ -2974,6 +3239,192 @@ impl Room {
         }
         for report in reports {
             self.fire_region_triggers(repo, ctx, report, ts, true).await;
+        }
+    }
+
+    /// The turn/round-scoped region-trigger fire site: fires the turn/round
+    /// boundaries a COMMITTED `CombatStart`/`CombatAdvance` transition
+    /// crossed (`combat::transition::TurnRoundBoundary` — recorded by the
+    /// pure transition, applied here) against the trigger-bearing regions
+    /// each boundary combatant's token is a recorded member of
+    /// (`SceneEcs::region_membership` — READ here, never written: a clock
+    /// boundary does not move tokens, so membership changes only through the
+    /// movement/placement funnel). Turn-scoped entries fire for the one
+    /// combatant whose turn it is; round-scoped entries expand across
+    /// `covered` (the order at crossing time), one fire per member token per
+    /// round boundary — `round_wrap`'s own structure. Only a combatant whose
+    /// kind names a token (`CombatantKind::Actor { token_id: Some, .. }`)
+    /// fires: an unbound combatant has no scene position, so no membership
+    /// can prove its occupancy. (The budget gate's `actor_id` fallback
+    /// resolves token→combatant; the inverse combatant→token is one-to-many
+    /// and would pick one token's position arbitrarily — a forked decision
+    /// this rule deliberately avoids.)
+    ///
+    /// Effects apply through `apply_region_trigger_effects`, the SAME funnel
+    /// the movement sites use, committing under `WriteOrigin::Trigger` as a
+    /// SECOND batch after the transition's own commit — the split
+    /// is structural, not stylistic: the effect ops' OCC pre-images must be
+    /// read from committed post-transition state (the transition's own
+    /// recovery may have just written the same combatant document).
+    /// `apply_intent` admits MULTIPLE `Update`s to one document in a batch
+    /// and checks each op's pre-image against PRE-BATCH state, applying in
+    /// order — so a folded-in effect op computed from the pre-transition
+    /// snapshot would not be rejected; it would silently overwrite the
+    /// transition's own write to the same path (the last applied wins).
+    /// `combat_hint` resolves a `ResourceDelta` against the FIRING combat
+    /// even when the token was teleported off its scene.
+    ///
+    /// Once-per-turn/round dedup (`Room::turn_round_dedup`, key
+    /// `TurnRoundFireKey`) runs at PLAN time: the set records that the clock
+    /// crossed the boundary, so an effect commit failure (swallowed inside
+    /// the application funnel) is lost exactly as the movement sites'
+    /// swallowed failures are — one failure philosophy.
+    ///
+    /// PRECONDITION: caller holds `publish_guard` (`commit_ops_locked`
+    /// requires it, and the ONE acquisition must span the transition commit
+    /// and this fire — see `commit_combat_and_fire`, this function's only
+    /// caller, for the interleave that rule closes).
+    pub(crate) async fn fire_turn_round_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        snap: &crate::combat::CombatSnapshot,
+        plan: Vec<crate::combat::transition::TurnRoundBoundary>,
+        ts: i64,
+    ) {
+        use crate::scene::regions;
+
+        if plan.is_empty() {
+            return;
+        }
+
+        // Resolve each boundary to the tokens it fires for, preserving plan
+        // (chronological) order for application. `by_token` values are
+        // (combatant, event, round) triples.
+        let mut token_order: Vec<Uuid> = Vec::new();
+        let mut by_token: HashMap<Uuid, Vec<(Uuid, eng::TriggerEvent, u32)>> = HashMap::new();
+        for boundary in &plan {
+            let combatants: &[Uuid] = match &boundary.combatant {
+                Some(c) => std::slice::from_ref(c),
+                None => &boundary.covered,
+            };
+            for &combatant in combatants {
+                let Some(token) = snap
+                    .combatants
+                    .iter()
+                    .find(|c| c.doc.id == combatant)
+                    .and_then(|c| match c.engine.kind {
+                        eng::CombatantKind::Actor { token_id, .. } => token_id,
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+                by_token
+                    .entry(token)
+                    .or_insert_with(|| {
+                        token_order.push(token);
+                        Vec::new()
+                    })
+                    .push((combatant, boundary.event, boundary.round));
+            }
+        }
+        if token_order.is_empty() {
+            return;
+        }
+
+        // The dedup window update, once per pass: fold this plan's highest
+        // round in, then prune keys older than the previous round (the
+        // rotation `TurnRoundDedup::last_round` documents).
+        let plan_max_round = plan.iter().map(|b| b.round).max().unwrap_or(0);
+        {
+            let mut dedup = self.turn_round_dedup.lock().await;
+            if dedup.len() >= MAX_TURN_ROUND_DEDUP_COMBATS && !dedup.contains_key(&snap.combat.id) {
+                dedup.clear();
+            }
+            let entry = dedup.entry(snap.combat.id).or_default();
+            entry.last_round = entry.last_round.max(plan_max_round);
+            let last_round = entry.last_round;
+            entry.keys.retain(|k| k.round + 1 >= last_round);
+        }
+
+        for token in token_order {
+            let boundaries = by_token.remove(&token).unwrap_or_default();
+            // Membership + identity rows under ONE read guard (never nested
+            // with the dedup lock): membership is the occupancy proof; rows
+            // resolve by id WITHOUT the per-scene/elevation filter — the
+            // `trigger_region_row` rule Exit firing already uses, for the
+            // same reason (re-filtering would drop a region the token was
+            // legitimately recorded inside).
+            let (member, rows) = {
+                let ecs = self.scene.read().await;
+                let member: std::collections::BTreeSet<Uuid> =
+                    ecs.region_membership_of(token).cloned().unwrap_or_default();
+                let rows: Vec<regions::TriggerRegion> = member
+                    .iter()
+                    .filter_map(|&id| ecs.trigger_region_row(id))
+                    .collect();
+                (member, rows)
+            };
+            if member.is_empty() {
+                continue;
+            }
+            // The candidate fires in plan order, then the seen-set filter.
+            let mut candidates: Vec<(TurnRoundFireKey, (Uuid, eng::RegionTrigger))> = Vec::new();
+            for (combatant, event, round) in boundaries {
+                for (region, index, trigger) in
+                    regions::fired_turn_round_triggers(&rows, &member, event)
+                {
+                    candidates.push((
+                        TurnRoundFireKey {
+                            event,
+                            round,
+                            combatant,
+                            region,
+                            trigger: index,
+                        },
+                        (region, trigger),
+                    ));
+                }
+            }
+            let fired: Vec<(Uuid, eng::RegionTrigger)> = {
+                let mut dedup = self.turn_round_dedup.lock().await;
+                let entry = dedup.entry(snap.combat.id).or_default();
+                candidates
+                    .into_iter()
+                    .filter(|(key, _)| entry.keys.insert(*key))
+                    .map(|(_, pair)| pair)
+                    .collect()
+            };
+            if fired.is_empty() {
+                continue;
+            }
+            // The token's committed document, loaded after the transition's
+            // commit — the application funnel's own discipline.
+            let token_doc = match repo.get_document(token).await {
+                Ok(Some(doc)) => doc,
+                Ok(None) => {
+                    tracing::debug!(%token, "turn/round region triggers: the token is gone; no effects fire");
+                    continue;
+                }
+                Err(err) => {
+                    tracing::debug!(%token, ?err, "turn/round region triggers: the token could not be loaded; no effects fire");
+                    continue;
+                }
+            };
+            self.apply_region_trigger_effects(
+                repo,
+                ctx,
+                token_doc,
+                TriggerEffectPlan {
+                    fired,
+                    secrecy_rows: &rows,
+                    combat_hint: Some(snap.combat.id),
+                    allow_teleport: true,
+                },
+                ts,
+            )
+            .await;
         }
     }
 
