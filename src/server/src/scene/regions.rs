@@ -1,7 +1,9 @@
-//! Region primitive: vector-shaped zones that weight, block, or arrest grid movement.
-//! Pure geometry — no ECS, no I/O (mirrors the `scene::movement` module's invariant). Consumed by
-//! `SceneEcs::region_field` (hydration + visibility filtering) and `scene::pathfinding` /
-//! `scene::move_exec` (the two enforcement points).
+//! Region primitive: vector-shaped zones that weight, block, or arrest grid movement, or edit
+//! their cells' ambient light. Pure geometry — no ECS, no I/O (mirrors the `scene::movement`
+//! module's invariant). Consumed by `SceneEcs::region_field` (hydration + visibility filtering),
+//! `scene::pathfinding` / `scene::move_exec` (the two movement enforcement points), and
+//! `LightingInputs::cell_light` (the ambient-light adjustment, read through the field's
+//! `ambient` facet only — never the movement one).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -10,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
 
-use crate::data::engine::{RegionTrigger, TriggerEvent};
+use crate::data::engine::{AmbientLightMode, AmbientLightOverride, RegionTrigger, TriggerEvent};
 
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
@@ -55,6 +57,43 @@ pub(crate) enum RegionBehavior {
     Impassable,
     /// Entering a cell stops the move there (trap/hazard semantics).
     Arrest,
+    /// Ambient-light edit: adjusts the covered cells' composed illumination
+    /// (`compose_ambient` → `LightingInputs::cell_light`'s final per-cell
+    /// adjustment). Movement-only readers (`compose`, `terrain_multiplier`,
+    /// `is_impassable`, `is_arrest`) never see this variant — it carries no
+    /// movement effect.
+    AmbientLight(AmbientLightOverride),
+}
+
+/// The per-cell composed ambient-light adjustment, folded from every
+/// overlapping enabled `ambient_light` region by `compose_ambient` and applied
+/// LAST over `LightingInputs::cell_light`'s base composition (placed/carried
+/// lights plus the environment ambient — under `all_bright` included, where
+/// the base is the flat maximum).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AmbientAdjustment {
+    /// Replace the composed illumination outright (an `Override` region; the
+    /// darker of two overlapping `Override`s).
+    Override(f64),
+    /// Net signed delta over the composed base (`Darken` negative,
+    /// `Brighten` positive) — overlapping deltas SUM, never take a max:
+    /// darken/brighten are additive perturbations to a baseline, not a
+    /// ceiling on it, so a second overlapping darken must genuinely deepen
+    /// the dark.
+    Delta(f64),
+}
+
+impl AmbientAdjustment {
+    /// Apply the adjustment to a composed base illumination, clamped to the
+    /// `[0, 1]` illumination scale. `Override` clamps its own level read-side
+    /// (ingress validation already enforces `[0, 1]`; the clamp here keeps a
+    /// fixture or a pre-validation stored document inside the scale).
+    pub(crate) fn apply(&self, base: f64) -> f64 {
+        match *self {
+            AmbientAdjustment::Override(level) => level.clamp(0.0, 1.0),
+            AmbientAdjustment::Delta(delta) => (base + delta).clamp(0.0, 1.0),
+        }
+    }
 }
 
 /// Per-cell composed effect after precedence + MAX overlap resolution.
@@ -238,6 +277,10 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
 /// Compose zero or more (behavior, cost) contributions for ONE cell into a single effect:
 /// precedence `Impassable > Arrest > Terrain`; overlapping Terrain costs take the MAX
 /// (not summed — difficulty is not cumulative). `None` when nothing contributes.
+/// `AmbientLight` contributions produce NO movement effect here — the ambient facet of the
+/// same cell is `compose_ambient`'s, and a cell may carry both (a darkened difficult-terrain
+/// cell is a coherent authoring); the two facets are folded from the SAME contribution list
+/// by `RegionFieldBuilder::build`.
 pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionEffect> {
     if contributions
         .iter()
@@ -261,13 +304,60 @@ pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionE
         .map(RegionEffect::Terrain)
 }
 
+/// The ambient facet of one cell's composition: fold every `AmbientLight` contribution into the
+/// ONE adjustment `LightingInputs::cell_light` applies after its base composition. Precedence:
+/// any `Override` wins outright over `Darken`/`Brighten` (matching `Impassable > Arrest >
+/// Terrain`'s "strongest wins" shape), two `Override`s resolve to the DARKER level (the
+/// fail-closed under-reveal convention this subsystem applies to every ambiguous case), and
+/// overlapping `Darken`/`Brighten` deltas SUM. `None` when no ambient-light region covers the
+/// cell (or the deltas net to exactly zero — identical to no adjustment, kept out of the field
+/// map so the `cell_light` fast path stays a plain emptiness test). Read-side fail-closed
+/// guards (ingress `RegionEngine::validate` already rejects them, a stored/fixture value is
+/// still not trusted): a non-finite level contributes nothing, a negative `Darken`/`Brighten`
+/// level clamps to 0, and an `Override` level clamps into `[0, 1]` at `AmbientAdjustment::apply`.
+pub(crate) fn compose_ambient(
+    contributions: &[(RegionBehavior, f64)],
+) -> Option<AmbientAdjustment> {
+    let mut override_level: Option<f64> = None;
+    let mut delta = 0.0_f64;
+    for (behavior, _) in contributions {
+        let RegionBehavior::AmbientLight(ambient) = behavior else {
+            continue;
+        };
+        if !ambient.level.is_finite() {
+            continue;
+        }
+        match ambient.mode {
+            AmbientLightMode::Override => {
+                override_level =
+                    Some(override_level.map_or(ambient.level, |acc: f64| acc.min(ambient.level)));
+            }
+            AmbientLightMode::Darken => delta -= ambient.level.max(0.0),
+            AmbientLightMode::Brighten => delta += ambient.level.max(0.0),
+        }
+    }
+    if let Some(level) = override_level {
+        return Some(AmbientAdjustment::Override(level));
+    }
+    if delta != 0.0 {
+        return Some(AmbientAdjustment::Delta(delta));
+    }
+    None
+}
+
 /// The composed per-cell region effect for one scene, already resolved to either a single
 /// requester's visibility (the router's per-requester field) or the full authoritative set
-/// (the GM's field / `move_exec`'s field). Built by `RegionFieldBuilder`.
+/// (the GM's field / `move_exec`'s field — and `LightingInputs::cell_light`'s, whose ambient
+/// adjustment ALWAYS reads the authoritative field, so a `gm_only` region's light edit applies
+/// to every viewer). Built by `RegionFieldBuilder`.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RegionField {
-    /// Composed effect per covered cell; absent cell = no region effect.
+    /// Composed movement effect per covered cell; absent cell = no movement effect.
     cells: BTreeMap<Cell, RegionEffect>,
+    /// Composed ambient-light adjustment per covered cell (`compose_ambient`); absent cell =
+    /// no ambient edit. Orthogonal to `cells` — a cell may carry a movement effect, an ambient
+    /// adjustment, both, or neither.
+    ambient: BTreeMap<Cell, AmbientAdjustment>,
 }
 
 impl RegionField {
@@ -300,6 +390,21 @@ impl RegionField {
             Some(RegionEffect::Terrain(m)) => *m,
             _ => 1.0,
         }
+    }
+
+    /// The composed ambient-light adjustment covering `c`; `None` when no `ambient_light`
+    /// region covers it. Test-only: production reads the map through `into_ambient_map` (the
+    /// lighting-inputs build), never per cell.
+    #[cfg(test)]
+    pub(crate) fn ambient_at(&self, c: Cell) -> Option<AmbientAdjustment> {
+        self.ambient.get(&c).copied()
+    }
+
+    /// Consume the field into JUST its ambient facet (the movement facet dropped) — the shape
+    /// `SceneEcs::ambient_light_map` hands the lighting-inputs build, which never reads a
+    /// movement effect.
+    pub(crate) fn into_ambient_map(self) -> BTreeMap<Cell, AmbientAdjustment> {
+        self.ambient
     }
 
     /// True iff any cell composes to `Impassable`. Split from
@@ -341,7 +446,8 @@ impl RegionField {
 }
 
 /// Accumulates per-region contributions cell-by-cell; `build` composes them
-/// (`compose`'s precedence + MAX-overlap rule) into the final `RegionField`.
+/// (`compose`'s movement precedence + MAX-overlap rule, plus `compose_ambient`'s ambient
+/// fold) into the final `RegionField`.
 #[derive(Default)]
 pub(crate) struct RegionFieldBuilder {
     /// Raw `(behavior, cost)` contributions per cell, pre-composition.
@@ -387,15 +493,22 @@ impl RegionFieldBuilder {
         }
     }
 
-    /// Compose all accumulated contributions into the final per-cell field.
+    /// Compose all accumulated contributions into the final per-cell field: the movement facet
+    /// (`compose`) and the ambient-light facet (`compose_ambient`) fold the SAME per-cell
+    /// contribution list, so the two output maps can never disagree about which regions covered
+    /// a cell.
     pub(crate) fn build(self) -> RegionField {
         let mut cells = BTreeMap::new();
+        let mut ambient = BTreeMap::new();
         for (c, contributions) in self.per_cell {
             if let Some(effect) = compose(&contributions) {
                 cells.insert(c, effect);
             }
+            if let Some(adjustment) = compose_ambient(&contributions) {
+                ambient.insert(c, adjustment);
+            }
         }
-        RegionField { cells }
+        RegionField { cells, ambient }
     }
 }
 

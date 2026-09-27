@@ -139,6 +139,8 @@ export type { TriggerEvent } from "./generated/engine/TriggerEvent";
 export type { TriggerEffect } from "./generated/engine/TriggerEffect";
 export type { PortalTarget } from "./generated/engine/PortalTarget";
 export type { NoticeAudience } from "./generated/engine/NoticeAudience";
+export type { AmbientLightMode } from "./generated/engine/AmbientLightMode";
+export type { AmbientLightOverride } from "./generated/engine/AmbientLightOverride";
 export type { DrawingEngine } from "./generated/engine/DrawingEngine";
 export type { DrawingShape } from "./generated/engine/DrawingShape";
 export type { Stroke } from "./generated/engine/Stroke";

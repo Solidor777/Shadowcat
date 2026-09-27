@@ -741,9 +741,76 @@ pub struct RegionTrigger {
     pub effect: TriggerEffect,
 }
 
+/// How an `ambient_light` region edits the composed illumination of the cells
+/// it covers (`RegionEngine::ambient_override`). Applied as the FINAL per-cell
+/// adjustment over `LightingInputs::cell_light`'s base composition — placed
+/// lights, carried lights and the boundary-projected environment all compose
+/// first, then this edit — including under `LightMode::GlobalIllumination`,
+/// whose flat all-bright baseline is itself edited (the `all_bright`
+/// short-circuit skips gathering placed lights and light walls, never this
+/// adjustment).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::AmbientLightMode;
+///
+/// let json = serde_json::to_value(AmbientLightMode::Darken).unwrap();
+/// assert_eq!(json, serde_json::json!("darken"));
+/// assert_eq!(
+///     serde_json::from_value::<AmbientLightMode>(json).unwrap(),
+///     AmbientLightMode::Darken
+/// );
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum AmbientLightMode {
+    /// Subtract `level` from the cell's composed illumination (the result
+    /// never drops below 0).
+    Darken,
+    /// Add `level` to the cell's composed illumination (saturating at 1, the
+    /// same ceiling the additive-superposition composition applies).
+    Brighten,
+    /// Replace the cell's composed illumination with `level` outright,
+    /// regardless of every other contributor (placed lights, environment,
+    /// other regions). The strongest form: any overlapping `Override` wins
+    /// over `Darken`/`Brighten` contributions, and two overlapping `Override`s
+    /// resolve to the DARKER level (the fail-closed under-reveal convention).
+    Override,
+}
+
+/// An `ambient_light` region's authored light edit: `mode` selects how `level`
+/// applies (`AmbientLightMode`); `level` is an absolute illumination for
+/// `Override` (validated to `[0, 1]`, the illumination scale's own range) or a
+/// non-negative delta for `Darken`/`Brighten`. Meaningful only when
+/// `RegionEngine::behavior` is `"ambient_light"` — `RegionEngine::validate`
+/// enforces that pairing.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{AmbientLightMode, AmbientLightOverride};
+///
+/// let zone = AmbientLightOverride { mode: AmbientLightMode::Darken, level: 0.5 };
+/// let json = serde_json::to_value(zone).unwrap();
+/// assert_eq!(json, serde_json::json!({ "mode": "darken", "level": 0.5 }));
+/// assert_eq!(serde_json::from_value::<AmbientLightOverride>(json).unwrap(), zone);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct AmbientLightOverride {
+    /// How `level` applies to a covered cell's composed illumination.
+    pub mode: AmbientLightMode,
+    /// The absolute illumination (`Override`, `[0, 1]`) or non-negative delta
+    /// (`Darken`/`Brighten`). Must be finite.
+    pub level: f64,
+}
+
 /// A region document's engine body: a vector-shaped zone that weights,
-/// blocks, or arrests grid movement, and optionally fires triggers on
-/// entering tokens. Client mirror: `RegionEngine` (`@shadowcat/core`).
+/// blocks, or arrests grid movement, or edits its cells' ambient light, and
+/// optionally fires triggers on entering tokens. Client mirror: `RegionEngine` (`@shadowcat/core`).
 /// `cost` is a multiplier (>=1, clamped read-side) meaningful only for
 /// `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
 /// deleting it (disabled regions are dropped entirely at read time).
@@ -763,6 +830,7 @@ pub struct RegionTrigger {
 ///     enabled: true,
 ///     triggers: Vec::new(),
 ///     elevation: None,
+///     ambient_override: None,
 /// };
 /// assert!(region.validate().is_ok());
 /// ```
@@ -774,8 +842,8 @@ pub struct RegionEngine {
     /// still emitted by the default authoring gesture) or a compound list of
     /// parts with per-part hole flags — see `RegionGeometry`.
     pub shape: RegionGeometry,
-    /// "terrain" | "impassable" | "arrest" — kept a `String` in v1 (asserted
-    /// by the battery).
+    /// "terrain" | "impassable" | "arrest" | "ambient_light" — kept a `String`
+    /// in v1 (asserted by the battery).
     pub behavior: String,
     /// Movement-cost multiplier (>= 1, clamped read-side); meaningful only
     /// for `behavior: "terrain"`.
@@ -794,6 +862,16 @@ pub struct RegionEngine {
     /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
     #[serde(default)]
     pub elevation: Option<ElevationBand>,
+    /// The ambient-light edit this region applies to its cells' composed
+    /// illumination (`scene::regions::AmbientAdjustment`, read through
+    /// `SceneEcs::ambient_light_map`, which passes no viewer so a `gm_only`
+    /// region's value still applies); meaningful only for
+    /// `behavior: "ambient_light"` — the
+    /// behavior-conditional-field precedent `cost` sets for `"terrain"`.
+    /// Absent on documents written before ambient-light regions existed
+    /// (serde default).
+    #[serde(default)]
+    pub ambient_override: Option<AmbientLightOverride>,
 }
 
 impl RegionEngine {
@@ -806,7 +884,9 @@ impl RegionEngine {
     /// satisfy the per-effect rules. Ids must be non-empty and
     /// `MAX_TRIGGER_ID_CHARS`-bounded, `amount` must satisfy `Formula::validate` (finite
     /// literal or parseable formula source), and notice text is bounded by
-    /// `chat::MAX_MESSAGE_CHARS`.
+    /// `chat::MAX_MESSAGE_CHARS`. An `ambient_override` is engine-executed too (it edits the
+    /// lighting field): it requires `behavior == "ambient_light"`, a finite `level`, and the
+    /// mode's own range — `[0, 1]` for `Override`, non-negative for `Darken`/`Brighten`.
     ///
     /// # Examples
     ///
@@ -828,6 +908,7 @@ impl RegionEngine {
     ///         effect: TriggerEffect::ConditionAdd { condition: String::new() },
     ///     }],
     ///     elevation: None,
+    ///     ambient_override: None,
     /// };
     /// assert!(region.validate().is_err()); // empty condition id
     /// ```
@@ -847,6 +928,29 @@ impl RegionEngine {
                 "shape has an unrecognized kind or a point count that does not match it"
                     .to_string(),
             );
+        }
+        if let Some(ambient) = &self.ambient_override {
+            if self.behavior != "ambient_light" {
+                return Err("ambient_override requires behavior \"ambient_light\"".to_string());
+            }
+            if !ambient.level.is_finite() {
+                return Err("ambient_override.level must be finite".to_string());
+            }
+            match ambient.mode {
+                AmbientLightMode::Override if !(0.0..=1.0).contains(&ambient.level) => {
+                    return Err(
+                        "ambient_override.level for mode \"override\" must be within [0, 1]"
+                            .to_string(),
+                    );
+                }
+                AmbientLightMode::Darken | AmbientLightMode::Brighten if ambient.level < 0.0 => {
+                    return Err(
+                        "ambient_override.level for mode \"darken\"/\"brighten\" must be >= 0"
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
         }
         for trigger in &self.triggers {
             match &trigger.effect {

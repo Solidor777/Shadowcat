@@ -434,3 +434,112 @@ mod levels_conformance {
         }
     }
 }
+
+// --- band_overlaps_level: the band-versus-level-span membership rule ---
+
+/// Two-level scene fixture: `ground` [0, 10) and `upper` [10, 20).
+fn two_levels() -> Vec<eng::SceneLevel> {
+    vec![
+        eng::SceneLevel {
+            id: "ground".to_string(),
+            name: "Ground".to_string(),
+            bottom: 0.0,
+            top: 10.0,
+            background: None,
+        },
+        eng::SceneLevel {
+            id: "upper".to_string(),
+            name: "Upper".to_string(),
+            bottom: 10.0,
+            top: 20.0,
+            background: None,
+        },
+    ]
+}
+
+#[test]
+fn band_overlaps_level_span_membership() {
+    let levels = two_levels();
+    // A band fully inside a level's span applies to that level only.
+    assert!(band_overlaps_level(
+        Some(&band(Some(2.0), Some(8.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(2.0), Some(8.0))),
+        &levels,
+        "upper"
+    ));
+    // A band straddling the level boundary applies to BOTH levels (a darkness globe hovering
+    // over the boundary shades both floors' fields).
+    assert!(band_overlaps_level(
+        Some(&band(Some(5.0), Some(12.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(5.0), Some(12.0))),
+        &levels,
+        "upper"
+    ));
+    // Boundary conventions: the band's ends are inclusive, the level's top exclusive — a band
+    // whose top lands exactly on a level's bottom shares that one elevation with it, while a
+    // band whose bottom lands exactly on a level's top shares nothing.
+    assert!(band_overlaps_level(
+        Some(&band(Some(0.0), Some(10.0))),
+        &levels,
+        "upper"
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(10.0), Some(20.0))),
+        &levels,
+        "ground"
+    ));
+    // An absent band end is unbounded; an absent band applies to every level.
+    assert!(band_overlaps_level(None, &levels, "ground"));
+    assert!(band_overlaps_level(
+        Some(&band(None, Some(5.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(15.0), None)),
+        &levels,
+        "upper"
+    ));
+}
+
+#[test]
+fn band_overlaps_level_fails_closed_and_grounds_a_level_less_scene() {
+    let levels = two_levels();
+    // A malformed interval or a non-finite endpoint applies everywhere (the same direction
+    // `band_contains` takes).
+    assert!(band_overlaps_level(
+        Some(&band(Some(10.0), Some(0.0))),
+        &levels,
+        "ground"
+    ));
+    assert!(band_overlaps_level(
+        Some(&band(Some(f64::NAN), Some(1.0))),
+        &levels,
+        "upper"
+    ));
+    // A level-less scene (or an undeclared level id) falls back to the grounded point test —
+    // the same answer a mover at ground reads through `band_contains`.
+    assert!(band_overlaps_level(
+        Some(&band(Some(-1.0), Some(1.0))),
+        &[],
+        ""
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(5.0), Some(9.0))),
+        &[],
+        ""
+    ));
+    assert!(!band_overlaps_level(
+        Some(&band(Some(5.0), Some(9.0))),
+        &levels,
+        "attic"
+    ));
+}

@@ -86,6 +86,52 @@ test("with viewedLevelBand unset, a new region's engine body's elevation stays n
   if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });
 
+test("ambient_light behavior persists the configured mode/level as ambient_override", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "brighten";
+  controller.regionAmbientLevel = 0.3;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({
+      behavior: "ambient_light",
+      ambient_override: { mode: "brighten", level: 0.3 },
+    });
+  }
+});
+
+test("a non-ambient_light behavior always persists ambient_override: null, even with a configured level", () => {
+  // Mutation coverage for `regionAmbientOverride`'s own gate: removing the
+  // `regionBehavior !== "ambient_light"` check would leak the configured level onto every
+  // region regardless of behavior, which this pins against.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionAmbientMode = "override";
+  controller.regionAmbientLevel = 0.9;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ ambient_override: null });
+});
+
+test("the compound commit carries the controller's own behavior, not a hardcoded one", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  controller.commitRegionParts();
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ behavior: "terrain", cost: 2, ambient_override: null });
+  }
+});
+
 test("the armed compound gesture stages parts and commits ONE compound region doc", () => {
   const { tool, controller, sent } = setup();
   controller.regionShapeMode = "rect";
@@ -100,6 +146,9 @@ test("the armed compound gesture stages parts and commits ONE compound region do
 
   // The row's hole checkbox flips the part's flag in place (region-part-hole).
   controller.regionParts[1].hole = true;
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "darken";
+  controller.regionAmbientLevel = 0.4;
   controller.commitRegionParts();
 
   expect(sent).toHaveLength(1);
@@ -108,7 +157,8 @@ test("the armed compound gesture stages parts and commits ONE compound region do
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("region");
     expect(op.doc.engine).toMatchObject({
-      behavior: "terrain",
+      behavior: "ambient_light",
+      ambient_override: { mode: "darken", level: 0.4 },
       shape: [
         { shape: { kind: "rect", points: [0, 0, 100, 100] }, hole: false },
         { shape: { kind: "rect", points: [200, 200, 300, 300] }, hole: true },

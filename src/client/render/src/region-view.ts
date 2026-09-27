@@ -10,6 +10,7 @@ const BEHAVIOR_FILL: Record<string, number> = {
   terrain: 0xd0a030,
   impassable: 0xd06060,
   arrest: 0x9040c0,
+  ambient_light: 0x3060b0,
 };
 const FILL_ALPHA = 0.25;
 const STROKE_WIDTH = 2;

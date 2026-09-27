@@ -54,6 +54,39 @@ pub(crate) fn band_contains(band: Option<&eng::ElevationBand>, e: f64) -> bool {
     lo <= e && e <= hi
 }
 
+/// Whether an elevation-BANDED region applies to a scene level's own elevation SPAN — the
+/// band-versus-band membership rule for a reader that is a whole level rather than a point
+/// elevation (`band_contains`'s shape). The consumer is the per-level lighting field
+/// (`SceneEcs::ambient_light_map`): a region whose band touches ANY elevation of the level's
+/// `[bottom, top)` span edits that level's field. Fail-closed toward APPLYING the region (the
+/// same direction `band_contains` takes on a malformed interval): an absent band applies to
+/// every level; a malformed band interval or a non-finite band endpoint applies everywhere; a
+/// level id the scene does not declare — and the `""` of a level-less scene — falls back to the
+/// grounded point test (`band_contains(band, GROUND)`), the same answer a mover at ground reads.
+pub(crate) fn band_overlaps_level(
+    band: Option<&eng::ElevationBand>,
+    levels: &[eng::SceneLevel],
+    level: &str,
+) -> bool {
+    let Some(b) = band else { return true };
+    if b.bottom.is_some_and(|v| !v.is_finite()) || b.top.is_some_and(|v| !v.is_finite()) {
+        return true;
+    }
+    let lo = b.bottom.unwrap_or(f64::NEG_INFINITY);
+    let hi = b.top.unwrap_or(f64::INFINITY);
+    if lo > hi {
+        return true;
+    }
+    let Some(l) = levels.iter().find(|l| l.id == level) else {
+        return lo <= GROUND && GROUND <= hi;
+    };
+    // Closed `[lo, hi]` (the band's convention) against half-open `[bottom, top)` (the level's
+    // convention): the spans share a point iff `hi >= bottom` and `lo < top` — the boundary
+    // `hi == bottom` is a genuine share (both ends include it), `lo == top` is not (the level
+    // excludes its top).
+    hi >= l.bottom && lo < l.top
+}
+
 /// Whether a wall with elevation band `band` occludes a sight/light source at
 /// elevation `e`: `band_contains(band, e)`, additionally fail-closed (occludes)
 /// when `e` itself is non-finite — a corrupt wall or a NaN leaked past

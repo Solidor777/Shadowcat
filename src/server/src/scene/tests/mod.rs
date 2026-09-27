@@ -271,6 +271,30 @@ pub(super) fn region_doc(
     )
 }
 
+/// An `ambient_light` region doc fixture: rect `[x0,y0,x1,y1]`, enabled, carrying
+/// `ambient_override: { mode, level }` (`"darken" | "brighten" | "override"`).
+pub(super) fn ambient_region_doc(
+    id: u128,
+    parent: u128,
+    mode: &str,
+    level: f64,
+    rect: (f64, f64, f64, f64),
+) -> Document {
+    let (x0, y0, x1, y1) = rect;
+    entity_doc_eng(
+        id,
+        parent,
+        "region",
+        json!({
+            "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            "behavior": "ambient_light",
+            "cost": 1.0,
+            "enabled": true,
+            "ambient_override": { "mode": mode, "level": level },
+        }),
+    )
+}
+
 mod audibility;
 mod combat_index;
 mod cost_parity;

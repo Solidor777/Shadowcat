@@ -272,3 +272,107 @@ fn blocks_sound_round_trips_its_wire_name_and_defaults_absent() {
         "a wall without a blocksSound key passes ingress"
     );
 }
+
+// --- Region ambient-light override validation ---
+
+/// A minimal valid `ambient_light` region engine body, overridden per test.
+fn ambient_region(mode: AmbientLightMode, level: f64) -> RegionEngine {
+    RegionEngine {
+        shape: RegionGeometry::Single(RegionShape {
+            kind: "rect".to_string(),
+            points: vec![0.0, 0.0, 5.0, 5.0],
+        }),
+        behavior: "ambient_light".to_string(),
+        cost: 1.0,
+        enabled: true,
+        triggers: Vec::new(),
+        elevation: None,
+        ambient_override: Some(AmbientLightOverride { mode, level }),
+    }
+}
+
+#[test]
+fn ambient_override_requires_the_ambient_light_behavior() {
+    let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
+    region.behavior = "terrain".to_string();
+    assert!(
+        region.validate().is_err(),
+        "an override on a non-ambient behavior is rejected"
+    );
+}
+
+#[test]
+fn ambient_override_level_must_be_finite() {
+    let region = ambient_region(AmbientLightMode::Darken, f64::NAN);
+    assert!(region.validate().is_err(), "a NaN level is rejected");
+    let region = ambient_region(AmbientLightMode::Brighten, f64::INFINITY);
+    assert!(region.validate().is_err(), "an infinite level is rejected");
+}
+
+#[test]
+fn ambient_override_override_level_is_bounded_to_the_illumination_scale() {
+    assert!(ambient_region(AmbientLightMode::Override, 0.0)
+        .validate()
+        .is_ok());
+    assert!(ambient_region(AmbientLightMode::Override, 1.0)
+        .validate()
+        .is_ok());
+    assert!(
+        ambient_region(AmbientLightMode::Override, 1.5)
+            .validate()
+            .is_err(),
+        "an override above 1 is rejected"
+    );
+    assert!(
+        ambient_region(AmbientLightMode::Override, -0.1)
+            .validate()
+            .is_err(),
+        "an override below 0 is rejected"
+    );
+}
+
+#[test]
+fn ambient_override_delta_levels_are_non_negative() {
+    assert!(ambient_region(AmbientLightMode::Darken, 0.0)
+        .validate()
+        .is_ok());
+    assert!(ambient_region(AmbientLightMode::Brighten, 2.5)
+        .validate()
+        .is_ok());
+    assert!(
+        ambient_region(AmbientLightMode::Darken, -0.1)
+            .validate()
+            .is_err(),
+        "a negative darken is a confusing spelling of brighten: rejected, not normalized"
+    );
+    assert!(
+        ambient_region(AmbientLightMode::Brighten, -0.1)
+            .validate()
+            .is_err(),
+        "a negative brighten is rejected the same way"
+    );
+}
+
+#[test]
+fn ambient_light_behavior_without_an_override_is_a_valid_no_op() {
+    let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
+    region.ambient_override = None;
+    assert!(
+        region.validate().is_ok(),
+        "an ambient_light region with no override authored yet is a harmless no-op"
+    );
+    // And the wire name is the verbatim field name (`RegionEngine` declares no
+    // `rename_all`; the client authors the key exactly as the field reads).
+    let region = ambient_region(AmbientLightMode::Override, 0.0);
+    let json = serde_json::to_value(&region).unwrap();
+    assert_eq!(
+        json["ambient_override"],
+        serde_json::json!({ "mode": "override", "level": 0.0 })
+    );
+    // A stored document carrying no `ambient_override` key deserializes to `None`
+    // (zero migration).
+    let mut absent = serde_json::to_value(&region).unwrap();
+    absent.as_object_mut().unwrap().remove("ambient_override");
+    let parsed: RegionEngine = serde_json::from_value(absent).unwrap();
+    assert_eq!(parsed.ambient_override, None);
+}

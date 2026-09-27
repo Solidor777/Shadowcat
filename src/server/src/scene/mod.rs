@@ -67,8 +67,10 @@ use visibility_compute::{
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
-    /// Every LOS cell is fully bright; per-light raycasts are skipped
-    /// (`LightingInputs::all_bright`).
+    /// Every LOS cell's BASE field is fully bright; per-light raycasts are skipped
+    /// (`LightingInputs::all_bright`). The ambient-region layer still applies over that flat
+    /// baseline (`LightingInputs::cell_light` consults `LightingInputs::ambient` regardless):
+    /// an `ambient_light` region darkens/brightens/overrides its cells even here.
     GlobalIllumination,
     /// Ambient environment level + per-light contributions, sampled per cell
     /// by `lighting::cell_illumination`.
@@ -222,11 +224,14 @@ pub struct ResolvedScene {
 }
 
 impl ResolvedScene {
-    /// Whether every LOS cell is fully bright and the per-light raycasts are skipped:
-    /// lighting off, or `GlobalIllumination`. THE one predicate behind `LightingInputs::
+    /// Whether the per-light raycasts are skipped: lighting off, or `GlobalIllumination`.
+    /// THE one predicate behind `LightingInputs::
     /// all_bright`, the visibility-cache snapshot and the carried-light move timeline
     /// (`SceneEcs::mover_light_inputs`), so the three cannot disagree about which scenes
-    /// have a light field at all.
+    /// have a light field at all. The short-circuit skips gathering placed lights and light
+    /// walls ONLY — the ambient-region layer (`LightingInputs::ambient`, applied by
+    /// `LightingInputs::cell_light` over the flat baseline) still applies: an `ambient_light`
+    /// region edits even an all-bright scene's cells.
     pub(crate) fn all_bright(&self) -> bool {
         !self.lighting_enabled || matches!(self.light_mode, LightMode::GlobalIllumination)
     }
@@ -1135,6 +1140,12 @@ struct LightingInputsSnapshot {
     light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
     sight_walls: Vec<elevation::WallEntry>,
+    /// The composed per-cell ambient-light adjustment map for the field's level
+    /// (`SceneEcs::ambient_light_map` — the AUTHORITATIVE region read). Fingerprinted because
+    /// `cell_light` consumes it: an ambient-light region added, edited, moved between levels,
+    /// or deleted must miss the cache exactly like a light edit (a region doc's engine body is
+    /// not otherwise represented in this fingerprint).
+    ambient: BTreeMap<(i32, i32), regions::AmbientAdjustment>,
 }
 
 /// Whether the changes being mirrored have cleared the authoritative write path.
@@ -2948,6 +2959,15 @@ impl SceneEcs {
     /// The composed field additionally excludes any region whose elevation band does not contain
     /// `elevation` (`elevation::band_contains`) — the mover's floor, never the viewer's.
     ///
+    /// An `ambient_light` region contributes to the field's AMBIENT facet only
+    /// (`regions::RegionField::ambient_at` — never a movement effect); the lighting field reads
+    /// that facet through `ambient_light_map`, ALWAYS from the authoritative (`None`-viewer)
+    /// field, so a secret region's light edit applies to every viewer even though its geometry
+    /// stays out of their per-requester field — mirroring how `move_exec` springs secret
+    /// regions at execution. A `"ambient_light"` behavior carrying no `ambient_override` (or a
+    /// non-finite level that slipped past ingress) contributes nothing — the harmless no-op a
+    /// disabled region already is.
+    ///
     /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
     /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
     /// mirroring `pathfind`'s `PathFail::Invalid`.
@@ -2956,6 +2976,22 @@ impl SceneEcs {
         scene: Uuid,
         viewer: Option<Uuid>,
         elevation: f64,
+    ) -> Option<regions::RegionField> {
+        self.region_field_if(scene, viewer, |band| {
+            elevation::band_contains(band, elevation)
+        })
+    }
+
+    /// `region_field` with the per-region elevation-band membership test passed as a predicate:
+    /// the movement/router consumers test the MOVER's point elevation (`band_contains`), while
+    /// the lighting field's per-LEVEL ambient read tests the level's whole span
+    /// (`elevation::band_overlaps_level`). One iteration body feeds both, so the doc-type/
+    /// parent/enabled/visibility/shape-parse filtering can never drift between the two.
+    fn region_field_if(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+        elevation_ok: impl Fn(Option<&eng::ElevationBand>) -> bool,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
@@ -2974,7 +3010,7 @@ impl SceneEcs {
             if !engine_tier_visible(doc, viewer) {
                 continue;
             }
-            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
+            if !elevation_ok(region_eng.elevation.as_ref()) {
                 continue;
             }
             let Some(parts) = regions::parse_region_shape(&region_eng.shape) else {
@@ -2983,12 +3019,41 @@ impl SceneEcs {
             let behavior = match region_eng.behavior.as_str() {
                 "impassable" => regions::RegionBehavior::Impassable,
                 "arrest" => regions::RegionBehavior::Arrest,
+                "ambient_light" => match region_eng.ambient_override {
+                    Some(ambient) if ambient.level.is_finite() => {
+                        regions::RegionBehavior::AmbientLight(ambient)
+                    }
+                    // A behavior with no override authored yet (or a non-finite level that
+                    // slipped past ingress) is a harmless no-op: contributes nothing.
+                    _ => continue,
+                },
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
             builder.add_parts(&parts, behavior, cost, cell, &*grid);
         }
         Some(builder.build())
+    }
+
+    /// The per-cell ambient-light adjustment map for one lighting field (a scene's `level`):
+    /// the ambient facet of the AUTHORITATIVE region field (`viewer: None` — a `gm_only`
+    /// region's light edit applies to every viewer, exactly like a hidden wall still blocks
+    /// sight; the region's GEOMETRY follows the ordinary per-requester rule unchanged).
+    /// Level membership is `elevation::band_overlaps_level` (a region whose band touches any
+    /// elevation of the level's span applies to that level's field), never the per-requester
+    /// mover-elevation point test. Empty when the scene declares no enabled `ambient_light`
+    /// region (the common case — `cell_light`'s fast path) or has no live document.
+    pub(crate) fn ambient_light_map(
+        &self,
+        scene: Uuid,
+        levels: &[eng::SceneLevel],
+        level: &str,
+    ) -> BTreeMap<(i32, i32), regions::AmbientAdjustment> {
+        self.region_field_if(scene, None, |band| {
+            elevation::band_overlaps_level(band, levels, level)
+        })
+        .map(regions::RegionField::into_ambient_map)
+        .unwrap_or_default()
     }
 
     /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
@@ -3955,7 +4020,8 @@ impl SceneEcs {
     /// with nothing excluded, memoised the same way. `level` scopes the field to one floor: a
     /// light contributes only to the level `elevation::level_of(light.elevation)` resolves to,
     /// so the mask for a floor never brightens from another floor's lamps. `all_bright`
-    /// short-circuits light raycasts under lighting-off or globalIllumination.
+    /// short-circuits light raycasts under lighting-off or globalIllumination — never the
+    /// ambient-region layer (`LightingInputs::ambient`), which applies under either mode.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
@@ -3977,7 +4043,8 @@ impl SceneEcs {
     /// run once per frame per scene per level rather than once per recipient, and the lit mask,
     /// the movement gate and the clip share one computation. Reuse is decided by comparing a
     /// freshly gathered `LightingInputsSnapshot` (cheap document decodes, no geometry) against
-    /// the stored one — a changed light, wall, setting or cell size misses and recomputes.
+    /// the stored one — a changed light, wall, setting, cell size or ambient-light region misses
+    /// and recomputes.
     pub(crate) fn lighting_inputs_excluding(
         &self,
         scene: Uuid,
@@ -4010,6 +4077,12 @@ impl SceneEcs {
             self.light_wall_entries(scene)
         };
         let sight_walls = self.sight_wall_entries(scene);
+        // The ambient-region layer is gathered REGARDLESS of `all_bright`: the short-circuit
+        // skips gathering placed lights and light walls (the raycast work), never the per-cell
+        // ambient adjustment — an ambient-light region applies even under
+        // `LightMode::GlobalIllumination`. Read once per inputs build (cached by the snapshot
+        // below), never per cell.
+        let ambient = self.ambient_light_map(scene, &levels, level);
         let mut excluded: Vec<Uuid> = exclude_emitters.to_vec();
         excluded.sort_unstable();
         excluded.dedup();
@@ -4020,6 +4093,7 @@ impl SceneEcs {
             lights,
             light_walls,
             sight_walls,
+            ambient,
         };
         {
             let cache = self.lighting_inputs_cache.lock().unwrap();
@@ -4038,9 +4112,9 @@ impl SceneEcs {
             snapshot.lights.clone(),
             &snapshot.light_walls,
             snapshot.sight_walls.clone(),
-            grid.world_extent(settings.bounds),
+            snapshot.ambient.clone(),
+            grid,
             cell,
-            grid.world_units_per_cell(),
         ));
         let mut cache = self.lighting_inputs_cache.lock().unwrap();
         if cache.len() >= MAX_LIGHTING_INPUTS_CACHE_ENTRIES {
@@ -4065,28 +4139,33 @@ impl SceneEcs {
     /// skips `env_light_polys` outright: `cell_illumination_from` admits the environment only
     /// for a positive intensity, so an empty polygon set is the identical field at zero
     /// raycasts. `settings.all_bright()` skips every raycast (lighting off or
-    /// `GlobalIllumination`).
+    /// `GlobalIllumination`) — but never the ambient-region layer: `ambient` (the
+    /// AUTHORITATIVE per-cell adjustments, already computed by the caller) travels into the
+    /// field unchanged, so a `Darken`/`Override` region edits the flat all-bright baseline too.
     ///
-    /// `extent` is the scene's WORLD-unit envelope, produced by
-    /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
-    /// units (cells), continuous, and must never reach `env_light_polys`, which measures against
-    /// wall coordinates in world units.
+    /// `grid` is the scene's resolved `GridShape`: `env_light_polys` reads its WORLD-unit
+    /// envelope (`GridShape::world_extent` of the authored grid-unit `bounds` — those are
+    /// measured in grid units (cells), continuous, and must never reach `env_light_polys`,
+    /// which measures against wall coordinates in world units) and `LightingInputs::cell_light`
+    /// reads its `cell_of` to snap an ambient-region lookup to the sampled cell.
     ///
-    /// `world_units_per_cell` is `GridShape::world_units_per_cell` for the same scene, used ONLY to
-    /// convert each light's authored (cell) radii into the world-unit reach `bound_for_reach` grows
-    /// its occlusion polygon's bound to cover — it is NOT the indexing scale `cell`/`extent` carry,
-    /// which differ from it on hex. Without this, a placed light's occlusion polygon is bounded by
-    /// wall endpoints and `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the
-    /// light was authored with.
+    /// `GridShape::world_units_per_cell` is used ONLY to convert each light's authored (cell)
+    /// radii into the world-unit reach `bound_for_reach` grows its occlusion polygon's bound to
+    /// cover — it is NOT the indexing scale `cell`/`extent` carry, which differ from it on hex.
+    /// Without this, a placed light's occlusion polygon is bounded by wall endpoints and
+    /// `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the light was
+    /// authored with.
     fn lighting_inputs_from(
         settings: &ResolvedScene,
         lights: Vec<lighting::Light>,
         light_walls: &[elevation::WallEntry],
         sight_walls: Vec<elevation::WallEntry>,
-        extent: grid_shape::WorldExtent,
+        ambient: BTreeMap<(i32, i32), regions::AmbientAdjustment>,
+        grid: Box<dyn grid_shape::GridShape + Send + Sync>,
         cell: f64,
-        world_units_per_cell: f64,
     ) -> LightingInputs {
+        let extent = grid.world_extent(settings.bounds);
+        let world_units_per_cell = grid.world_units_per_cell();
         // Each light raycasts against the light walls whose elevation band covers the LIGHT's
         // own elevation (`wall_occludes`): a lamp above a wall's band shines over it. The
         // raycast itself is `emitters::light_polygon` — the same function the carried-light
@@ -4117,6 +4196,8 @@ impl SceneEcs {
             lit_polys,
             env_polys,
             sight_walls,
+            ambient,
+            grid,
         }
     }
 
@@ -4446,9 +4527,10 @@ impl SceneEcs {
     /// a prior call for the same `(user, scene)` only when a freshly rebuilt
     /// `VisibilityInputsSnapshot` — built from the SAME `gather_vision_sources_in_scene` call and
     /// the SAME raw `resolve_scene`/`scene_grid_sizes`/`scene_lights` and banded wall-collector
-    /// (`sight_wall_entries`/`light_wall_entries`)
+    /// (`sight_wall_entries`/`light_wall_entries`) and ambient-region (`ambient_light_map`)
     /// reads the uncached path uses — compares EQUAL to the snapshot stored alongside the cached
-    /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, a
+    /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, an
+    /// ambient-light region add/edit/delete, a
     /// token gaining or losing owner/source status in this scene, or `lenient` itself
     /// changing) is a snapshot mismatch and forces a full recompute — fails toward recompute,
     /// never toward serving a stale wider mask. The only work skipped on a cache HIT is the two
@@ -4544,6 +4626,11 @@ impl SceneEcs {
             lights,
             light_walls,
             sight_walls,
+            // The mask reads the ambient-region layer through `cell_light`, so the region set
+            // is a genuine mask input: fingerprint it (the AUTHORITATIVE read, same value the
+            // lighting-inputs cache keys on) or an ambient-region edit would serve a stale
+            // mask until some unrelated input changed.
+            ambient: self.ambient_light_map(scene, &levels, &mover_level),
         };
 
         {

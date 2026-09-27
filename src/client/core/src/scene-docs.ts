@@ -54,6 +54,8 @@ import type {
   TriggerEffect,
   PortalTarget,
   NoticeAudience,
+  AmbientLightMode,
+  AmbientLightOverride,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -158,6 +160,8 @@ export type {
   TriggerEffect,
   PortalTarget,
   NoticeAudience,
+  AmbientLightMode,
+  AmbientLightOverride,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -223,8 +227,10 @@ export type RegionShapeKind = "rect" | "circle" | "polygon";
  * `RegionBehavior`/`RegionEffect`: `"impassable"` blocks the router and the move gate
  * (`RegionField::is_impassable`); `"arrest"` truncates a route at that
  * cell (`RegionField::is_arrest`) without blocking it; `"terrain"` only
- * weights pathfinding cost and never blocks or truncates a route. */
-export type RegionBehavior = "terrain" | "impassable" | "arrest";
+ * weights pathfinding cost and never blocks or truncates a route; `"ambient_light"` never
+ * blocks or weights movement at all — it edits the region's cells' composed illumination via
+ * `RegionEngine.ambient_override`, read by the lighting field rather than the movement gate. */
+export type RegionBehavior = "terrain" | "impassable" | "arrest" | "ambient_light";
 
 /** Recursively `Object.freeze`s `obj` and every nested plain object reachable from it, so a
  * shared default constant (e.g. `DEFAULT_SCENE_BOUNDS`) cannot be mutated in place by a
@@ -1112,6 +1118,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   behavior: "impassable", cost: 1, enabled: true,
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  *   elevation: null,
+ *   ambient_override: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1142,6 +1149,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
  *   elevation: null,
+ *   ambient_override: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);

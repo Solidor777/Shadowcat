@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -261,7 +261,8 @@
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
-  const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+  const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest", "ambient_light"];
+  const ambientLightModes: AmbientLightMode[] = ["darken", "brighten", "override"];
 
   // The open editor's target document, resolved live from the shared editing selection
   // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
@@ -633,6 +634,12 @@
           {#each regionBehaviors as b (b)}<option value={b}>{b}</option>{/each}
         </select>
         <input type="number" data-testid="region-cost" aria-label={t("tools.cost")} min="1" step="0.5" bind:value={controller.regionCost} disabled={controller.regionBehavior !== "terrain"} />
+        {#if controller.regionBehavior === "ambient_light"}
+          <select data-testid="region-ambient-mode" aria-label={t("tools.regionAmbientLight")} bind:value={controller.regionAmbientMode}>
+            {#each ambientLightModes as m (m)}<option value={m}>{m === "darken" ? t("tools.ambientDarken") : m === "brighten" ? t("tools.ambientBrighten") : t("tools.ambientOverride")}</option>{/each}
+          </select>
+          <input type="number" data-testid="region-ambient-level" aria-label={t("tools.ambientLevel")} min="0" max={controller.regionAmbientMode === "override" ? 1 : undefined} step="0.05" bind:value={controller.regionAmbientLevel} />
+        {/if}
         <label>
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}

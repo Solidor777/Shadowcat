@@ -76,6 +76,7 @@ const regionEngine = (over: Partial<RegionEngine> = {}): RegionEngine => ({
   enabled: true,
   triggers: [],
   elevation: null,
+  ambient_override: null,
   ...over,
 });
 

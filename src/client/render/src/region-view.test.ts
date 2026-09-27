@@ -31,6 +31,20 @@ test("a region reconciles to a tinted shape in the regions layer", () => {
   expect(s.fill).not.toBeNull();
 });
 
+test("each region behavior carries its own fill tint", () => {
+  // An unmapped behavior falls back to the terrain tint, so a behavior missing from the tint
+  // map renders indistinguishably from terrain — this pins every behavior as distinct.
+  const tint = (behavior: string): number => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    store.applyCommand(cmd(1, [{ op: "create", doc: regionDoc("r1", { kind: "rect", points: [0, 0, 10, 10] }, behavior) }]));
+    new RegionView(store, backend).reconcile();
+    return backend.shapes.get("r1")!.fill!.color;
+  };
+  const tints = ["terrain", "impassable", "arrest", "ambient_light"].map(tint);
+  expect(new Set(tints).size).toBe(tints.length);
+});
+
 test("a circular region tessellates to a closed polygon", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

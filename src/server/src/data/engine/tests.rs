@@ -945,7 +945,7 @@ fn region_shape_kind_literal_set_deserializes() {
 
 #[test]
 fn region_behavior_literal_set_deserializes() {
-    for behavior in ["terrain", "impassable", "arrest"] {
+    for behavior in ["terrain", "impassable", "arrest", "ambient_light"] {
         let v = json!({
             "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
             "behavior": behavior, "cost": 1.0, "enabled": true
@@ -1621,9 +1621,12 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
     // Normalization re-serializes the absent `elevation` key back as an
     // explicit null, the same way an absent `triggers` key re-serializes as an
     // explicit empty list (see
-    // `region_without_triggers_loads_and_normalizes_with_an_empty_list`).
+    // `region_without_triggers_loads_and_normalizes_with_an_empty_list`) — and
+    // the absent `ambient_override` key re-serializes as an explicit null the
+    // same way.
     let mut expected = v.as_object().unwrap().clone();
     expected.insert("elevation".to_string(), serde_json::Value::Null);
+    expected.insert("ambient_override".to_string(), serde_json::Value::Null);
     assert_eq!(
         n,
         serde_json::Value::Object(expected),
@@ -2157,6 +2160,7 @@ fn region_with_teleport(target: PortalTarget) -> RegionEngine {
             effect: TriggerEffect::Teleport { target },
         }],
         elevation: None,
+        ambient_override: None,
     }
 }
 

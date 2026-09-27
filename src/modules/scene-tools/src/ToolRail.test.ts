@@ -52,6 +52,22 @@ test("the draw and template tools activate and reveal their controls", async () 
   expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
 });
 
+test("selecting the ambient_light region behavior reveals the mode/level inputs; switching away hides them", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  expect(screen.queryByTestId("region-ambient-mode")).toBeNull();
+  expect(screen.queryByTestId("region-ambient-level")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "ambient_light" } });
+  expect(screen.getByTestId("region-ambient-mode")).toBeTruthy();
+  expect(screen.getByTestId("region-ambient-level")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "terrain" } });
+  expect(screen.queryByTestId("region-ambient-mode")).toBeNull();
+  expect(screen.queryByTestId("region-ambient-level")).toBeNull();
+});
+
 test("the measure and ping tools are available and activate", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -475,7 +491,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, enabled: true, triggers: [], elevation: null,
+          behavior: "terrain", cost: 1, enabled: true, triggers: [], elevation: null, ambient_override: null,
         }, "region-1"),
       },
       {

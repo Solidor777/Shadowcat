@@ -794,3 +794,181 @@ fn fired_turn_round_triggers_filters_by_on_event_correctly() {
         [crate::test_ids::test_uuid(0xDEAD)].into_iter().collect();
     assert!(fired_turn_round_triggers(&regions, &orphan, TriggerEvent::TurnStart).is_empty());
 }
+
+// -----------------------------------------------------------------------
+// Ambient-light behavior: the ambient facet of composition
+// -----------------------------------------------------------------------
+
+/// An `AmbientLight` behavior contribution fixture (the `f64` slot is unused by the ambient
+/// facet — it carries `cost`, which only `Terrain` reads).
+fn ambient(mode: AmbientLightMode, level: f64) -> (RegionBehavior, f64) {
+    (
+        RegionBehavior::AmbientLight(AmbientLightOverride { mode, level }),
+        1.0,
+    )
+}
+
+#[test]
+fn compose_ambient_darken_reduces_illumination() {
+    let Some(AmbientAdjustment::Delta(d)) =
+        compose_ambient(&[ambient(AmbientLightMode::Darken, 0.3)])
+    else {
+        panic!("a darken contribution composes to a negative delta");
+    };
+    assert_eq!(d, -0.3);
+    assert_eq!(AmbientAdjustment::Delta(d).apply(0.8), 0.5);
+    // Darken never drives a cell below 0.
+    assert_eq!(AmbientAdjustment::Delta(d).apply(0.1), 0.0);
+}
+
+#[test]
+fn compose_ambient_brighten_increases_illumination_saturating_at_one() {
+    let Some(AmbientAdjustment::Delta(d)) =
+        compose_ambient(&[ambient(AmbientLightMode::Brighten, 0.5)])
+    else {
+        panic!("a brighten contribution composes to a positive delta");
+    };
+    assert_eq!(d, 0.5);
+    // Saturation: the same ceiling the additive-superposition composition applies.
+    assert_eq!(AmbientAdjustment::Delta(d).apply(0.8), 1.0);
+}
+
+#[test]
+fn compose_ambient_override_replaces_regardless_of_other_contributors() {
+    let Some(AmbientAdjustment::Override(level)) = compose_ambient(&[
+        ambient(AmbientLightMode::Darken, 0.9),
+        ambient(AmbientLightMode::Override, 0.2),
+        ambient(AmbientLightMode::Brighten, 0.5),
+    ]) else {
+        panic!("an override among deltas wins outright");
+    };
+    assert_eq!(level, 0.2);
+    // The base is irrelevant: every contributor is replaced.
+    assert_eq!(AmbientAdjustment::Override(level).apply(1.0), 0.2);
+    assert_eq!(AmbientAdjustment::Override(level).apply(0.0), 0.2);
+}
+
+#[test]
+fn compose_two_overlapping_overrides_resolves_to_the_darker_value() {
+    let Some(AmbientAdjustment::Override(level)) = compose_ambient(&[
+        ambient(AmbientLightMode::Override, 0.4),
+        ambient(AmbientLightMode::Override, 0.1),
+    ]) else {
+        panic!("two overrides still compose to an override");
+    };
+    assert_eq!(level, 0.1, "the darker of the two wins (fail-closed)");
+}
+
+#[test]
+fn compose_two_overlapping_darkens_sums_deltas() {
+    let Some(AmbientAdjustment::Delta(d)) = compose_ambient(&[
+        ambient(AmbientLightMode::Darken, 0.3),
+        ambient(AmbientLightMode::Darken, 0.4),
+    ]) else {
+        panic!("two darkens compose to a summed delta");
+    };
+    assert_eq!(d, -0.7, "deltas sum, never max: stacked darkness deepens");
+    // Darken and Brighten net against each other (epsilon-compared: the sum is f64 arithmetic).
+    let Some(AmbientAdjustment::Delta(net)) = compose_ambient(&[
+        ambient(AmbientLightMode::Darken, 0.6),
+        ambient(AmbientLightMode::Brighten, 0.2),
+    ]) else {
+        panic!("a darken and a brighten compose to a net delta");
+    };
+    assert!(
+        (net - -0.4).abs() < 1e-12,
+        "net darken 0.6 + brighten 0.2 = -0.4, got {net}"
+    );
+}
+
+#[test]
+fn compose_ambient_zero_net_and_no_contribution_are_both_none() {
+    assert_eq!(compose_ambient(&[]), None);
+    // A darken and a brighten cancel exactly: identical to no adjustment, and kept out of the
+    // field map so the `cell_light` fast path stays a plain emptiness test.
+    assert_eq!(
+        compose_ambient(&[
+            ambient(AmbientLightMode::Darken, 0.3),
+            ambient(AmbientLightMode::Brighten, 0.3),
+        ]),
+        None
+    );
+    // Movement behaviors never contribute to the ambient facet.
+    assert_eq!(
+        compose_ambient(&[
+            (RegionBehavior::Terrain, 2.0),
+            (RegionBehavior::Impassable, 1.0)
+        ]),
+        None
+    );
+}
+
+#[test]
+fn compose_ambient_read_side_guards_against_values_past_ingress() {
+    // A non-finite level contributes nothing (a stored/fixture value is not trusted just
+    // because ingress rejected it once).
+    assert_eq!(
+        compose_ambient(&[ambient(AmbientLightMode::Darken, f64::NAN)]),
+        None
+    );
+    // A negative darken is clamped to a zero delta rather than silently brightening.
+    assert_eq!(
+        compose_ambient(&[ambient(AmbientLightMode::Darken, -0.5)]),
+        None
+    );
+    // An out-of-scale override level clamps into [0, 1] at application.
+    assert_eq!(AmbientAdjustment::Override(1.5).apply(0.5), 1.0);
+    assert_eq!(AmbientAdjustment::Override(-1.0).apply(0.5), 0.0);
+}
+
+#[test]
+fn ambient_contributions_carry_no_movement_effect() {
+    // The movement facet ignores ambient contributions entirely, and the ambient facet never
+    // produces a movement effect: a cell may carry both, or only one.
+    assert_eq!(
+        compose(&[ambient(AmbientLightMode::Darken, 0.5)]),
+        None,
+        "ambient-only contributions compose to no movement effect"
+    );
+    let grid = sq(100.0);
+    let mut b = RegionField::builder();
+    b.add(
+        &RegionShape::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 100.0,
+            y1: 100.0,
+        },
+        RegionBehavior::AmbientLight(AmbientLightOverride {
+            mode: AmbientLightMode::Darken,
+            level: 0.5,
+        }),
+        1.0,
+        100.0,
+        &grid,
+    );
+    let field = b.build();
+    assert_eq!(
+        field.ambient_at((0, 0)),
+        Some(AmbientAdjustment::Delta(-0.5)),
+        "the ambient facet covers the region's cells"
+    );
+    assert_eq!(
+        field.ambient_at((5, 5)),
+        None,
+        "uncovered cell carries no ambient adjustment"
+    );
+    assert!(
+        !field.is_impassable((0, 0)) && !field.is_arrest((0, 0)),
+        "an ambient region is neither impassable nor arrest"
+    );
+    assert_eq!(
+        field.terrain_multiplier((0, 0)),
+        1.0,
+        "an ambient region never weights movement cost"
+    );
+    assert!(
+        !field.has_terrain_or_impassable(),
+        "an ambient-only field never forces the router's weighted sub-path"
+    );
+}

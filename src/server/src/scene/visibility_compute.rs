@@ -12,7 +12,9 @@ use super::*;
 
 /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
 /// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
-/// under lighting-off or globalIllumination.
+/// under lighting-off or globalIllumination — it skips gathering placed lights and light walls,
+/// NEVER the ambient-region layer: `ambient` applies on top of the flat all-bright baseline, so
+/// an `ambient_light` region edits a `GlobalIllumination` scene's field.
 pub(crate) struct LightingInputs {
     /// Skip per-light raycasts: lighting off or `GlobalIllumination`.
     pub(crate) all_bright: bool,
@@ -33,17 +35,30 @@ pub(crate) struct LightingInputs {
     /// each vision source filters them at its own elevation through
     /// `elevation::walls_at_elevation` before raycasting).
     pub(crate) sight_walls: Vec<elevation::WallEntry>,
+    /// The per-cell ambient-light adjustments of the scene's enabled `ambient_light` regions
+    /// for this field's level, read AUTHORITATIVELY (`SceneEcs::ambient_light_map` — a
+    /// `gm_only` region's edit applies to every viewer; the region's geometry follows the
+    /// ordinary per-requester rule). Empty when no ambient-light region covers any cell of the
+    /// level — the common case, and `cell_light`'s fast path.
+    pub(crate) ambient: std::collections::BTreeMap<(i32, i32), regions::AmbientAdjustment>,
+    /// The scene's resolved grid shape — the point→cell lookup (`cell_of`) the ambient-region
+    /// adjustment reads through in `cell_light`. Held by the same `Arc` the field is shared
+    /// through; never re-resolved per read.
+    pub(crate) grid: Box<dyn grid_shape::GridShape + Send + Sync>,
 }
 
 impl LightingInputs {
-    /// The composed light at `point`: under `all_bright` a full-level cell (untinted with
+    /// The composed light at `point`: under `all_bright` a full-level BASE cell (untinted with
     /// lighting off, environment-tinted under globalIllumination — level 1.0 so every vision
     /// floor, incl. normal "dim", passes and every LOS cell is visible), else the additive field
     /// (`cell_illumination_from`) over this scene's lights plus `extra` — carried lights an
     /// in-flight mover composes in at its instant position (`InstantLight`). THE one
     /// illumination read: `player_lit_mask`'s band/tint bookkeeping and `point_qualifies`'s
     /// floor test both take their `CellLight` here, so the egress mask, the movement gate and
-    /// the move-stream clip cannot light a cell by different rules.
+    /// the move-stream clip cannot light a cell by different rules. The ambient-region
+    /// adjustment (`ambient`, composed by `regions::compose_ambient`) applies LAST over either
+    /// base — the `all_bright` short-circuit included: it skips gathering lights and light
+    /// walls, never this per-cell edit.
     ///
     /// `world_units_per_cell` is the shape-derived world distance of one grid step
     /// (`GridShape::world_units_per_cell`), NOT the cell indexing scale — a light's radii are
@@ -56,28 +71,43 @@ impl LightingInputs {
         world_units_per_cell: f64,
         extra: &[&InstantLight],
     ) -> crate::scene::lighting::CellLight {
-        if self.all_bright {
-            return crate::scene::lighting::CellLight {
+        let base = if self.all_bright {
+            crate::scene::lighting::CellLight {
                 level: 1.0,
                 tint: if settings.lighting_enabled {
                     settings.env_color
                 } else {
                     0
                 },
-            };
+            }
+        } else {
+            crate::scene::lighting::cell_illumination_from(
+                point,
+                settings.env_intensity,
+                settings.env_color,
+                self.lights
+                    .iter()
+                    .enumerate()
+                    .map(|(k, l)| (l, self.lit_polys.get(k).map_or(&[][..], Vec::as_slice)))
+                    .chain(extra.iter().map(|e| (&e.light, e.occluder.as_slice()))),
+                &self.env_polys,
+                world_units_per_cell,
+            )
+        };
+        // Final per-cell ambient-region adjustment (composed by `regions::compose_ambient`) —
+        // applied over EITHER base, the flat all-bright one included: the `all_bright`
+        // short-circuit skips light/wall gathering, never this edit. The empty-map fast path
+        // keeps a scene with no ambient-light region byte-identical.
+        if self.ambient.is_empty() {
+            return base;
         }
-        crate::scene::lighting::cell_illumination_from(
-            point,
-            settings.env_intensity,
-            settings.env_color,
-            self.lights
-                .iter()
-                .enumerate()
-                .map(|(k, l)| (l, self.lit_polys.get(k).map_or(&[][..], Vec::as_slice)))
-                .chain(extra.iter().map(|e| (&e.light, e.occluder.as_slice()))),
-            &self.env_polys,
-            world_units_per_cell,
-        )
+        match self.ambient.get(&self.grid.cell_of(point)) {
+            Some(adjustment) => crate::scene::lighting::CellLight {
+                level: adjustment.apply(base.level),
+                tint: base.tint,
+            },
+            None => base,
+        }
     }
 }
 
@@ -156,7 +186,10 @@ pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<St
 /// ADMISSION (`user_access`'s `resolve_access_world`: the token's permissions, the caller's
 /// world role, the world-level capability grants) need no fields of their own — their entire
 /// effect on the mask is WHICH tokens the gathered `sources` list contains, and that list is
-/// fingerprinted here.
+/// fingerprinted here. The ambient-light region layer rides `ambient` (the composed per-level
+/// map, computed by the SAME `SceneEcs::ambient_light_map` read `lighting_inputs_excluding`
+/// fingerprints): an `ambient_light` region add/edit/delete changes the mask through
+/// `LightingInputs::cell_light`, so it must miss this cache too.
 #[derive(Clone, PartialEq)]
 pub(crate) struct VisibilityInputsSnapshot {
     /// The sampling mode the mask was computed under.
@@ -181,6 +214,11 @@ pub(crate) struct VisibilityInputsSnapshot {
     pub(crate) light_walls: Vec<elevation::WallEntry>,
     /// `blocksSight` wall segments with their elevation bands.
     pub(crate) sight_walls: Vec<elevation::WallEntry>,
+    /// The mover-level ambient-light adjustment map (`SceneEcs::ambient_light_map`, the
+    /// AUTHORITATIVE region read). The mask consumes it through `LightingInputs::cell_light`,
+    /// so an ambient-light region's add/edit/delete must miss this cache exactly like a light
+    /// edit — a region engine body is not otherwise represented in this fingerprint.
+    pub(crate) ambient: std::collections::BTreeMap<(i32, i32), regions::AmbientAdjustment>,
 }
 
 /// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the

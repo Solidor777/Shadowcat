@@ -3222,3 +3222,269 @@ fn visible_cells_is_level_scoped_a_mover_on_one_level_ignores_a_same_cell_source
         "cached floor-2 mask must equal the uncached one"
     );
 }
+
+// -----------------------------------------------------------------------
+// Region ambient-light overrides (`behavior: "ambient_light"` + `ambient_override`)
+// -----------------------------------------------------------------------
+
+/// A global-illumination scene fixture: one player-owned token at (50, 50) plus `extra` docs,
+/// with world-settings setting `lightingEnabled` + `lightMode: "globalIllumination"` (the
+/// `all_bright` arm). Cell size 100, default bounds.
+fn global_illumination_scene(extra: Vec<Document>) -> (SceneEcs, Uuid, Uuid) {
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let mut docs = vec![doc(10, None, "scene"), tok];
+    docs.extend(extra);
+    let mut ecs = SceneEcs::from_documents(docs, 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "lightingEnabled": true, "lightMode": "globalIllumination" }
+    }));
+    (ecs, user, scene_id)
+}
+
+#[test]
+fn ambient_region_override_applies_under_global_illumination() {
+    // THE design-point pin: the override applies even under `LightMode::GlobalIllumination` —
+    // the `all_bright` short-circuit skips gathering placed lights and light walls, never the
+    // per-cell ambient adjustment.
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "override",
+        0.2,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    assert!(settings.all_bright(), "the fixture is the all-bright arm");
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.2,
+        "the override replaces the flat all-bright baseline inside the region"
+    );
+
+    // A Darken region darkens the flat baseline by its delta, never below 0.
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "darken",
+        0.3,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.7,
+        "a darken subtracts from the all-bright baseline"
+    );
+}
+
+#[test]
+fn ambient_region_override_does_not_disable_all_bright_elsewhere_in_the_scene() {
+    // The exception is surgical: a cell OUTSIDE the region still reads the flat all-bright
+    // maximum, and a scene with no ambient-light region at all is byte-identical (the
+    // fast path is structural — an empty adjustment map).
+    let (ecs, _user, scene) = global_illumination_scene(vec![ambient_region_doc(
+        20,
+        10,
+        "override",
+        0.2,
+        (0.0, 0.0, 200.0, 200.0),
+    )]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        li.cell_light((550.0, 550.0), &settings, 100.0, &[]).level,
+        1.0,
+        "a cell outside the region keeps the flat all-bright maximum"
+    );
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.2,
+        "the covered cell is overridden"
+    );
+
+    let (ecs, _user, scene) = global_illumination_scene(vec![]);
+    let settings = ecs.resolve_scene(scene);
+    let li = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert!(
+        li.ambient.is_empty(),
+        "no ambient-light region: the cell_light fast path stays structural"
+    );
+    assert_eq!(
+        li.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        1.0,
+        "the untouched scene reads the flat maximum exactly as before"
+    );
+}
+
+#[test]
+fn a_gm_only_ambient_region_still_darkens_a_non_gms_movement_gate() {
+    // Secrecy pin: the override VALUE reads the AUTHORITATIVE field (a hidden darkness region
+    // still darkens), while the region's GEOMETRY follows the ordinary per-requester rule (a
+    // non-GM's own region field omits it entirely).
+    use crate::data::document::Visibility;
+    let mut region = ambient_region_doc(20, 10, "override", 0.0, (200.0, 200.0, 400.0, 400.0));
+    region
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), Visibility::GmOnly);
+    let (ecs, user, scene) = global_illumination_scene(vec![region]);
+
+    let player_field = ecs
+        .region_field(scene, Some(user), elevation::GROUND)
+        .expect("scene exists");
+    assert_eq!(
+        player_field.ambient_at((2, 2)),
+        None,
+        "a non-GM's per-requester field omits the secret region's geometry"
+    );
+    let authoritative = ecs
+        .region_field(scene, None, elevation::GROUND)
+        .expect("scene exists");
+    assert_eq!(
+        authoritative.ambient_at((2, 2)),
+        Some(regions::AmbientAdjustment::Override(0.0)),
+        "the authoritative field carries the secret region's value"
+    );
+
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
+    assert!(
+        mask.contains(&(0, 0)),
+        "unaffected cells stay visible under global illumination, got {mask:?}"
+    );
+    assert!(
+        !mask.contains(&(2, 2)),
+        "the hidden override-0 region drops its cells from the non-GM's mask, got {mask:?}"
+    );
+}
+
+#[test]
+fn lighting_inputs_cache_invalidates_when_an_ambient_region_is_added_or_edited() {
+    // The fingerprint pin: `LightingInputsSnapshot::ambient` must make an ambient-region
+    // add/edit miss the cache — without it the computed field is served stale.
+    let (mut ecs, _user, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    assert!(
+        !settings.all_bright(),
+        "the fixture is the composed field, not the short-circuit"
+    );
+    let before = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1, "cold: one build");
+    // The light sits at (50, 50): the composed field there is bright before the region exists.
+    assert!(
+        before.cell_light((50.0, 50.0), &settings, 100.0, &[]).level > 0.0,
+        "the lit fixture cell starts bright"
+    );
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "an unchanged snapshot is served from the cache"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    let after = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        2,
+        "adding an ambient region must miss the cache"
+    );
+    assert_eq!(
+        after.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.0,
+        "the recomputed field carries the override"
+    );
+
+    ecs.apply_op(&Operation::Update {
+        doc_id: crate::test_ids::test_uuid(20),
+        changes: vec![fc("/engine/ambient_override/level", json!(0.6))],
+    });
+    let edited = ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        3,
+        "editing an ambient region's level must miss the cache"
+    );
+    assert_eq!(
+        edited.cell_light((50.0, 50.0), &settings, 100.0, &[]).level,
+        0.6,
+        "the recomputed field carries the edited level"
+    );
+}
+
+#[test]
+fn visible_cells_cache_invalidates_when_an_ambient_region_is_added() {
+    // The movement-gate mask cache fingerprints the same ambient layer (the mask reads it
+    // through `cell_light`), so a region add must miss it too — otherwise a stale, wider mask
+    // is served until some unrelated input changes.
+    let (mut ecs, user, scene) = scene_with_lit_player_token();
+    let read = |ecs: &SceneEcs| {
+        ecs.visible_cells_cached(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0,
+        )
+    };
+    let before = read(&ecs);
+    assert_eq!(ecs.visible_cells_recompute_count(), 1, "cold cache");
+    let again = read(&ecs);
+    assert_eq!(before, again);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        1,
+        "an unchanged snapshot is served from the cache"
+    );
+    assert!(
+        before.contains(&(0, 0)),
+        "the token's own lit cell starts visible"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    let after = read(&ecs);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        2,
+        "adding an ambient region must miss the movement-gate cache"
+    );
+    assert!(
+        !after.contains(&(0, 0)),
+        "the override-0 region's cell drops out of the recomputed mask"
+    );
+    // The recomputed mask must equal the uncached primitive's answer for the same inputs —
+    // the cached path can never diverge from `visible_cells`.
+    assert_eq!(
+        after,
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        ),
+        "cached and uncached masks agree after the region add"
+    );
+}

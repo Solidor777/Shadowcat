@@ -5,7 +5,7 @@ import {
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
-import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
+import { buildRegionDoc, setRegionVisibility, type RegionEngine, type AmbientLightMode, type AmbientLightOverride } from "./scene-docs";
 import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
@@ -424,6 +424,7 @@ describe("buildRegionDoc", () => {
         { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
       ],
       elevation: null,
+      ambient_override: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -441,6 +442,7 @@ describe("buildRegionDoc", () => {
       enabled: true,
       triggers: [],
       elevation: null,
+      ambient_override: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
@@ -462,6 +464,7 @@ describe("buildRegionDoc", () => {
       enabled: true,
       triggers: [],
       elevation: null,
+      ambient_override: null,
     };
     const compound: RegionEngine = {
       shape: [
@@ -473,6 +476,7 @@ describe("buildRegionDoc", () => {
       enabled: true,
       triggers: [],
       elevation: null,
+      ambient_override: null,
     };
     for (const engine of [legacy, compound]) {
       const revived = JSON.parse(JSON.stringify(buildRegionDoc("world1", "scene1", engine))) as { engine: RegionEngine };
@@ -483,6 +487,31 @@ describe("buildRegionDoc", () => {
     if (Array.isArray(shape)) {
       expect(shape.map((p) => p.hole)).toEqual([false, true]);
       expect(shape.map((p) => p.shape.kind)).toEqual(["rect", "circle"]);
+    }
+  });
+
+  it("admits every AmbientLightMode and round-trips ambient_override through JSON", () => {
+    // Mirrors the geometry round-trip test above: region engine bodies carry no client Zod
+    // schema (validation is server-side, `RegionEngine::validate`), so the generated union type
+    // plus this JSON round-trip is the parity surface for `ambient_override` too. Mutation: a
+    // round-trip that dropped `ambient_override` (e.g. omitted from `buildRegionDoc`'s envelope
+    // spread) would fail `toEqual` here.
+    const modes: AmbientLightMode[] = ["darken", "brighten", "override"];
+    for (const mode of modes) {
+      const override: AmbientLightOverride = { mode, level: mode === "override" ? 0.2 : 0.5 };
+      const eng: RegionEngine = {
+        shape: { kind: "rect", points: [0, 0, 10, 10] },
+        behavior: "ambient_light",
+        cost: 1,
+        enabled: true,
+        triggers: [],
+        elevation: null,
+        ambient_override: override,
+      };
+      const doc = buildRegionDoc("world1", "scene1", eng);
+      expect(doc.engine).toEqual(eng);
+      const revived = JSON.parse(JSON.stringify(doc)) as { engine: RegionEngine };
+      expect(revived.engine.ambient_override).toEqual(override);
     }
   });
 });

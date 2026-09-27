@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, regionShapeOutline, type SceneTool, type Point, type ShapeNodeSpec } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
@@ -31,8 +31,10 @@ export type TemplateMode = "circle" | "cone" | "rect" | "line";
  * (`regionShapeGeometry`). */
 export type RegionShapeMode = "rect" | "circle" | "polygon";
 /** A region's gameplay effect, matching the server `RegionBehavior` variants (precedence
- * `Impassable > Arrest > Terrain` at composition time). */
-export type RegionBehaviorMode = "terrain" | "impassable" | "arrest";
+ * `Impassable > Arrest > Terrain` at composition time). `"ambient_light"` is not a movement
+ * behavior at all — it edits the region's cells' composed illumination
+ * (`ToolController.regionAmbientMode`/`regionAmbientLevel`) and never blocks or weights a route. */
+export type RegionBehaviorMode = "terrain" | "impassable" | "arrest" | "ambient_light";
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
@@ -303,6 +305,14 @@ export class ToolController {
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** Region-tool authored ambient-light mode; meaningful only when `regionBehavior ===
+   * "ambient_light"` (`regionAmbientOverride`'s own gate — the behavior-conditional-field
+   * precedent `regionCost`/`"terrain"` already sets). */
+  regionAmbientMode = $state<AmbientLightMode>("darken");
+  /** Region-tool authored ambient-light level: an absolute illumination for `"override"`
+   * (`[0, 1]`) or a non-negative delta for `"darken"`/`"brighten"` — the exact range
+   * `RegionEngine::validate` enforces server-side. */
+  regionAmbientLevel = $state<number>(0.5);
   /** The non-token scene entity currently open for editing (a light, wall, region, drawing or
    * template picked with the select or light tool), or `null`. Cleared on every tool switch
    * (`toggle`) and on a GM's empty-canvas click with the select tool; `ToolRail` renders the
@@ -549,6 +559,7 @@ export class ToolController {
       enabled: true,
       triggers: $state.snapshot(this.regionTriggers),
       elevation: this.ctx.viewedLevelBand?.() ?? null,
+      ambient_override: regionAmbientOverride(this),
     };
     const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
     if (this.regionSecret) setRegionVisibility(doc, true);
@@ -947,6 +958,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
             // array wraps its contents in is not cloneable.
             triggers: $state.snapshot(controller.regionTriggers),
             elevation: ctx.viewedLevelBand?.() ?? null,
+            ambient_override: regionAmbientOverride(controller),
           };
           const doc = buildRegionDoc(ctx.world, scene.id, engine);
           if (controller.regionSecret) setRegionVisibility(doc, true);
@@ -1062,6 +1074,26 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
     case "polygon":
       return freehand;
   }
+}
+
+/** The `RegionEngine.ambient_override` body for the region the tool is about to persist:
+ * `null` unless `regionBehavior === "ambient_light"` (the `ambient_override.is_some() implies
+ * behavior == "ambient_light"` pairing `RegionEngine::validate` enforces server-side — this
+ * function is what keeps the client from ever authoring the mismatched combination), otherwise
+ * the controller's configured mode/level. Shared by both region-persist call sites
+ * (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`) so the pairing can never
+ * drift between the single-shape and compound authoring flows.
+ * @param controller Supplies the configured `regionBehavior`/`regionAmbientMode`/`regionAmbientLevel`.
+ * @returns The ambient-light edit to persist, or `null` when the region is not `"ambient_light"`.
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const override = regionAmbientOverride(controller);
+ * ```
+ */
+function regionAmbientOverride(controller: ToolController): AmbientLightOverride | null {
+  if (controller.regionBehavior !== "ambient_light") return null;
+  return { mode: controller.regionAmbientMode, level: controller.regionAmbientLevel };
 }
 
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to
