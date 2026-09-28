@@ -196,6 +196,30 @@ const TEXTURE_SWEEP_INTERVAL_MS = 5_000;
  * plenty of budget remains). */
 const TEXTURE_TTL_MS = 5 * 60_000;
 
+/** Font size (world units) for a `"glyph"`-kind emote overlay (a player's 1-4-emoji emote):
+ * large and DELIBERATELY single-line — never wrapped, per `EmoteKind`'s own doc. Unchanged
+ * from this overlay's original size. */
+const GLYPH_FONT_SIZE = 48;
+
+/** Font size (world units) for a `"caption"`-kind emote overlay (server-authored prose, e.g. a
+ * region trigger's `ScrollingText`) — much smaller than `GLYPH_FONT_SIZE`: a caption is
+ * expected to wrap to several lines, and a 48-unit line height would make even a short
+ * sentence many token-heights tall. `20` is chosen together with `EMOTE_WRAP_WIDTH` and
+ * `MAX_OVERLAY_DISPLAY_CHARS` (`@shadowcat/render`'s `emote-view` module) to keep a
+ * display-truncated caption on the order of one token tall — see that constant's own doc for
+ * the exact arithmetic. */
+const CAPTION_FONT_SIZE = 20;
+
+/** Wrap width for a `"caption"`-kind emote overlay's `Text` node, in the SAME scene (world)
+ * units its `x`/`y` anchor is already drawn in — `emoteLayer` sits under the camera-scaled
+ * `world` container (`setCameraTransform` scales the whole subtree), so this is a world-unit
+ * width, not a screen-pixel one, and stays proportionate under zoom. `70` world units/cell is
+ * this codebase's own canonical example cell size (see every `new Grid({ kind: "square", size:
+ * 70 })` doc example); 4 cells wide is a legible caption width independent of font size — see
+ * `MAX_OVERLAY_DISPLAY_CHARS`'s doc for how this combines with `CAPTION_FONT_SIZE` to bound the
+ * caption block's height. Never applied to a `"glyph"`-kind overlay, which is never wrapped. */
+const EMOTE_WRAP_WIDTH = 4 * 70;
+
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
  * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
@@ -1729,23 +1753,48 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
-  /** `DisplayBackend.drawEmotes`: redraw the emote-glyph overlay — destroys the previous
-   * frame's `Text` children, then adds one centered glyph per emote (fontSize 48,
-   * `sans-serif`, at the glyph's own `alpha`).
-   * @param glyphs The current emote glyphs to draw (anchor, glyph(s), alpha), in draw order.
+  /** `DisplayBackend.drawEmotes`: redraw the emote overlay — destroys the previous frame's
+   * `Text` children, then adds one node per overlay, styled by its own `kind` (`EmoteKind`'s
+   * own doc): `"glyph"` (a player's 1-4-emoji emote) draws at `GLYPH_FONT_SIZE`, single-line,
+   * never wrapped — byte-for-byte the original treatment this overlay has always had;
+   * `"caption"` (server-authored prose, e.g. a region trigger's `ScrollingText`) draws smaller,
+   * at `CAPTION_FONT_SIZE`, word-wrapped to `EMOTE_WRAP_WIDTH` and centered — bounded to a
+   * roughly-one-token-tall block because the text it receives is ALREADY display-truncated by
+   * `EmoteView.add` (`MAX_OVERLAY_DISPLAY_CHARS`). Anchored bottom-center (`(0.5, 1)`): `g.y`
+   * is the token's TOP edge (`RenderEngine.addEmote`'s own doc), so the block's bottom sits
+   * there and it grows UPWARD as its height varies with wrapped line count — a center anchor
+   * would instead render half of any multi-line caption down over the token.
+   * @param glyphs The current emote overlays to draw (anchor, text, kind, alpha), in draw order.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 0.8 }]);
    * ```
    */
   drawEmotes(glyphs: EmoteGlyph[]): void {
     for (const child of this.emoteLayer.removeChildren()) child.destroy();
     for (const g of glyphs) {
-      const t = new Text({ text: g.emote, style: { fontSize: 48, fontFamily: "sans-serif" } });
-      t.anchor.set(0.5);
+      const t = new Text({
+        text: g.emote,
+        style:
+          g.kind === "caption"
+            ? {
+                fontSize: CAPTION_FONT_SIZE,
+                fontFamily: "sans-serif",
+                wordWrap: true,
+                wordWrapWidth: EMOTE_WRAP_WIDTH,
+                // Wraps inside a word too: word-boundary-only wrapping leaves an unbroken run
+                // (a pasted token, a space-free language) on one line whose width grows past
+                // `EMOTE_WRAP_WIDTH` unbounded by it.
+                breakWords: true,
+                align: "center",
+              }
+            : { fontSize: GLYPH_FONT_SIZE, fontFamily: "sans-serif" },
+      });
+      // Bottom-center: g.y is the token's top edge, so the block grows upward from it.
+      t.anchor.set(0.5, 1);
       t.position.set(g.x, g.y);
       t.alpha = g.alpha;
       this.emoteLayer.addChild(t);

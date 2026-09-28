@@ -51,4 +51,9 @@ audience: NoticeAudience, } | { "type": "teleport",
 /**
  * Where to send the token.
  */
-target: PortalTarget, };
+target: PortalTarget, } | { "type": "scrolling_text", 
+/**
+ * Overlay text (`chat::MAX_MESSAGE_CHARS`-bounded at ingress; the client
+ * display-truncates further — see `EmoteView`'s doc).
+ */
+text: string, };

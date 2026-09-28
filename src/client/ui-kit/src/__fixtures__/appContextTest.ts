@@ -93,6 +93,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onEmote: over.onEmote ?? (() => () => {}),
+    onScrollingText: over.onScrollingText ?? (() => () => {}),
     onMoveOutcome: over.onMoveOutcome ?? (() => () => {}),
     chat: over.chat ?? {
       send: () => Promise.resolve(),

@@ -4,7 +4,7 @@
 // mount; before/after attachment every call no-ops (snap is identity) so a tool
 // component never crashes when no canvas is mounted. Render types are type-only imports
 // (zero runtime dependency on @shadowcat/render here).
-import type { SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample, EmoteKind } from "@shadowcat/render";
 
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
@@ -133,13 +133,16 @@ export class SceneInteractionBridge implements SceneInteraction {
     this.#host?.addPing(x, y);
   }
 
-  /** Forward to the attached host; a no-op when detached.
+  /** Forward to the attached host; a no-op when detached. The host display-caps the text per
+   * kind, so a long string renders truncated rather than as an oversized node.
    * @param tokenId - The token id the emote plays over.
-   * @param emote - The emote glyph(s).
+   * @param emote - The emote glyph(s), or prose when `kind` is `"caption"`.
+   * @param kind - Which draw treatment to use: `"glyph"` (default, one unwrapped line at glyph
+   * size) or `"caption"` (smaller, wrapped, for prose).
    * @example sceneInteraction.addEmote("tok1", "😀");
    */
-  addEmote(tokenId: string, emote: string): void {
-    this.#host?.addEmote(tokenId, emote);
+  addEmote(tokenId: string, emote: string, kind?: EmoteKind): void {
+    this.#host?.addEmote(tokenId, emote, kind);
   }
 
   /** Forward to the attached host; a no-op when detached.

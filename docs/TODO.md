@@ -150,11 +150,6 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: Volumetric sense-restriction regions (silence zone, darkness globe, sight-blocking fog)
   — regions become occluders for `scene::vision`/`scene::lighting`/`scene::audibility`, which
   today read only the wall set. (L)
-- TODO: Region ambient-light override behaviour (`RegionBehavior` variant that brightens/
-  darkens/overrides the environment term in `LightingInputs::cell_light`) reusing
-  `regions::compose` and the `/engine`-tier secrecy already solved for regions. Design point:
-  whether it also applies under `LightMode::GlobalIllumination`'s `all_bright` short-circuit.
-  (M)
 - TODO: Token-attached (following) regions — a mechanical mobile aura; every region consumer
   (`region_field`, `pathfinding`, `trigger_regions`) assumes static per-scene geometry today.
   (L, contested)
@@ -170,8 +165,6 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: GM "reset explored fog" intent — `scene::explored::ExploredSet` rows are purged only on
   scene/world/user deletion; add a GM-only intent that clears a scene (optionally one user or
   level) and broadcasts the empty `vision.explored` set. (S)
-- TODO: `TriggerEffect::ScrollingText { text }` rendered through `EmoteView`'s floating
-  overlay. (S)
 - TODO: Per-movement-tag terrain cost — `RegionEngine.cost` becomes a per-tag map with the flat
   value as fallback; `pathfinding::terrain_cost` consults the mover's `scene::movement_tags`.
   Touches the route⊆gate and router/executor cost-parity pinned tests. (M)

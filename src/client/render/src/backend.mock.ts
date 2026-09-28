@@ -477,7 +477,7 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 0.8 }]);
    * ```
    */
   drawEmotes(glyphs: EmoteGlyph[]): void {

@@ -653,6 +653,23 @@ pub enum TriggerEffect {
         /// Where to send the token.
         target: PortalTarget,
     },
+    /// Play a floating overlay above the triggering token — reuses
+    /// `EmoteView`'s existing floating-glyph mechanism (a server-authored
+    /// emote) rather than a second floating-text renderer. Text is bounded by
+    /// `chat::MAX_MESSAGE_CHARS` at ingress (one constant, one precedent — the
+    /// SAME bound `ChatNotice` uses; a tighter server-side cap would silently
+    /// narrow what a GM may author, an authoring-policy call this ingress
+    /// validator does not make). The CLIENT overlay display-truncates a long
+    /// text regardless — see `EmoteView`'s own doc for the display-side limit
+    /// this variant's own render treatment enforces. Secrecy is forced to
+    /// GM-only when the firing region's `/engine` band is not visible to
+    /// every world member (`ws::room::Room::apply_region_trigger_effects`),
+    /// mirroring `ChatNotice`'s own secrecy forcing.
+    ScrollingText {
+        /// Overlay text (`chat::MAX_MESSAGE_CHARS`-bounded at ingress; the client
+        /// display-truncates further — see `EmoteView`'s doc).
+        text: String,
+    },
 }
 
 /// A teleport's destination. `scene: None` = the same scene the portal fired
@@ -972,6 +989,14 @@ impl RegionEngine {
                 }
                 TriggerEffect::Teleport { target } => {
                     target.validate()?;
+                }
+                TriggerEffect::ScrollingText { text } => {
+                    if text.chars().count() > crate::chat::MAX_MESSAGE_CHARS {
+                        return Err(format!(
+                            "scrolling_text text exceeds {} chars",
+                            crate::chat::MAX_MESSAGE_CHARS
+                        ));
+                    }
                 }
             }
         }

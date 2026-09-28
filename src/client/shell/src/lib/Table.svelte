@@ -143,6 +143,7 @@
     toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),
     onPing: (cb) => session.onPing(cb),
     onEmote: (cb) => session.onEmote(cb),
+    onScrollingText: (cb) => session.onScrollingText(cb),
     onMoveOutcome: (cb) => session.onMoveOutcome(cb),
     chat: {
       send: (o) => session.sendChatMessage(o),

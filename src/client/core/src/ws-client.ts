@@ -236,6 +236,19 @@ export interface EmoteNotice {
   emote: string;
 }
 
+/** A region-triggered scrolling-text overlay (`WsClientHandlers.onScrollingText`); carries no seq. */
+export interface ScrollingTextNotice {
+  /** The scene the token stands on. */
+  scene: string;
+  /** The token the overlay plays over. */
+  token: string;
+  /** The overlay text. */
+  text: string;
+  /** True when the firing region is not visible to every world member — this frame reaches
+   * only GM connections (server-decided; a non-GM client never receives one with this set). */
+  gmOnly: boolean;
+}
+
 /** A relayed VFX one-shot (`WsClientHandlers.onVfx`); carries no seq. */
 export interface VfxNotice {
   /** The scene the effect plays on. */
@@ -376,6 +389,9 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An out-of-band region-triggered scrolling-text overlay (carries no seq).
+   * @param msg The overlay's scene, token, text, and GM-only secrecy flag. */
+  onScrollingText?(msg: ScrollingTextNotice): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -1245,6 +1261,16 @@ export class WsClient {
       case "emote":
         this.safeEmit(() =>
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
+        );
+        break;
+      case "scrolling_text":
+        this.safeEmit(() =>
+          this.opts.handlers.onScrollingText?.({
+            scene: msg.scene,
+            token: msg.token,
+            text: msg.text,
+            gmOnly: msg.gm_only,
+          }),
         );
         break;
       case "audio_error":

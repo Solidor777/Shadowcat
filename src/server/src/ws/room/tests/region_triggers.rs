@@ -1334,6 +1334,93 @@ fn count_vfx_frames(
     n
 }
 
+/// Drains every currently-buffered broadcast off `rx` (non-blocking) and returns every
+/// `ServerMsg::ScrollingText { token, text, gm_only, .. }` frame's `(text, gm_only)` pair, in
+/// order — mirrors `count_vfx_frames`'s drain shape.
+fn scrolling_text_frames(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> Vec<(String, bool)> {
+    use tokio::sync::broadcast::error::TryRecvError;
+    let mut out = Vec::new();
+    loop {
+        match rx.try_recv() {
+            Ok(RoomEvent::Other(msg)) => {
+                if let ServerMsg::ScrollingText { text, gm_only, .. } = &*msg {
+                    out.push((text.clone(), *gm_only));
+                }
+            }
+            Ok(RoomEvent::Event(_)) => {}
+            Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => break,
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn scrolling_text_trigger_broadcasts_to_the_room_when_region_is_visible_to_all() {
+    let h = movement_scene("unrestricted", false).await;
+    place_region(
+        &h,
+        0x7C0,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "enter", "effect": { "type": "scrolling_text", "text": "You feel a chill." } }]),
+    )
+    .await;
+    let (mut rx, _) = h.room.subscribe();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        scrolling_text_frames(&mut rx),
+        vec![("You feel a chill.".to_string(), false)],
+        "a visible-to-all region's overlay broadcasts room-wide (gm_only: false)"
+    );
+}
+
+#[tokio::test]
+async fn scrolling_text_trigger_is_gm_only_when_region_is_not_visible_to_all() {
+    let h = movement_scene("unrestricted", false).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let region_id = crate::test_ids::test_uuid(0x7C1);
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.engine = Some(trigger_region_engine(
+        (1, 0),
+        "terrain",
+        json!([{ "on": "enter", "effect": { "type": "scrolling_text", "text": "A trap springs." } }]),
+    ));
+    region.permissions.default = DocRole::Observer;
+    // Mutation witness: deleting this `/engine` GmOnly override (or the `!visible_to_all` read
+    // in `Room::apply_region_trigger_effects`'s scrolling-text arm) flips `gm_only` to `false`
+    // and fails this assertion.
+    region
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), Visibility::GmOnly);
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let (mut rx, _) = h.room.subscribe();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        scrolling_text_frames(&mut rx),
+        vec![("A trap springs.".to_string(), true)],
+        "a secret region's overlay is forced gm_only: true, whatever the region's own visibility"
+    );
+}
+
 /// A region whose `enter` trigger carries BOTH a same-scene teleport with a carried `vfx` asset
 /// AND an unrelated `chat_notice` — lets a test distinguish "the whole batch was dropped" from
 /// "only the VFX broadcast was throttled".

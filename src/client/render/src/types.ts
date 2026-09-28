@@ -1,4 +1,5 @@
 import type { VfxAnchor } from "@shadowcat/core";
+import type { EmoteKind } from "./emote-view";
 
 /** A point in scene coordinates. */
 export interface Point {
@@ -493,12 +494,13 @@ export interface SceneToolHost {
    * @param x The ping's scene x-coordinate.
    * @param y The ping's scene y-coordinate. */
   addPing(x: number, y: number): void;
-  /** Spawn a transient emote glyph above `tokenId`'s current position (from a
-   * received/own emote). A token the host cannot resolve renders no overlay — the
+  /** Spawn a transient emote overlay above `tokenId`'s current position (from a
+   * received/own emote/caption). A token the host cannot resolve renders no overlay — the
    * relay is room-wide, so recipients drop overlays for unknown token ids.
-   * @param tokenId The token document id the emote plays over.
-   * @param emote The emote glyph(s). */
-  addEmote(tokenId: string, emote: string): void;
+   * @param tokenId The token document id the overlay plays over.
+   * @param emote The emote glyph(s) or caption text.
+   * @param kind Which draw treatment the caller wants; defaults to `"glyph"`. */
+  addEmote(tokenId: string, emote: string, kind?: EmoteKind): void;
   /** Drive a smooth local walk of a token along a route's scene-coord waypoints.
    * @param id The token document id to animate.
    * @param path Scene-coord `[x,y]` waypoints, in walk order. */

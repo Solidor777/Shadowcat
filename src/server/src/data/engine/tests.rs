@@ -1712,6 +1712,28 @@ fn region_trigger_validation_rejects_malformed_payloads() {
     .is_ok());
 }
 
+#[test]
+fn region_engine_validate_bounds_scrolling_text_length() {
+    let base = |text: &str| {
+        json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true,
+            "triggers": [
+                { "on": "enter", "effect": { "type": "scrolling_text", "text": text } }
+            ]
+        })
+    };
+    // Exactly at the cap is admitted — the SAME `chat::MAX_MESSAGE_CHARS` bound `ChatNotice`
+    // uses (one constant, one precedent); the client display-truncates further, see
+    // `EmoteView`'s own doc for that separate, tighter limit.
+    let cap_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS);
+    assert!(validate_engine("region", Some(&base(&cap_text))).is_ok());
+    // One over the cap is refused — mutation: raising `TriggerEffect::ScrollingText`'s
+    // `RegionEngine::validate` bound (or dropping the arm) flips this from Err to Ok.
+    let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(validate_engine("region", Some(&base(&long_text))).is_err());
+}
+
 // --- search_text: the engine-aware index projection ---
 
 #[test]

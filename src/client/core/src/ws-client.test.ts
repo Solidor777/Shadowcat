@@ -1779,3 +1779,26 @@ describe("WsClient VFX frames", () => {
     client.stop();
   });
 });
+
+describe("WsClient scrolling-text frames", () => {
+  it("a scrolling_text server frame invokes onScrollingText with every field mapped (incl. gm_only → gmOnly)", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onScrollingText: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(
+      JSON.stringify({ type: "scrolling_text", scene: "s1", token: "t1", text: "You feel a chill.", gm_only: true }),
+    );
+    await flush();
+    expect(received).toEqual([{ scene: "s1", token: "t1", text: "You feel a chill.", gmOnly: true }]);
+    client.stop();
+  });
+});

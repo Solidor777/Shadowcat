@@ -327,6 +327,8 @@ export const en: Messages = {
   "tools.triggerAmount": "Amount (number or formula)",
   "tools.triggerText": "Notice text",
   "tools.triggerAudience": "Audience",
+  "tools.triggerScrollingText": "Overlay text",
+  "tools.triggerScrollingTextHint": "The server saves the whole text; the overlay displays only the first {max} characters.",
   "tools.addTrigger": "+ Trigger",
   "tools.removeTrigger": "Remove trigger",
   "tools.regionPartAdd": "+ Part (compound)",

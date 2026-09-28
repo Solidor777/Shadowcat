@@ -1246,6 +1246,27 @@ pub enum ServerMsg {
         /// The emote glyph(s).
         emote: String,
     },
+    /// A region-triggered floating overlay over a token — the server-authored twin of `Emote`,
+    /// with its own length bound at INGRESS (`chat::MAX_MESSAGE_CHARS`, the SAME bound
+    /// `ChatNotice` uses — never `Emote`'s 16-byte player bound, and never a tighter
+    /// server-side cap of its own: `TriggerEffect::ScrollingText`'s own doc explains why). The
+    /// CLIENT independently display-truncates a long text to a much shorter limit
+    /// (`@shadowcat/render`'s `MAX_OVERLAY_DISPLAY_CHARS`) — the server accepts more than the
+    /// overlay ever shows. Out-of-band (no seq, never buffered/resynced). `gm_only` is decided
+    /// at fire time (`ws::room::Room::apply_region_trigger_effects`) from the firing region's
+    /// `/engine` visibility: `egress_loop` drops the frame for a non-GM connection when set,
+    /// mirroring a forced-`GmOnly` `ChatNotice`'s own audience restriction.
+    ScrollingText {
+        /// Scene the token stands on.
+        scene: Uuid,
+        /// Token the overlay plays over.
+        token: Uuid,
+        /// The overlay text.
+        text: String,
+        /// True when the firing region is not visible to every world member — the frame is
+        /// delivered only to GM connections.
+        gm_only: bool,
+    },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
     /// `arrested` is true when an arrest region truncated the route before the requested goal,

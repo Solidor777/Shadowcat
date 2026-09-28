@@ -3057,6 +3057,29 @@ impl Room {
             failures.push("chained portal refused (one hop per move)".to_string());
         }
 
+        // --- Scrolling-text overlays, in fired order. Out-of-band aux broadcast (no document,
+        // no seq) mirroring `Emote`'s own shape — the client resolves the anchor position from
+        // `token` via `EmoteView`, exactly as a player-fired emote does. `gm_only` mirrors
+        // `ChatNotice`'s own secrecy forcing: a region whose `/engine` band is not visible to
+        // every world member is delivered only to GM connections (`egress_loop`'s per-connection
+        // filter), never broadcast to the whole room. ---
+        for (region_id, trigger) in &fired {
+            if let eng::TriggerEffect::ScrollingText { text } = &trigger.effect {
+                let Some(scene_id) = scene else { continue };
+                let visible_to_all = secrecy_rows
+                    .iter()
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                self.broadcast_aux(ServerMsg::ScrollingText {
+                    scene: scene_id,
+                    token,
+                    text: text.clone(),
+                    gm_only: !visible_to_all,
+                });
+            }
+        }
+
         // --- Chat notices, in fired order ---
         for (region_id, trigger) in &fired {
             if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {

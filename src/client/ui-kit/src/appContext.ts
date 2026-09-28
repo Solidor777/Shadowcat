@@ -330,6 +330,15 @@ export interface AppContext {
     /** The emote glyph(s). */
     emote: string;
   }) => void) => () => void;
+  /** Subscribe to region-triggered scrolling-text overlays. Server-fired only (a region's own
+   * `TriggerEffect::ScrollingText`) — there is no client `send` counterpart, unlike `onEmote`/
+   * `sendEmote`. Returns an unsubscribe. */
+  onScrollingText: (cb: (msg: {
+    /** Token the overlay plays over. */
+    token: string;
+    /** The overlay text. */
+    text: string;
+  }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
    * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
    * unsubscribe. */

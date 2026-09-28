@@ -347,3 +347,54 @@ test("compound region authoring: stage an additive part and a hole part, then co
   // The gesture reset: the part list cleared, so the rail shows no staged rows.
   await expect(page.getByTestId("region-part-hole")).toHaveCount(0);
 });
+
+// Region trigger: `TriggerEffect::ScrollingText` reaches the client. Single (GM-only) session —
+// a GM bypasses every movement gate, so dragging their own placed token through the trigger
+// region needs no ownership handoff, restriction-mode change, or second browser context. Asserts
+// on the CLIENT-VISIBLE effect (the `Stage` overlay-observability attribute
+// `onScrollingText` sets, per `EmoteView`'s reuse for this effect), never on an i18n string.
+const ST_START = { x: 210, y: 310 };
+const ST_REGION_A = { x: 350, y: 260 };
+const ST_REGION_B = { x: 450, y: 360 }; // a 100x100 box
+const ST_WALK_TARGET = { x: 400, y: 310 }; // inside the region box
+const ST_TEXT = "You feel a chill.";
+
+test("region trigger: a ScrollingText overlay reaches the client on enter", async ({ page, account }) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill(`Scrolling Text World ${Date.now().toString(36)}`);
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = stageHost(page);
+  await expect(host).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await disableSnap(page);
+  await uploadAsset(page, "st-token.png", 1);
+
+  await page.getByTestId("tool-place").click();
+  const pick = page.getByTestId("picker-asset").first();
+  await expect(pick).toBeVisible({ timeout: 10_000 });
+  await pick.click();
+  await clickScene(page, ST_START);
+  await expect(host).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
+
+  // Author a ScrollingText region trigger covering a cell the token will walk through.
+  await page.getByTestId("tool-region").click();
+  await page.getByTestId("region-trigger-add").click();
+  await page.getByTestId("region-trigger-effect").selectOption("scrolling_text");
+  await page.getByTestId("region-trigger-scrolling-text").fill(ST_TEXT);
+  await dragScene(page, ST_REGION_A, ST_REGION_B);
+
+  // Walk the token into the region: the "enter" trigger fires, broadcasting
+  // `ServerMsg::ScrollingText`; `Stage`'s `onScrollingText` handler plays it through
+  // `EmoteView.addEmote` — the same floating-overlay mechanism a player-fired emote uses — and
+  // records the fired text on the stage host for e2e observability.
+  await page.getByTestId("tool-select").click();
+  await dragScene(page, ST_START, ST_WALK_TARGET);
+
+  // Escapes every regex-special character in ST_TEXT (not just the first "."), so this
+  // assertion stays correct if ST_TEXT ever gains additional special characters.
+  const stTextPattern = ST_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await expect(host).toHaveAttribute("data-last-scrolling-text", new RegExp(stTextPattern), {
+    timeout: 20_000,
+  });
+});

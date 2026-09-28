@@ -1006,6 +1006,24 @@ export type ServerMsg =
       emote: string;
     }
   | {
+      /** A region-triggered floating overlay over a token: the server-authored twin of
+       * `emote`, bounded at INGRESS by the server's `chat::MAX_MESSAGE_CHARS` (never
+       * `emote`'s 16-byte player bound, and never a tighter server-side cap of its own).
+       * The client independently display-truncates a long `text` to a much shorter limit
+       * (`@shadowcat/render`'s `MAX_OVERLAY_DISPLAY_CHARS`) — the server accepts more than
+       * the overlay ever shows. Out-of-band (no seq, never buffered/resynced). */
+      type: "scrolling_text";
+      /** Scene the token stands on. */
+      scene: string;
+      /** Token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+      /** True when the firing region is not visible to every world member — the server
+       * delivers this frame only to GM connections. */
+      gm_only: boolean;
+    }
+  | {
       /** The route for the `pathfind` with this `request_id`: ordered cell-center scene
        * points (incl. start + goal) and the total cost in cells (client multiplies
        * `grid.distance.perCell`). `arrested` is true when an arrest region truncated the
@@ -1309,6 +1327,13 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     token: z.string(),
     user: z.string(),
     emote: z.string(),
+  }),
+  z.object({
+    type: z.literal("scrolling_text"),
+    scene: z.string(),
+    token: z.string(),
+    text: z.string(),
+    gm_only: z.boolean(),
   }),
   z.object({
     type: z.literal("path_result"),

@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from "vitest";
-import { AnimatedSprite, Assets, Container, Texture } from "pixi.js";
+import { AnimatedSprite, Assets, Container, Text, Texture } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
@@ -1016,5 +1016,55 @@ describe("PixiBackend texture budget", () => {
     expect(unloadSpy).toHaveBeenCalledWith("/tex/in-flight");
     loadSpy.mockRestore();
     unloadSpy.mockRestore();
+  });
+});
+
+describe("PixiBackend.drawEmotes", () => {
+  test("a \"caption\"-kind overlay's Text node is configured to word-wrap, centered, at the shared wrap width", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([{ x: 0, y: 0, emote: "A very long region-triggered scrolling-text overlay line that must wrap.", kind: "caption", alpha: 1 }]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    expect(layer.children).toHaveLength(1);
+    const text = layer.children[0] as Text;
+    // Pins the exact style configuration, not just visual output — a mutation removing
+    // `wordWrap: true` (or `wordWrapWidth`) leaves this failing since PixiJS's default style
+    // has `wordWrap: false`, which this assertion would then catch immediately.
+    expect(text.style.wordWrap).toBe(true);
+    expect(text.style.wordWrapWidth).toBeGreaterThan(0);
+    expect(text.style.align).toBe("center");
+    // Pinned exactly, not merely "smaller than the glyph size": the height budget in
+    // `MAX_OVERLAY_DISPLAY_CHARS`'s doc is derived from this exact value together with
+    // `EMOTE_WRAP_WIDTH`, so any other value silently invalidates that derivation.
+    expect(text.style.fontSize).toBe(20);
+    // A run with no whitespace must still wrap rather than extend past the wrap width.
+    expect(text.style.breakWords).toBe(true);
+  });
+
+  test("a \"glyph\"-kind overlay's Text node is NEVER word-wrapped and keeps the original 48-unit font size", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([{ x: 0, y: 0, emote: "😀", kind: "glyph", alpha: 1 }]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    const text = layer.children[0] as Text;
+    // A player's short emoji cluster must render exactly as it always has — no wrapping.
+    // Mutation: applying the caption's wrap style unconditionally (regardless of `kind`) would
+    // flip `wordWrap` to `true` here and fail this assertion.
+    expect(text.style.wordWrap).toBe(false);
+    expect(text.style.fontSize).toBe(48);
+  });
+
+  test("every overlay kind anchors bottom-center so a multi-line block grows upward from the token's top edge", () => {
+    const backend = headlessBackend();
+    backend.drawEmotes([
+      { x: 10, y: 20, emote: "😀", kind: "glyph", alpha: 1 },
+      { x: 30, y: 40, emote: "A caption.", kind: "caption", alpha: 1 },
+    ]);
+    const layer = (backend as unknown as { emoteLayer: Container }).emoteLayer;
+    for (const child of layer.children as Text[]) {
+      // Mutation: setting the anchor to `(0.5, 0.5)` here fails this assertion — the block's
+      // BOTTOM, not its center, sits at the token's recorded top-edge y, so a block whose
+      // height varies grows upward instead of spreading down over the token.
+      expect(child.anchor.x).toBeCloseTo(0.5);
+      expect(child.anchor.y).toBeCloseTo(1);
+    }
   });
 });

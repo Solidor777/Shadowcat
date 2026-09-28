@@ -241,7 +241,24 @@ user: string,
 /**
  * The emote glyph(s).
  */
-emote: string, } | { "type": "path_result", 
+emote: string, } | { "type": "scrolling_text", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the overlay plays over.
+ */
+token: string, 
+/**
+ * The overlay text.
+ */
+text: string, 
+/**
+ * True when the firing region is not visible to every world member — the frame is
+ * delivered only to GM connections.
+ */
+gm_only: boolean, } | { "type": "path_result", 
 /**
  * The originating pathfind's correlation token.
  */

@@ -1839,6 +1839,23 @@ fn audio_listen_as_permitted_admits_only_the_gm() {
     assert!(!audio_listen_as_permitted(&player));
 }
 
+/// `scrolling_text_admitted` is the pure predicate `egress_loop`'s `ServerMsg::ScrollingText`
+/// arm calls to decide per-connection delivery: a non-`gm_only` frame reaches everyone; a
+/// `gm_only` frame reaches only a GM connection. Mutation witness: inverting the predicate's
+/// body to `gm_only && world_role == WorldRole::Gm` fails the first assertion below
+/// (`scrolling_text_admitted(false, WorldRole::Player)` flips from admitted to refused).
+#[test]
+fn scrolling_text_admitted_drops_for_non_gm_gm_only_and_keeps_for_gm() {
+    use crate::data::document::WorldRole;
+
+    // Not gm_only: every role is admitted.
+    assert!(scrolling_text_admitted(false, WorldRole::Player));
+    assert!(scrolling_text_admitted(false, WorldRole::Gm));
+    // gm_only: only a GM connection is admitted.
+    assert!(!scrolling_text_admitted(true, WorldRole::Player));
+    assert!(scrolling_text_admitted(true, WorldRole::Gm));
+}
+
 /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that
 /// scene is `unrestricted` (no visibility mask to fail closed on). Otherwise a player could
 /// route-preview inside a scene they have never entered and read its `blocksMove` wall layout

@@ -49,7 +49,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members, t } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onScrollingText, vfx, audio, onMoveOutcome, role, members, t } = ctx;
 
   // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
   // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
@@ -164,6 +164,7 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offScrollingText: (() => void) | null = null;
     let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
@@ -469,6 +470,14 @@
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
+      // Region-triggered scrolling-text overlays reuse the SAME floating-overlay lifecycle
+      // as a player-fired emote (`EmoteView.addEmote`) — never a second renderer — but declare
+      // the "caption" draw treatment (smaller, wrapped, multi-line) rather than the emoji
+      // "glyph" one, since server-authored prose is not a 1-4-character cluster.
+      offScrollingText = onScrollingText((m) => {
+        e.addEmote(m.token, m.text, "caption");
+        host.dataset.lastScrollingText = `${m.token}:${m.text}`;
+      });
       // Relayed VFX one-shots (incl. our own echo) play through the engine. Warm the asset's
       // metadata BEFORE calling engine.playVfx so the render layer's own synchronous
       // vfxAssets(id) lookup always hits on this exact arrival — a cold cache would otherwise
@@ -521,6 +530,7 @@
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offScrollingText?.();
       offVfx?.();
       offMoveOutcome?.();
       offAsset?.();

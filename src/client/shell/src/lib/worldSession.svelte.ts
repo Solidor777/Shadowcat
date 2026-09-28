@@ -245,6 +245,15 @@ export class WorldSession {
   >();
   /** `onVfx` subscriber set. */
   #vfxListeners = new Set<(msg: VfxNotice) => void>();
+  /** `onScrollingText` subscriber set. */
+  #scrollingTextListeners = new Set<
+    (msg: {
+      /** The token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+    }) => void
+  >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -939,6 +948,31 @@ export class WorldSession {
     return () => this.#emoteListeners.delete(cb);
   }
 
+  /** Subscribe to region-triggered scrolling-text overlays; returns an unsubscribe. Fired only
+   * by the server (a region's own `TriggerEffect::ScrollingText`) — there is no client `send`
+   * counterpart, unlike `onEmote`/`sendEmote`.
+   * @param cb Called with the token and text of each overlay.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function renderScrollingText(token: string, text: string): void;
+   * const off = session.onScrollingText(({ token, text }) => renderScrollingText(token, text));
+   * off();
+   * ```
+   */
+  onScrollingText(
+    cb: (msg: {
+      /** The token the overlay plays over. */
+      token: string;
+      /** The overlay text. */
+      text: string;
+    }) => void,
+  ): () => void {
+    this.#scrollingTextListeners.add(cb);
+    return () => this.#scrollingTextListeners.delete(cb);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -1417,6 +1451,13 @@ export class WorldSession {
           // that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
+        },
+        onScrollingText: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a
+          // scrolling-text overlay broadcasts room-wide (or GM-only) and must render only for
+          // recipients currently viewing that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#scrollingTextListeners) cb(msg);
         },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onVfx: (msg) => {

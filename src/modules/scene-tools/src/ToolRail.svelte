@@ -5,6 +5,7 @@
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
+  import { MAX_OVERLAY_DISPLAY_CHARS } from "@shadowcat/render";
 
   const ctx = getAppContext();
 
@@ -428,7 +429,7 @@
   const triggerEvents: TriggerEvent[] = ["enter", "arrest", "exit", "turn_start", "turn_end", "round_start", "round_end"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
-  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport", "scrolling_text"];
   const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
 
   /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
@@ -476,6 +477,7 @@
       case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
       case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
       case "teleport": trig.effect = { type: "teleport", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null } }; break;
+      case "scrolling_text": trig.effect = { type: "scrolling_text", text: "" }; break;
       default: trig.effect = { type: "condition_add", condition: "" };
     }
   }
@@ -696,6 +698,13 @@
               </select>
             {:else if trig.effect.type === "teleport"}
               <RegionTriggerTeleportEditor bind:target={trig.effect.target} row={i} {controller} />
+            {:else if trig.effect.type === "scrolling_text"}
+              <input
+                data-testid="region-trigger-scrolling-text"
+                aria-label={t("tools.triggerScrollingText")}
+                title={t("tools.triggerScrollingTextHint", { max: MAX_OVERLAY_DISPLAY_CHARS })}
+                bind:value={trig.effect.text}
+              />
             {/if}
             <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
           </div>

@@ -20,7 +20,7 @@ import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
-import { EmoteView } from "./emote-view";
+import { EmoteView, type EmoteKind } from "./emote-view";
 import { VfxView } from "./vfx-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
@@ -1416,16 +1416,19 @@ export class RenderEngine implements SceneToolHost {
     }
   }
 
-  /** `SceneToolHost.addEmote`: spawn a transient emote glyph above `tokenId`'s current
-   * resolved position (a received or locally-originated emote). The anchor is read AT SPAWN
-   * from `TokenView.specOf` — the emote marks WHERE it was fired and never tracks a moving
-   * token — and an unknown/unrenderable token id is DROPPED: the relay is room-wide, so a
-   * recipient who cannot resolve the token renders no overlay. The rise is the active grid's
+  /** `SceneToolHost.addEmote`: spawn a transient emote overlay above `tokenId`'s current
+   * resolved position (a received or locally-originated emote/caption). The anchor is read AT
+   * SPAWN from `TokenView.specOf` — the overlay marks WHERE it was fired and never tracks a
+   * moving token — and an unknown/unrenderable token id is DROPPED: the relay is room-wide, so
+   * a recipient who cannot resolve the token renders no overlay. The rise is the active grid's
    * per-cell world distance (`Grid.worldUnitsPerCell`), the view's ONE cell-size source.
-   * Forwards to `EmoteView.add`; glyph rise/fade is driven by the ticker installed in
-   * `start()`.
-   * @param tokenId The token document id the emote plays over.
-   * @param emote The emote glyph(s).
+   * Forwards to `EmoteView.add`; overlay rise/fade is driven by the ticker installed in
+   * `start()`. `kind` is the PRODUCING call site's own declaration of which draw treatment it
+   * wants (`EmoteKind`'s own doc) — this method makes no guess from `emote`'s length.
+   * @param tokenId The token document id the overlay plays over.
+   * @param emote The emote glyph(s) or caption text.
+   * @param kind Which draw treatment the caller wants; defaults to `"glyph"` (the pre-existing
+   * player-emote behavior every caller before this parameter existed already relied on).
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1433,13 +1436,14 @@ export class RenderEngine implements SceneToolHost {
    * declare const engine: RenderEngine;
    *
    * engine.addEmote("token-1", "😀");
+   * engine.addEmote("token-1", "You feel a chill.", "caption");
    * ```
    */
-  addEmote(tokenId: string, emote: string): void {
+  addEmote(tokenId: string, emote: string, kind: EmoteKind = "glyph"): void {
     const spec = this.tokens.specOf(tokenId);
     if (!spec) return;
     // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
-    this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
+    this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell(), kind);
   }
 
   /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact

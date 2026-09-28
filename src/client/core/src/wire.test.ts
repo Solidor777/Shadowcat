@@ -607,6 +607,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",
       request_id: "r",

@@ -1196,6 +1196,20 @@ fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -
     ctx.world_role == crate::data::document::WorldRole::Gm
 }
 
+/// Whether `egress_loop` may deliver a `ServerMsg::ScrollingText { gm_only, .. }` frame to a
+/// connection holding `world_role`: `true` for every recipient when the frame is not `gm_only`,
+/// and `true` for a GM recipient regardless — `false` (drop, no error frame) only for a non-GM
+/// connection when `gm_only` is set. This is the exact secrecy-forcing decision
+/// `Room::apply_region_trigger_effects` computes `gm_only` FOR (a region not visible to every
+/// world member), enforced here per connection since the frame itself is a room-wide broadcast
+/// with no per-recipient document to filter through the ordinary redaction path. Extracted as a
+/// pure, I/O-free predicate (no `Room`/`Repository` access) so this decision is directly
+/// unit-testable, mirroring the intent behind `ServerMsg::Evicted`'s and `ServerMsg::MoveStream`'s
+/// own per-connection decisions in `egress_loop` without requiring a full connection/room fixture.
+fn scrolling_text_admitted(gm_only: bool, world_role: crate::data::document::WorldRole) -> bool {
+    !gm_only || world_role == crate::data::document::WorldRole::Gm
+}
+
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
 /// site): 16 bytes covers 1–4 emoji graphemes (a 4-byte code point plus variation
 /// selector/ZWJ joiners) while capping the relayed frame size.
@@ -2486,6 +2500,20 @@ async fn egress_loop<S>(
                                     }
                                 }
                                 failed
+                            }
+                            ServerMsg::ScrollingText { gm_only, .. } => {
+                                // Per-connection secrecy filter, mirroring the `Evicted`
+                                // per-recipient decision shape above: a `gm_only` overlay is
+                                // silently dropped for a non-GM connection (not a failure — the
+                                // frame simply never reaches this sink), exactly like a forced
+                                // `GmOnly` `ChatNotice`'s own audience restriction. The actual
+                                // admit/drop decision lives in `scrolling_text_admitted`, a pure
+                                // predicate pinned by its own unit test.
+                                if scrolling_text_admitted(*gm_only, ctx.world_role) {
+                                    send_plain(&mut sink, inner.as_ref()).await.is_err()
+                                } else {
+                                    false
+                                }
                             }
                             ServerMsg::Evicted { user } => {
                                 // Targeted eviction. Delivery of the frame is
