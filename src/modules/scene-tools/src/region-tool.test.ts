@@ -119,6 +119,86 @@ test("a non-ambient_light behavior always persists ambient_override: null, even 
   if (op.op === "create") expect(op.doc.engine).toMatchObject({ ambient_override: null });
 });
 
+test("staged regionCostByTag rows persist as a record on the created region, clamped to >= 1", () => {
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: 0.2 }, { tag: "swimming", cost: 3 });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    // `flying`'s authored 0.2 clamps to 1 — the SAME `>= 1` floor `regionCost` itself gets,
+    // via `regionCostByTagRecord`, never a second independently-authored bound.
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1, swimming: 3 } });
+  }
+});
+
+test("a cleared per-tag cost input (NaN) persists the floor, not NaN/null", () => {
+  // A `<input type="number">` an author clears binds `NaN`; `Math.max(1, NaN)` is itself
+  // `NaN`, which `JSON.stringify`s to `null` and fails the whole `Create` at ingress
+  // (`BTreeMap<String, f64>` type mismatch) with no feedback. `clampRegionCost` must floor a
+  // non-finite value to 1 instead, matching the server's own `f64::max`-based clamp (which
+  // already floors `NaN` this way).
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: Number.NaN });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1 } });
+  }
+});
+
+test("a cleared flat regionCost input (NaN) persists the floor, not NaN/null", () => {
+  // The identical gap on the flat `cost` field, fixed in the same pass rather than left
+  // beside the per-tag fix.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCost = Number.NaN;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost: 1 });
+  }
+});
+
+test("a blank tag row is dropped from the persisted cost_by_tag record", () => {
+  // Mutation coverage for `regionCostByTagRecord`'s blank-tag guard: a row whose tag is
+  // still empty (freshly added via `addRegionCostByTagRow`, never filled in) must not
+  // persist as an empty-string key.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "", cost: 2 }, { tag: "flying", cost: 1.5 });
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 1.5 } });
+    expect(Object.keys((op.doc.engine as { cost_by_tag: Record<string, number> }).cost_by_tag)).toHaveLength(1);
+  }
+});
+
+test("commitRegionParts persists staged regionCostByTag rows the same way the single-shape flow does", () => {
+  // The compound-flow persist site (`commitRegionParts`) must never drift from the
+  // single-shape flow (`makeRegionTool.onPointerUp`) on how `regionCostByTag` becomes a
+  // record — both route through the SAME `regionCostByTagRecord` helper.
+  const { controller, sent } = setup();
+  controller.regionBehavior = "terrain";
+  controller.regionCostByTag.push({ tag: "flying", cost: 2 });
+  controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "scene-1");
+  controller.commitRegionParts();
+  expect(sent).toHaveLength(1);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ cost_by_tag: { flying: 2 } });
+});
+
 test("the compound commit carries the controller's own behavior, not a hardcoded one", () => {
   const { tool, controller, sent } = setup();
   controller.regionShapeMode = "rect";

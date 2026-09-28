@@ -284,6 +284,7 @@ fn ambient_region(mode: AmbientLightMode, level: f64) -> RegionEngine {
         }),
         behavior: "ambient_light".to_string(),
         cost: 1.0,
+        cost_by_tag: std::collections::BTreeMap::new(),
         enabled: true,
         triggers: Vec::new(),
         elevation: None,

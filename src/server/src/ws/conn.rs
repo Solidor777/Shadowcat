@@ -1402,10 +1402,12 @@ async fn handle_pathfind(
             };
             match derived {
                 Some(r) => {
+                    let mover_tags = s.token_movement_tags(t);
                     traits = crate::scene::pathfinding::MoveTraits {
                         ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
-                            &s.token_movement_tags(t),
+                            &mover_tags,
                         ),
+                        tags: mover_tags,
                     };
                     r
                 }

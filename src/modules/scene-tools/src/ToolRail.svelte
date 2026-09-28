@@ -443,6 +443,17 @@
     controller.regionTriggers.push({ on: "enter", effect: { type: "condition_add", condition: "" } });
   }
 
+  /** Append a blank per-tag cost row (empty tag, cost 1) to the region tool's authored
+   * `regionCostByTag` list, persisted onto the next region the tool creates.
+   * @example
+   * ```
+   * addRegionCostByTagRow();
+   * ```
+   */
+  function addRegionCostByTagRow(): void {
+    controller.regionCostByTag.push({ tag: "", cost: 1 });
+  }
+
   /** Arm the compound-region gesture: the region tool's drags then STAGE parts into the
    * `regionParts` list instead of persisting a single-shape region. A second click with
    * nothing staged yet cancels the gesture (the only escape hatch before the first drag —
@@ -673,6 +684,35 @@
           {#each regionBehaviors as b (b)}<option value={b}>{b}</option>{/each}
         </select>
         <input type="number" data-testid="region-cost" aria-label={t("tools.cost")} min="1" step="0.5" bind:value={controller.regionCost} disabled={controller.regionBehavior !== "terrain"} />
+        {#if controller.regionBehavior === "terrain"}
+          <!-- Per-movement-tag cost overrides: the flat `regionCost` above stays the fallback
+               for a mover whose tags match none of these rows. -->
+          {#each controller.regionCostByTag as row, i (i)}
+            <div class="trigger-row" data-testid="region-cost-by-tag-row">
+              <input
+                data-testid="region-cost-by-tag-tag"
+                aria-label={t("tools.regionCostByTag")}
+                bind:value={row.tag}
+              />
+              <input
+                type="number"
+                data-testid="region-cost-by-tag-cost"
+                aria-label={t("tools.cost")}
+                min="1"
+                step="0.5"
+                bind:value={row.cost}
+              />
+              <button
+                type="button"
+                data-testid="region-cost-by-tag-remove"
+                aria-label={t("tools.removeTagCost")}
+                title={t("tools.removeTagCost")}
+                onclick={() => controller.regionCostByTag.splice(i, 1)}
+              >×</button>
+            </div>
+          {/each}
+          <button type="button" data-testid="region-cost-by-tag-add" onclick={addRegionCostByTagRow}>{t("tools.addTagCost")}</button>
+        {/if}
         {#if controller.regionBehavior === "ambient_light"}
           <select data-testid="region-ambient-mode" aria-label={t("tools.regionAmbientLight")} bind:value={controller.regionAmbientMode}>
             {#each ambientLightModes as m (m)}<option value={m}>{m === "darken" ? t("tools.ambientDarken") : m === "brighten" ? t("tools.ambientBrighten") : t("tools.ambientOverride")}</option>{/each}

@@ -844,6 +844,7 @@ pub struct AmbientLightOverride {
 ///     }),
 ///     behavior: "terrain".to_string(),
 ///     cost: 2.0,
+///     cost_by_tag: std::collections::BTreeMap::new(),
 ///     enabled: true,
 ///     triggers: Vec::new(),
 ///     elevation: None,
@@ -865,6 +866,15 @@ pub struct RegionEngine {
     /// Movement-cost multiplier (>= 1, clamped read-side); meaningful only
     /// for `behavior: "terrain"`.
     pub cost: f64,
+    /// Per-movement-tag cost overrides (>= 1, clamped read-side exactly like `cost`);
+    /// meaningful only for `behavior: "terrain"`. A mover carrying one or more matching
+    /// tags (`scene::regions::RegionField::resolved_terrain_multiplier`) pays the MINIMUM
+    /// matching value rather than `cost` — "you navigate however is easiest for you". `cost`
+    /// remains the fallback for a mover whose tags match no key here, exactly as it is the
+    /// only value today. Absent on documents written before per-tag terrain cost existed
+    /// (serde default, empty map).
+    #[serde(default)]
+    pub cost_by_tag: std::collections::BTreeMap<String, f64>,
     /// GM toggle; a disabled region is dropped entirely at read time.
     pub enabled: bool,
     /// Effects fired on tokens entering, arrested inside, or leaving the
@@ -919,6 +929,7 @@ impl RegionEngine {
     ///     }),
     ///     behavior: "terrain".to_string(),
     ///     cost: 1.0,
+    ///     cost_by_tag: std::collections::BTreeMap::new(),
     ///     enabled: true,
     ///     triggers: vec![RegionTrigger {
     ///         on: TriggerEvent::Enter,

@@ -1106,7 +1106,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this region is parented to.
- * @param engine The full `RegionEngine` body (shape, behavior, cost, enabled).
+ * @param engine The full `RegionEngine` body (shape, behavior, cost, cost_by_tag, enabled).
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "region"`, parented to `sceneId`.
  * @example
@@ -1115,7 +1115,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true,
+ *   behavior: "impassable", cost: 1, cost_by_tag: {}, enabled: true,
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  *   elevation: null,
  *   ambient_override: null,
@@ -1147,7 +1147,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
+ *   behavior: "impassable", cost: 1, cost_by_tag: {}, enabled: true, triggers: [],
  *   elevation: null,
  *   ambient_override: null,
  * };

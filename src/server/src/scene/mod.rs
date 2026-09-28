@@ -947,7 +947,7 @@ pub struct RouteRequester<'a> {
 /// };
 /// assert_eq!(mover.footprint_radius, 0.4);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RouteMover {
     /// Mover footprint radius in CELLS — token-derived via `SceneEcs::resolve_token_footprint`
     /// when the request names a token, else the wire's own hypothetical value.
@@ -2828,7 +2828,7 @@ impl SceneEcs {
                 let needs_weighted = if traits.ignore_terrain {
                     regions.has_impassable()
                 } else {
-                    regions.has_terrain_or_impassable()
+                    regions.has_terrain_or_impassable(&traits.tags)
                 };
                 if needs_weighted {
                     // Euclidean base metric: the grid's step cost AND its admissible
@@ -2862,7 +2862,7 @@ impl SceneEcs {
                         waypoints,
                         pathfinding::PathInputs {
                             shape: &*euclid_shape,
-                            ..inputs
+                            ..inputs.clone()
                         },
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
@@ -3030,7 +3030,18 @@ impl SceneEcs {
                 _ => regions::RegionBehavior::Terrain,
             };
             let cost = region_eng.cost.max(1.0);
-            builder.add_parts(&parts, behavior, cost, cell, &*grid);
+            // Identical clamp/validation site to the flat `cost` above (never a second,
+            // independently authored bound): `cost_by_tag` values are clamped read-side here,
+            // never rejected at `RegionEngine::validate` — `cost` itself carries no ingress
+            // check either, only this same `.max(1.0)` read-side floor. `f64::max` returns the
+            // non-NaN operand when either side is NaN, so a NaN authored value floors to 1.0
+            // exactly like a NaN flat `cost` does.
+            let cost_by_tag: std::collections::BTreeMap<String, f64> = region_eng
+                .cost_by_tag
+                .iter()
+                .map(|(tag, v)| (tag.clone(), v.max(1.0)))
+                .collect();
+            builder.add_parts(&parts, behavior, cost, &cost_by_tag, cell, &*grid);
         }
         Some(builder.build())
     }

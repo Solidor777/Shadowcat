@@ -241,9 +241,12 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
 
 /// The exempt-mover flag set: the shape `MoveGateInputs.traits` takes when the caller resolved
 /// a terrain-exempt tag off the mover.
-const EXEMPT_TRAITS: MoveTraits = MoveTraits {
-    ignore_terrain: true,
-};
+fn exempt_traits() -> MoveTraits {
+    MoveTraits {
+        ignore_terrain: true,
+        tags: std::collections::BTreeSet::new(),
+    }
+}
 
 #[test]
 fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_multiplier() {
@@ -269,7 +272,7 @@ fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_
         grounded.cost
     );
     let exempt =
-        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
+        execute_move(&ecs, gate(exempt_traits()), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.0).abs() < 1e-9,
         "exempt mover pays the unweighted step, got {}",
@@ -293,7 +296,7 @@ fn exempt_mover_budget_stop_uses_the_exempt_cost() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
@@ -338,7 +341,7 @@ fn exempt_mover_continuous_transition_and_tail_both_read_unweighted() {
         grounded.cost
     );
     let exempt =
-        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
+        execute_move(&ecs, gate(exempt_traits()), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.1).abs() < 1e-9,
         "exempt mover pays the raw Euclidean span, got {}",
@@ -358,7 +361,7 @@ fn exemption_never_covers_impassable_or_arrest() {
         visible: &mask,
         cell: FIXTURE_GRID_SIZE,
         budget: None,
-        traits: EXEMPT_TRAITS,
+        traits: exempt_traits(),
         mover_elevation: crate::scene::elevation::GROUND,
     };
     let blocked = execute_move(

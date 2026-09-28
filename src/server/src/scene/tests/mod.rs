@@ -271,6 +271,35 @@ pub(super) fn region_doc(
     )
 }
 
+/// A `region_doc` fixture that additionally authors `cost_by_tag`: per-movement-tag cost
+/// overrides alongside the flat `cost` fallback.
+pub(super) fn region_doc_with_tags(
+    id: u128,
+    parent: u128,
+    behavior: &str,
+    cost: f64,
+    cost_by_tag: &[(&str, f64)],
+    rect: (f64, f64, f64, f64),
+) -> Document {
+    let (x0, y0, x1, y1) = rect;
+    let by_tag: serde_json::Map<String, serde_json::Value> = cost_by_tag
+        .iter()
+        .map(|(tag, v)| ((*tag).to_string(), json!(v)))
+        .collect();
+    entity_doc_eng(
+        id,
+        parent,
+        "region",
+        json!({
+            "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            "behavior": behavior,
+            "cost": cost,
+            "cost_by_tag": by_tag,
+            "enabled": true,
+        }),
+    )
+}
+
 /// An `ambient_light` region doc fixture: rect `[x0,y0,x1,y1]`, enabled, carrying
 /// `ambient_override: { mode, level }` (`"darken" | "brighten" | "override"`).
 pub(super) fn ambient_region_doc(

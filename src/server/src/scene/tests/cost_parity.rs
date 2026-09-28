@@ -76,6 +76,109 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
             out.cost
         );
     }
+
+    // Per-tag cost fixture: prove router preview and executor still agree once a region's
+    // `cost_by_tag` diverges from its flat `cost` for the fixture mover's tags — not merely
+    // re-proving the flat-cost parity the loop above already pins. A tagged and an untagged
+    // mover route the SAME scene; the tagged mover's cost must be strictly cheaper (2.0 vs the
+    // flat 4.0 fallback), which is what proves the tag-resolved path — not the flat path — was
+    // exercised on both sides.
+    {
+        let mut ecs = SceneEcs::new();
+        let scene_id = crate::test_ids::test_uuid(1);
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "vision": { "movementRestriction": "unrestricted" } }),
+        );
+        ecs.apply_op(&Operation::Create {
+            doc: entity_doc_eng(
+                2,
+                1,
+                "token",
+                json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+        });
+        ecs.apply_op(&Operation::Create {
+            // A full-height band (mirroring the continuous test's fixture shape below): ANY
+            // route from x=50 to x=450 must cross it, so the tagged/untagged comparison cannot
+            // be defeated by an A* detour that routes around the weighted cells entirely.
+            doc: region_doc_with_tags(
+                3,
+                1,
+                "terrain",
+                4.0,
+                &[("swimming", 2.0)],
+                // A vertically-oversized band: it covers every row the search window's 8-cell
+                // margin can reach on either side of the straight row-0 path, so a king-move
+                // detour around it (free under Chebyshev, whose diagonal costs the same as an
+                // orthogonal step) cannot escape the weighted columns either — the route MUST
+                // cross the region, which is what makes the tagged/untagged comparison below
+                // meaningful rather than both movers detouring around it for free.
+                (150.0, -2000.0, 350.0, 2000.0),
+            ),
+        });
+        let gm = crate::test_ids::test_uuid(9);
+        let cost_for = |traits: MoveTraits| -> (f64, f64) {
+            let route = ecs
+                .pathfind(
+                    RouteRequester {
+                        user: gm,
+                        is_gm: true,
+                        world_role: WorldRole::Gm,
+                        world_defaults: &no_world_grants(),
+                        explored: None,
+                    },
+                    scene_id,
+                    (50.0, 50.0),
+                    &[(450.0, 50.0)],
+                    crate::scene::RouteMover {
+                        footprint_radius: 0.4,
+                        budget_cells: None,
+                        traits: traits.clone(),
+                        elevation: elevation::GROUND,
+                    },
+                )
+                .expect("routable");
+            let out = crate::scene::move_exec::execute_move(
+                &ecs,
+                crate::scene::move_exec::MoveGateInputs {
+                    scene: scene_id,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &Default::default(),
+                    cell: 100.0,
+                    budget: None,
+                    traits,
+                    mover_elevation: elevation::GROUND,
+                },
+                crate::test_ids::test_uuid(2),
+                &route.path,
+                true,
+                0.4,
+            )
+            .expect("admissible");
+            (route.cost, out.cost)
+        };
+        let (tagged_route_cost, tagged_exec_cost) = cost_for(MoveTraits {
+            ignore_terrain: false,
+            tags: ["swimming".to_string()].into_iter().collect(),
+        });
+        let (untagged_route_cost, untagged_exec_cost) = cost_for(MoveTraits::default());
+        assert!(
+            (tagged_route_cost - tagged_exec_cost).abs() < 1e-9,
+            "tag-costed: preview {tagged_route_cost} vs execution {tagged_exec_cost}"
+        );
+        assert!(
+            (untagged_route_cost - untagged_exec_cost).abs() < 1e-9,
+            "untagged control: preview {untagged_route_cost} vs execution {untagged_exec_cost}"
+        );
+        assert!(
+            tagged_route_cost < untagged_route_cost,
+            "tagged mover ({tagged_route_cost}) must be strictly cheaper than the untagged \
+             flat-cost mover ({untagged_route_cost}) — proves cost_by_tag, not the flat \
+             fallback, priced the tagged route"
+        );
+    }
 }
 
 #[test]
@@ -143,13 +246,112 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
         route.cost,
         out.cost
     );
+
+    // Per-tag cost fixture on the CONTINUOUS engine: a region whose FLAT cost is 1.0 (so an
+    // untagged mover dispatches to the pure any-angle polyanya route, which applies NO terrain
+    // weighting at all) but whose `cost_by_tag` weights a "heavy" mover to 2.0 — this exercises
+    // the tag-aware `has_terrain_or_impassable` dispatch predicate itself, not just per-span
+    // pricing: an untagged flat-cost check would wrongly read this region as unweighted and
+    // route a "heavy" mover through the unweighted path too.
+    {
+        let mut ecs = SceneEcs::new();
+        ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
+        let scene_id = crate::test_ids::test_uuid(1);
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "bounds": { "width": 10, "height": 10 },
+                "vision": { "movementRestriction": "unrestricted" } }),
+        );
+        ecs.apply_op(&Operation::Create {
+            doc: entity_doc_eng(
+                2,
+                1,
+                "token",
+                json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+        });
+        ecs.apply_op(&Operation::Create {
+            doc: region_doc_with_tags(
+                3,
+                1,
+                "terrain",
+                1.0,
+                &[("heavy", 2.0)],
+                (300.0, 0.0, 400.0, 1000.0),
+            ),
+        });
+        let gm = crate::test_ids::test_uuid(9);
+        let cost_for = |traits: MoveTraits| -> (f64, f64) {
+            let route = ecs
+                .pathfind(
+                    RouteRequester {
+                        user: gm,
+                        is_gm: true,
+                        world_role: WorldRole::Gm,
+                        world_defaults: &no_world_grants(),
+                        explored: None,
+                    },
+                    scene_id,
+                    (50.0, 50.0),
+                    &[(650.0, 250.0)],
+                    crate::scene::RouteMover {
+                        footprint_radius: 0.4,
+                        budget_cells: None,
+                        traits: traits.clone(),
+                        elevation: elevation::GROUND,
+                    },
+                )
+                .expect("routable");
+            let out = crate::scene::move_exec::execute_move(
+                &ecs,
+                crate::scene::move_exec::MoveGateInputs {
+                    scene: scene_id,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &Default::default(),
+                    cell: 100.0,
+                    budget: None,
+                    traits,
+                    mover_elevation: elevation::GROUND,
+                },
+                crate::test_ids::test_uuid(2),
+                &route.path,
+                true,
+                0.4,
+            )
+            .expect("admissible");
+            (route.cost, out.cost)
+        };
+        let (heavy_route_cost, heavy_exec_cost) = cost_for(MoveTraits {
+            ignore_terrain: false,
+            tags: ["heavy".to_string()].into_iter().collect(),
+        });
+        let (untagged_route_cost, untagged_exec_cost) = cost_for(MoveTraits::default());
+        assert!(
+            (heavy_route_cost - heavy_exec_cost).abs() < 1e-9,
+            "heavy-tagged: preview {heavy_route_cost} vs execution {heavy_exec_cost}"
+        );
+        assert!(
+            (untagged_route_cost - untagged_exec_cost).abs() < 1e-9,
+            "untagged control: preview {untagged_route_cost} vs execution {untagged_exec_cost}"
+        );
+        assert!(
+            heavy_route_cost > untagged_route_cost,
+            "the heavy-tagged mover ({heavy_route_cost}) must pay MORE than the untagged \
+             mover ({untagged_route_cost}), which dispatches unweighted — proves the \
+             dispatch predicate itself is tag-aware, not just per-span pricing"
+        );
+    }
 }
 
 /// `ignore_terrain` flags — the shape both seams hand the router and executor for a mover
 /// carrying a reserved terrain-exempt tag.
-const EXEMPT_TRAITS: MoveTraits = MoveTraits {
-    ignore_terrain: true,
-};
+fn exempt_traits() -> MoveTraits {
+    MoveTraits {
+        ignore_terrain: true,
+        tags: std::collections::BTreeSet::new(),
+    }
+}
 
 #[test]
 fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
@@ -214,7 +416,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT_TRAITS,
+                traits: exempt_traits(),
                 elevation: elevation::GROUND,
             },
         )
@@ -232,7 +434,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: elevation::GROUND,
         },
         crate::test_ids::test_uuid(2),
@@ -296,7 +498,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT_TRAITS,
+                traits: exempt_traits(),
                 elevation: elevation::GROUND,
             },
         )
@@ -325,7 +527,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: elevation::GROUND,
         },
         crate::test_ids::test_uuid(2),
@@ -382,7 +584,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT_TRAITS,
+                traits: exempt_traits(),
                 elevation: elevation::GROUND,
             },
         )
@@ -400,7 +602,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: elevation::GROUND,
         },
         crate::test_ids::test_uuid(2),
@@ -479,7 +681,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT_TRAITS,
+                traits: exempt_traits(),
                 elevation: elevation::GROUND,
             },
         )
@@ -520,7 +722,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT_TRAITS,
+            traits: exempt_traits(),
             mover_elevation: elevation::GROUND,
         },
         crate::test_ids::test_uuid(2),

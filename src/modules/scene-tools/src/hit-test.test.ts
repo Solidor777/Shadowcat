@@ -73,6 +73,7 @@ const regionEngine = (over: Partial<RegionEngine> = {}): RegionEngine => ({
   shape: { kind: "rect", points: [0, 0, 10, 10] },
   behavior: "terrain",
   cost: 1,
+  cost_by_tag: {},
   enabled: true,
   triggers: [],
   elevation: null,

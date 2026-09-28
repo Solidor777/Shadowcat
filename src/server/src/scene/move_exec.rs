@@ -606,7 +606,7 @@ pub(crate) fn execute_move(
                 }
             };
             let step_cost =
-                step * crate::scene::pathfinding::terrain_cost(Some(&regions), next_cell, traits);
+                step * crate::scene::pathfinding::terrain_cost(Some(&regions), next_cell, &traits);
             if check_budget {
                 if let Some(b) = budget {
                     if !crate::scene::pathfinding::budget_admits_step(cost, step_cost, b) {
@@ -649,7 +649,7 @@ pub(crate) fn execute_move(
         let stop_pos = walk[stop_idx].pos;
         let stop_cell = to_cell(stop_pos);
         cost += euclidean_span_cells(last_transition_pos, stop_pos, world_per_cell)
-            * crate::scene::pathfinding::terrain_cost(Some(&regions), stop_cell, traits);
+            * crate::scene::pathfinding::terrain_cost(Some(&regions), stop_cell, &traits);
     }
 
     // --- Coarse render_path: authored vertices fully traversed + the exact stop point ---

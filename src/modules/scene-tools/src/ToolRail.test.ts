@@ -90,6 +90,65 @@ test("selecting the ambient_light region behavior reveals the mode/level inputs;
   expect(screen.queryByTestId("region-ambient-level")).toBeNull();
 });
 
+test("the per-tag cost table is shown only for the terrain behavior", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  // Default behavior is "terrain": the add button is present.
+  expect(screen.getByTestId("region-cost-by-tag-add")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "impassable" } });
+  expect(screen.queryByTestId("region-cost-by-tag-add")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("region-behavior"), { target: { value: "terrain" } });
+  expect(screen.getByTestId("region-cost-by-tag-add")).toBeTruthy();
+});
+
+test("adding, editing and removing per-tag cost rows through the rail persists the surviving rows", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+
+  // Add two rows and fill each through its own inputs.
+  await fireEvent.click(screen.getByTestId("region-cost-by-tag-add"));
+  await fireEvent.click(screen.getByTestId("region-cost-by-tag-add"));
+  await waitFor(() => expect(screen.getAllByTestId("region-cost-by-tag-row")).toHaveLength(2));
+  const tagInputs = screen.getAllByTestId("region-cost-by-tag-tag") as HTMLInputElement[];
+  const costInputs = screen.getAllByTestId("region-cost-by-tag-cost") as HTMLInputElement[];
+  await fireEvent.input(tagInputs[0], { target: { value: "flying" } });
+  await fireEvent.input(costInputs[0], { target: { value: "1" } });
+  await fireEvent.input(tagInputs[1], { target: { value: "swimming" } });
+  await fireEvent.input(costInputs[1], { target: { value: "3" } });
+  expect((tagInputs[0] as HTMLInputElement).value).toBe("flying");
+  expect((costInputs[1] as HTMLInputElement).value).toBe("3");
+
+  // Remove the first row; only "swimming" survives.
+  const removeButtons = screen.getAllByTestId("region-cost-by-tag-remove");
+  await fireEvent.click(removeButtons[0]);
+  await waitFor(() => expect(screen.getAllByTestId("region-cost-by-tag-row")).toHaveLength(1));
+  expect((screen.getByTestId("region-cost-by-tag-tag") as HTMLInputElement).value).toBe("swimming");
+
+  // Drag to persist: the created region's cost_by_tag carries only the surviving row.
+  const tool = tools.at(-1)!;
+  const ev = {} as PointerEvent;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  expect(dispatched).toHaveLength(1);
+  const op = dispatched[0][0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    expect(op.doc.engine).toMatchObject({ cost_by_tag: { swimming: 3 } });
+  }
+});
+
 test("the measure and ping tools are available and activate", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -513,7 +572,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, enabled: true, triggers: [], elevation: null, ambient_override: null,
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null,
         }, "region-1"),
       },
       {

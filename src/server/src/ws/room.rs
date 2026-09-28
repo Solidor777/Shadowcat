@@ -1799,10 +1799,10 @@ impl Room {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;
+            let mover_tags = scene.token_movement_tags(token);
             move_traits = crate::scene::pathfinding::MoveTraits {
-                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
-                    &scene.token_movement_tags(token),
-                ),
+                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(&mover_tags),
+                tags: mover_tags,
             };
 
             let settings = scene.resolve_scene(token_scene);

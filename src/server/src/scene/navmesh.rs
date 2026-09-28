@@ -400,7 +400,10 @@ pub(crate) fn clip_to_visible_mask(
 /// any-angle geometry by straightening spans that pass ONLY through plain, visible, unobstructed
 /// cells. A span `path[i]..path[j]` (j >= i+2) is straightened only when every cell its chord
 /// enters is (a) in `mask` when `Some`, (b) crossed by no `blocksMove` wall, (c) not impassable,
-/// (d) not arrest, (e) not weighted terrain (`terrain_multiplier <= 1.0`). Conditions (c)-(e) keep
+/// (d) not arrest, (e) not weighted terrain for this mover
+/// (`resolved_terrain_multiplier(cell, traits.tags) <= 1.0` — the tag-resolved reading, so a
+/// mover whose `cost_by_tag` entry flattens a region to 1.0 may straighten through it exactly
+/// as an untagged mover may straighten through an unweighted cell). Conditions (c)-(e) keep
 /// smoothing away from any "special" cell, so a straightened chord can never shortcut INTO
 /// terrain/impassable/arrest the weighted search routed around or truncated at — the smoothed
 /// route's gate/secrecy/cost properties are therefore <= the grid route's. The single grid step
@@ -450,7 +453,7 @@ pub(crate) fn los_smooth(
         shape: grid,
         budget_cells: _,
         traits,
-    } = *inputs;
+    } = inputs.clone();
     if outcome.path.len() < 3
         || !cell.is_finite()
         || cell <= 0.0
@@ -486,7 +489,8 @@ pub(crate) fn los_smooth(
                 if field.is_some_and(|f| {
                     f.is_impassable(*c)
                         || f.is_arrest(*c)
-                        || (!traits.ignore_terrain && f.terrain_multiplier(*c) > 1.0)
+                        || (!traits.ignore_terrain
+                            && f.resolved_terrain_multiplier(*c, &traits.tags) > 1.0)
                 }) {
                     return false;
                 }
@@ -545,7 +549,7 @@ pub(crate) fn los_smooth(
         .windows(2)
         .map(|w| {
             crate::scene::grid_shape::euclidean_span_cells(w[0], w[1], world_per_cell)
-                * crate::scene::pathfinding::terrain_cost(field, grid.cell_of(w[1]), traits)
+                * crate::scene::pathfinding::terrain_cost(field, grid.cell_of(w[1]), &traits)
         })
         .sum();
 

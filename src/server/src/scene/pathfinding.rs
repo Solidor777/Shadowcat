@@ -50,30 +50,37 @@ pub type Cell = (i32, i32);
 /// `movement_tags::ignores_terrain_cost` over `SceneEcs::token_movement_tags`) and never
 /// re-derived inside the router or the executor. Room to grow: each future engine-reserved tag
 /// lands as a flag here rather than as a new parameter threaded site by site.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MoveTraits {
     /// The mover carries a terrain-exempt tag (`movement_tags::TERRAIN_EXEMPT_TAGS`):
     /// `terrain_cost` flattens every multiplier to 1.0 — and NOTHING else changes (walls,
     /// impassable, arrest, and the visibility mask all still gate).
     pub ignore_terrain: bool,
+    /// The mover's full resolved movement-type tag set (`SceneEcs::token_movement_tags`),
+    /// the SAME resolution `ignore_terrain` was derived from — never a second, independently
+    /// resolved tag set. Read by `RegionField::resolved_terrain_multiplier` (through
+    /// `terrain_cost`) to pick a per-tag `cost_by_tag` override; irrelevant when
+    /// `ignore_terrain` is set (terrain costs nothing for that mover regardless of tags).
+    pub tags: std::collections::BTreeSet<String>,
 }
 
 /// The ONE terrain-cost read every pricing site shares: an `ignore_terrain` mover is
 /// unweighted (the multiplier reads as 1.0); otherwise the field's own
-/// `RegionField::terrain_multiplier` answers. `regions: None` (no region enforcement) is
-/// unweighted either way. Both the router (`astar_leg`, `replay_step_costs`,
-/// `navmesh::los_smooth`) and the executor (`move_exec::execute_move`'s per-transition and
-/// tail pricing) read this symbol, so preview and execution cannot disagree on what an
-/// exempt mover pays.
+/// `RegionField::resolved_terrain_multiplier` answers, resolved against `traits.tags` (a
+/// per-tag `cost_by_tag` override where the field authors one, else the flat multiplier).
+/// `regions: None` (no region enforcement) is unweighted either way. Both the router
+/// (`astar_leg`, `replay_step_costs`, `navmesh::los_smooth`) and the executor
+/// (`move_exec::execute_move`'s per-transition and tail pricing) read this symbol, so preview
+/// and execution cannot disagree on what an exempt OR a tag-costed mover pays.
 pub(crate) fn terrain_cost(
     regions: Option<&crate::scene::regions::RegionField>,
     c: Cell,
-    traits: MoveTraits,
+    traits: &MoveTraits,
 ) -> f64 {
     if traits.ignore_terrain {
         1.0
     } else {
-        regions.map_or(1.0, |r| r.terrain_multiplier(c))
+        regions.map_or(1.0, |r| r.resolved_terrain_multiplier(c, &traits.tags))
     }
 }
 
@@ -87,7 +94,12 @@ pub(crate) fn terrain_cost(
 /// `regions` omit whatever tier the requester may not see. `shape` MUST be the same `GridShape`
 /// those three sets were built with; a mask indexed in one coordinate system and tested in another
 /// is not a shared mask.
-#[derive(Clone, Copy)]
+///
+/// `Clone`, not `Copy`: `traits.tags` is an owned `BTreeSet<String>`, so a caller needing a
+/// second `PathInputs` differing only in one field (e.g. `shape`, the continuous engine's
+/// Euclidean-ruled search) clones explicitly (`inputs.clone()`) rather than relying on an
+/// implicit struct-update copy.
+#[derive(Clone)]
 pub struct PathInputs<'a> {
     /// Mover footprint radius in CELLS; `find` rejects anything outside
     /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
@@ -320,7 +332,7 @@ fn replay_step_costs(grid: &PathGrid<'_>, cells: &[Cell]) -> Vec<f64> {
             .expect(
                 "cells adjacent along an already-found route are a valid grid_shape neighbor pair",
             );
-        out.push(terrain_cost(grid.inputs.regions, w[1], grid.inputs.traits) * sc);
+        out.push(terrain_cost(grid.inputs.regions, w[1], &grid.inputs.traits) * sc);
         p = next_p;
     }
     out
@@ -452,7 +464,7 @@ pub(crate) fn astar_leg(
             if !cell_enterable(grid, cell, next) {
                 continue;
             }
-            let mult = terrain_cost(grid.inputs.regions, next, grid.inputs.traits);
+            let mult = terrain_cost(grid.inputs.regions, next, &grid.inputs.traits);
             let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {

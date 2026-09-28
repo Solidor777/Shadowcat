@@ -1622,11 +1622,16 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
     // explicit null, the same way an absent `triggers` key re-serializes as an
     // explicit empty list (see
     // `region_without_triggers_loads_and_normalizes_with_an_empty_list`) — and
-    // the absent `ambient_override` key re-serializes as an explicit null the
-    // same way.
+    // the absent `ambient_override` key re-serializes as an explicit null and
+    // the absent `cost_by_tag` key re-serializes as an explicit empty object,
+    // both the same way.
     let mut expected = v.as_object().unwrap().clone();
     expected.insert("elevation".to_string(), serde_json::Value::Null);
     expected.insert("ambient_override".to_string(), serde_json::Value::Null);
+    expected.insert(
+        "cost_by_tag".to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    );
     assert_eq!(
         n,
         serde_json::Value::Object(expected),
@@ -2176,6 +2181,7 @@ fn region_with_teleport(target: PortalTarget) -> RegionEngine {
         }),
         behavior: "terrain".to_string(),
         cost: 1.0,
+        cost_by_tag: std::collections::BTreeMap::new(),
         enabled: true,
         triggers: vec![RegionTrigger {
             on: TriggerEvent::Enter,

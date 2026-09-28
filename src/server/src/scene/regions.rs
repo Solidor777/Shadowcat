@@ -17,6 +17,16 @@ use crate::data::engine::{AmbientLightMode, AmbientLightOverride, RegionTrigger,
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
 
+/// One raw `(behavior, cost, cost_by_tag)` contribution to a cell's composition, pre-fold.
+/// `cost_by_tag` is meaningful only for `RegionBehavior::Terrain` and empty for any other
+/// behavior or an untagged terrain region.
+type RegionContribution = (RegionBehavior, f64, BTreeMap<String, f64>);
+
+/// One terrain region's `(flat cost, cost_by_tag)` pair, as recorded in
+/// `RegionField::tag_cost` for a cell where at least one overlapping terrain region authors a
+/// non-empty `cost_by_tag`.
+type TerrainTagCost = (f64, BTreeMap<String, f64>);
+
 /// Authored region geometry (vector-shape vocabulary: rect/circle/polygon).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RegionShape {
@@ -281,23 +291,23 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
 /// same cell is `compose_ambient`'s, and a cell may carry both (a darkened difficult-terrain
 /// cell is a coherent authoring); the two facets are folded from the SAME contribution list
 /// by `RegionFieldBuilder::build`.
-pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionEffect> {
+pub(crate) fn compose(contributions: &[RegionContribution]) -> Option<RegionEffect> {
     if contributions
         .iter()
-        .any(|(b, _)| *b == RegionBehavior::Impassable)
+        .any(|(b, _, _)| *b == RegionBehavior::Impassable)
     {
         return Some(RegionEffect::Impassable);
     }
     if contributions
         .iter()
-        .any(|(b, _)| *b == RegionBehavior::Arrest)
+        .any(|(b, _, _)| *b == RegionBehavior::Arrest)
     {
         return Some(RegionEffect::Arrest);
     }
     contributions
         .iter()
-        .filter(|(b, _)| *b == RegionBehavior::Terrain)
-        .map(|(_, cost)| *cost)
+        .filter(|(b, _, _)| *b == RegionBehavior::Terrain)
+        .map(|(_, cost, _)| *cost)
         .fold(None, |acc: Option<f64>, c| {
             Some(acc.map_or(c, |a| a.max(c)))
         })
@@ -315,12 +325,10 @@ pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionE
 /// guards (ingress `RegionEngine::validate` already rejects them, a stored/fixture value is
 /// still not trusted): a non-finite level contributes nothing, a negative `Darken`/`Brighten`
 /// level clamps to 0, and an `Override` level clamps into `[0, 1]` at `AmbientAdjustment::apply`.
-pub(crate) fn compose_ambient(
-    contributions: &[(RegionBehavior, f64)],
-) -> Option<AmbientAdjustment> {
+pub(crate) fn compose_ambient(contributions: &[RegionContribution]) -> Option<AmbientAdjustment> {
     let mut override_level: Option<f64> = None;
     let mut delta = 0.0_f64;
-    for (behavior, _) in contributions {
+    for (behavior, _, _) in contributions {
         let RegionBehavior::AmbientLight(ambient) = behavior else {
             continue;
         };
@@ -358,6 +366,17 @@ pub(crate) struct RegionField {
     /// no ambient edit. Orthogonal to `cells` — a cell may carry a movement effect, an ambient
     /// adjustment, both, or neither.
     ambient: BTreeMap<Cell, AmbientAdjustment>,
+    /// Per-cell terrain contributions carrying a per-tag cost override: `(flat cost,
+    /// cost_by_tag)` for every terrain region overlapping the cell, present ONLY for a cell
+    /// where at least one overlapping terrain region authors a non-empty `cost_by_tag` — most
+    /// scenes author none, so this map is empty in the common case. Every terrain contribution
+    /// for such a cell is recorded (not just the tag-bearing ones), because
+    /// `resolved_terrain_multiplier` must fold ALL of them through the same overlapping-
+    /// regions-take-the-MAX rule `cells`' flat-only composition already applies. Read only by
+    /// `resolved_terrain_multiplier`; `cells`/`terrain_multiplier` stay flat-cost-only and
+    /// unaware of tags, so a caller with no movement tags to resolve can keep using the cheap
+    /// flat path.
+    tag_cost: BTreeMap<Cell, Vec<TerrainTagCost>>,
 }
 
 impl RegionField {
@@ -367,7 +386,7 @@ impl RegionField {
     ///
     /// ```text
     /// let mut b = RegionField::builder();
-    /// b.add_parts(&[(shape, false)], RegionBehavior::Terrain, 2.0, cell, grid);
+    /// b.add_parts(&[(shape, false)], RegionBehavior::Terrain, 2.0, &BTreeMap::new(), cell, grid);
     /// let field = b.build();
     /// ```
     pub(crate) fn builder() -> RegionFieldBuilder {
@@ -390,6 +409,36 @@ impl RegionField {
             Some(RegionEffect::Terrain(m)) => *m,
             _ => 1.0,
         }
+    }
+
+    /// The effective terrain multiplier for a mover carrying `tags` entering cell `c`. When `c`
+    /// carries no `cost_by_tag`-bearing terrain contribution (`tag_cost.get(&c)` is `None` — the
+    /// common case), identical to `terrain_multiplier` (the cheap flat-only path). Otherwise,
+    /// per contributing terrain region: resolves the MINIMUM `cost_by_tag` value whose key the
+    /// mover's tags contain, falling back to that region's own flat cost when no tag matches
+    /// ("you navigate however is easiest for you" — a mover with several qualifying tags takes
+    /// whichever tag's terrain description favors them most). The per-region resolved values
+    /// then fold through the SAME overlapping-regions-take-the-MAX rule `compose` applies to
+    /// flat costs — never a second precedence rule, so a cell covered by both a plain
+    /// (untagged) terrain region and a tag-costed one still composes correctly: the plain
+    /// region's flat cost is one of the folded values, exactly as if it authored an empty
+    /// `cost_by_tag`.
+    pub(crate) fn resolved_terrain_multiplier(&self, c: Cell, tags: &BTreeSet<String>) -> f64 {
+        let Some(contributions) = self.tag_cost.get(&c) else {
+            return self.terrain_multiplier(c);
+        };
+        contributions
+            .iter()
+            .map(|(flat, by_tag)| {
+                by_tag
+                    .iter()
+                    .filter(|(tag, _)| tags.contains(*tag))
+                    .map(|(_, cost)| *cost)
+                    .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a| a.min(v))))
+                    .unwrap_or(*flat)
+            })
+            .fold(None::<f64>, |acc, m| Some(acc.map_or(m, |a| a.max(m))))
+            .unwrap_or(1.0)
     }
 
     /// The composed ambient-light adjustment covering `c`; `None` when no `ambient_light`
@@ -418,21 +467,25 @@ impl RegionField {
             .any(|e| matches!(e, RegionEffect::Impassable))
     }
 
-    /// True iff any cell is weighted `Terrain` (multiplier > 1.0).
-    pub(crate) fn has_weighted_terrain(&self) -> bool {
-        self.cells
-            .values()
-            .any(|e| matches!(e, RegionEffect::Terrain(m) if *m > 1.0))
+    /// True iff any cell is weighted `Terrain` for a mover carrying `tags` (the tag-resolved
+    /// multiplier, via `resolved_terrain_multiplier` — never the flat-only reading, or a
+    /// scene where every terrain region's flat cost is 1.0 but a `cost_by_tag` entry weights a
+    /// tagged mover would wrongly read as unweighted).
+    pub(crate) fn has_weighted_terrain(&self, tags: &BTreeSet<String>) -> bool {
+        self.cells.iter().any(|(c, e)| {
+            matches!(e, RegionEffect::Terrain(_))
+                && self.resolved_terrain_multiplier(*c, tags) > 1.0
+        })
     }
 
-    /// True iff any cell is `Impassable` or weighted `Terrain` (multiplier > 1.0). The
-    /// dispatch predicate the continuous router uses to decide between the weighted grid
-    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither) for
-    /// a NON-exempt mover. Arrest is excluded: it neither bends the route nor requires
-    /// route-around, so an arrest-only scene stays on the polyanya path with an arrest
-    /// post-filter.
-    pub(crate) fn has_terrain_or_impassable(&self) -> bool {
-        self.has_impassable() || self.has_weighted_terrain()
+    /// True iff any cell is `Impassable` or weighted `Terrain` (tag-resolved, per `tags`) for
+    /// a mover carrying `tags`. The dispatch predicate the continuous router uses to decide
+    /// between the weighted grid route (terrain/impassable present) and the pure any-angle
+    /// polyanya route (neither) for a NON-exempt mover. Arrest is excluded: it neither bends
+    /// the route nor requires route-around, so an arrest-only scene stays on the polyanya path
+    /// with an arrest post-filter.
+    pub(crate) fn has_terrain_or_impassable(&self, tags: &BTreeSet<String>) -> bool {
+        self.has_impassable() || self.has_weighted_terrain(tags)
     }
 
     /// Read-only iteration over the composed per-cell effects, existing for the parity
@@ -450,8 +503,10 @@ impl RegionField {
 /// fold) into the final `RegionField`.
 #[derive(Default)]
 pub(crate) struct RegionFieldBuilder {
-    /// Raw `(behavior, cost)` contributions per cell, pre-composition.
-    per_cell: BTreeMap<Cell, Vec<(RegionBehavior, f64)>>,
+    /// Raw `(behavior, cost, cost_by_tag)` contributions per cell, pre-composition.
+    /// `cost_by_tag` is empty for every non-`Terrain` behavior and for a `Terrain`
+    /// contribution that authors no per-tag override.
+    per_cell: BTreeMap<Cell, Vec<RegionContribution>>,
 }
 
 impl RegionFieldBuilder {
@@ -460,7 +515,8 @@ impl RegionFieldBuilder {
     /// The single-shape convenience spelling of `add_parts` (a legacy one-part region), kept so
     /// every additive contribution routes through the ONE composition rule. Production callers
     /// always feed the normalized part list from `parse_region_shape`, so this spelling exists
-    /// for the single-shape fixtures only.
+    /// for the single-shape fixtures only. Carries no `cost_by_tag` (an empty map) — a fixture
+    /// exercising per-tag cost calls `add_parts` directly.
     #[cfg(test)]
     pub(crate) fn add(
         &mut self,
@@ -470,18 +526,29 @@ impl RegionFieldBuilder {
         cell: f64,
         grid: &dyn crate::scene::grid_shape::GridShape,
     ) {
-        self.add_parts(&[(shape.clone(), false)], behavior, cost, cell, grid);
+        self.add_parts(
+            &[(shape.clone(), false)],
+            behavior,
+            cost,
+            &BTreeMap::new(),
+            cell,
+            grid,
+        );
     }
 
-    /// Add one compound region's composed cells + behavior/cost: the union of its additive
-    /// parts minus its hole parts, through `rasterize_compound`. Skips (contributes nothing)
-    /// when the composition fails closed — never silently all-passes a region one of whose
-    /// parts is over-cap or degenerate.
+    /// Add one compound region's composed cells + behavior/cost/cost_by_tag: the union of its
+    /// additive parts minus its hole parts, through `rasterize_compound`. Skips (contributes
+    /// nothing) when the composition fails closed — never silently all-passes a region one of
+    /// whose parts is over-cap or degenerate. `cost_by_tag` is meaningful only for
+    /// `RegionBehavior::Terrain`; a non-empty map on any other behavior is carried but never
+    /// read (`compose`/`compose_ambient` ignore it, and `build` only reads it for `Terrain`
+    /// contributions).
     pub(crate) fn add_parts(
         &mut self,
         parts: &[(RegionShape, bool)],
         behavior: RegionBehavior,
         cost: f64,
+        cost_by_tag: &BTreeMap<String, f64>,
         cell: f64,
         grid: &dyn crate::scene::grid_shape::GridShape,
     ) {
@@ -489,26 +556,48 @@ impl RegionFieldBuilder {
             return;
         };
         for c in cells {
-            self.per_cell.entry(c).or_default().push((behavior, cost));
+            self.per_cell
+                .entry(c)
+                .or_default()
+                .push((behavior, cost, cost_by_tag.clone()));
         }
     }
 
     /// Compose all accumulated contributions into the final per-cell field: the movement facet
     /// (`compose`) and the ambient-light facet (`compose_ambient`) fold the SAME per-cell
     /// contribution list, so the two output maps can never disagree about which regions covered
-    /// a cell.
+    /// a cell. A cell that composes to `Terrain` additionally populates `tag_cost` when at
+    /// least one of its terrain contributions authored a non-empty `cost_by_tag` — recording
+    /// EVERY terrain contribution at that cell (not just the tag-bearing ones), since
+    /// `resolved_terrain_multiplier` must fold all of them through the same MAX rule `compose`
+    /// already applied to their flat costs.
     pub(crate) fn build(self) -> RegionField {
         let mut cells = BTreeMap::new();
         let mut ambient = BTreeMap::new();
+        let mut tag_cost = BTreeMap::new();
         for (c, contributions) in self.per_cell {
             if let Some(effect) = compose(&contributions) {
+                if matches!(effect, RegionEffect::Terrain(_)) {
+                    let terrain: Vec<TerrainTagCost> = contributions
+                        .iter()
+                        .filter(|(b, _, _)| matches!(b, RegionBehavior::Terrain))
+                        .map(|(_, cost, by_tag)| (*cost, by_tag.clone()))
+                        .collect();
+                    if terrain.iter().any(|(_, by_tag)| !by_tag.is_empty()) {
+                        tag_cost.insert(c, terrain);
+                    }
+                }
                 cells.insert(c, effect);
             }
             if let Some(adjustment) = compose_ambient(&contributions) {
                 ambient.insert(c, adjustment);
             }
         }
-        RegionField { cells, ambient }
+        RegionField {
+            cells,
+            ambient,
+            tag_cost,
+        }
     }
 }
 

@@ -24,6 +24,7 @@ import type { RegionTrigger } from "./RegionTrigger";
  *     }),
  *     behavior: "terrain".to_string(),
  *     cost: 2.0,
+ *     cost_by_tag: std::collections::BTreeMap::new(),
  *     enabled: true,
  *     triggers: Vec::new(),
  *     elevation: None,
@@ -49,6 +50,16 @@ behavior: string,
  * for `behavior: "terrain"`.
  */
 cost: number, 
+/**
+ * Per-movement-tag cost overrides (>= 1, clamped read-side exactly like `cost`);
+ * meaningful only for `behavior: "terrain"`. A mover carrying one or more matching
+ * tags (`scene::regions::RegionField::resolved_terrain_multiplier`) pays the MINIMUM
+ * matching value rather than `cost` — "you navigate however is easiest for you". `cost`
+ * remains the fallback for a mover whose tags match no key here, exactly as it is the
+ * only value today. Absent on documents written before per-tag terrain cost existed
+ * (serde default, empty map).
+ */
+cost_by_tag: { [key in string]: number }, 
 /**
  * GM toggle; a disabled region is dropped entirely at read time.
  */

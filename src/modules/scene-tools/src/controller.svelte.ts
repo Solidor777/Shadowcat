@@ -48,6 +48,17 @@ export type RegionShapeMode = "rect" | "circle" | "polygon";
  * behavior at all — it edits the region's cells' composed illumination
  * (`ToolController.regionAmbientMode`/`regionAmbientLevel`) and never blocks or weights a route. */
 export type RegionBehaviorMode = "terrain" | "impassable" | "arrest" | "ambient_light";
+/** One staged row of the region tool's per-movement-tag cost table
+ * (`ToolController.regionCostByTag`), folded into a `RegionEngine.cost_by_tag` record by
+ * `regionCostByTagRecord` at persist time. */
+export interface RegionCostByTagRow {
+  /** The movement tag this row's cost applies to (e.g. `"flying"`); a blank tag is dropped at
+   * persist time rather than authored as an empty-string key. */
+  tag: string;
+  /** The cost multiplier for a mover carrying `tag`, clamped to `>= 1` at persist time
+   * (the same floor `ToolController.regionCost` itself gets). */
+  cost: number;
+}
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
@@ -322,6 +333,12 @@ export class ToolController {
   regionBehavior = $state<RegionBehaviorMode>("terrain");
   /** Region-tool authored terrain cost multiplier; clamped to `>= 1` at persist time. */
   regionCost = $state<number>(2);
+  /** Region-tool authored per-movement-tag cost overrides, staged as add/remove rows exactly
+   * like `regionTriggers`. Each `cost` is clamped to `>= 1` at persist time by
+   * `regionCostByTagRecord`, mirroring `regionCost`'s own clamp; meaningful only for
+   * `regionBehavior === "terrain"` (an authored row on any other behavior persists as an
+   * inert, unread `cost_by_tag` entry, same posture as `regionCost` itself). */
+  regionCostByTag = $state<RegionCostByTagRow[]>([]);
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
@@ -575,7 +592,8 @@ export class ToolController {
       // cleared right after, and a reactive proxy must never reach the persisted doc.
       shape: $state.snapshot(this.regionParts),
       behavior: this.regionBehavior,
-      cost: Math.max(1, this.regionCost),
+      cost: clampRegionCost(this.regionCost),
+      cost_by_tag: regionCostByTagRecord(this),
       enabled: true,
       triggers: $state.snapshot(this.regionTriggers),
       elevation: this.ctx.viewedLevelBand?.() ?? null,
@@ -970,7 +988,8 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
           const engine: RegionEngine = {
             shape: { kind: mode, points: shapePoints },
             behavior: controller.regionBehavior,
-            cost: Math.max(1, controller.regionCost),
+            cost: clampRegionCost(controller.regionCost),
+            cost_by_tag: regionCostByTagRecord(controller),
             enabled: true,
             // Deep copy: the rail's list stays editable for the NEXT region, and a later
             // row edit must never mutate the doc this persist already handed out.
@@ -1114,6 +1133,50 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
 function regionAmbientOverride(controller: ToolController): AmbientLightOverride | null {
   if (controller.regionBehavior !== "ambient_light") return null;
   return { mode: controller.regionAmbientMode, level: controller.regionAmbientLevel };
+}
+
+/** Clamps an authored region-cost value to the server's own read-side floor
+ * (`region_eng.cost.max(1.0)`, and the identical clamp `cost_by_tag`'s values get): `>= 1`,
+ * with a non-finite value (`NaN` — what a cleared `<input type="number">` binds as) floored to
+ * `1` rather than propagated. The Rust `max` method already floors `NaN` this way (it returns
+ * whichever operand is not `NaN`); `Math.max` does not, so an unclamped `NaN` would serialize
+ * to JSON `null` and fail the whole region `Create` at ingress — a `BTreeMap<String, f64>`/`f64`
+ * type mismatch — with no feedback to the author. Shared by every authored region-cost site:
+ * the flat `regionCost` (both region-persist call sites) and `regionCostByTagRecord`.
+ * @param value An authored cost value — a number input's live `bind:value`, possibly `NaN`.
+ * @returns The clamped cost: always finite and `>= 1`.
+ * @example
+ * ```
+ * clampRegionCost(NaN); // 1
+ * ```
+ */
+function clampRegionCost(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, value) : 1;
+}
+
+/** The `RegionEngine.cost_by_tag` body for the region the tool is about to persist: the
+ * staged `regionCostByTag` rows folded into a plain record, each `cost` clamped by
+ * `clampRegionCost` exactly like `regionCost` (the identical clamp/validation site the server
+ * itself applies read-side — never a second, independently authored bound). A blank tag is
+ * dropped rather than persisted as an empty-string key. Shared by both region-persist call
+ * sites (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`) so the two
+ * authoring flows can never drift on how a row list becomes a record.
+ * @param controller Supplies the configured `regionCostByTag` rows.
+ * @returns The per-tag cost overrides to persist (empty when no row is staged).
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const costByTag = regionCostByTagRecord(controller);
+ * ```
+ */
+function regionCostByTagRecord(controller: ToolController): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of controller.regionCostByTag) {
+    const tag = row.tag.trim();
+    if (tag === "") continue;
+    out[tag] = clampRegionCost(row.cost);
+  }
+  return out;
 }
 
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to

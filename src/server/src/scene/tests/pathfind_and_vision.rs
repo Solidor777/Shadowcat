@@ -856,7 +856,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     assert!(
         ecs.region_field(scene_id, Some(user), elevation::GROUND)
             .expect("scene exists")
-            .has_terrain_or_impassable(),
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "the terrain region flips the Continuous dispatch to the weighted sub-path"
     );
 
@@ -2765,7 +2765,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
         .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
         .expect("the fixture's scene resolves a region field");
     assert!(
-        field.has_terrain_or_impassable(),
+        field.has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "fixture: the terrain region must select the weighted sub-path"
     );
     let a = g.cell_center((1, 1));

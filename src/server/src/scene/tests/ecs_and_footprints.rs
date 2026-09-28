@@ -2439,11 +2439,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     assert!(ecs
         .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(!ecs
         .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 
     ecs.apply_op(&Operation::Move {
         doc_id: crate::test_ids::test_uuid(20),
@@ -2454,11 +2454,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     assert!(!ecs
         .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(ecs
         .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
-        .has_terrain_or_impassable());
+        .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 }
 
 #[test]

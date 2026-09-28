@@ -22,30 +22,39 @@ fn has_terrain_or_impassable_detects_weight_but_not_arrest() {
     let mut b = RegionField::builder();
     b.add(&rect, RegionBehavior::Terrain, 2.0, cell, &grid);
     assert!(
-        b.build().has_terrain_or_impassable(),
+        b.build()
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "terrain mult>1 counts"
     );
 
     let mut b = RegionField::builder();
     b.add(&rect, RegionBehavior::Impassable, 1.0, cell, &grid);
-    assert!(b.build().has_terrain_or_impassable(), "impassable counts");
+    assert!(
+        b.build()
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
+        "impassable counts"
+    );
 
     let mut b = RegionField::builder();
     b.add(&rect, RegionBehavior::Arrest, 1.0, cell, &grid);
     assert!(
-        !b.build().has_terrain_or_impassable(),
+        !b.build()
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "arrest alone does not count"
     );
 
     let mut b = RegionField::builder();
     b.add(&rect, RegionBehavior::Terrain, 1.0, cell, &grid);
     assert!(
-        !b.build().has_terrain_or_impassable(),
+        !b.build()
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "terrain mult==1 is a no-op, does not count"
     );
 
     assert!(
-        !RegionField::builder().build().has_terrain_or_impassable(),
+        !RegionField::builder()
+            .build()
+            .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "empty field"
     );
 }
@@ -202,15 +211,31 @@ fn extreme_magnitude_coordinates_fail_closed_not_overflow() {
 fn compose_precedence_impassable_beats_arrest_beats_terrain() {
     assert_eq!(
         compose(&[
-            (RegionBehavior::Terrain, 2.0),
-            (RegionBehavior::Impassable, 1.0)
+            (
+                RegionBehavior::Terrain,
+                2.0,
+                std::collections::BTreeMap::new()
+            ),
+            (
+                RegionBehavior::Impassable,
+                1.0,
+                std::collections::BTreeMap::new()
+            )
         ]),
         Some(RegionEffect::Impassable)
     );
     assert_eq!(
         compose(&[
-            (RegionBehavior::Terrain, 2.0),
-            (RegionBehavior::Arrest, 1.0)
+            (
+                RegionBehavior::Terrain,
+                2.0,
+                std::collections::BTreeMap::new()
+            ),
+            (
+                RegionBehavior::Arrest,
+                1.0,
+                std::collections::BTreeMap::new()
+            )
         ]),
         Some(RegionEffect::Arrest)
     );
@@ -220,8 +245,16 @@ fn compose_precedence_impassable_beats_arrest_beats_terrain() {
 fn compose_terrain_overlap_takes_max_not_sum() {
     assert_eq!(
         compose(&[
-            (RegionBehavior::Terrain, 2.0),
-            (RegionBehavior::Terrain, 3.0)
+            (
+                RegionBehavior::Terrain,
+                2.0,
+                std::collections::BTreeMap::new()
+            ),
+            (
+                RegionBehavior::Terrain,
+                3.0,
+                std::collections::BTreeMap::new()
+            )
         ]),
         Some(RegionEffect::Terrain(3.0))
     );
@@ -273,6 +306,150 @@ fn region_field_builder_composes_across_overlapping_regions() {
     );
     assert!(!field.is_impassable((0, 0)));
     assert!(!field.is_arrest((0, 0)));
+}
+
+/// A single 0..100x0..100 rect region, terrain behavior, `flat` flat cost + `by_tag` per-tag
+/// overrides.
+fn terrain_field_with_tags(flat: f64, by_tag: &[(&str, f64)]) -> RegionField {
+    let grid = sq(100.0);
+    let mut b = RegionField::builder();
+    let cost_by_tag: std::collections::BTreeMap<String, f64> =
+        by_tag.iter().map(|(t, c)| (t.to_string(), *c)).collect();
+    b.add_parts(
+        &[(
+            RegionShape::Rect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0,
+            },
+            false,
+        )],
+        RegionBehavior::Terrain,
+        flat,
+        &cost_by_tag,
+        100.0,
+        &grid,
+    );
+    b.build()
+}
+
+fn tags(names: &[&str]) -> std::collections::BTreeSet<String> {
+    names.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn terrain_cost_prefers_matching_tag_cost_over_flat_fallback() {
+    let field = terrain_field_with_tags(3.0, &[("swimming", 1.5)]);
+    assert_eq!(
+        field.resolved_terrain_multiplier((0, 0), &tags(&["swimming"])),
+        1.5,
+        "a mover with the matching tag pays the tag cost, not the flat 3.0 fallback"
+    );
+}
+
+#[test]
+fn terrain_cost_falls_back_to_flat_cost_when_no_tag_matches() {
+    let field = terrain_field_with_tags(3.0, &[("swimming", 1.5)]);
+    assert_eq!(
+        field.resolved_terrain_multiplier((0, 0), &tags(&["walking"])),
+        3.0,
+        "no matching key in cost_by_tag ⇒ the flat cost, exactly as today"
+    );
+    // Every existing region (cost_by_tag empty) resolves identically to the flat-only path for
+    // EVERY mover, regardless of tags — the removal/degradation pin for this item.
+    let untagged = terrain_field_with_tags(2.0, &[]);
+    assert_eq!(
+        untagged.resolved_terrain_multiplier((0, 0), &tags(&["flying", "swimming"])),
+        2.0,
+        "an untagged region ignores the mover's tags entirely and reads as its flat cost"
+    );
+}
+
+#[test]
+fn terrain_cost_takes_the_minimum_across_multiple_matching_tags_on_one_mover() {
+    let field = terrain_field_with_tags(5.0, &[("flying", 1.0), ("swimming", 2.0)]);
+    assert_eq!(
+        field.resolved_terrain_multiplier((0, 0), &tags(&["flying", "swimming"])),
+        1.0,
+        "a mover with BOTH qualifying tags takes the cheaper (most favorable) one"
+    );
+}
+
+#[test]
+fn terrain_cost_ignore_terrain_bypasses_cost_by_tag_entirely() {
+    let field = terrain_field_with_tags(5.0, &[("swimming", 2.0)]);
+    let exempt = crate::scene::pathfinding::MoveTraits {
+        ignore_terrain: true,
+        tags: tags(&["swimming"]),
+    };
+    assert_eq!(
+        crate::scene::pathfinding::terrain_cost(Some(&field), (0, 0), &exempt),
+        1.0,
+        "ignore_terrain flattens every multiplier to 1.0 regardless of a matching cost_by_tag key"
+    );
+    let non_exempt = crate::scene::pathfinding::MoveTraits {
+        ignore_terrain: false,
+        tags: tags(&["swimming"]),
+    };
+    assert_eq!(
+        crate::scene::pathfinding::terrain_cost(Some(&field), (0, 0), &non_exempt),
+        2.0,
+        "control: the same mover without ignore_terrain pays the matching tag cost"
+    );
+}
+
+#[test]
+fn terrain_cost_max_across_overlapping_regions_composes_over_the_per_region_tag_resolution() {
+    // Two terrain regions overlap cell (0,0): region A authors a matching cost_by_tag entry
+    // (flat 5.0, "flying": 2.0); region B is flat-only (flat 3.0, no cost_by_tag). Every value
+    // is distinct on purpose, so MIN-then-MAX (the correct rule), MIN-across-regions, and
+    // dropping the flat-only region B from `tag_cost` each land on a DIFFERENT number for the
+    // tagged mover — the three wrong compositions cannot hide behind a coincidental match.
+    let grid = sq(100.0);
+    let rect = RegionShape::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 100.0,
+        y1: 100.0,
+    };
+    let mut b = RegionField::builder();
+    let mut cost_by_tag_a = std::collections::BTreeMap::new();
+    cost_by_tag_a.insert("flying".to_string(), 2.0);
+    b.add_parts(
+        &[(rect.clone(), false)],
+        RegionBehavior::Terrain,
+        5.0,
+        &cost_by_tag_a,
+        100.0,
+        &grid,
+    );
+    b.add_parts(
+        &[(rect, false)],
+        RegionBehavior::Terrain,
+        3.0,
+        &std::collections::BTreeMap::new(),
+        100.0,
+        &grid,
+    );
+    let field = b.build();
+
+    // Tagged mover: region A resolves to its matching tag cost (2.0, the MIN — its only
+    // candidate); region B (no cost_by_tag) resolves to its own flat cost (3.0). The correct
+    // composition is the overlapping-regions MAX of the two per-region resolved values:
+    // max(2.0, 3.0) = 3.0 — NOT 2.0 (a wrongly MIN-composed outer fold) and NOT 5.0 (region B
+    // silently dropped, leaving only region A's flat fallback).
+    assert_eq!(
+        field.resolved_terrain_multiplier((0, 0), &tags(&["flying"])),
+        3.0,
+        "MAX across regions of each region's own MIN-matching-tag-or-flat resolution"
+    );
+    // Untagged control: both regions fall back to their flat cost; max(5.0, 3.0) = 5.0.
+    assert_eq!(
+        field.resolved_terrain_multiplier((0, 0), &tags(&[])),
+        5.0,
+        "untagged control: both regions fall back to flat cost, MAX still applies"
+    );
 }
 
 #[test]
@@ -801,10 +978,14 @@ fn fired_turn_round_triggers_filters_by_on_event_correctly() {
 
 /// An `AmbientLight` behavior contribution fixture (the `f64` slot is unused by the ambient
 /// facet — it carries `cost`, which only `Terrain` reads).
-fn ambient(mode: AmbientLightMode, level: f64) -> (RegionBehavior, f64) {
+fn ambient(
+    mode: AmbientLightMode,
+    level: f64,
+) -> (RegionBehavior, f64, std::collections::BTreeMap<String, f64>) {
     (
         RegionBehavior::AmbientLight(AmbientLightOverride { mode, level }),
         1.0,
+        std::collections::BTreeMap::new(),
     )
 }
 
@@ -896,8 +1077,16 @@ fn compose_ambient_zero_net_and_no_contribution_are_both_none() {
     // Movement behaviors never contribute to the ambient facet.
     assert_eq!(
         compose_ambient(&[
-            (RegionBehavior::Terrain, 2.0),
-            (RegionBehavior::Impassable, 1.0)
+            (
+                RegionBehavior::Terrain,
+                2.0,
+                std::collections::BTreeMap::new()
+            ),
+            (
+                RegionBehavior::Impassable,
+                1.0,
+                std::collections::BTreeMap::new()
+            )
         ]),
         None
     );
@@ -968,7 +1157,7 @@ fn ambient_contributions_carry_no_movement_effect() {
         "an ambient region never weights movement cost"
     );
     assert!(
-        !field.has_terrain_or_impassable(),
+        !field.has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "an ambient-only field never forces the router's weighted sub-path"
     );
 }
