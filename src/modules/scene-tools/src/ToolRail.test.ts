@@ -52,6 +52,28 @@ test("the draw and template tools activate and reveal their controls", async () 
   expect(screen.queryByTestId("draw-mode")).toBeNull(); // switched away from draw
 });
 
+test("the template tool's angle/width inputs appear only for their respective shape modes", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-template"));
+
+  // Default mode is "circle": neither input is shown.
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.queryByTestId("template-width")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "cone" } });
+  expect(screen.getByTestId("template-angle")).toBeTruthy();
+  expect(screen.queryByTestId("template-width")).toBeNull();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "line" } });
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.getByTestId("template-width")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("template-mode"), { target: { value: "rect" } });
+  expect(screen.queryByTestId("template-angle")).toBeNull();
+  expect(screen.getByTestId("template-width")).toBeTruthy();
+});
+
 test("selecting the ambient_light region behavior reveals the mode/level inputs; switching away hides them", async () => {
   const { scene } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });

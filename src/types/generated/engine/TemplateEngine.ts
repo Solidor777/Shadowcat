@@ -11,7 +11,7 @@ import type { TemplateShape } from "./TemplateShape";
  * use shadowcat::data::engine::{TemplateEngine, TemplateShape};
  *
  * let template = TemplateEngine {
- *     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0 },
+ *     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0, angle: None, width: None },
  *     color: "#ffaa00".to_string(),
  *     elevation: None,
  * };

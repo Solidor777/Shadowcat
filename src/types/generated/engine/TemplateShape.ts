@@ -10,7 +10,7 @@
  * ```
  * use shadowcat::data::engine::TemplateShape;
  *
- * let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0 };
+ * let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0, angle: None, width: None };
  * assert_eq!(shape.size, 15.0);
  * ```
  */
@@ -29,11 +29,38 @@ x: number,
  */
 y: number, 
 /**
- * Radius/length, scene units.
+ * The scale of this field is per-`kind` (`width`'s doc details the full
+ * convention): `"circle"` — radius; `"cone"` — the apex-to-base-corner
+ * distance; `"rect"` — HALF the first-axis side (full side `2*size`);
+ * `"line"` — the full segment length.
  */
 size: number, 
 /**
  * Orientation in degrees; the render layer converts via standard radian
  * math (`TemplateView.toSpec`).
  */
-direction: number, };
+direction: number, 
+/**
+ * The cone's full aperture — the angle BETWEEN the two base corners
+ * (`TemplateView.toSpec`'s `conePoints` halves it to sweep `direction ±
+ * angle/2`), degrees, `(0.0, 180.0)` EXCLUSIVE on both ends: `conePoints`
+ * returns a three-point wedge (apex + two base corners), which is
+ * collinear (zero area) at exactly 180° and opens AWAY from `direction`
+ * past 180° — neither is a representable cone, so both are refused at
+ * ingress rather than silently rendering nothing or backwards. Absent
+ * reproduces the render layer's default 60° cone
+ * (`DEFAULT_CONE_ANGLE_DEGREES` client-side). Unused for
+ * `"circle"`/`"rect"`/`"line"`.
+ */
+angle: number | null, 
+/**
+ * The shape's second/perpendicular dimension. The SCALE follows `size`'s
+ * own convention for the same `kind`, which is what makes an absent
+ * `width` (`width ?? size` client-side) reproduce today's exact shape in
+ * every kind that uses it: `"rect"` — HALF the second-axis side (full
+ * side `2*width`; absent defaults to `size`, giving the pre-existing
+ * forced-square `2*size × 2*size` output); `"line"` — the FULL
+ * perpendicular thickness (absent/`0.0` is a zero-width segment, today's
+ * exact shape). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
+ */
+width: number | null, };

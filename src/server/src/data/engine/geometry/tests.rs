@@ -376,3 +376,49 @@ fn ambient_light_behavior_without_an_override_is_a_valid_no_op() {
     let parsed: RegionEngine = serde_json::from_value(absent).unwrap();
     assert_eq!(parsed.ambient_override, None);
 }
+
+/// A template with a valid color and no `angle`/`width` authored.
+fn template(angle: Option<f64>, width: Option<f64>) -> TemplateEngine {
+    TemplateEngine {
+        shape: TemplateShape {
+            kind: "cone".to_string(),
+            x: 0.0,
+            y: 0.0,
+            size: 15.0,
+            direction: 90.0,
+            angle,
+            width,
+        },
+        color: "#ffaa00".to_string(),
+        elevation: None,
+    }
+}
+
+#[test]
+fn template_engine_validate_bounds_angle_and_width() {
+    // Absent angle/width is the pre-existing-behavior pin: always valid.
+    assert!(template(None, None).validate().is_ok());
+
+    // A valid angle in (0.0, 180.0) and a valid non-negative width both pass.
+    assert!(template(Some(60.0), Some(5.0)).validate().is_ok());
+    assert!(template(Some(0.1), Some(0.0)).validate().is_ok());
+
+    // The upper bound is pinned at its edge: just inside 180.0 is Ok, 180.0
+    // itself (the collinear, zero-area wedge) and anything above are Err —
+    // `conePoints`' three-point wedge cannot represent either.
+    assert!(template(Some(179.9), None).validate().is_ok());
+    assert!(template(Some(180.0), None).validate().is_err());
+    assert!(template(Some(180.1), None).validate().is_err());
+    assert!(template(Some(270.0), None).validate().is_err());
+
+    // Angle must be finite and strictly greater than 0.0.
+    assert!(template(Some(0.0), None).validate().is_err());
+    assert!(template(Some(-10.0), None).validate().is_err());
+    assert!(template(Some(f64::NAN), None).validate().is_err());
+    assert!(template(Some(f64::INFINITY), None).validate().is_err());
+
+    // Width must be finite and non-negative.
+    assert!(template(None, Some(-0.1)).validate().is_err());
+    assert!(template(None, Some(f64::NAN)).validate().is_err());
+    assert!(template(None, Some(f64::INFINITY)).validate().is_err());
+}

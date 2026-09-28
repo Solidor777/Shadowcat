@@ -158,7 +158,7 @@ test("topDrawingAt: overlapping closed drawings pick the topmost (last-in-order)
 // --- topTemplateAt ---
 
 const templateEngine = (over: Partial<TemplateEngine> = {}): TemplateEngine => ({
-  shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 },
+  shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0, angle: null, width: null },
   color: "#3388ff",
   elevation: null,
   ...over,
@@ -173,7 +173,7 @@ test("topTemplateAt: a circle template hits inside its radius and misses outside
 test("topTemplateAt: an open line template picks nearest-within-tolerance, not containment", () => {
   const template = buildSceneEntityDoc(
     "w1", "scene1", "template",
-    templateEngine({ shape: { kind: "line", x: 0, y: 0, size: 20, direction: 0 } }),
+    templateEngine({ shape: { kind: "line", x: 0, y: 0, size: 20, direction: 0, angle: null, width: null } }),
     "t1",
   );
   expect(topTemplateAt([template], { x: 10, y: 2 })).toBe("t1"); // within tolerance of the segment

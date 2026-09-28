@@ -124,3 +124,105 @@ test("a template with a null direction does not render (cone)", () => {
   new TemplateView(store, backend).reconcile();
   expect(backend.shapes.has("t-null-dir")).toBe(false);
 });
+
+test("a cone template's authored angle widens its base corners", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-narrow", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 20, width: null }) }]),
+  );
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-wide", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 120, width: null }) }]),
+  );
+  const view = new TemplateView(store, backend);
+  view.reconcile();
+  const narrow = backend.shapes.get("t-narrow")!;
+  const wide = backend.shapes.get("t-wide")!;
+  expect(Math.abs(wide.points[3])).toBeGreaterThan(Math.abs(narrow.points[3]));
+});
+
+test("a line template's authored width closes it into a filled rectangle", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-thick", { kind: "line", x: 0, y: 0, size: 10, direction: 0, angle: null, width: 4 }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  const s = backend.shapes.get("t-thick")!;
+  expect(s.closed).toBe(true);
+  expect(s.points).toHaveLength(8);
+  expect(s.fill).not.toBeNull();
+});
+
+test("a rect template's authored width produces a non-square rectangle", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-rect", { kind: "rect", x: 0, y: 0, size: 5, direction: 0, angle: null, width: 2 }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  const s = backend.shapes.get("t-rect")!;
+  expect(s.points).toEqual([-5, -2, 5, -2, 5, 2, -5, 2]);
+});
+
+test("a template with a non-finite authored angle does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-bad-angle", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: Number.NaN }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-bad-angle")).toBe(false);
+});
+
+test("a template with a non-finite authored width does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-bad-width", { kind: "line", x: 0, y: 0, size: 10, direction: 0, width: Number.POSITIVE_INFINITY }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-bad-width")).toBe(false);
+});
+
+// The optimistic store can legitimately hold engine data the server has not yet
+// validated/rejected: an angle at or past the `conePoints` three-point wedge's representable
+// bound (180° is collinear; above it, the wedge opens away from `direction`) must not render,
+// matching `TemplateEngine::validate`'s own exclusive `(0.0, 180.0)` bound exactly.
+test("a template with an out-of-range authored angle does not render (at and past 180)", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-angle-180", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 180 }) }]),
+  );
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-angle-270", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 270 }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-angle-180")).toBe(false);
+  expect(backend.shapes.has("t-angle-270")).toBe(false);
+});
+
+test("a template with an out-of-range authored angle does not render (at and below 0)", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-angle-0", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 0 }) }]),
+  );
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-angle-neg", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: -10 }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-angle-0")).toBe(false);
+  expect(backend.shapes.has("t-angle-neg")).toBe(false);
+});
+
+test("a template with an angle just inside the (0.0, 180.0) bound still renders", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(
+    cmd(1, [{ op: "create", doc: tmplDoc("t-angle-edge", { kind: "cone", x: 0, y: 0, size: 10, direction: 0, angle: 179.9 }) }]),
+  );
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-angle-edge")).toBe(true);
+});

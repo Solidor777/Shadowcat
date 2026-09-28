@@ -2,7 +2,20 @@
 // only through the public AppContext seams (the scene bridge for tool activation/snap,
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
-import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, regionShapeOutline, type SceneTool, type Point, type ShapeNodeSpec } from "@shadowcat/render";
+import {
+  rectPoints,
+  ellipsePoints,
+  circlePoints,
+  conePoints,
+  squarePoints,
+  linePoints,
+  DEFAULT_CONE_ANGLE_DEGREES,
+  parseColor,
+  regionShapeOutline,
+  type SceneTool,
+  type Point,
+  type ShapeNodeSpec,
+} from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
@@ -296,6 +309,13 @@ export class ToolController {
   templateMode = $state<TemplateMode>("circle");
   /** Template-tool fill/stroke color (hex string, parsed via `parseColor`). */
   templateColor = $state("#3388ff");
+  /** Template-tool authored cone full aperture, degrees; meaningful only for `templateMode ===
+   * "cone"`. `null` persists an absent `shape.angle` (the render layer's own default cone). */
+  templateAngle = $state<number | null>(null);
+  /** Template-tool authored second dimension (a line's thickness, or a rect's second edge
+   * alongside `size`), scene units; meaningful only for `templateMode === "line" | "rect"`.
+   * `null` persists an absent `shape.width` (zero-width line / forced-square rect). */
+  templateWidth = $state<number | null>(null);
   /** Region-tool shape mode + behavior/cost/secrecy config. */
   regionShapeMode = $state<RegionShapeMode>("rect");
   /** Region-tool authored behavior, applied to the next region the tool persists. */
@@ -1724,29 +1744,44 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
   };
 }
 
-/** Template area from an anchor + size + direction (degrees): `"circle"`/`"cone"` are
- * tessellated rings (`circlePoints`/`conePoints`), closed; `"rect"` is a ROTATED SQUARE
- * centered on the anchor (`squarePoints`, side `2*size`) — NOT the axis-aligned two-corner
- * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This tool is
- * internally consistent across its own modes (always the rotated square for `"rect"`); the
- * cross-tool split with `shapePath` is consistent-by-construction, not a documented tradeoff —
- * it mirrors the render layer's `TemplateView.toSpec` vs `DrawingView.toSpec` split; `"line"` is the two
- * endpoints computed from `direction`/`size`, open.
+/** Template area from an anchor + size + direction (degrees): `"circle"` is a tessellated
+ * ring (`circlePoints`), closed; `"cone"` is `conePoints` at `angle ??
+ * DEFAULT_CONE_ANGLE_DEGREES`, closed; `"rect"` is a ROTATED RECTANGLE centered on the
+ * anchor (`squarePoints`, sides `2*size` by `2*(width ?? size)`) — NOT the axis-aligned
+ * two-corner bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This
+ * tool is internally consistent across its own modes (always the rotated rectangle for
+ * `"rect"`); the cross-tool split with `shapePath` is consistent-by-construction, not a
+ * documented tradeoff — it mirrors the render layer's `TemplateView.toSpec` vs
+ * `DrawingView.toSpec` split; `"line"` is `linePoints` at `width ?? 0` — the bare two
+ * endpoints when `width` is absent/zero (open), or a thickness rectangle otherwise (closed).
  * @param mode The active template shape mode.
  * @param ax The anchor x (scene coords, post-snap).
  * @param ay The anchor y (scene coords, post-snap).
  * @param size The template's size (radius for circle/cone, half-side for rect, length for line).
  * @param direction The facing angle in degrees (unused by `"circle"`).
+ * @param angle The cone's full aperture, degrees; `null` uses the render layer's default.
+ * Ignored by every other mode.
+ * @param width The line's thickness, or the rect's second dimension, scene units; `null`
+ * reproduces the pre-existing zero-width line / forced-square rect. Ignored by `"circle"`/
+ * `"cone"`.
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
  * declare const anchor: Point;
  * declare const size: number;
  * declare const direction: number;
- * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
+ * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction, null, null);
  * ```
  */
-function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): {
+function templatePath(
+  mode: TemplateMode,
+  ax: number,
+  ay: number,
+  size: number,
+  direction: number,
+  angle: number | null = null,
+  width: number | null = null,
+): {
   /** The preview/persist polyline (or ring) for `mode`. */
   points: number[];
   /** Whether the shape should render/persist closed. */
@@ -1756,12 +1791,12 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
     case "circle":
       return { points: circlePoints(ax, ay, size), closed: true };
     case "cone":
-      return { points: conePoints(ax, ay, size, direction), closed: true };
+      return { points: conePoints(ax, ay, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES), closed: true };
     case "rect":
-      return { points: squarePoints(ax, ay, size, direction), closed: true };
+      return { points: squarePoints(ax, ay, size, direction, width ?? size), closed: true };
     case "line": {
-      const a = (direction * Math.PI) / 180;
-      return { points: [ax, ay, ax + size * Math.cos(a), ay + size * Math.sin(a)], closed: false };
+      const w = width ?? 0;
+      return { points: linePoints(ax, ay, size, direction, w), closed: w > 0 };
     }
   }
 }
@@ -1793,6 +1828,48 @@ function sizeDir(a: Point, b: Point, cell: number): {
   const d = Math.hypot(dx, dy);
   if (d < 1) return { size: cell, direction: 0 };
   return { size: d, direction: (Math.atan2(dy, dx) * 180) / Math.PI };
+}
+
+/** `true` when `angle` is a value `TemplateEngine::validate` would accept for a cone's
+ * `shape.angle` — `null` (no authored override; the render layer's own default aperture
+ * applies) or a finite value in `(0.0, 180.0)` EXCLUSIVE on both ends, matching that
+ * function's own bound exactly: `conePoints`' three-point wedge is collinear (zero area) at
+ * exactly 180° and opens away from `direction` past it, so neither endpoint is a
+ * representable cone. The native `<input min max>` on the angle control is advisory only
+ * (nothing stops a typed value outside it, and it does not block the `change` event) — this
+ * is the genuine gate: `onPointerUp` calls it before dispatching, so an out-of-range authored
+ * angle is refused client-side rather than round-tripping an optimistic placement into a
+ * server rejection and rollback.
+ * @param angle The authored `templateAngle`, or `null`.
+ * @returns Whether a cone template may be dispatched with this angle.
+ * @example
+ * ```
+ * isValidTemplateAngle(null); // true — no override
+ * isValidTemplateAngle(60);   // true
+ * isValidTemplateAngle(180);  // false — collinear wedge
+ * isValidTemplateAngle(200);  // false — opens away from `direction`
+ * ```
+ */
+function isValidTemplateAngle(angle: number | null): boolean {
+  return angle === null || (Number.isFinite(angle) && angle > 0 && angle < 180);
+}
+
+/** `true` when `width` is a value `TemplateEngine::validate` would accept for `shape.width` —
+ * `null`, or finite and `>= 0.0`, matching that function's own rule exactly (a rect/line
+ * `width` has no upper bound, unlike `angle`'s wedge geometry). Sibling of
+ * `isValidTemplateAngle`; both are the client-side mirror of the SAME server function, kept as
+ * a matched pair rather than two independently-derived rules.
+ * @param width The authored `templateWidth`, or `null`.
+ * @returns Whether a line/rect template may be dispatched with this width.
+ * @example
+ * ```
+ * isValidTemplateWidth(null); // true — no override
+ * isValidTemplateWidth(4);    // true
+ * isValidTemplateWidth(-5);   // false — TemplateEngine::validate requires >= 0.0
+ * ```
+ */
+function isValidTemplateWidth(width: number | null): boolean {
+  return width === null || (Number.isFinite(width) && width >= 0);
 }
 
 /** Drag to place a template area (circle/cone/rect/line) anchored at the snapped cell; the
@@ -1828,20 +1905,46 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
     onPointerMove(p: Point): void {
       if (!anchor) return;
       const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
-      const { points, closed } = templatePath(controller.templateMode, anchor.x, anchor.y, size, direction);
+      const { points, closed } = templatePath(
+        controller.templateMode,
+        anchor.x,
+        anchor.y,
+        size,
+        direction,
+        controller.templateAngle,
+        controller.templateWidth,
+      );
       const color = parseColor(controller.templateColor);
       ctx.scene.previewOverlay([{ points, closed, stroke: { color, width: 2 }, fill: closed ? { color, alpha: 0.25 } : null }]);
     },
     onPointerUp(p: Point): void {
       if (!anchor) return;
       const scene = activeScene(ctx);
-      if (scene) {
+      // Send `angle`/`width` ONLY for the kinds whose geometry consumes them, mirroring
+      // `templatePath`'s preview, which reads each field only where it applies: `templateAngle`
+      // and `templateWidth` persist across a `templateMode` change, so a value authored under one
+      // mode must not reach a document of another kind. INVARIANT: the gate below validates
+      // exactly the values being sent and therefore needs no knowledge of the mode — a field the
+      // active kind ignores is already `null`, which both validity checks accept.
+      const angle = controller.templateMode === "cone" ? controller.templateAngle : null;
+      const width = controller.templateMode === "line" || controller.templateMode === "rect" ? controller.templateWidth : null;
+      // Refuse to dispatch a `Create` the server's `TemplateEngine::validate` would reject
+      // outright, rather than round-tripping an optimistic placement into a rollback.
+      if (scene && isValidTemplateAngle(angle) && isValidTemplateWidth(width)) {
         const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
         ctx.dispatchIntent([
           {
             op: "create",
             doc: buildSceneEntityDoc(ctx.world, scene.id, "template", {
-              shape: { kind: controller.templateMode, x: anchor.x, y: anchor.y, size, direction },
+              shape: {
+                kind: controller.templateMode,
+                x: anchor.x,
+                y: anchor.y,
+                size,
+                direction,
+                angle,
+                width,
+              },
               color: controller.templateColor,
               elevation: ctx.viewedLevelBand?.() ?? null,
             }),

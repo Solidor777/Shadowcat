@@ -626,6 +626,43 @@
           {#each templateModes as m (m)}<option value={m}>{m}</option>{/each}
         </select>
         <input type="color" data-testid="template-color" aria-label={t("tools.color")} bind:value={controller.templateColor} />
+        {#if controller.templateMode === "cone"}
+          <!-- Cone full aperture, degrees; empty persists an absent `shape.angle` (the render
+               layer's own DEFAULT_CONE_ANGLE_DEGREES). `min`/`max` bound the authorable range to
+               `TemplateEngine::validate`'s own EXCLUSIVE `(0.0, 180.0)` — `conePoints`' 3-point
+               wedge is collinear at 180° and opens away from `direction` past it. These native
+               attributes are advisory only (they neither clamp a typed value nor block `change`);
+               `isValidTemplateAngle` in the controller is the real gate at dispatch time. -->
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            max="179.9"
+            data-testid="template-angle"
+            aria-label={t("tools.templateAngle")}
+            value={controller.templateAngle ?? ""}
+            onchange={(e) => {
+              const parsed = parseElevation(e.currentTarget.value);
+              if (parsed !== undefined) controller.templateAngle = parsed;
+            }}
+          />
+        {/if}
+        {#if controller.templateMode === "line" || controller.templateMode === "rect"}
+          <!-- A line's thickness, or a rect's second dimension alongside `size`; empty persists
+               an absent `shape.width` (zero-width line / forced-square rect). -->
+          <input
+            type="number"
+            step="1"
+            min="0"
+            data-testid="template-width"
+            aria-label={t("tools.templateWidth")}
+            value={controller.templateWidth ?? ""}
+            onchange={(e) => {
+              const parsed = parseElevation(e.currentTarget.value);
+              if (parsed !== undefined) controller.templateWidth = parsed;
+            }}
+          />
+        {/if}
       </div>
     {:else if controller.active === "region"}
       <div class="controls">

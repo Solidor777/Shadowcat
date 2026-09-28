@@ -621,7 +621,7 @@ test("start renders existing drawing and template docs", () => {
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
       { op: "create", doc: { id: "d1", scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "freehand", points: [0, 0, 5, 5] }, stroke: { color: "#fff", width: 1 }, fill: null }, system: {}, created_at: 0, updated_at: 0 } },
-      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, color: "#3388ff" }, system: {}, created_at: 0, updated_at: 0 } },
+      { op: "create", doc: { id: "tm1", scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1, name: null, source: null, owner: null, permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null }, embedded: {}, parent_id: "s1", engine: { shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0, angle: null, width: null }, color: "#3388ff" }, system: {}, created_at: 0, updated_at: 0 } },
     ],
   });
   engine.start();

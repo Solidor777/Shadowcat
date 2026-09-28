@@ -22,6 +22,6 @@ export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription, type ThemeColors } from "./engine";
 export { PixiBackend, createPixiBackend, composeTokenFxMatrix } from "./pixi-backend";
-export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";
+export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, linePoints, DEFAULT_CONE_ANGLE_DEGREES } from "./geometry";
 export { sceneScopedDocs } from "./scene-scope";
 export { TextureCacheManager } from "./texture-cache";

@@ -1210,7 +1210,7 @@ impl DrawingEngine {
 /// ```
 /// use shadowcat::data::engine::TemplateShape;
 ///
-/// let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0 };
+/// let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0, angle: None, width: None };
 /// assert_eq!(shape.size, 15.0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -1224,11 +1224,36 @@ pub struct TemplateShape {
     pub x: f64,
     /// Anchor y, scene units.
     pub y: f64,
-    /// Radius/length, scene units.
+    /// The scale of this field is per-`kind` (`width`'s doc details the full
+    /// convention): `"circle"` — radius; `"cone"` — the apex-to-base-corner
+    /// distance; `"rect"` — HALF the first-axis side (full side `2*size`);
+    /// `"line"` — the full segment length.
     pub size: f64,
     /// Orientation in degrees; the render layer converts via standard radian
     /// math (`TemplateView.toSpec`).
     pub direction: f64,
+    /// The cone's full aperture — the angle BETWEEN the two base corners
+    /// (`TemplateView.toSpec`'s `conePoints` halves it to sweep `direction ±
+    /// angle/2`), degrees, `(0.0, 180.0)` EXCLUSIVE on both ends: `conePoints`
+    /// returns a three-point wedge (apex + two base corners), which is
+    /// collinear (zero area) at exactly 180° and opens AWAY from `direction`
+    /// past 180° — neither is a representable cone, so both are refused at
+    /// ingress rather than silently rendering nothing or backwards. Absent
+    /// reproduces the render layer's default 60° cone
+    /// (`DEFAULT_CONE_ANGLE_DEGREES` client-side). Unused for
+    /// `"circle"`/`"rect"`/`"line"`.
+    #[serde(default)]
+    pub angle: Option<f64>,
+    /// The shape's second/perpendicular dimension. The SCALE follows `size`'s
+    /// own convention for the same `kind`, which is what makes an absent
+    /// `width` (`width ?? size` client-side) reproduce today's exact shape in
+    /// every kind that uses it: `"rect"` — HALF the second-axis side (full
+    /// side `2*width`; absent defaults to `size`, giving the pre-existing
+    /// forced-square `2*size × 2*size` output); `"line"` — the FULL
+    /// perpendicular thickness (absent/`0.0` is a zero-width segment, today's
+    /// exact shape). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
+    #[serde(default)]
+    pub width: Option<f64>,
 }
 
 /// A template document's engine body: a measured-area overlay.
@@ -1239,7 +1264,7 @@ pub struct TemplateShape {
 /// use shadowcat::data::engine::{TemplateEngine, TemplateShape};
 ///
 /// let template = TemplateEngine {
-///     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0 },
+///     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0, angle: None, width: None },
 ///     color: "#ffaa00".to_string(),
 ///     elevation: None,
 /// };
@@ -1262,8 +1287,23 @@ pub struct TemplateEngine {
 }
 
 impl TemplateEngine {
-    /// Ingress validation beyond serde shape: css-`#rrggbb` `color`.
+    /// Ingress validation beyond serde shape: css-`#rrggbb` `color`, and the
+    /// shape's `angle`/`width` bounds when present. `angle`'s upper bound is
+    /// exclusive at `180.0` (not `360.0`): `conePoints`' three-point wedge is
+    /// collinear at exactly 180° and opens away from `direction` beyond it —
+    /// see `TemplateShape::angle`'s own doc for the full geometric argument.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        validate_hex_color(&self.color)
+        validate_hex_color(&self.color)?;
+        if let Some(angle) = self.shape.angle {
+            if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
+                return Err("shape.angle: must be finite and in (0.0, 180.0)".to_string());
+            }
+        }
+        if let Some(width) = self.shape.width {
+            if !width.is_finite() || width < 0.0 {
+                return Err("shape.width: must be finite and >= 0.0".to_string());
+            }
+        }
+        Ok(())
     }
 }

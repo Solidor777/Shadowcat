@@ -156,9 +156,11 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: Multi-destination portals with player choice/reveal flags — `TriggerEffect::Teleport`
   has one fixed `PortalTarget` and fires unconditionally in `Room::fire_region_triggers`; a
   choice needs a pausable move, i.e. a wire mechanism that does not exist. (M-L, contested)
-- TODO: Template shape parameters — `TemplateShape` gains `angle` (cone; `conePoints` hardcodes
-  60°), `width` (line has zero width in `template-view.ts`; rect is forced square by
-  `squarePoints`), so a system can compute AOE membership. (S-M)
+- TODO: Arc-tessellated cone base so a template aperture of a half-turn or wider is
+  representable — `conePoints` returns a three-point wedge, which is collinear at exactly 180° and
+  opens away from `direction` beyond it, so `TemplateEngine::validate` bounds `shape.angle` to
+  `(0.0, 180.0)`. Widening that bound requires tessellating the base as an arc, which changes the
+  default cone's output and so needs its regression pin re-derived. (S-M)
 - TODO: Shared live ruler — broadcast the measure tool's route preview on the existing
   `ScenePing`/`Emote` per-scene pattern (same cross-scene-leak guard) with a hidden toggle.
   (S-M)

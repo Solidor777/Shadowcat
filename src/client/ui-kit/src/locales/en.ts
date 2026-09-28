@@ -367,6 +367,8 @@ export const en: Messages = {
   "tools.wallOneWay": "One-way (solid from one side only)",
   "tools.wallFlipSide": "Flip one-way side",
   "tools.wallLimited": "Limited sight (see through one wall, not two)",
+  "tools.templateAngle": "Cone angle (degrees)",
+  "tools.templateWidth": "Width",
   "tools.lightElevation": "Elevation",
   "tools.wallElevationBottom": "Occludes from elevation (empty = unbounded)",
   "tools.wallElevationTop": "Occludes up to elevation (empty = unbounded)",
