@@ -164,10 +164,11 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: Shared live ruler — broadcast the measure tool's route preview on the existing
   `ScenePing`/`Emote` per-scene pattern (same cross-scene-leak guard) with a hidden toggle.
   (S-M)
-- TODO: Shared/pooled fog mode — `explored_fog` is keyed `(scene_id, level_id, user_id)`; a
-  per-scene `individual`/`shared` toggle on the `resolveSceneSettings` precedence chain would
-  key `ExploredSet::mark_cells` on `(scene, level)` alone. Live per-recipient masks untouched.
-  (M)
+- TODO: Translate enum `<option>` labels in `GameSettingsPanel` — the movement-restriction,
+  movement-model, light-mode, diagonal-rule, easing and illumination-floor selects render their raw
+  wire values as option text, so a GM reads identifiers rather than words. The same file already
+  translates per value for the perception, dice-mode, dice-direction, audio-occlusion and fog-pooling
+  selects, so the pattern exists; this is the set that predates it. (S)
 - TODO: Scene padding margin around authored `SceneEngine.bounds`. (S, contested: the
   grid-units-first bounds model does not have the problem padding solves)
 - DESIGN QUESTION: unify `TemplateEngine` and `RegionEngine` on one geometry/rasterization

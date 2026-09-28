@@ -357,3 +357,18 @@ fn hex_strict_candidate_cells_nest_inside_lenient_candidate_cells_at_the_clamp_b
         "strict candidate cells must nest inside lenient candidate cells on hex too"
     );
 }
+
+#[test]
+fn explored_fog_key_returns_nil_under_shared_pooling() {
+    let user = uuid::Uuid::new_v4();
+    assert_eq!(
+        explored_fog_key(FogPooling::Shared, user),
+        uuid::Uuid::nil()
+    );
+}
+
+#[test]
+fn explored_fog_key_returns_the_user_id_under_individual_pooling() {
+    let user = uuid::Uuid::new_v4();
+    assert_eq!(explored_fog_key(FogPooling::Individual, user), user);
+}

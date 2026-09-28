@@ -106,6 +106,7 @@ export type { SceneAmbience } from "./generated/engine/SceneAmbience";
 export type { EnvironmentLight } from "./generated/engine/EnvironmentLight";
 export type { MovementModel } from "./generated/engine/MovementModel";
 export type { MovementRestriction } from "./generated/engine/MovementRestriction";
+export type { FogPooling } from "./generated/engine/FogPooling";
 export type { LightMode } from "./generated/engine/LightMode";
 export type { DiagonalRule } from "./generated/engine/DiagonalRule";
 export type { EasingMode } from "./generated/engine/EasingMode";

@@ -11,7 +11,8 @@ use ts_rs::TS;
 
 use super::combat::CombatDefaults;
 use super::scene::{
-    DiagonalRule, EasingMode, EnvironmentLight, LightMode, MovementModel, MovementRestriction,
+    DiagonalRule, EasingMode, EnvironmentLight, FogPooling, LightMode, MovementModel,
+    MovementRestriction,
 };
 
 /// `Option`-lifted twin of `WorldSceneDefaults`; a field added there without
@@ -57,6 +58,9 @@ pub struct SceneDefaultsOverlay {
     /// Overrides `WorldSceneDefaults.partial_cell_leniency`.
     #[ts(optional = nullable)]
     pub partial_cell_leniency: Option<bool>,
+    /// Overrides `WorldSceneDefaults.fog_pooling`.
+    #[ts(optional = nullable)]
+    pub fog_pooling: Option<FogPooling>,
 }
 
 /// `Option`-lifted twin of `Pathfinding`.

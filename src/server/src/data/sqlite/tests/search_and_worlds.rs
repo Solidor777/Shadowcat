@@ -1522,6 +1522,38 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
     assert_eq!(count, 0);
 }
 
+/// The shared/pooled fog mode's entire migration-freedom mechanism: `set_explored`/
+/// `get_explored` need zero code change to serve the reserved `Uuid::nil()` sentinel key — they
+/// already accept a bare `Uuid`, and `explored_fog`'s primary key is unchanged.
+#[tokio::test]
+async fn set_and_get_explored_under_the_nil_sentinel_key_round_trips() {
+    let r = repo().await;
+    let world = uuid::Uuid::new_v4();
+    let scene = uuid::Uuid::new_v4();
+    r.set_explored(world, scene, "", uuid::Uuid::nil(), &[7, 8, 9])
+        .await
+        .unwrap();
+    assert_eq!(
+        r.get_explored(scene, "", uuid::Uuid::nil()).await.unwrap(),
+        Some(vec![7, 8, 9])
+    );
+    // A real user id stored alongside the sentinel is a distinct row -- confirms the sentinel
+    // does not collide with, or shadow, any real user's own explored memory.
+    let real_user = uuid::Uuid::new_v4();
+    r.set_explored(world, scene, "", real_user, &[1, 2, 3])
+        .await
+        .unwrap();
+    assert_eq!(
+        r.get_explored(scene, "", uuid::Uuid::nil()).await.unwrap(),
+        Some(vec![7, 8, 9]),
+        "the sentinel row is unaffected by a real user's own row"
+    );
+    assert_eq!(
+        r.get_explored(scene, "", real_user).await.unwrap(),
+        Some(vec![1, 2, 3])
+    );
+}
+
 #[tokio::test]
 async fn import_world_inserts_world_invites_row() {
     let src = repo().await;
@@ -2479,4 +2511,171 @@ async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
         .await
         .unwrap()
         .is_some());
+}
+
+/// A scene with fog on two levels for one user must round-trip with BOTH levels intact.
+/// INVARIANT: `level_id` is part of `explored_fog`'s primary key, so the bundle row must carry it.
+/// A bundle row without it gives two levels of one scene the same identity, and the import's
+/// second insert then violates that key (SQLite code 1555, "UNIQUE constraint failed") — which
+/// aborts the whole import transaction rather than collapsing to one level.
+#[tokio::test]
+async fn fog_on_two_levels_of_one_scene_round_trips_with_both_levels_intact() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-two-level", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src
+        .create_world_owned("Two Level World", gm, 0)
+        .await
+        .unwrap();
+    let scene = crate::test_ids::test_uuid(50);
+    src.set_explored(w.id, scene, "l1", gm, &[1, 1, 1])
+        .await
+        .unwrap();
+    src.set_explored(w.id, scene, "l2", gm, &[2, 2, 2])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    target
+        .create_user("gm-two-level", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let summary = target.import_world(import_data).await.unwrap();
+    assert_eq!(summary.skipped_fog, 0);
+
+    let target_gm = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE username = ?")
+        .bind("gm-two-level")
+        .fetch_one(target.pool())
+        .await
+        .unwrap();
+    let l1 = target
+        .get_explored(scene, "l1", Uuid::parse_str(&target_gm).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let l2 = target
+        .get_explored(scene, "l2", Uuid::parse_str(&target_gm).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(l1, vec![1, 1, 1]);
+    assert_eq!(l2, vec![2, 2, 2]);
+}
+
+/// A Shared-mode scene's pool row (keyed by the reserved `Uuid::nil()` sentinel) must round-trip
+/// through export/import WITHOUT a username, never dropped by an inner join against `users` and
+/// never counted as a skipped/unresolvable row.
+#[tokio::test]
+async fn shared_pool_fog_row_round_trips_without_a_username() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-pool", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("Pool World", gm, 0).await.unwrap();
+    let scene = crate::test_ids::test_uuid(51);
+    src.set_explored(w.id, scene, "", Uuid::nil(), &[9, 9, 9])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let pool_row = export_data
+        .fog
+        .iter()
+        .find(|r| r.scene_id == scene)
+        .expect("the pool row must be present in the export, not dropped");
+    assert!(
+        pool_row.pool,
+        "the row's user_id is nil, so pool must be true"
+    );
+    assert_eq!(
+        pool_row.username, None,
+        "a pool row carries no username to export"
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    target
+        .create_user("gm-pool", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let summary = target.import_world(import_data).await.unwrap();
+    assert_eq!(
+        summary.skipped_fog, 0,
+        "a pool row must never be counted as skipped"
+    );
+    let pooled = target.get_explored(scene, "", Uuid::nil()).await.unwrap();
+    assert_eq!(pooled, Some(vec![9, 9, 9]));
+}
+
+/// An orphan `explored_fog` row (a real, non-nil `user_id` with no matching `users` row —
+/// theoretically reachable since the table carries no FK) is classified `pool: false` at export
+/// (never merged into the pool because its username happens to be absent too) and is
+/// skipped-and-counted at import, exactly like an unresolvable `world_members` row — never
+/// silently absorbed.
+#[tokio::test]
+async fn orphan_fog_row_is_classified_apart_from_the_pool_and_skipped_and_counted() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-orphan", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("Orphan World", gm, 0).await.unwrap();
+    let scene = crate::test_ids::test_uuid(52);
+    // A real, non-nil, non-existent user id — simulates a dangling row this FK-less table
+    // permits in principle, without relying on `delete_user`'s own purge behavior.
+    let ghost = crate::test_ids::test_uuid(0xFEED);
+    src.set_explored(w.id, scene, "", ghost, &[3, 3, 3])
+        .await
+        .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    let orphan_row = export_data
+        .fog
+        .iter()
+        .find(|r| r.scene_id == scene)
+        .expect("the orphan row must still be present in the export, not silently dropped");
+    assert!(
+        !orphan_row.pool,
+        "a non-nil user_id must NEVER classify as the pool, even with no resolved username"
+    );
+    assert_eq!(orphan_row.username, None);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = crate::world_bundle::write_bundle(&export_data, tmp.path(), Vec::new()).unwrap();
+    let tar_path = tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let summary = target.import_world(import_data).await.unwrap();
+    assert_eq!(
+        summary.skipped_fog, 1,
+        "the orphan row is skipped-and-counted, not silently absorbed"
+    );
+    assert!(
+        target
+            .get_explored(scene, "", Uuid::nil())
+            .await
+            .unwrap()
+            .is_none(),
+        "an orphan row must never be merged into the pool bucket"
+    );
 }

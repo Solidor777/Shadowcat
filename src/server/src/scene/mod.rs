@@ -168,6 +168,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 /// # Examples
 ///
 /// ```
+/// use shadowcat::data::engine::FogPooling;
 /// use shadowcat::scene::{GridKind, LightMode, MovementModel, MovementRestriction, ResolvedScene};
 ///
 /// let scene = ResolvedScene {
@@ -183,6 +184,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     partial_cell_leniency: false,
 ///     bounds: (100.0, 100.0),
 ///     grid_kind: GridKind::Square,
+///     fog_pooling: FogPooling::Individual,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -221,6 +223,10 @@ pub struct ResolvedScene {
     /// system of persisted explored fog, and — because it is part of `ResolvedScene` — the
     /// visibility cache's own invalidation key.
     pub grid_kind: GridKind,
+    /// Which `explored_fog` bucket this scene's players accumulate into (see
+    /// `eng::FogPooling`). Consulted ONLY by `ws::conn::enrich_vision_explored` via
+    /// `scene::explored::explored_fog_key`; the live vision/movement gates never read it.
+    pub fog_pooling: eng::FogPooling,
 }
 
 impl ResolvedScene {
@@ -1905,6 +1911,10 @@ impl SceneEcs {
             .and_then(|s| s.partial_cell_leniency)
             .or(sd_scene.and_then(|s| s.partial_cell_leniency))
             .unwrap_or(d.partial_cell_leniency);
+        let d_fog_pooling = ws_scene
+            .and_then(|s| s.fog_pooling)
+            .or(sd_scene.and_then(|s| s.fog_pooling))
+            .unwrap_or(d.fog_pooling);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1930,6 +1940,9 @@ impl SceneEcs {
             .and_then(|v| v.movement_restriction)
             .unwrap_or(d_move);
         let mmodel = vision_ov.and_then(|v| v.movement_model).unwrap_or(d_model);
+        let fog_pooling = vision_ov
+            .and_then(|v| v.fog_pooling)
+            .unwrap_or(d_fog_pooling);
 
         // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -1954,6 +1967,7 @@ impl SceneEcs {
             partial_cell_leniency: d_lenient,
             bounds,
             grid_kind: grid_kind_from(s),
+            fog_pooling,
         }
     }
 
@@ -2509,6 +2523,28 @@ impl SceneEcs {
                 .filter(|s| *s > 0.0)
                 .unwrap_or(100.0);
             out.insert(e.doc.id, size);
+        }
+        out
+    }
+
+    /// Each scene's resolved `FogPooling` mode (`resolve_scene(scene).fog_pooling`) — the ONE
+    /// axis `ws::conn::enrich_vision_explored` reads to pick `scene::explored::explored_fog_key`'s
+    /// bucket. Captured under the ECS read lock alongside `scene_grid_sizes`/`scene_grid_shapes`,
+    /// since `enrich_vision_explored` itself runs after that lock is dropped (async DB I/O).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.scene_fog_pooling().is_empty());
+    /// ```
+    pub fn scene_fog_pooling(&self) -> std::collections::HashMap<Uuid, eng::FogPooling> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "scene" {
+                continue;
+            }
+            out.insert(e.doc.id, self.resolve_scene(e.doc.id).fog_pooling);
         }
         out
     }

@@ -38,6 +38,24 @@ describe("resolveSceneSettings", () => {
     expect(r.gridDistance).toEqual({ perCell: 5, unit: "ft" });
   });
 
+  it("falls back to individual pooling, then folds system < world < scene", () => {
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const bare = resolveSceneSettings(scene, storeWith(scene));
+    expect(bare.fogPooling).toBe("individual");
+
+    const sd = buildSystemDefaultsDoc("w1", { scene: { fogPooling: "shared" } });
+    const system = resolveSceneSettings(scene, storeWith(sd, scene));
+    expect(system.fogPooling).toBe("shared");
+
+    const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fogPooling: "individual" } }, "ws1");
+    const world = resolveSceneSettings(scene, storeWith(sd, ws, scene));
+    expect(world.fogPooling).toBe("individual");
+
+    const overridden = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: "shared" } }, "scene1");
+    const withScene = resolveSceneSettings(overridden, storeWith(sd, ws, overridden));
+    expect(withScene.fogPooling).toBe("shared");
+  });
+
   it("absent bounds resolves to DEFAULT_SCENE_BOUNDS", () => {
     const scene = buildSceneDoc("w1", {}, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -72,7 +90,7 @@ describe("resolveSceneSettings", () => {
 
   it("scene overrides win over world defaults", () => {
     const scene = buildSceneDoc("w1", {
-      vision: { movementRestriction: "revealed", losRestriction: false, fog: null, observerVision: null, movementModel: null },
+      vision: { movementRestriction: "revealed", losRestriction: false, fog: null, observerVision: null, movementModel: null, fogPooling: null },
       lighting: { enabled: false, mode: null, environment: null },
       grid: { kind: "square", size: 100, distance: { perCell: 1.5, unit: "m" } },
     }, "scene1");
@@ -128,7 +146,7 @@ describe("resolveSceneSettings", () => {
   it("movementModel: scene override beats world", () => {
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
+      vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
@@ -140,7 +158,7 @@ describe("resolveSceneSettings", () => {
       scene: { ...DEFAULT_WORLD_SETTINGS.scene, movementModel: "continuous" },
     }, "ws1");
     const scene = buildSceneDoc("w1", {
-      vision: { movementModel: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null },
+      vision: { movementModel: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null },
     }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(ws));
     expect(r.movementModel).toBe("continuous");
@@ -154,7 +172,7 @@ describe("resolveSceneSettings", () => {
   });
 
   it("snapToGrid defaults to false for a continuous scene (derived default)", () => {
-    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null } }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.movementModel).toBe("continuous");
     expect(r.snapToGrid).toBe(false);
@@ -163,7 +181,7 @@ describe("resolveSceneSettings", () => {
   it("snapToGrid: an explicit true overrides the continuous default", () => {
     const scene = buildSceneDoc(
       "w1",
-      { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null }, snapToGrid: true },
+      { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, fogPooling: null }, snapToGrid: true },
       "scene1",
     );
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -706,7 +724,7 @@ describe("system defaults", () => {
   it("resolveSceneSettings folds engine < system < world < scene per field", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
     const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: false, movementRestriction: null, movementModel: null } }, "s1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: false, movementRestriction: null, movementModel: null, fogPooling: null } }, "s1");
     const r = resolveSceneSettings(scene, storeWith(sd, ws, scene));
     expect(r.fog).toBe(true);
     expect(r.observerVision).toBe(false);
@@ -727,7 +745,7 @@ describe("system defaults", () => {
       },
       "ws1",
     );
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "s1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null } }, "s1");
     const storeWithWorld = storeWith(sdDoc, ws, scene);
     expect(resolveSettingProvenance(storeWithWorld, scene, "scene.fog")).toEqual({
       value: true, source: "scene", systemOrEngine: { value: false, source: "system" },

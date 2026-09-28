@@ -1050,6 +1050,8 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // A masked payload whose lit set is a 3×3 cell block in `scene` (5-int cells).
     let mut payload = json!({
@@ -1061,6 +1063,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1094,6 +1097,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1123,6 +1127,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -1144,6 +1149,8 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
     let ghost = crate::test_ids::test_uuid(0xDEAD);
     let grid: std::collections::HashMap<Uuid, f64> = std::collections::HashMap::new();
     let shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     let mut payload = json!({
         "mode": "masked",
@@ -1154,6 +1161,7 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &shapes,
+            fog_pooling: &fog_pooling,
             repo: repo.as_ref(),
             world,
             user,
@@ -1180,6 +1188,8 @@ async fn enrich_see_as_player_is_read_only() {
     let target = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // Seed the target with one explored cell (as if they'd been there).
     let mut seed = crate::scene::explored::ExploredSet::new();
@@ -1205,6 +1215,7 @@ async fn enrich_see_as_player_is_read_only() {
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user: target,
@@ -2908,12 +2919,15 @@ async fn enrich_token_less_player_emits_no_explored() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let grid = std::collections::HashMap::new();
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
     let mut payload = json!({ "mode": "masked", "polygons": [], "lit": [] });
     enrich_vision_explored(
         &mut payload,
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world: crate::test_ids::test_uuid(1),
             user: crate::test_ids::test_uuid(2),
@@ -4558,6 +4572,8 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     let user = crate::test_ids::test_uuid(20);
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
 
     // Two lit groups: a floor-1 source sees cell (0,0); a floor-2 source sees cell (5,5).
     let mut payload = json!({
@@ -4573,6 +4589,7 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -4608,6 +4625,7 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
         ExploredCtx {
             grid: &grid,
             grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
             repo: &repo,
             world,
             user,
@@ -4620,6 +4638,272 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     assert_eq!(emitted.len(), 1);
     assert_eq!(emitted[0]["level"], json!("l2"));
     assert_eq!(emitted[0]["cells"].as_array().unwrap().len(), 2);
+}
+
+/// A scene resolved to `FogPooling::Shared` reads/writes the reserved `Uuid::nil()` bucket, not
+/// the recipient's own `user` id — `enrich_vision_explored` never persists under `user` once
+/// pooling is on.
+#[tokio::test]
+async fn enrich_vision_explored_reads_the_shared_bucket_when_scene_is_pooled() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    assert!(
+        repo.get_explored(scene, "", user).await.unwrap().is_none(),
+        "pooled mode must not write under the real user id"
+    );
+    let pooled = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(
+        pooled.len(),
+        1,
+        "the visible cell landed in the nil-sentinel bucket"
+    );
+}
+
+/// Absent from `fog_pooling` (or explicitly `Individual`) is today's unchanged behavior: the
+/// recipient's own `user` id is the key.
+#[tokio::test]
+async fn enrich_vision_explored_reads_the_individual_bucket_by_default() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    // No entry for `scene`: `enrich_vision_explored` must fall back to `Individual`.
+    let fog_pooling: std::collections::HashMap<Uuid, crate::data::engine::FogPooling> =
+        std::collections::HashMap::new();
+
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &fog_pooling,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    assert!(
+        repo.get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .is_none(),
+        "individual mode must not write under the nil sentinel"
+    );
+    let stored = crate::scene::explored::ExploredSet::from_bytes(
+        &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(stored.len(), 1);
+}
+
+/// The end-to-end pin: two distinct real users produce IDENTICAL `explored` WIRE PAYLOADS for
+/// the same pooled scene, because both keyed reads resolve to the same nil-sentinel bucket. A and
+/// B explore DIFFERENT cells so a broken (per-user) keying would leave each seeing only their own
+/// cell -- a same-cell setup would coincidentally match even when broken, since it discloses
+/// nothing about whose bucket the read actually came from. B's call happens second (folding in A's
+/// cell via the shared bucket), then A re-queries so both comparisons happen after the same writes
+/// have landed; the assertion compares the WIRE payloads themselves, not just repository state.
+#[tokio::test]
+async fn two_different_users_see_the_same_explored_set_under_shared_pooling() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user_a = crate::test_ids::test_uuid(20);
+    let user_b = crate::test_ids::test_uuid(21);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let fog_pooling =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+    let ctx = |user: Uuid| ExploredCtx {
+        grid: &grid,
+        grid_shapes: &grid_shapes,
+        fog_pooling: &fog_pooling,
+        repo: &repo,
+        world,
+        user,
+    };
+
+    // User A explores cell (0,0).
+    let mut payload_a = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_a, ctx(user_a), "", true).await;
+
+    // User B explores a DIFFERENT cell, (1,1).
+    let mut payload_b = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [1, 1, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_b, ctx(user_b), "", true).await;
+
+    // A re-checks with no NEW cell (re-lighting its own already-explored (0,0)) so its second
+    // payload reflects the bucket as it stands after B's write too.
+    let mut payload_a2 = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
+    });
+    enrich_vision_explored(&mut payload_a2, ctx(user_a), "", true).await;
+
+    // The actual property under test: A's post-write view and B's own emitted view are
+    // byte-identical wire frames, each containing BOTH cells -- proof both reads/writes landed
+    // in the one shared bucket rather than two independent per-user buckets that coincidentally
+    // agree.
+    assert_eq!(
+        payload_a2["explored"], payload_b["explored"],
+        "two distinct users on a Shared-pooling scene must receive identical `explored` wire \
+         payloads, not merely agree on repository state"
+    );
+    assert_eq!(
+        payload_b["explored"][0]["cells"].as_array().unwrap().len(),
+        4,
+        "the shared bucket must contain both users' cells: (0,0) and (1,1)"
+    );
+
+    let pool_view = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(pool_view.len(), 2);
+    assert!(
+        repo.get_explored(scene, "", user_a)
+            .await
+            .unwrap()
+            .is_none(),
+        "user A's own id must hold no separate row once pooled"
+    );
+    assert!(
+        repo.get_explored(scene, "", user_b)
+            .await
+            .unwrap()
+            .is_none(),
+        "user B's own id must hold no separate row once pooled"
+    );
+}
+
+/// Flipping the mode does not delete or merge existing rows: the old per-user row survives
+/// under the old key, invisible while `Shared`, and reappears unchanged if flipped back.
+#[tokio::test]
+async fn flipping_pooling_mode_does_not_delete_or_merge_existing_rows() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = crate::test_ids::test_uuid(1);
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(20);
+
+    // Seed an individual-mode row directly (as if explored before any mode flip).
+    let mut individual = crate::scene::explored::ExploredSet::new();
+    individual.mark_cells([(0, 0)]);
+    repo.set_explored(
+        world,
+        scene,
+        "",
+        user,
+        &individual.to_bytes(crate::scene::GridKind::Square),
+    )
+    .await
+    .unwrap();
+
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+    let shared =
+        std::collections::HashMap::from([(scene, crate::data::engine::FogPooling::Shared)]);
+
+    // Flip to Shared and explore a different cell -- writes land in the nil bucket, the
+    // individual row is left untouched.
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [5, 5, 0, 0, -1] }]
+    });
+    enrich_vision_explored(
+        &mut payload,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            fog_pooling: &shared,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
+
+    let old_individual_row = crate::scene::explored::ExploredSet::from_bytes(
+        &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(
+        old_individual_row.len(),
+        1,
+        "the pre-flip individual row is neither deleted nor merged into"
+    );
+    assert!(old_individual_row.contains((0, 0)));
+    assert!(
+        !old_individual_row.contains((5, 5)),
+        "the Shared-mode write did not land in the individual row"
+    );
+
+    let shared_row = crate::scene::explored::ExploredSet::from_bytes(
+        &repo
+            .get_explored(scene, "", uuid::Uuid::nil())
+            .await
+            .unwrap()
+            .unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert!(shared_row.contains((5, 5)));
+    assert!(
+        !shared_row.contains((0, 0)),
+        "the shared bucket starts empty; nothing was migrated into it"
+    );
 }
 
 #[test]

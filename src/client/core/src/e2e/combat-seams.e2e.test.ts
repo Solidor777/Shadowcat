@@ -131,7 +131,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
       bounds: { width: 1000, height: 1000 },
       // Unrestricted: no vision/lighting is authored, so a player's default `Visible` movement
       // restriction would see (and therefore route through) nothing at all.
-      vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null },
+      vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null, fogPooling: null },
       combat: { movementResource: "movement", interpretation: "per_cell", enforcement: "warn" },
     },
     sceneId,

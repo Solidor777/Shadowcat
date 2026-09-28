@@ -10,6 +10,7 @@ import type { FootprintExtent } from "./footprints";
 import type {
   MovementRestriction,
   MovementModel,
+  FogPooling,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -116,6 +117,7 @@ import type {
 export type {
   MovementRestriction,
   MovementModel,
+  FogPooling,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -280,6 +282,7 @@ export const DEFAULT_WORLD_SETTINGS: {
     movementRestriction: "visible",
     movementModel: "grid-stepped",
     partialCellLeniency: true,
+    fogPooling: "individual",
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
@@ -304,6 +307,9 @@ export interface ResolvedSceneSettings {
   /** The movement/routing engine this scene uses (grid vs continuous); scene `vision` override,
    * else the world default. */
   movementModel: MovementModel;
+  /** Which `explored_fog` bucket this scene's players accumulate into; scene `vision` override,
+   * else the world default. */
+  fogPooling: FogPooling;
   /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
@@ -646,6 +652,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     observerVision: v?.observerVision ?? world?.scene?.observerVision ?? system?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision,
     movementRestriction: v?.movementRestriction ?? world?.scene?.movementRestriction ?? system?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction,
     movementModel,
+    fogPooling: v?.fogPooling ?? world?.scene?.fogPooling ?? system?.scene?.fogPooling ?? DEFAULT_WORLD_SETTINGS.scene.fogPooling,
     // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
@@ -1529,6 +1536,8 @@ export function resolveSettingProvenance(
       return resolvePick(v?.movementRestriction, world?.scene?.movementRestriction, system?.scene?.movementRestriction, DEFAULT_WORLD_SETTINGS.scene.movementRestriction);
     case "scene.movementModel":
       return resolvePick(v?.movementModel, world?.scene?.movementModel, system?.scene?.movementModel, DEFAULT_WORLD_SETTINGS.scene.movementModel);
+    case "scene.fogPooling":
+      return resolvePick(v?.fogPooling, world?.scene?.fogPooling, system?.scene?.fogPooling, DEFAULT_WORLD_SETTINGS.scene.fogPooling);
     case "scene.partialCellLeniency":
       return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":

@@ -235,6 +235,29 @@ pub struct Grid {
     pub distance: Option<GridDistance>,
 }
 
+/// Which `explored_fog` bucket a scene's players accumulate into:
+/// `Individual` keys memory per real `user_id` (today's behavior); `Shared`
+/// pools every player's exploration into one bucket, keyed by the reserved
+/// `Uuid::nil()` sentinel (`scene::explored::explored_fog_key`) — no schema
+/// change, since `Uuid::new_v4()` can never produce the nil UUID.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FogPooling;
+///
+/// assert_ne!(FogPooling::Individual, FogPooling::Shared);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum FogPooling {
+    /// Every player accumulates their own explored-fog memory (today's behavior).
+    Individual,
+    /// Every player reads/writes the SAME explored-fog memory for this scene.
+    Shared,
+}
+
 /// Per-scene overrides for vision behaviour; absent fields fall back to world
 /// defaults. `null` is a valid wire value (the UI writes null to clear an
 /// override); resolvers use `??`, so `null`/absent are semantically
@@ -252,6 +275,7 @@ pub struct Grid {
 ///     observer_vision: None,
 ///     movement_restriction: None,
 ///     movement_model: None,
+///     fog_pooling: None,
 /// };
 /// assert_eq!(overrides.los_restriction, Some(true));
 /// ```
@@ -274,6 +298,9 @@ pub struct SceneVisionOverrides {
     /// Movement-engine override.
     #[serde(default)]
     pub movement_model: Option<MovementModel>,
+    /// Explored-fog pooling override (see `FogPooling`).
+    #[serde(default)]
+    pub fog_pooling: Option<FogPooling>,
 }
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
@@ -444,6 +471,8 @@ pub struct WorldSceneDefaults {
     pub movement_model: MovementModel,
     /// Grid gate counts a cell partially inside vision as reachable.
     pub partial_cell_leniency: bool,
+    /// Default explored-fog pooling mode (see `FogPooling`).
+    pub fog_pooling: FogPooling,
 }
 
 /// A scene's ambient playlist override: when this scene becomes the world's active scene
@@ -707,6 +736,7 @@ impl Default for WorldSceneDefaults {
             movement_restriction: MovementRestriction::Visible,
             movement_model: MovementModel::GridStepped,
             partial_cell_leniency: true,
+            fog_pooling: FogPooling::Individual,
         }
     }
 }

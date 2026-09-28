@@ -976,6 +976,7 @@ fn engine_literal_defaults_match_client_default() {
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
+            "fogPooling": "individual",
         })
     );
     assert_eq!(

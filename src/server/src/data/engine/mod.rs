@@ -46,10 +46,10 @@ pub use registries::{
 };
 pub use scene::{
     AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
-    FalloffCurve, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode,
-    MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, SceneDimensions,
-    SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
-    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
+    FalloffCurve, FogPooling, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine,
+    LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception,
+    SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides,
+    VisionMode, VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
     MAX_SCENE_LEVELS,
 };
 pub use system_defaults::{

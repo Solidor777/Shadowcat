@@ -459,3 +459,20 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
         .unwrap_or(0);
     assert_eq!(leftovers, 0);
 }
+
+#[test]
+fn a_pre_pooling_fog_row_deserializes_with_the_prior_semantics() {
+    // The row shape a bundle written before per-level fog and pooling existed carries: no
+    // `level_id`, no `pool` key at all — every such row is a real user's own ground-level
+    // memory, so the defaults must reproduce EXACTLY that, not an approximation.
+    let legacy = serde_json::json!({
+        "scene_id": crate::test_ids::test_uuid(200),
+        "username": "mock_player",
+        "cells": [1, 0, 1]
+    });
+    let row: crate::data::world_bundle::ExportedFogRow =
+        serde_json::from_value(legacy).expect("a pre-pooling bundle row must still import");
+    assert_eq!(row.level_id, "", "absent level_id means the ground level");
+    assert!(!row.pool, "absent pool means a real, resolved user");
+    assert_eq!(row.username, Some("mock_player".to_string()));
+}

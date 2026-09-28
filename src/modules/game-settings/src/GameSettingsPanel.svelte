@@ -207,6 +207,7 @@
   const MOVEMENT = ["visible", "revealed", "unrestricted"] as const;
   const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
+  const FOG_POOLING = ["individual", "shared"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal"] as const;
   const EASING = ["easeInOut", "linear"] as const;
@@ -484,6 +485,15 @@
       </select>
     </label>
     {@render provControl("scene.movementModel", wsys.scene?.movementModel, "gameSettings.movementModel")}
+
+    <label>
+      {ctx.t("gameSettings.fogPooling")}
+      <select aria-label={ctx.t("gameSettings.fogPooling")} value={prov("scene.fogPooling").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/fogPooling", wsys.scene?.fogPooling, (e.currentTarget as HTMLSelectElement).value)}>
+        {#each FOG_POOLING as f}<option value={f}>{f === "individual" ? ctx.t("gameSettings.fogPoolingIndividual") : ctx.t("gameSettings.fogPoolingShared")}</option>{/each}
+      </select>
+    </label>
+    {@render provControl("scene.fogPooling", wsys.scene?.fogPooling, "gameSettings.fogPooling")}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
@@ -888,6 +898,19 @@
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.fogPooling")}
+        <select aria-label={ctx.t("gameSettings.scene.fogPooling")}
+          value={ssys.vision?.fogPooling ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/fogPooling", ssys.vision?.fogPooling ?? null, v === "" ? null : v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each FOG_POOLING as f}<option value={f}>{f === "individual" ? ctx.t("gameSettings.fogPoolingIndividual") : ctx.t("gameSettings.fogPoolingShared")}</option>{/each}
         </select>
       </label>
 

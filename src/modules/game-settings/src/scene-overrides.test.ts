@@ -71,7 +71,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate scene with fog explicitly set to true; selecting inherit clears it with null.
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.fog") as HTMLSelectElement;
@@ -89,7 +89,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate the scene with a movementRestriction override already set.
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: "unrestricted", movementModel: null, fogPooling: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.movementRestriction") as HTMLSelectElement;
@@ -162,7 +162,7 @@ describe("per-scene overrides", () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate the scene with a movementModel override already set.
-    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: "continuous" } }, "scene1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: "continuous", fogPooling: null } }, "scene1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.scene.movementModel") as HTMLSelectElement;
@@ -171,6 +171,36 @@ describe("per-scene overrides", () => {
 
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/movementModel", old: "continuous", new: null }] },
+    ]);
+  });
+
+  it("setting fog pooling override writes to the selected scene doc", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.fogPooling") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "shared" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/fogPooling", old: null, new: "shared" }] },
+    ]);
+  });
+
+  it("selecting inherit on an already-set fogPooling override dispatches null to clear it", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // Pre-populate the scene with a fogPooling override already set.
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: "shared" } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.fogPooling") as HTMLSelectElement;
+    // The control reflects the current override ("shared"); selecting "" clears it to null.
+    await fireEvent.change(sel, { target: { value: "" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/fogPooling", old: "shared", new: null }] },
     ]);
   });
 

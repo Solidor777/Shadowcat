@@ -10,10 +10,27 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use crate::data::engine::FogPooling;
 use crate::scene::grid_shape::{exceeds_cell_cap, GridShape};
 use crate::scene::vision;
 use crate::scene::GridKind;
 use std::collections::BTreeSet;
+use uuid::Uuid;
+
+/// The `explored_fog` key a caller should read/write for `user` under `pooling`: `user` itself
+/// under `FogPooling::Individual` (today's behavior, unchanged), or the reserved
+/// `Uuid::nil()` sentinel under `FogPooling::Shared` — every player then reads/writes the SAME
+/// bucket for that scene. Safe with no schema change because `Uuid::new_v4()` (how every real
+/// user id is generated) can never produce the nil UUID, so the sentinel is unambiguously
+/// distinguishable from any real user. `ws::conn::enrich_vision_explored` is the sole caller,
+/// computing this once per (scene, user) pair and passing the result to BOTH its
+/// `Repository::get_explored`/`Repository::set_explored` calls — never `user` directly.
+pub(crate) fn explored_fog_key(pooling: FogPooling, user: Uuid) -> Uuid {
+    match pooling {
+        FogPooling::Individual => user,
+        FogPooling::Shared => Uuid::nil(),
+    }
+}
 
 /// Magic prefix of a serialized `ExploredSet`. A blob without it states no coordinate system for
 /// its records and is unusable rather than assumed.

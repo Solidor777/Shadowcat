@@ -78,7 +78,7 @@ function setupRoute(over: {
             ? {
                 vision: {
                   losRestriction: null, fog: null, observerVision: null, movementRestriction: null,
-                  movementModel: over.sceneVision.movementModel ?? null,
+                  movementModel: over.sceneVision.movementModel ?? null, fogPooling: null,
                 },
               }
             : {}),
@@ -676,7 +676,7 @@ function seedRouteCtx(over: {
             ? {
                 vision: {
                   losRestriction: null, fog: null, observerVision: null, movementRestriction: null,
-                  movementModel: over.sceneVision.movementModel ?? null,
+                  movementModel: over.sceneVision.movementModel ?? null, fogPooling: null,
                 },
               }
             : {}),

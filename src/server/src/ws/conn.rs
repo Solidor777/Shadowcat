@@ -1236,11 +1236,27 @@ async fn reset_explored_fog_scene_ok(
 /// the same generic `ServerMsg::Error { code: Forbidden }` frame for a non-GM sender and for a
 /// scene absent from this world — mirroring the uniform-rejection shape every other GM-only
 /// intent uses, even though a GM's own action naming a scene in their own world discloses
-/// nothing new to them. On success the matching `explored_fog` rows are deleted and
-/// `ServerMsg::ExploredFogReset` is broadcast out-of-band to the room via `Room::broadcast_aux`
-/// (no seq, mirrors `ScenePing`); `egress_loop`'s dedicated arm arms every connection's own
-/// debounced scene-channel re-eval on receipt, so the next `"vision"` push (for every affected
-/// connection, including the resetting GM's own) reflects the cleared rows.
+/// nothing new to them. **A `user`-scoped reset is additionally refused outright, with its own
+/// distinct `BadMessage` (never `Forbidden` — this is a semantic conflict with the scene's
+/// current mode, not an authorization failure) error, when the scene resolves to
+/// `FogPooling::Shared`.** Under Shared pooling there is only ONE explored memory for the whole
+/// scene — a per-user row is never read (`ws::conn::enrich_vision_explored`'s own key derivation
+/// never keys on `user` there), so `Repository::reset_explored_fog(scene, level, Some(user))`
+/// would match zero rows while this function still reported success and broadcast
+/// `ServerMsg::ExploredFogReset`, letting a GM believe they wiped one player's memory when they
+/// changed nothing. The alternative of silently remapping the requested `user` onto the pool
+/// sentinel is REJECTED on purpose: "reset this one player" wiping every player's shared memory
+/// is worse than refusing outright. The UNSCOPED path (`user: None`) is unaffected and stays
+/// exactly as it was — it already deletes every row for the scene regardless of `user_id`,
+/// which already includes the pool's own nil-sentinel row. The mode is resolved through the
+/// SAME `SceneEcs::resolve_scene` the live `\"vision\"` read path folds `fog_pooling` through
+/// (never a second way to learn a scene's mode) — this is GM-gated already (the check above),
+/// so the refusal discloses nothing a GM may not already know about their own scene. On success
+/// the matching `explored_fog` rows are deleted and `ServerMsg::ExploredFogReset` is broadcast
+/// out-of-band to the room via `Room::broadcast_aux` (no seq, mirrors `ScenePing`);
+/// `egress_loop`'s dedicated arm arms every connection's own debounced scene-channel re-eval on
+/// receipt, so the next `"vision"` push (for every affected connection, including the resetting
+/// GM's own) reflects the cleared rows.
 async fn handle_reset_explored_fog(
     room: &crate::ws::room::Room,
     repo: &SqliteRepository,
@@ -1259,6 +1275,17 @@ async fn handle_reset_explored_fog(
     }
     if !reset_explored_fog_scene_ok(scene, world_id, repo).await {
         return Some(forbidden);
+    }
+    if user.is_some() {
+        let pooling = room.scene().read().await.resolve_scene(scene).fog_pooling;
+        if pooling == crate::data::engine::FogPooling::Shared {
+            return Some(ServerMsg::Error {
+                code: WsErrorCode::BadMessage,
+                message: "cannot reset one player's explored fog on a shared-pooling scene; \
+                          reset the whole scene instead"
+                    .into(),
+            });
+        }
     }
     if repo
         .reset_explored_fog(scene, level.as_deref(), user)
@@ -1676,6 +1703,9 @@ struct ExploredCtx<'a> {
         Uuid,
         Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
     >,
+    /// Each subscribed scene's resolved `FogPooling` mode, captured under the same ECS read lock
+    /// as `grid`/`grid_shapes` (`SceneEcs::scene_fog_pooling`).
+    fog_pooling: &'a std::collections::HashMap<Uuid, crate::data::engine::FogPooling>,
     /// The repository `get_explored`/`set_explored` persist explored-fog blobs through.
     repo: &'a SqliteRepository,
     /// The world the explored-fog blob is persisted under.
@@ -1709,6 +1739,7 @@ async fn enrich_vision_explored(
     let ExploredCtx {
         grid,
         grid_shapes,
+        fog_pooling,
         repo,
         world,
         user,
@@ -1770,19 +1801,24 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
-        let mut set = match repo.get_explored(scene, &group_level, user).await {
+        // The bucket this recipient reads/writes for THIS scene: their own `user` id under
+        // `Individual` pooling (today's behavior), or the reserved shared-pool sentinel under
+        // `Shared` — computed once, consumed by BOTH calls below, never `user` directly. Absent
+        // from `fog_pooling` cannot happen alongside a present `grid`/`grid_shapes` entry (both
+        // maps are built from the same live-scene scan under the same ECS read lock), but falls
+        // back to `Individual` rather than panicking if that parity is ever broken.
+        let pooling = fog_pooling
+            .get(&scene)
+            .copied()
+            .unwrap_or(crate::data::engine::FogPooling::Individual);
+        let key = crate::scene::explored::explored_fog_key(pooling, user);
+        let mut set = match repo.get_explored(scene, &group_level, key).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_cells(visible) > 0 {
             let _ = repo
-                .set_explored(
-                    world,
-                    scene,
-                    &group_level,
-                    user,
-                    &set.to_bytes(shape.kind()),
-                )
+                .set_explored(world, scene, &group_level, key, &set.to_bytes(shape.kind()))
                 .await;
         }
         // Emission is scoped to the recipient's VIEWED level: every level's memory grew above,
@@ -2440,14 +2476,14 @@ async fn egress_loop<S>(
                         // Read the ECS and the seq it reflects under one borrow, then drop it before
                         // awaiting the sink. Grid sizes are captured under the same lock for the
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
-                        let (payload, seq, grid, grid_shapes) = {
+                        let (payload, seq, grid, grid_shapes, fog_pooling) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes(), ecs.scene_fog_pooling())
                         };
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
+                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, fog_pooling: &fog_pooling, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -2682,7 +2718,7 @@ async fn egress_loop<S>(
                 // Re-evaluate derived scene subscriptions against the current ECS, each with its
                 // own effective view ctx (own, or a GM see-as target); push only when a channel's
                 // payload changed. The read borrow is dropped before awaiting the sink.
-                let (seq, snapshot, grid, grid_shapes) = {
+                let (seq, snapshot, grid, grid_shapes, fog_pooling) = {
                     let ecs = room.scene().read().await;
                     let mut out = Vec::new();
                     for (id, s) in scene_subs.iter() {
@@ -2694,14 +2730,14 @@ async fn egress_loop<S>(
                             crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
-                    (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                    (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes(), ecs.scene_fog_pooling())
                 };
                 for (id, channel, view_ctx, level, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
                             // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
                             let accumulate = view_ctx.user_id == ctx.user_id;
-                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
+                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, fog_pooling: &fog_pooling, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {

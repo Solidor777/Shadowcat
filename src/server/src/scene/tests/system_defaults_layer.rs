@@ -150,3 +150,71 @@ fn apply_op_hydrates_and_retires_the_system_defaults_doc() {
     ecs.apply_op(&Operation::Delete { doc: sd });
     assert!(ecs.system_defaults_doc().is_none());
 }
+
+/// `fog_pooling` folds through the SAME per-leaf chain every other `SceneVisionOverrides` field
+/// uses — engine literal (`Individual`) < system-defaults < world-settings < per-scene override.
+#[test]
+fn fog_pooling_resolves_through_system_world_and_scene_layers() {
+    let mut ecs = SceneEcs::new();
+    let scene_id = crate::test_ids::test_uuid(7);
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+    );
+    assert_eq!(
+        ecs.resolve_scene(scene_id).fog_pooling,
+        crate::data::engine::FogPooling::Individual,
+        "the engine-literal default with no system/world/scene layer present"
+    );
+
+    ecs.set_system_defaults_for_test(json!({ "scene": { "fogPooling": "shared" } }));
+    assert_eq!(
+        ecs.resolve_scene(scene_id).fog_pooling,
+        crate::data::engine::FogPooling::Shared,
+        "system-defaults beats the engine literal"
+    );
+
+    ecs.set_world_settings_for_test(ws_body(&[("/scene/fogPooling", json!("individual"))]));
+    assert_eq!(
+        ecs.resolve_scene(scene_id).fog_pooling,
+        crate::data::engine::FogPooling::Individual,
+        "world-settings beats system-defaults"
+    );
+
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({
+            "grid": { "kind": "square", "size": 100 }, "background": null,
+            "vision": { "fogPooling": "shared" }
+        }),
+    );
+    assert_eq!(
+        ecs.resolve_scene(scene_id).fog_pooling,
+        crate::data::engine::FogPooling::Shared,
+        "a per-scene override beats world-settings"
+    );
+}
+
+/// `SceneEcs::scene_fog_pooling` is a per-scene MAP of the exact value `resolve_scene` folds —
+/// the map `ws::conn::enrich_vision_explored` reads, captured under the ECS lock.
+#[test]
+fn scene_fog_pooling_map_reflects_resolve_scene_per_scene() {
+    let mut ecs = SceneEcs::new();
+    let pooled = crate::test_ids::test_uuid(7);
+    let unpooled = crate::test_ids::test_uuid(8);
+    ecs.insert_scene_for_test(
+        pooled,
+        json!({
+            "grid": { "kind": "square", "size": 100 }, "background": null,
+            "vision": { "fogPooling": "shared" }
+        }),
+    );
+    ecs.insert_scene_for_test(
+        unpooled,
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+    );
+    let map = ecs.scene_fog_pooling();
+    assert_eq!(map.len(), 2);
+    assert_eq!(map[&pooled], crate::data::engine::FogPooling::Shared);
+    assert_eq!(map[&unpooled], crate::data::engine::FogPooling::Individual);
+}
