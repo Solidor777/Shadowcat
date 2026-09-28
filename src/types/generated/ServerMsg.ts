@@ -241,7 +241,19 @@ user: string,
 /**
  * The emote glyph(s).
  */
-emote: string, } | { "type": "scrolling_text", 
+emote: string, } | { "type": "explored_fog_reset", 
+/**
+ * The scene whose explored memory was reset.
+ */
+scene: string, 
+/**
+ * The user the reset was scoped to, or `None` for every user.
+ */
+user: string | null, 
+/**
+ * The level the reset was scoped to, or `None` for every level.
+ */
+level: string | null, } | { "type": "scrolling_text", 
 /**
  * Scene the token stands on.
  */

@@ -148,6 +148,26 @@ pub enum ClientMsg {
         /// The emote glyph(s); 1..=16 bytes.
         emote: String,
     },
+    /// GM-only: purge `scene::explored::ExploredSet` memory (the persisted `explored_fog`
+    /// rows), scoped to `scene` and, when present, to one `user` and/or one `level`. Refused
+    /// with a generic `Error { code: Forbidden }` for a non-GM sender or for a scene absent
+    /// from this world — the same uniform-rejection shape every other GM-only intent uses.
+    /// On success the matching rows are deleted and `ServerMsg::ExploredFogReset` is broadcast
+    /// out-of-band to the room so every affected connection's next `"vision"` push reflects the
+    /// cleared memory.
+    ResetExploredFog {
+        /// The scene whose explored memory is reset.
+        scene: Uuid,
+        /// Limit the reset to one user's memory; `None` clears every user's.
+        #[serde(default)]
+        #[ts(optional)]
+        user: Option<Uuid>,
+        /// Limit the reset to one level (`scene::elevation::level_of`'s id); `None` clears
+        /// every level.
+        #[serde(default)]
+        #[ts(optional)]
+        level: Option<String>,
+    },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
     /// scene coords; `waypoints`' LAST element is the goal. The route is mask-bounded for non-GM
     /// requesters.
@@ -1245,6 +1265,22 @@ pub enum ServerMsg {
         user: Uuid,
         /// The emote glyph(s).
         emote: String,
+    },
+    /// A GM's `ResetExploredFog` intent took effect: `scene::explored::ExploredSet` rows for
+    /// `scene` (scoped to `user`/`level` exactly as the request was) were deleted. Out-of-band
+    /// (no seq, never buffered/resynced), mirroring `ScenePing` — carries only IDs already
+    /// known to every room member, no geometry, no explored-cell contents. `egress_loop` arms
+    /// this connection's own debounced scene-channel re-eval on receipt (mirroring
+    /// `AudioListenAs`'s leading-edge arm) so the affected connection's next `"vision"` push
+    /// reflects the cleared rows; delivered to every connection in the room, including the
+    /// resetting GM's own, so their client sees the reset too.
+    ExploredFogReset {
+        /// The scene whose explored memory was reset.
+        scene: Uuid,
+        /// The user the reset was scoped to, or `None` for every user.
+        user: Option<Uuid>,
+        /// The level the reset was scoped to, or `None` for every level.
+        level: Option<String>,
     },
     /// A region-triggered floating overlay over a token — the server-authored twin of `Emote`,
     /// with its own length bound at INGRESS (`chat::MAX_MESSAGE_CHARS`, the SAME bound

@@ -1722,6 +1722,48 @@ describe("WsClient", () => {
     client.audioListenAs(null);
     expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: null });
   });
+
+  it("resetExploredFog sends the fire-and-forget reset_explored_fog frame, scoped and unscoped", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.resetExploredFog("scene-1");
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "reset_explored_fog",
+      scene: "scene-1",
+      user: undefined,
+      level: undefined,
+    });
+    client.resetExploredFog("scene-1", { user: "u1", level: "l1" });
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "reset_explored_fog",
+      scene: "scene-1",
+      user: "u1",
+      level: "l1",
+    });
+  });
+
+  it("an explored_fog_reset server frame invokes onExploredFogReset with every field mapped", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onExploredFogReset: (m) => received.push(m) },
+    });
+    await client.start();
+    onMessage(
+      JSON.stringify({ type: "explored_fog_reset", scene: "scene-1", user: "u1", level: "l1" }),
+    );
+    expect(received).toEqual([{ scene: "scene-1", user: "u1", level: "l1" }]);
+  });
 });
 
 describe("WsClient VFX frames", () => {

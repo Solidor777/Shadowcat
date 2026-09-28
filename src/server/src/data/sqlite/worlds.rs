@@ -224,6 +224,57 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// GM-only fog reset: delete every `explored_fog` row for `scene`, optionally narrowed to
+    /// one `level` and/or one `user`. A FOURTH purge trigger alongside `delete_document_tx`
+    /// (scene delete), `delete_world` (world delete) and `delete_user` (user delete) — none of
+    /// those paths are touched by this addition. One parameterized query with conditionally
+    /// included clauses, mirroring `query_documents_by_types`'s own conditional-clause-plus-
+    /// per-optionality-bind style rather than one near-duplicate query per optionality
+    /// combination. `Ok(())` regardless of whether any row matched — the caller (a GM resetting
+    /// an already-empty scene) is not an error case.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = uuid::Uuid::nil();
+    /// let (scene, user) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    /// repo.set_explored(world, scene, "", user, &[1, 2, 3]).await?;
+    /// repo.reset_explored_fog(scene, None, None).await?;
+    /// assert_eq!(repo.get_explored(scene, "", user).await?, None);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn reset_explored_fog(
+        &self,
+        scene: Uuid,
+        level: Option<&str>,
+        user: Option<Uuid>,
+    ) -> Result<(), DataError> {
+        let mut sql = String::from("DELETE FROM explored_fog WHERE scene_id = ?");
+        if level.is_some() {
+            sql.push_str(" AND level_id = ?");
+        }
+        if user.is_some() {
+            sql.push_str(" AND user_id = ?");
+        }
+        // The interpolated segments are fixed clause literals selected by which optional
+        // parameter is present, never caller-supplied string content — every actual value
+        // (scene, level, user) is bound as a parameter below, so this is not injectable.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(scene.to_string());
+        if let Some(level) = level {
+            q = q.bind(level.to_string());
+        }
+        if let Some(user) = user {
+            q = q.bind(user.to_string());
+        }
+        q.execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Read one key from the server-global `settings` table (e.g. the persisted
     /// session key), or `None`.
     ///

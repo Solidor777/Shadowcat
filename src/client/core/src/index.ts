@@ -60,6 +60,8 @@ export type {
   MoveLightSample,
   MoveStream,
   VfxNotice,
+  ResetExploredFogOptions,
+  ExploredFogResetNotice,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,

@@ -138,6 +138,7 @@
     snapModePreference,
     sendPing: (x, y) => session.sendPing(x, y),
     sendEmote: (token, emote) => session.sendEmote(token, emote),
+    resetExploredFog: (scene, opts) => session.resetExploredFog(scene, opts),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),

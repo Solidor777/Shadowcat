@@ -236,6 +236,29 @@ export interface EmoteNotice {
   emote: string;
 }
 
+/**
+ * A GM's `reset_explored_fog` intent took effect (`WsClientHandlers.onExploredFogReset`);
+ * carries no seq. Delivered to every connection in the room, including the resetting GM's
+ * own; there is no client-side action required beyond letting the next "vision" push
+ * (which the server re-computes on receipt) reflect the cleared memory.
+ */
+export interface ExploredFogResetNotice {
+  /** The scene whose explored memory was reset. */
+  scene: string;
+  /** The user the reset was scoped to, or `null` for every user. */
+  user: string | null;
+  /** The level the reset was scoped to, or `null` for every level. */
+  level: string | null;
+}
+
+/** Optional scope for `WsClient.resetExploredFog`/`AppContext.resetExploredFog`. */
+export interface ResetExploredFogOptions {
+  /** Limit the reset to one user's memory; omit to clear every user's. */
+  user?: string;
+  /** Limit the reset to one level; omit to clear every level. */
+  level?: string;
+}
+
 /** A region-triggered scrolling-text overlay (`WsClientHandlers.onScrollingText`); carries no seq. */
 export interface ScrollingTextNotice {
   /** The scene the token stands on. */
@@ -392,6 +415,11 @@ export interface WsClientHandlers {
   /** An out-of-band region-triggered scrolling-text overlay (carries no seq).
    * @param msg The overlay's scene, token, text, and GM-only secrecy flag. */
   onScrollingText?(msg: ScrollingTextNotice): void;
+  /** A GM's `reset_explored_fog` intent took effect (carries no seq); delivered to every
+   * connection in the room. No client action is required — the next "vision" push already
+   * reflects the cleared memory — this exists for UI feedback only.
+   * @param msg The reset's scene and its user/level scope. */
+  onExploredFogReset?(msg: ExploredFogResetNotice): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -1263,6 +1291,11 @@ export class WsClient {
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
         );
         break;
+      case "explored_fog_reset":
+        this.safeEmit(() =>
+          this.opts.handlers.onExploredFogReset?.({ scene: msg.scene, user: msg.user, level: msg.level }),
+        );
+        break;
       case "scrolling_text":
         this.safeEmit(() =>
           this.opts.handlers.onScrollingText?.({
@@ -1621,6 +1654,24 @@ export class WsClient {
    */
   audioListenAs(token: string | null): void {
     this.send({ type: "audio_listen_as", token });
+  }
+
+  /**
+   * GM-only: purge explored-fog memory for `scene`, optionally narrowed to one user and/or
+   * one level. Fire-and-forget on the wire: there is no correlated success reply (the
+   * `explored_fog_reset` broadcast — delivered to every connection, including this one — is
+   * the confirmation); a refusal arrives as a generic `onError`.
+   * @param scene The scene whose explored memory is reset.
+   * @param opts Optionally narrow the reset to one `user` and/or one `level`.
+   * @example
+   * ```ts
+   * declare const client: WsClient;
+   * client.resetExploredFog("scene-1");
+   * client.resetExploredFog("scene-1", { user: "player-1" });
+   * ```
+   */
+  resetExploredFog(scene: string, opts?: ResetExploredFogOptions): void {
+    this.send({ type: "reset_explored_fog", scene, user: opts?.user, level: opts?.level });
   }
 
   /**

@@ -122,7 +122,20 @@ token: string,
 /**
  * The emote glyph(s); 1..=16 bytes.
  */
-emote: string, } | { "type": "pathfind", 
+emote: string, } | { "type": "reset_explored_fog", 
+/**
+ * The scene whose explored memory is reset.
+ */
+scene: string, 
+/**
+ * Limit the reset to one user's memory; `None` clears every user's.
+ */
+user?: string, 
+/**
+ * Limit the reset to one level (`scene::elevation::level_of`'s id); `None` clears
+ * every level.
+ */
+level?: string, } | { "type": "pathfind", 
 /**
  * Correlation token for `PathResult`/`PathError`.
  */

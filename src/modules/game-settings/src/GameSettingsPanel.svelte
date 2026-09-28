@@ -919,6 +919,11 @@
         </select>
       </label>
 
+      <button type="button" data-testid="reset-explored-fog"
+        onclick={() => ctx.resetExploredFog(scene.id)}>
+        {ctx.t("gameSettings.scene.resetExploredFog")}
+      </button>
+
       <label>
         {ctx.t("gameSettings.scene.observerVision")}
         <select aria-label={ctx.t("gameSettings.scene.observerVision")}
@@ -1108,7 +1113,7 @@
 
 <style lang="scss">
   input,
-  .reset-to-system {
+  button {
     @media (pointer: coarse) {
       min-height: var(--input-height-coarse);
     }

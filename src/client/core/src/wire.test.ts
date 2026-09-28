@@ -326,6 +326,27 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound explored_fog_reset frame, scoped and unscoped", () => {
+    const scoped = parseServerMsg(
+      JSON.stringify({ type: "explored_fog_reset", scene: "s1", user: "u1", level: "l1" }),
+    );
+    expect(scoped?.type).toBe("explored_fog_reset");
+    if (scoped?.type === "explored_fog_reset") {
+      expect(scoped.scene).toBe("s1");
+      expect(scoped.user).toBe("u1");
+      expect(scoped.level).toBe("l1");
+    }
+
+    const unscoped = parseServerMsg(
+      JSON.stringify({ type: "explored_fog_reset", scene: "s1", user: null, level: null }),
+    );
+    expect(unscoped?.type).toBe("explored_fog_reset");
+    if (unscoped?.type === "explored_fog_reset") {
+      expect(unscoped.user).toBeNull();
+      expect(unscoped.level).toBeNull();
+    }
+  });
+
   it("parses an inbound emote frame", () => {
     const m = parseServerMsg(
       JSON.stringify({ type: "emote", scene: "s1", token: "t1", user: "u1", emote: "😀" }),
@@ -607,6 +628,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
     scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",

@@ -54,6 +54,7 @@ import {
   type MoveStream,
   type VfxNotice,
   type VfxPlayRequest,
+  type ResetExploredFogOptions,
   type SubscriptionHandle,
   type WireSearchHit,
   type ClientMsg,
@@ -1009,6 +1010,24 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
+  }
+
+  /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+   * and/or one `level`. No-op when disconnected. The server re-authorizes `WorldRole.Gm`
+   * and refuses a non-GM sender or a scene outside this world generically, so this is
+   * client-advisory only — every connection's next `"vision"` push (this one included)
+   * reflects the cleared memory once the server's `explored_fog_reset` broadcast arrives.
+   * @param scene The scene whose explored memory is reset.
+   * @param opts Optionally narrow the reset to one `user` and/or one `level`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const sceneId: string;
+   * session.resetExploredFog(sceneId);
+   * ```
+   */
+  resetExploredFog(scene: string, opts?: ResetExploredFogOptions): void {
+    this.#ws?.resetExploredFog(scene, opts);
   }
 
   /** Subscribe to relayed VFX one-shots (incl. our own echo); returns an unsubscribe.

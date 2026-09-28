@@ -88,6 +88,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     tokenSelection: over.tokenSelection ?? new TokenSelection(),
     sendPing: over.sendPing ?? (() => {}),
     sendEmote: over.sendEmote ?? (() => {}),
+    resetExploredFog: over.resetExploredFog ?? (() => {}),
     pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
     moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
     toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),

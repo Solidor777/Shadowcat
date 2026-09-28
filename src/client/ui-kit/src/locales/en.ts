@@ -444,6 +444,7 @@ export const en: Messages = {
   "gameSettings.scene.movementModel": "Movement model (override)",
   "gameSettings.scene.losRestriction": "Line-of-sight restriction (override)",
   "gameSettings.scene.fog": "Fog of war (override)",
+  "gameSettings.scene.resetExploredFog": "Reset explored fog",
   "gameSettings.scene.observerVision": "Observer vision (override)",
   "gameSettings.scene.lightingEnabled": "Lighting enabled (override)",
   "gameSettings.scene.lightMode": "Light mode (override)",

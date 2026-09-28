@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -279,6 +279,13 @@ export interface AppContext {
    * re-authorizes effective ownership (GM exempt) and drops an over-reaching send
    * silently, so callers may offer this client-advisory only. */
   sendEmote: (token: string, emote: string) => void;
+  /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+   * and/or one `level`. Fire-and-forget: the server re-authorizes `WorldRole.Gm` and refuses
+   * a non-GM sender or a scene outside this world with a generic error, so callers may offer
+   * this client-advisory only. Every connection's next `"vision"` push (including the
+   * caller's own) reflects the cleared memory once the server's `explored_fog_reset`
+   * broadcast arrives — no local state to update. */
+  resetExploredFog: (scene: string, opts?: ResetExploredFogOptions) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
    * with the computed path + cost, rejects on unreachable or timeout. Thin
    * transport mirror — no client-side path logic. `token`, when given, names the

@@ -1006,6 +1006,20 @@ export type ServerMsg =
       emote: string;
     }
   | {
+      /** A GM's `reset_explored_fog` intent took effect: explored-fog memory for `scene`
+       * (scoped to `user`/`level` exactly as the request was) was deleted server-side.
+       * Out-of-band (no seq, never buffered/resynced), mirroring `scene_ping` — carries only
+       * IDs already known to every room member, no geometry, no explored-cell contents.
+       * Delivered to every connection in the room, including the resetting GM's own. */
+      type: "explored_fog_reset";
+      /** The scene whose explored memory was reset. */
+      scene: string;
+      /** The user the reset was scoped to, or `null` for every user. */
+      user: string | null;
+      /** The level the reset was scoped to, or `null` for every level. */
+      level: string | null;
+    }
+  | {
       /** A region-triggered floating overlay over a token: the server-authored twin of
        * `emote`, bounded at INGRESS by the server's `chat::MAX_MESSAGE_CHARS` (never
        * `emote`'s 16-byte player bound, and never a tighter server-side cap of its own).
@@ -1327,6 +1341,12 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     token: z.string(),
     user: z.string(),
     emote: z.string(),
+  }),
+  z.object({
+    type: z.literal("explored_fog_reset"),
+    scene: z.string(),
+    user: z.string().nullable(),
+    level: z.string().nullable(),
   }),
   z.object({
     type: z.literal("scrolling_text"),
@@ -1732,6 +1752,19 @@ export type ClientMsg =
       token: string;
       /** The emote glyph(s); 1..=16 bytes. */
       emote: string;
+    }
+  | {
+      /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
+       * and/or one `level`. Refused with a generic `error` frame for a non-GM sender or a
+       * scene outside this world. On success the server broadcasts `explored_fog_reset`
+       * out-of-band to the room; there is no dedicated success reply. */
+      type: "reset_explored_fog";
+      /** The scene whose explored memory is reset. */
+      scene: string;
+      /** Limit the reset to one user's memory; omit to clear every user's. */
+      user?: string;
+      /** Limit the reset to one level; omit to clear every level. */
+      level?: string;
     }
   | {
       /** A one-shot grid pathfinding request, correlated by `request_id`. When `token` is

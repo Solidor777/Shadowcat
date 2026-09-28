@@ -101,6 +101,20 @@ describe("per-scene overrides", () => {
     ]);
   });
 
+  it("clicking reset-explored-fog calls ctx.resetExploredFog with the currently-selected scene", async () => {
+    const resetExploredFog = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), resetExploredFog }),
+    });
+
+    const button = screen.getByTestId("reset-explored-fog");
+    await fireEvent.click(button);
+
+    expect(resetExploredFog).toHaveBeenCalledWith("scene1");
+  });
+
   it("setting scene bounds width writes the whole /engine/bounds object (height defaults)", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");

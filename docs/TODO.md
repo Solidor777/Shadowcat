@@ -164,9 +164,6 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
 - TODO: Shared live ruler — broadcast the measure tool's route preview on the existing
   `ScenePing`/`Emote` per-scene pattern (same cross-scene-leak guard) with a hidden toggle.
   (S-M)
-- TODO: GM "reset explored fog" intent — `scene::explored::ExploredSet` rows are purged only on
-  scene/world/user deletion; add a GM-only intent that clears a scene (optionally one user or
-  level) and broadcasts the empty `vision.explored` set. (S)
 - TODO: Shared/pooled fog mode — `explored_fog` is keyed `(scene_id, level_id, user_id)`; a
   per-scene `individual`/`shared` toggle on the `resolveSceneSettings` precedence chain would
   key `ExploredSet::mark_cells` on `(scene, level)` alone. Live per-recipient masks untouched.

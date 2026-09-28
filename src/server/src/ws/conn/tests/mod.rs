@@ -15,6 +15,8 @@ mod combat_intents;
 mod door_toggle;
 /// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
 mod mover_light;
+/// `handle_reset_explored_fog`'s GM-only gate + happy-path effect.
+mod reset_explored_fog;
 mod senses;
 
 /// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,

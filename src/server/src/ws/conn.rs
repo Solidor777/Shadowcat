@@ -696,6 +696,27 @@ async fn handle_socket(
                                         });
                                     }
                                 }
+                                Ok(ClientMsg::ResetExploredFog { scene, user, level }) => {
+                                    // GM-only fog purge: on success no reply is sent to the
+                                    // requester's etx — the room broadcast (delivered to this
+                                    // connection too) is the confirmation, mirroring
+                                    // `handle_move_request`'s broadcast-not-requester shape.
+                                    if let Some(err_frame) = handle_reset_explored_fog(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        world_id,
+                                        scene,
+                                        user,
+                                        level,
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::AudioTransport { op }) => {
                                     // Fire-and-forget on the wire: no reply frame on success (the
                                     // broadcast Event echo of the audio-state Update IS the
@@ -1194,6 +1215,63 @@ async fn scene_ping_permitted(
 /// same convention as `scene_ping_permitted`/`token_emote_permitted`.
 fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
     ctx.world_role == crate::data::document::WorldRole::Gm
+}
+
+/// Whether `scene` may be targeted by `ClientMsg::ResetExploredFog`: the doc must exist, be a
+/// `"scene"` document, and belong to THIS room's world — mirrors `scene_ping_permitted`'s
+/// scene-ownership check (no `cap::READ` requirement: the caller is already known to be a GM,
+/// who has full authority over the world's own scenes).
+async fn reset_explored_fog_scene_ok(
+    scene: Uuid,
+    world_id: Uuid,
+    repo: &dyn crate::data::repository::Repository,
+) -> bool {
+    let Ok(Some(doc)) = repo.get_document(scene).await else {
+        return false;
+    };
+    doc.doc_type == "scene" && crate::data::document::world_of(&doc) == Some(world_id)
+}
+
+/// Resolve and apply a GM-only explored-fog reset (`ClientMsg::ResetExploredFog`). Refused with
+/// the same generic `ServerMsg::Error { code: Forbidden }` frame for a non-GM sender and for a
+/// scene absent from this world — mirroring the uniform-rejection shape every other GM-only
+/// intent uses, even though a GM's own action naming a scene in their own world discloses
+/// nothing new to them. On success the matching `explored_fog` rows are deleted and
+/// `ServerMsg::ExploredFogReset` is broadcast out-of-band to the room via `Room::broadcast_aux`
+/// (no seq, mirrors `ScenePing`); `egress_loop`'s dedicated arm arms every connection's own
+/// debounced scene-channel re-eval on receipt, so the next `"vision"` push (for every affected
+/// connection, including the resetting GM's own) reflects the cleared rows.
+async fn handle_reset_explored_fog(
+    room: &crate::ws::room::Room,
+    repo: &SqliteRepository,
+    ctx: &crate::data::membership::PermissionContext,
+    world_id: Uuid,
+    scene: Uuid,
+    user: Option<Uuid>,
+    level: Option<String>,
+) -> Option<ServerMsg> {
+    let forbidden = ServerMsg::Error {
+        code: WsErrorCode::Forbidden,
+        message: "not authorized to reset explored fog".into(),
+    };
+    if ctx.world_role != crate::data::document::WorldRole::Gm {
+        return Some(forbidden);
+    }
+    if !reset_explored_fog_scene_ok(scene, world_id, repo).await {
+        return Some(forbidden);
+    }
+    if repo
+        .reset_explored_fog(scene, level.as_deref(), user)
+        .await
+        .is_err()
+    {
+        return Some(ServerMsg::Error {
+            code: WsErrorCode::Internal,
+            message: "failed to reset explored fog".into(),
+        });
+    }
+    room.broadcast_aux(ServerMsg::ExploredFogReset { scene, user, level });
+    None
 }
 
 /// Whether `egress_loop` may deliver a `ServerMsg::ScrollingText { gm_only, .. }` frame to a
@@ -2502,6 +2580,18 @@ async fn egress_loop<S>(
                                     }
                                 }
                                 failed
+                            }
+                            ServerMsg::ExploredFogReset { .. } => {
+                                // A GM's reset may affect OTHER users' connections; `reeval_deadline`
+                                // is per-connection state, so every connection arms its OWN debounced
+                                // re-eval on receipt (mirrors `AudioListenAs`'s leading-edge arm) —
+                                // this makes the affected subscription's next "vision" push read
+                                // `explored_fog` fresh and show the now-empty set. Forwarded
+                                // unredacted (no geometry, no explored-cell contents) to every
+                                // connection including the resetting GM's own, so their client sees
+                                // the reset too.
+                                reeval_deadline = Some(tokio::time::Instant::now());
+                                send_plain(&mut sink, inner.as_ref()).await.is_err()
                             }
                             ServerMsg::ScrollingText { gm_only, .. } => {
                                 // Per-connection secrecy filter, mirroring the `Evicted`

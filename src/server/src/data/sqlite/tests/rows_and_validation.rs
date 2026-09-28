@@ -2887,3 +2887,177 @@ async fn explored_fog_is_keyed_per_scene_level_user() {
         "the l2 row is untouched by the l1 upsert"
     );
 }
+
+#[tokio::test]
+async fn reset_explored_fog_scene_only_clears_every_user_and_level() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(31);
+    let other_scene = crate::test_ids::test_uuid(32);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l1", alice, &[2, 2])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+    repo.set_explored(world, other_scene, "", alice, &[9, 9])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, None, None).await.unwrap();
+
+    assert_eq!(repo.get_explored(scene, "", alice).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene, "l1", alice).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene, "", bob).await.unwrap(), None);
+    assert_eq!(
+        repo.get_explored(other_scene, "", alice).await.unwrap(),
+        Some(vec![9, 9]),
+        "a reset scoped to `scene` must not touch a different scene's rows"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_one_user_leaves_others_untouched() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(33);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, None, Some(alice))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "", alice).await.unwrap(),
+        None,
+        "alice's own row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "a reset scoped to one user must not clear another user's row"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_one_level_leaves_other_levels_untouched() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(34);
+    let alice = crate::test_ids::test_uuid(40);
+
+    repo.set_explored(world, scene, "l1", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l2", alice, &[2, 2])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, Some("l1"), None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        None,
+        "the targeted level's row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2]),
+        "a reset scoped to one level must not clear another level's row"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_combined_user_and_level_scope() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(35);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    repo.set_explored(world, scene, "l1", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l2", alice, &[2, 2])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l1", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    repo.reset_explored_fog(scene, Some("l1"), Some(alice))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        None,
+        "the (scene, l1, alice) row is cleared"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2]),
+        "a different level for the SAME user is untouched"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l1", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "the SAME level for a different user is untouched"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_on_a_scene_with_no_rows_is_ok_not_an_error() {
+    let repo = repo().await;
+    let scene = crate::test_ids::test_uuid(36);
+
+    // No `set_explored` call precedes this: the scene has zero `explored_fog` rows.
+    let result = repo.reset_explored_fog(scene, None, None).await;
+
+    assert!(
+        result.is_ok(),
+        "a reset against an already-empty scene is not an error case; got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn reset_explored_fog_scoped_to_a_user_with_no_rows_is_ok_and_leaves_others_intact() {
+    let repo = repo().await;
+    let world = crate::test_ids::test_uuid(30);
+    let scene = crate::test_ids::test_uuid(37);
+    let alice = crate::test_ids::test_uuid(40);
+    let bob = crate::test_ids::test_uuid(41);
+
+    // alice has never explored this scene; bob has.
+    repo.set_explored(world, scene, "", bob, &[3, 3])
+        .await
+        .unwrap();
+
+    let result = repo.reset_explored_fog(scene, None, Some(alice)).await;
+
+    assert!(
+        result.is_ok(),
+        "a reset scoped to a user with zero matching rows is not an error case; got {result:?}"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "", bob).await.unwrap(),
+        Some(vec![3, 3]),
+        "the no-match path must not widen to touch a different user's row"
+    );
+}
