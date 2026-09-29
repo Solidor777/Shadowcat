@@ -241,7 +241,30 @@ user: string,
 /**
  * The emote glyph(s).
  */
-emote: string, } | { "type": "explored_fog_reset", 
+emote: string, } | { "type": "ruler", 
+/**
+ * The measuring user (server-stamped, never client-asserted).
+ */
+from: string, 
+/**
+ * Scene the ruler is measured on.
+ */
+scene: string, 
+/**
+ * The route preview's vertices in scene coordinates, start through goal; empty exactly
+ * when `active` is `false`.
+ */
+points: Array<[number, number]>, 
+/**
+ * `false` ends `from`'s ruler for this recipient (`points` is then empty).
+ */
+active: boolean, 
+/**
+ * The sending connection's opaque token, relayed unchanged from
+ * `ClientMsg::RulerUpdate::origin`. Not server-verified: a forged value can only make
+ * the client holding that token hide the forger's own ruler.
+ */
+origin: string, } | { "type": "explored_fog_reset", 
 /**
  * The scene whose explored memory was reset.
  */

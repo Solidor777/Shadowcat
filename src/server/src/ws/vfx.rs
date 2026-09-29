@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use crate::data::document::WorldRole;
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{cap, effective_owner, resolve_access_world};
 use crate::data::repository::Repository;
 
 /// Max byte length of `PlayVfx.asset`/`PlayVfx.sound` — generous for a UUID-shaped id, bounds
@@ -106,8 +105,9 @@ pub fn validate_bounds(req: &VfxRequest) -> bool {
 }
 
 /// Whether `ctx` may fire a `PlayVfx` on `scene`: the doc must exist, be a `scene`, belong to
-/// THIS world, and grant the sender `cap::READ` (the SAME `scene_ping_permitted` shape — a
-/// one-shot is a table gesture like a ping, deliberately weaker than a token-authoring gate),
+/// THIS world, and grant the sender `cap::READ` (`ws::scene_broadcast_permitted`, the ONE
+/// admission shared with `ScenePing` — a one-shot is a table gesture like a ping, deliberately
+/// weaker than a token-authoring gate),
 /// AND the sender's world role must be `Gm` or `Player` — a spectator is refused outright,
 /// checked BEFORE the document read so a spectator never spends a repository round-trip.
 /// Denial is a SILENT drop at the call site: any error frame or behavior split would leak
@@ -137,26 +137,7 @@ pub async fn vfx_permitted(
     if ctx.world_role == WorldRole::Spectator {
         return false;
     }
-    let Ok(Some(doc)) = repo.get_document(scene).await else {
-        return false;
-    };
-    if doc.doc_type != "scene" {
-        return false;
-    }
-    if crate::data::document::world_of(&doc) != Some(world_id) {
-        return false;
-    }
-    let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
-        return false;
-    };
-    let access = resolve_access_world(
-        ctx.user_id,
-        ctx.world_role,
-        &doc,
-        &defaults.grants_for(&doc.doc_type),
-        effective_owner(&doc, None),
-    );
-    access.has(cap::READ)
+    super::scene_broadcast_permitted(scene, ctx, world_id, repo).await
 }
 
 #[cfg(test)]

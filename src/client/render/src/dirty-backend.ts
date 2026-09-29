@@ -58,6 +58,7 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
     clearMeasure: () => { onDirty(); backend.clearMeasure(); },
     drawPings: (rings) => { onDirty(); backend.drawPings(rings); },
     drawEmotes: (glyphs) => { onDirty(); backend.drawEmotes(glyphs); },
+    drawRulers: (rulers) => { onDirty(); backend.drawRulers(rulers); },
     setLighting: (frame) => { onDirty(); backend.setLighting(frame); },
     startTicker: (cb) => backend.startTicker(cb),
     resize: (width, height) => { onDirty(); backend.resize(width, height); },

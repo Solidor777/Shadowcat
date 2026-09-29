@@ -45,6 +45,8 @@
     world: ctx.world,
     role: ctx.role,
     sendPing: ctx.sendPing,
+    shareRuler: ctx.shareRuler,
+    sendRulerUpdate: ctx.sendRulerUpdate,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
     toggleDoor: ctx.toggleDoor,
@@ -568,6 +570,23 @@
       onclick={toggleSnapMode}
     >
       {ctx.snapModePreference.mode === "vertex" ? t("tools.snapModeVertex") : t("tools.snapModeCenter")}
+    </button>
+  {/if}
+
+  <!-- The shared live ruler's toggle: client-local, per-user, OFF by default
+       (`ctx.shareRuler`). Shown beside the measure tool's own controls, where the measure tool is
+       active; never a document write. -->
+  {#if controller.active === "measure"}
+    <button
+      type="button"
+      class="tool"
+      aria-pressed={ctx.shareRuler.enabled}
+      aria-label={t("tools.shareRuler")}
+      data-testid="share-ruler-toggle"
+      title={t("tools.shareRuler")}
+      onclick={() => ctx.shareRuler.set(!ctx.shareRuler.enabled)}
+    >
+      {t("tools.shareRuler")}
     </button>
   {/if}
 

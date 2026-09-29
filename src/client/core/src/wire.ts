@@ -1006,6 +1006,22 @@ export type ServerMsg =
       emote: string;
     }
   | {
+      /** A relayed shared ruler: one user's live measured route preview. Out-of-band (no seq,
+       * never buffered/resynced), mirroring `scene_ping`. The server relays `points`
+       * unclipped to every connection in the room, the sender's own included. */
+      type: "ruler";
+      /** The measuring user (server-stamped, not client-asserted). */
+      from: string;
+      /** Scene the ruler is measured on. */
+      scene: string;
+      /** The route preview's vertices in scene coordinates, start through goal. */
+      points: [number, number][];
+      /** `false` ends `from`'s ruler for this recipient (`points` is then empty). */
+      active: boolean;
+      /** The sending connection's token, relayed unchanged from `ruler_update`. */
+      origin: string;
+    }
+  | {
       /** A GM's `reset_explored_fog` intent took effect: explored-fog memory for `scene`
        * (scoped to `user`/`level` exactly as the request was) was deleted server-side.
        * Out-of-band (no seq, never buffered/resynced), mirroring `scene_ping` — carries only
@@ -1341,6 +1357,14 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     token: z.string(),
     user: z.string(),
     emote: z.string(),
+  }),
+  z.object({
+    type: z.literal("ruler"),
+    from: z.string(),
+    scene: z.string(),
+    points: z.array(z.tuple([z.number(), z.number()])),
+    active: z.boolean(),
+    origin: z.string(),
   }),
   z.object({
     type: z.literal("explored_fog_reset"),
@@ -1752,6 +1776,29 @@ export type ClientMsg =
       token: string;
       /** The emote glyph(s); 1..=16 bytes. */
       emote: string;
+    }
+  | {
+      /** A transient shared-ruler update: the sender's measured route preview on `scene`,
+       * relayed out-of-band to the world room with the sender stamped (`ruler`); never
+       * sequenced, logged, or a document (mirrors `scene_ping`). The scene must grant the
+       * sender READ. `points` holds at most `RULER_LIMITS.maxPoints` vertices, every coordinate
+       * finite and within `RULER_LIMITS.maxCoord`. A longer list, or a non-finite coordinate
+       * (JSON carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is
+       * answered with a generic `error` frame to the sender alone; a finite coordinate beyond
+       * the bound, an over-long `origin`, an unreadable scene, or an exhausted per-user budget
+       * is dropped silently. `active: false` (or an empty `points`) ends the sender's ruler for
+       * observers. The server relays the frame to every connection in the room, this one
+       * included; `origin` is what lets the sending client recognize its own frame. */
+      type: "ruler_update";
+      /** Scene the ruler is measured on (must grant the sender READ). */
+      scene: string;
+      /** The route preview's vertices in scene coordinates, start through goal. */
+      points: [number, number][];
+      /** `false` ends the sender's ruler. */
+      active: boolean;
+      /** Opaque token naming this connection (`WsClient.rulerOrigin`), relayed unchanged on the
+       * `ruler` frame; the server bounds its length and drops a longer one silently. */
+      origin: string;
     }
   | {
       /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`

@@ -62,12 +62,15 @@ export type {
   VfxNotice,
   ResetExploredFogOptions,
   ExploredFogResetNotice,
+  RulerNotice,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,
   ChatSendOptions,
   DrawTableOptions,
 } from "./ws-client";
+export { randomUuid } from "./uuid";
+export { RULER_LIMITS } from "./ruler";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
 export {

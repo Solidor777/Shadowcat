@@ -2,6 +2,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNod
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 
 /** The background-layer sprite spec — the statement of record for this shape; every
  * implementation/recording site (`PixiBackend`, `MockBackend`) references this type rather
@@ -88,6 +89,9 @@ export interface DisplayBackend {
   /** Redraw the transient emote glyphs (rising/fading emoji over tokens).
    * @param glyphs The emote glyphs to draw — see `EmoteGlyph`. */
   drawEmotes(glyphs: EmoteGlyph[]): void;
+  /** Redraw the remote shared rulers (other users' live measured routes).
+   * @param rulers The live rulers to draw — see `RemoteRulerPath`. */
+  drawRulers(rulers: RemoteRulerPath[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint.
    * @param frame The resolved lighting overlay to paint. */
   setLighting(frame: LightingFrame): void;

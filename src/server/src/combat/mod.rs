@@ -389,7 +389,7 @@ async fn run_intent(
 ///
 /// A `combatant` document never carries an actor link (`token_actor_link` is
 /// `token`-only), so the no-join `effective_owner(doc, None)` resolution is
-/// exact — the same reasoning `scene_ping_permitted` states for a scene doc.
+/// exact — the same reasoning `scene_broadcast_permitted` states for a scene doc.
 ///
 /// Returns the whole `Access` because `authorize` asks THREE questions of it —
 /// whole-document `cap::READ`, effective ownership, and (for the intents that

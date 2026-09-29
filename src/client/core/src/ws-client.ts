@@ -19,6 +19,7 @@ import {
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
 import type { VfxPlayRequest } from "./vfx";
+import { randomUuid } from "./uuid";
 
 // Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
 // canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
@@ -224,6 +225,24 @@ export interface ScenePingNotice {
   user: string;
 }
 
+/** A relayed shared ruler (`WsClientHandlers.onRuler`); carries no seq. `points` are the route as
+ * the sender sent it, thinned by the sender to at most `RULER_LIMITS.maxPoints` vertices, and
+ * relayed unclipped by the server. */
+export interface RulerNotice {
+  /** The user id measuring (server-stamped, not client-asserted). */
+  from: string;
+  /** The scene the ruler is measured on. */
+  scene: string;
+  /** The route preview's vertices in scene coordinates, start through goal. */
+  points: [number, number][];
+  /** `false` ends `from`'s ruler (`points` is then empty). */
+  active: boolean;
+  /** The token the sending connection chose (`WsClient.rulerOrigin` on the sender). The server
+   * relays it unverified, so any client can send any value: a frame carries this client's own
+   * `WsClient.rulerOrigin` when this connection sent it, or when another client forged it. */
+  origin: string;
+}
+
 /** A relayed emote over a token (`WsClientHandlers.onEmote`); carries no seq. */
 export interface EmoteNotice {
   /** The scene the token stands on. */
@@ -412,6 +431,10 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An out-of-band relayed shared ruler (carries no seq), delivered unclipped to every
+   * connection in the room, the sender's own included (`RulerNotice.origin` identifies it).
+   * @param msg The measuring user, scene, vertices, active flag, and origin token. */
+  onRuler?(msg: RulerNotice): void;
   /** An out-of-band region-triggered scrolling-text overlay (carries no seq).
    * @param msg The overlay's scene, token, text, and GM-only secrecy flag. */
   onScrollingText?(msg: ScrollingTextNotice): void;
@@ -862,6 +885,33 @@ export class WsClient {
     this.transport?.send(JSON.stringify(msg));
   }
 
+  /** Random token naming this client instance, generated once and never persisted. It rides on
+   * every `ruler_update` and returns unchanged on the relayed `ruler` frame, so this client can
+   * tell the frame its own connection sent from the same user's frames sent by another
+   * connection. */
+  readonly rulerOrigin: string = randomUuid();
+
+  /** Send a `ruler_update` for `scene` carrying `rulerOrigin`. Fire-and-forget: the server
+   * relays the frame to every connection in the room, this one included. A list over
+   * `RULER_LIMITS.maxPoints` vertices, or a non-finite coordinate (JSON carries `NaN` and
+   * `Infinity` as `null`, which the server rejects as malformed), is answered with a generic
+   * `error` to this connection; a finite coordinate beyond `RULER_LIMITS.maxCoord`, an
+   * unreadable scene, an over-budget rate or an over-long `origin` is dropped silently.
+   * @param scene The scene the ruler is measured on.
+   * @param points The route preview's vertices in scene coordinates.
+   * @param active `false` ends this user's ruler for observers.
+   * @example
+   * ```ts
+   * import type { WsClient } from "@shadowcat/core";
+   *
+   * declare const client: WsClient;
+   * client.sendRulerUpdate("scene-1", [[0, 0], [70, 70]], true);
+   * ```
+   */
+  sendRulerUpdate(scene: string, points: [number, number][], active: boolean): void {
+    this.send({ type: "ruler_update", scene, points, active, origin: this.rulerOrigin });
+  }
+
   /** Send a one-shot `PlayVfx` frame. Fire-and-forget: the server replies with nothing on
    * success (the broadcast `vfx` echo IS the confirmation, mirroring the ping/emote relay);
    * a denial (rate limit, unreadable scene, spectator role) drops silently — no reject frame.
@@ -1289,6 +1339,17 @@ export class WsClient {
       case "emote":
         this.safeEmit(() =>
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
+        );
+        break;
+      case "ruler":
+        this.safeEmit(() =>
+          this.opts.handlers.onRuler?.({
+            from: msg.from,
+            scene: msg.scene,
+            points: msg.points,
+            active: msg.active,
+            origin: msg.origin,
+          }),
         );
         break;
       case "explored_fog_reset":

@@ -1,6 +1,6 @@
 import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS } from "@shadowcat/core";
-import { RenderEngine, MockBackend } from "./index";
+import { RenderEngine, MockBackend, RULER_STALE_MS } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
 
@@ -497,6 +497,36 @@ test("addEmote anchors above the token at fire time, driven by the ticker; unkno
   engine.addEmote("unknown-token", "🔥"); // no overlay for an id this viewer cannot resolve
   backend.tick!(100);
   expect(backend.emotes).toHaveLength(1);
+});
+
+test("remote rulers are keyed per sending connection, drawn from the ticker, cleared per connection, and a scene switch drops them all", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.setRemoteRuler("a", "o1", [[0, 0], [10, 0]]);
+  engine.setRemoteRuler("b", "o2", [[0, 5], [10, 5]]);
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["a", "b"]);
+  expect(backend.rulers[0].points).toEqual([[0, 0], [10, 0]]);
+
+  // A stop for one sender leaves the other untouched.
+  engine.clearRemoteRuler("a", "o1");
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["b"]);
+
+  // A scene switch ends every remote ruler; the ticker sends the one clearing draw.
+  engine.reapplyViewedScene();
+  backend.tick!(16);
+  expect(backend.rulers).toEqual([]);
+});
+
+test("a remote ruler that is never refreshed expires on its own", () => {
+  const { backend, engine } = makeEngine();
+  engine.start();
+  engine.setRemoteRuler("a", "o1", [[0, 0], [10, 0]]);
+  backend.tick!(16);
+  expect(backend.rulers).toHaveLength(1);
+  backend.tick!(RULER_STALE_MS);
+  expect(backend.rulers).toEqual([]);
 });
 
 test("start registers the backend ticker", () => {

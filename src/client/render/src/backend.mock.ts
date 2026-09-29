@@ -3,6 +3,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNod
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
@@ -74,6 +75,8 @@ export class MockBackend implements DisplayBackend {
   pings: PingRing[] = [];
   /** Last `drawEmotes` glyphs, recorded verbatim. */
   emotes: EmoteGlyph[] = [];
+  /** Last `drawRulers` rulers, recorded verbatim. */
+  rulers: RemoteRulerPath[] = [];
   /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
   /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
@@ -482,6 +485,19 @@ export class MockBackend implements DisplayBackend {
    */
   drawEmotes(glyphs: EmoteGlyph[]): void {
     this.emotes = glyphs;
+  }
+  /** `DisplayBackend.drawRulers`: records `rulers` verbatim into `this.rulers`.
+   * @param rulers The current remote rulers to record.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.drawRulers([{ user: "u1", origin: "conn-1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 }]);
+   * ```
+   */
+  drawRulers(rulers: RemoteRulerPath[]): void {
+    this.rulers = rulers;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.
    * @param frame The resolved per-cell lighting to record.

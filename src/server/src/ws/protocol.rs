@@ -148,6 +148,36 @@ pub enum ClientMsg {
         /// The emote glyph(s); 1..=16 bytes.
         emote: String,
     },
+    /// A transient shared-ruler update: the sender's measured route preview on `scene`, relayed
+    /// out-of-band to the world room with the sender stamped (`ServerMsg::Ruler`); never
+    /// sequenced, logged, or a document (mirrors `ScenePing`). The scene must exist in this world
+    /// and grant the sender READ. `points` holds at most `ws::ruler::MAX_RULER_POINTS` vertices,
+    /// every coordinate finite and within `scene::move_exec::MAX_GATE_WALK_COORD`, and `origin` is
+    /// at most `ws::ruler::MAX_RULER_ORIGIN_BYTES` bytes. A longer list, or a non-finite
+    /// coordinate (JSON carries it as `null`, which `f64` deserialization rejects), fails to
+    /// deserialize and the sender alone receives a generic `BadMessage`. A frame with a finite
+    /// coordinate past the bound, an over-long `origin`, an unreadable scene, or past the
+    /// per-user budget on its own bucket (`ws::ruler::RULER_RATE_PER_MIN`) is dropped silently.
+    /// Any update with `active: false` or an empty `points` ends the sender's ruler and is
+    /// relayed as the canonical stop (`active: false`, no points; `ws::ruler::canonical`). A
+    /// READ-only spectator may send one (unlike `PlayVfx`, which refuses spectators). Every room
+    /// member, the sender's own connections included, receives the points unclipped.
+    RulerUpdate {
+        /// Scene the ruler is measured on (must grant the sender READ).
+        scene: Uuid,
+        /// The route preview's vertices in scene coordinates, start through goal; a list longer
+        /// than `ws::ruler::MAX_RULER_POINTS` fails to deserialize.
+        #[serde(deserialize_with = "crate::ws::ruler::deserialize_points")]
+        points: Vec<(f64, f64)>,
+        /// `false` ends the sender's ruler; an absent value reads as `false`.
+        #[serde(default)]
+        active: bool,
+        /// Opaque token naming the sending connection, relayed unchanged on `ServerMsg::Ruler`
+        /// so the originating client can recognize its own frame; an absent value reads as
+        /// empty, which no client treats as its own.
+        #[serde(default)]
+        origin: String,
+    },
     /// GM-only: purge `scene::explored::ExploredSet` memory (the persisted `explored_fog`
     /// rows), scoped to `scene` and, when present, to one `user` and/or one `level`. Refused
     /// with a generic `Error { code: Forbidden }` for a non-GM sender or for a scene absent
@@ -1265,6 +1295,25 @@ pub enum ServerMsg {
         user: Uuid,
         /// The emote glyph(s).
         emote: String,
+    },
+    /// A relayed shared ruler: one user's live measured route preview. Out-of-band (no seq, never
+    /// buffered/resynced), mirroring `ScenePing`. Delivered unclipped to every
+    /// connection in the room, including every connection of the sender's own user; the
+    /// originating client recognizes its own frame by `origin`.
+    Ruler {
+        /// The measuring user (server-stamped, never client-asserted).
+        from: Uuid,
+        /// Scene the ruler is measured on.
+        scene: Uuid,
+        /// The route preview's vertices in scene coordinates, start through goal; empty exactly
+        /// when `active` is `false`.
+        points: Vec<(f64, f64)>,
+        /// `false` ends `from`'s ruler for this recipient (`points` is then empty).
+        active: bool,
+        /// The sending connection's opaque token, relayed unchanged from
+        /// `ClientMsg::RulerUpdate::origin`. Not server-verified: a forged value can only make
+        /// the client holding that token hide the forger's own ruler.
+        origin: String,
     },
     /// A GM's `ResetExploredFog` intent took effect: `scene::explored::ExploredSet` rows for
     /// `scene` (scoped to `user`/`level` exactly as the request was) were deleted. Out-of-band

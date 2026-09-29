@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -10,6 +10,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { SnapModePreference } from "./snapModePreference.svelte";
+import type { ShareRulerPreference } from "./shareRulerPreference.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 import type { PerformanceController } from "./performance.svelte";
 
@@ -273,6 +274,22 @@ export interface AppContext {
    * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
    * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */
   snapModePreference: SnapModePreference;
+  /** Whether THIS user broadcasts their measure-tool drags to the other members (the shared
+   * live ruler). Client-local and per-user: never a document field and never sent itself —
+   * only the ruler's route travels, and only while it is on, plus the one terminating stop
+   * that ends a ruler already shown when it is switched off. Defaults to off. `ToolRail`
+   * writes it; the measure tool reads it. See `ShareRulerPreference`. */
+  shareRuler: ShareRulerPreference;
+  /** Broadcast this user's live ruler on `scene` to the other members; `active: false` (or an
+   * empty `points`) ends it. Takes an explicit `scene` so a stop reaches the scene the ruler
+   * was started on. Fire-and-forget: the server re-authorizes scene READ and bounds the point
+   * count, the coordinates and the send rate. A list over `RULER_LIMITS.maxPoints` vertices, or
+   * a non-finite coordinate (JSON carries `NaN` and `Infinity` as `null`, which the server
+   * rejects as malformed), is answered with a generic `error` to this connection; a finite
+   * coordinate beyond `RULER_LIMITS.maxCoord`, an unreadable scene, an over-budget rate or an
+   * over-long `origin` is dropped silently. Every connection in the room receives `points`
+   * unclipped; the sending connection drops its own frame on receipt. */
+  sendRulerUpdate: (scene: string, points: [number, number][], active: boolean) => void;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Broadcast a transient emote over `token` on the currently-viewed scene. The server
@@ -337,6 +354,10 @@ export interface AppContext {
     /** The emote glyph(s). */
     emote: string;
   }) => void) => () => void;
+  /** Subscribe to shared rulers on the viewed scene; returns an unsubscribe. The callback is
+   * not called for a frame this connection sent (it draws its own local preview), but is for the
+   * same user's frames from another connection. `points` arrive unclipped. */
+  onRuler: (cb: (msg: RulerNotice) => void) => () => void;
   /** Subscribe to region-triggered scrolling-text overlays. Server-fired only (a region's own
    * `TriggerEffect::ScrollingText`) — there is no client `send` counterpart, unlike `onEmote`/
    * `sendEmote`. Returns an unsubscribe. */

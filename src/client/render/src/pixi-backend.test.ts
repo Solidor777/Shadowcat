@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from "vitest";
-import { AnimatedSprite, Assets, Container, Text, Texture } from "pixi.js";
+import { AnimatedSprite, Assets, Container, Graphics, Text, Texture } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
@@ -1016,6 +1016,42 @@ describe("PixiBackend texture budget", () => {
     expect(unloadSpy).toHaveBeenCalledWith("/tex/in-flight");
     loadSpy.mockRestore();
     unloadSpy.mockRestore();
+  });
+});
+
+describe("PixiBackend.drawRulers", () => {
+  /** The backend's remote-ruler overlay `Graphics`. */
+  function rulerLayer(backend: PixiBackend): Graphics {
+    return (backend as unknown as { rulerGraphics: Graphics }).rulerGraphics;
+  }
+
+  test("a polyline ruler paints its extent, a lone vertex paints a dot, and an empty list clears the overlay", () => {
+    const backend = headlessBackend();
+    const layer = rulerLayer(backend);
+
+    backend.drawRulers([{ user: "a", origin: "o1", points: [[0, 0], [100, 0]], color: 0x4fc3f7 }]);
+    // `getLocalBounds` returns a shared object, so each reading is copied out at once.
+    const lineWidth = layer.getLocalBounds().width;
+    expect(lineWidth).toBeGreaterThanOrEqual(100);
+
+    backend.drawRulers([{ user: "a", origin: "o1", points: [[40, 40]], color: 0x4fc3f7 }]);
+    const dotWidth = layer.getLocalBounds().width;
+    expect(dotWidth).toBeGreaterThan(0);
+    expect(dotWidth).toBeLessThan(lineWidth);
+
+    backend.drawRulers([]);
+    expect(layer.getLocalBounds().width).toBe(0);
+  });
+
+  test("every sender's ruler is painted in the same pass, not only the last", () => {
+    const backend = headlessBackend();
+    backend.drawRulers([
+      { user: "a", origin: "o1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 },
+      { user: "b", origin: "o2", points: [[500, 500], [510, 500]], color: 0xba68c8 },
+    ]);
+    const { width, height } = rulerLayer(backend).getLocalBounds();
+    expect(width).toBeGreaterThanOrEqual(510);
+    expect(height).toBeGreaterThanOrEqual(500);
   });
 });
 

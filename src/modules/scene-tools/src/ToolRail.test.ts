@@ -5,7 +5,7 @@ import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
-import { TokenSelection, SpeakAsToken, SnapModePreference } from "@shadowcat/ui-kit";
+import { TokenSelection, SpeakAsToken, SnapModePreference, ShareRulerPreference } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
 
@@ -438,6 +438,45 @@ test("the snap-mode toggle dispatches no document write (client-local session st
     }),
   });
   await fireEvent.click(screen.getByTestId("snap-mode-toggle"));
+  expect(dispatched).toEqual([]);
+});
+
+test("the share-ruler toggle is offered only while the measure tool is active, and is off by default", async () => {
+  const shareRuler = new ShareRulerPreference("u1");
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: sceneStore(), shareRuler }) });
+  // Hidden until the measure tool is chosen: off by default and easy to miss unless looked for.
+  expect(screen.queryByTestId("share-ruler-toggle")).toBeNull();
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const toggle = screen.getByTestId("share-ruler-toggle");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  // Accessible name present and identical to the tooltip (the harness `t` echoes the key).
+  expect(toggle.getAttribute("aria-label")).toBeTruthy();
+  expect(toggle.getAttribute("aria-label")).toBe(toggle.getAttribute("title"));
+  expect(shareRuler.enabled).toBe(false);
+  // Choosing another tool hides it again.
+  await fireEvent.click(screen.getByTestId("tool-ping"));
+  expect(screen.queryByTestId("share-ruler-toggle")).toBeNull();
+});
+
+test("the share-ruler toggle flips the local preference, reflects it, and dispatches no document write", async () => {
+  const shareRuler = new ShareRulerPreference("u1");
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "player",
+      documents: sceneStore(),
+      shareRuler,
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const toggle = screen.getByTestId("share-ruler-toggle");
+  await fireEvent.click(toggle);
+  expect(shareRuler.enabled).toBe(true);
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
+  expect(shareRuler.enabled).toBe(false);
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
   expect(dispatched).toEqual([]);
 });
 

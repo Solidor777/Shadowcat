@@ -122,7 +122,26 @@ token: string,
 /**
  * The emote glyph(s); 1..=16 bytes.
  */
-emote: string, } | { "type": "reset_explored_fog", 
+emote: string, } | { "type": "ruler_update", 
+/**
+ * Scene the ruler is measured on (must grant the sender READ).
+ */
+scene: string, 
+/**
+ * The route preview's vertices in scene coordinates, start through goal; a list longer
+ * than `ws::ruler::MAX_RULER_POINTS` fails to deserialize.
+ */
+points: Array<[number, number]>, 
+/**
+ * `false` ends the sender's ruler; an absent value reads as `false`.
+ */
+active: boolean, 
+/**
+ * Opaque token naming the sending connection, relayed unchanged on `ServerMsg::Ruler`
+ * so the originating client can recognize its own frame; an absent value reads as
+ * empty, which no client treats as its own.
+ */
+origin: string, } | { "type": "reset_explored_fog", 
 /**
  * The scene whose explored memory is reset.
  */

@@ -161,9 +161,6 @@ a ruling on shape, not just a yes/no. None is blocked on an unstarted `PLAN.md` 
   opens away from `direction` beyond it, so `TemplateEngine::validate` bounds `shape.angle` to
   `(0.0, 180.0)`. Widening that bound requires tessellating the base as an arc, which changes the
   default cone's output and so needs its regression pin re-derived. (S-M)
-- TODO: Shared live ruler — broadcast the measure tool's route preview on the existing
-  `ScenePing`/`Emote` per-scene pattern (same cross-scene-leak guard) with a hidden toggle.
-  (S-M)
 - TODO: Translate enum `<option>` labels in `GameSettingsPanel` — the movement-restriction,
   movement-model, light-mode, diagonal-rule, easing and illumination-floor selects render their raw
   wire values as option text, so a GM reads identifiers rather than words. The same file already

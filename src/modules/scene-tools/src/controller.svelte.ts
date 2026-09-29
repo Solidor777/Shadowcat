@@ -17,8 +17,9 @@ import {
   type ShapeNodeSpec,
 } from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
-import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
+import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
+import { RulerSharer } from "./ruler-share";
 import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
 
 /** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
@@ -83,7 +84,14 @@ export interface ToolContext {
   role: WorldRole;
   /** Broadcast a transient ping at scene coords (the ping tool). */
   sendPing: (x: number, y: number) => void;
-  /** Monotonic clock for drag-intent coalescing; defaults to Date.now (injected in tests). */
+  /** Whether this user shares their live ruler (from `AppContext.shareRuler`, default off). The
+   * measure tool reads it on every update; absent ⇒ never shared. */
+  shareRuler?: ShareRulerPreference;
+  /** Broadcast this user's live ruler on a scene (from `AppContext.sendRulerUpdate`); absent ⇒
+   * the measure tool never shares, whatever `shareRuler` says. */
+  sendRulerUpdate?: (scene: string, points: [number, number][], active: boolean) => void;
+  /** Clock in ms for drag-intent coalescing and the shared-ruler send throttle; defaults to
+   * Date.now and need not be monotonic (injected in tests). */
   now?: () => number;
   /** Timer scheduler backing the measure tool's deferred route-preview fire; defaults to the
    * real `setTimeout`. Tests that inject a logical `now` (advanced without advancing real
@@ -1202,7 +1210,9 @@ export function makePingTool(ctx: ToolContext): SceneTool {
 }
 
 /** Drag to measure: a client-local segment + whole-cell distance label. Never persists a
- * document or broadcasts — purely an overlay on the dragging client.
+ * document. Its preview is an overlay on the dragging client; only while `ctx.shareRuler` is on
+ * does the tool also broadcast the previewed route to the other members (`RulerSharer`), ending
+ * that broadcast whenever the local preview ends.
  *
  * Route mode (`inRouteMode`) requires:
  *   1. `ctx.tokenSelection` has exactly ONE token id, AND
@@ -1254,7 +1264,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // (resolve), the reject handler, or onDeactivate (abort path).
   let committing = false;
 
-  // Monotonic clock (injected in tests; defaults to Date.now).
+  // Clock in ms; need not be monotonic (injected in tests; defaults to Date.now).
   const now = ctx.now ?? ((): number => Date.now());
   // Timer scheduler backing the deferred route-preview fire (injected in tests alongside
   // `now`; defaults to the real setTimeout/clearTimeout). Keeping this behind the same
@@ -1274,6 +1284,18 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // once the remaining cooldown elapses, unless a newer request already fired in the meantime.
   let pendingRouteGoal: Point | null = null;
   let pendingRouteTimer: unknown | null = null;
+  // Shared-ruler broadcast of the previewed route. Off unless the user opted in
+  // (`ctx.shareRuler`) AND the host supplies the send seam; every local-preview teardown ends
+  // the broadcast (`clearRoute`, the plain-measure release, `onDeactivate`), and the sharer's own
+  // timers end it when sharing is switched off or the viewed scene changes.
+  const sharer = new RulerSharer({
+    enabled: () => ctx.shareRuler?.enabled === true && ctx.sendRulerUpdate !== undefined,
+    viewedScene: () => activeScene(ctx)?.id ?? null,
+    send: (scene, points, active) => ctx.sendRulerUpdate?.(scene, points, active),
+    now,
+    schedule: scheduleTimeout,
+    cancel: clearScheduledTimeout,
+  });
 
   /** True when the measure tool's pointer handlers should attempt route mode: exactly one
    * token selected (`ctx.tokenSelection`) AND `ctx.pathfind` provided. Deliberately does NOT
@@ -1406,6 +1428,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
           }
         }
         const pts = result.path.flat();
+        sharer.update(scene.id, result.path);
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: strokeColor, width: 3 }, fill: null }]);
         const withSuffix = suffix ? `${budgetLabel} · ${suffix}` : budgetLabel;
         // An arrested result means the server truncated the route at an arrest region; only this
@@ -1417,7 +1440,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       () => {
         if (seq !== pendingSeq) return;
         lastPreviewedPath = null;
-        // No route available: clear the overlay and show a "no route" label.
+        // No route available: clear the overlay and show a "no route" label. Nothing is left to
+        // share, so observers' copy of the previous route ends too.
+        sharer.stop();
         ctx.scene.clearOverlay();
         const startPt: Point = { x: start[0], y: start[1] };
         ctx.scene.drawMeasure(startPt, goal, "—");
@@ -1503,6 +1528,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   function clearRoute(): void {
     pendingSeq++; // invalidate any in-flight request
     clearPendingRouteTimer();
+    sharer.stop();
     ctx.scene.clearOverlay();
     ctx.scene.clearMeasure();
     waypoints = [];
@@ -1671,7 +1697,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       // is viewed, matching `resolveSceneSettings`'s default exactly.
       if (!anchor) return;
       const cells = ctx.scene.gridDistance(anchor, p);
-      const scene = activeScene(ctx) ?? { perCell: 5, unit: "ft" };
+      const viewed = activeScene(ctx);
+      const scene = viewed ?? { perCell: 5, unit: "ft" };
+      if (viewed) sharer.update(viewed.id, [[anchor.x, anchor.y], [p.x, p.y]]);
       ctx.scene.drawMeasure(anchor, p, formatCellDistance(cells, scene));
     },
     onPointerUp(_p: Point): void {
@@ -1684,8 +1712,14 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         clearRoute();
         return;
       }
-      // Fallback: plain measure cleanup.
-      if (!anchor) return;
+      // Fallback: plain measure cleanup. A release with no plain anchor still ends a shown
+      // ruler: route mode can lapse mid-drag (the token selection emptied), leaving route state
+      // and a shared ruler that only `clearRoute` tears down.
+      if (!anchor) {
+        clearRoute();
+        return;
+      }
+      sharer.stop();
       ctx.scene.clearMeasure();
       anchor = null;
     },

@@ -23,6 +23,7 @@ import {
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers, CombatClientError } from "@shadowcat/core";
+import { shareRulerStorageKey } from "@shadowcat/ui-kit";
 import { getWorldSnapshot } from "./api";
 import { getViewedLevel } from "./sessionState.svelte";
 import { reactiveRead } from "./__testHelpers__/reactivityProbe.svelte";
@@ -1443,6 +1444,92 @@ test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, dro
   expect(got[0].scene).toBe("sceneB");
 });
 
+test("onRuler cross-scene guard: a GM roaming scene B sees a ruler for B, drops one for A, and every field reaches the listener", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB"); // roaming B while players stay on A
+
+  const got: unknown[] = [];
+  session.onRuler((m) => got.push(m));
+
+  push({ type: "ruler", from: "u9", scene: sceneA, points: [[1, 2]], active: true, origin: "o9" }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "ruler", from: "u9", scene: "sceneB", points: [[3, 4], [5, 6]], active: true, origin: "o9" }); // the GM's viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ from: "u9", scene: "sceneB", points: [[3, 4], [5, 6]], active: true, origin: "o9" });
+
+  // A stop for the scene being left is dropped like any other frame for it.
+  push({ type: "ruler", from: "u9", scene: sceneA, points: [], active: false, origin: "o9" });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(1);
+});
+
+test("onRuler drops only the frame this connection sent: the same user's other connection renders it", async () => {
+  // Two sessions of ONE user (selfId "u1"), each over its own WsClient and socket: the way a
+  // GM measuring on one device is also connected on a second.
+  const sentA: Array<Record<string, unknown>> = [];
+  const sentB: Array<Record<string, unknown>> = [];
+  const a = pushConnect(sentA);
+  const b = pushConnect(sentB);
+  const sessionA = new WorldSession({ selfId: "u1", connect: a.connect, modules: [coreUiStub], logger: silentLogger });
+  const sessionB = new WorldSession({ selfId: "u1", connect: b.connect, modules: [coreUiStub], logger: silentLogger });
+  await sessionA.enter("w1");
+  await sessionB.enter("w1");
+  a.push({ ...welcomeFrame, user_role: "gm" });
+  b.push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sentA).length).toBe(1));
+  await vi.waitFor(() => expect(sceneCreates(sentB).length).toBe(1));
+  const scene = "sceneShared";
+  for (const session of [sessionA, sessionB]) {
+    session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, scene) }]);
+    session.setGmViewedScene(scene);
+  }
+  const gotA: unknown[] = [];
+  const gotB: unknown[] = [];
+  sessionA.onRuler((m) => gotA.push(m));
+  sessionB.onRuler((m) => gotB.push(m));
+
+  // Session A sends; the server relays the frame to every connection, carrying A's origin.
+  sessionA.sendRulerUpdate(scene, [[0, 0], [70, 70]], true);
+  const sent = sentA.find((m) => m.type === "ruler_update")!;
+  const relayed = { type: "ruler", from: "u1", scene, points: sent.points, active: true, origin: sent.origin };
+  a.push(relayed);
+  b.push(relayed);
+
+  await vi.waitFor(() => expect(gotB).toHaveLength(1));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(gotA, "the originating connection draws its own preview, not a remote duplicate").toHaveLength(0);
+  expect(gotB[0]).toMatchObject({ from: "u1", points: [[0, 0], [70, 70]], active: true });
+});
+
+test("sendRulerUpdate transmits the explicit scene, points and active flag; a stop reaches the scene it was started on", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  session.sendRulerUpdate("scene-started-on", [[0, 0], [70, 70]], true);
+  session.sendRulerUpdate("scene-started-on", [], false);
+  const rulers = sent.filter((m) => m.type === "ruler_update");
+  expect(rulers).toEqual([
+    { type: "ruler_update", scene: "scene-started-on", points: [[0, 0], [70, 70]], active: true, origin: expect.any(String) },
+    { type: "ruler_update", scene: "scene-started-on", points: [], active: false, origin: expect.any(String) },
+  ]);
+  expect(rulers[0].origin).toBe(rulers[1].origin);
+  expect(rulers[0].origin).not.toBe("");
+});
+
 test("playVfx forwards to WsClient.playVfx; onVfx fires only for the viewed scene; a disconnected session no-ops", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
@@ -2334,4 +2421,20 @@ describe("WorldSession.audio", () => {
     });
     session.leave();
   });
+});
+
+test("the share-ruler preference a session exposes is keyed by that session's user and persists in this device's storage", () => {
+  localStorage.clear();
+  const connect = (() => Promise.reject(new Error("unused"))) as never;
+  const alice = new WorldSession({ selfId: "alice", connect, modules: [], logger: silentLogger });
+  expect(alice.shareRuler.enabled).toBe(false);
+  alice.shareRuler.set(true);
+  expect(localStorage.getItem(shareRulerStorageKey("alice"))).toBe("1");
+  expect(localStorage.getItem(shareRulerStorageKey("bob"))).toBeNull();
+
+  // A second session for another user on the same browser profile does not inherit the opt-in;
+  // a new session for the same user restores it.
+  expect(new WorldSession({ selfId: "bob", connect, modules: [], logger: silentLogger }).shareRuler.enabled).toBe(false);
+  expect(new WorldSession({ selfId: "alice", connect, modules: [], logger: silentLogger }).shareRuler.enabled).toBe(true);
+  localStorage.clear();
 });

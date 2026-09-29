@@ -73,9 +73,10 @@ import {
   type AudioStateEngine,
   type PlaylistEngine,
   type HookFaultPayload,
+  type RulerNotice,
 } from "@shadowcat/core";
 import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
-import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
 import type { HooksEmitApi } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
@@ -216,6 +217,11 @@ export class WorldSession {
   readonly actorSelection = new ActorSelection();
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */
   readonly tokenSelection = new TokenSelection();
+  /** Whether this session's user broadcasts their measure-tool drags (the shared live ruler's
+   * toggle). Owned here because the session owns the user identity: it is constructed with the
+   * session's immutable `selfId`, so it reads and persists under that user's storage key. The
+   * `ToolRail` toggle writes it and the measure tool reads it through AppContext. */
+  readonly shareRuler: ShareRulerPreference;
   /** `onAssetChanged` subscriber set. */
   #assetListeners = new Set<(msg: AssetChangedNotice) => void>();
   /** `onPing` subscriber set. */
@@ -244,6 +250,8 @@ export class WorldSession {
       emote: string;
     }) => void
   >();
+  /** `onRuler` subscriber set. */
+  #rulerListeners = new Set<(msg: RulerNotice) => void>();
   /** `onVfx` subscriber set. */
   #vfxListeners = new Set<(msg: VfxNotice) => void>();
   /** `onScrollingText` subscriber set. */
@@ -740,6 +748,7 @@ export class WorldSession {
    * ```
    */
   constructor(private readonly opts: WorldSessionOpts) {
+    this.shareRuler = new ShareRulerPreference(opts.selfId, typeof localStorage === "undefined" ? undefined : localStorage);
     this.#logger = opts.logger ?? consoleLogger();
     this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
     this.#hooks = new HookBus(this.#logger);
@@ -949,6 +958,27 @@ export class WorldSession {
     return () => this.#emoteListeners.delete(cb);
   }
 
+  /** Subscribe to relayed shared rulers; returns an unsubscribe. The server relays every ruler
+   * to every connection, so a frame this connection itself sent is dropped here (it draws its
+   * own local preview) while the same user's frames from another connection are delivered. Only
+   * frames for the scene this client is viewing (`viewedSceneId`) reach the callback, with
+   * `points` unclipped.
+   * @param cb Called with the measuring user, scene, vertices, active flag, and sending
+   * connection's origin token of each update.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function showRuler(user: string, points: [number, number][]): void;
+   * const off = session.onRuler(({ from, points, active }) => active && showRuler(from, points));
+   * off();
+   * ```
+   */
+  onRuler(cb: (msg: RulerNotice) => void): () => void {
+    this.#rulerListeners.add(cb);
+    return () => this.#rulerListeners.delete(cb);
+  }
+
   /** Subscribe to region-triggered scrolling-text overlays; returns an unsubscribe. Fired only
    * by the server (a region's own `TriggerEffect::ScrollingText`) — there is no client `send`
    * counterpart, unlike `onEmote`/`sendEmote`.
@@ -1010,6 +1040,29 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
+  }
+
+  /** Broadcast this user's live ruler on `scene` to the other members. Takes an explicit
+   * `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target) so a stop frame reaches the
+   * scene the ruler was started on even after the view has moved. No-op when disconnected. The
+   * server re-authorizes scene READ and bounds the point count, the coordinates and the send
+   * rate. A list over `RULER_LIMITS.maxPoints` vertices, or a non-finite coordinate (JSON
+   * carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is answered
+   * with a generic `error` to this connection; a finite coordinate beyond
+   * `RULER_LIMITS.maxCoord`, an unreadable scene, an over-budget rate or an over-long `origin`
+   * is dropped silently. Every connection in the room receives `points` unclipped.
+   * @param scene The scene the ruler is measured on.
+   * @param points The route preview's vertices in scene coordinates, start through goal.
+   * @param active `false` ends this user's ruler for observers.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.sendRulerUpdate("scene-1", [[0, 0], [70, 70]], true);
+   * session.sendRulerUpdate("scene-1", [], false);
+   * ```
+   */
+  sendRulerUpdate(scene: string, points: [number, number][], active: boolean): void {
+    this.#ws?.sendRulerUpdate(scene, points, active);
   }
 
   /** GM-only: purge explored-fog memory for `scene`, optionally narrowed to one `user`
@@ -1477,6 +1530,17 @@ export class WorldSession {
           // recipients currently viewing that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#scrollingTextListeners) cb(msg);
+        },
+        onRuler: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a ruler
+          // broadcasts room-wide and must render only for recipients currently viewing that
+          // scene (a GM roaming scene B must not surface scene A's ruler on B's grid).
+          if (msg.scene !== this.viewedSceneId) return;
+          // The drop keys on the origin token, not on `msg.from`: the originating connection
+          // draws its own local preview, while another connection of the same user has none and
+          // must render the relayed ruler.
+          if (msg.origin === this.#ws?.rulerOrigin) return;
+          for (const cb of this.#rulerListeners) cb(msg);
         },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onVfx: (msg) => {

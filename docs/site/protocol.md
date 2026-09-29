@@ -79,6 +79,7 @@ Every `ServerMsg` variant:
 | `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
 | `emote` | A user's transient emote glyph over a token (includes your own echo) |
+| `ruler` | A member's shared live ruler: the route they are measuring, relayed unclipped to every connection in the room, the sender's own included. Recipients always see the canonical form: a stop (`active: false`) carries no points and an active frame carries at least one. `from` is stamped by the server; `origin` is the sending connection's token, relayed as given and not verified, and the originating client drops its own frame by it |
 | `vfx` | A relayed VFX one-shot at scene coords (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
 | `path_error` | Pathfind request failed |
@@ -109,6 +110,7 @@ Every `ClientMsg` variant:
 | `scene_unsubscribe` | Close it |
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `emote` | Broadcast a transient emote glyph over a token you effectively own |
+| `ruler_update` | Broadcast your live measured route on a scene you can read, including as a read-only spectator. At most 256 vertices, every coordinate finite and within 1e9 in magnitude. A longer list, or a non-finite coordinate (JSON carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is answered with a generic `error` to you alone. A frame with a finite coordinate beyond the bound, an `origin` token over 64 bytes, a scene you cannot read, or past your per-user rate budget (720 frames a minute) is dropped silently. The `origin` token is chosen by the client and relayed unchanged so the sending connection can recognize its own frame; `active: false` or an empty route ends the ruler |
 | `play_vfx` | Fire a one-shot VFX at scene coords; rate-limited per user, spectators refused |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |

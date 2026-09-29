@@ -7,6 +7,7 @@ import { vfxAnchorZIndex } from "./vfx-view";
 import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
+import type { RemoteRulerPath } from "./remote-ruler-view";
 import { TextureCacheManager } from "./texture-cache";
 
 /** Initial renderer options for `createPixiBackend`. */
@@ -354,6 +355,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The remote shared-ruler overlay, redrawn wholesale by `drawRulers`. */
+  private readonly rulerGraphics = new Graphics();
   /** The darkness sheet: `LightingFrame.darkness` filled at `MAX_DARK_ALPHA`, inverse-masked
    * by `litHoles` so every lit cell shows through. Parented under the `lighting` container
    * beneath `lightingGraphics`. */
@@ -549,6 +552,7 @@ export class PixiBackend implements DisplayBackend {
         this.measureText.anchor.set(0.5);
         this.measureText.visible = false;
         c.addChild(this.measureText);
+        c.addChild(this.rulerGraphics);
         c.addChild(this.pingGraphics);
         c.addChild(this.emoteLayer);
       }
@@ -1798,6 +1802,32 @@ export class PixiBackend implements DisplayBackend {
       t.position.set(g.x, g.y);
       t.alpha = g.alpha;
       this.emoteLayer.addChild(t);
+    }
+  }
+  /** `DisplayBackend.drawRulers`: redraw the remote shared-ruler overlay — clears it, then per
+   * ruler strokes the polyline (3px, the ruler's own `color`) and marks its last vertex with a
+   * filled dot; a single-vertex ruler draws as the dot alone.
+   * @param rulers The live remote rulers to draw (sender, vertices, color), in draw order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawRulers([{ user: "u1", origin: "conn-1", points: [[0, 0], [10, 0]], color: 0x4fc3f7 }]);
+   * ```
+   */
+  drawRulers(rulers: RemoteRulerPath[]): void {
+    this.rulerGraphics.clear();
+    for (const r of rulers) {
+      const [first, ...rest] = r.points;
+      if (!first) continue;
+      if (rest.length > 0) {
+        this.rulerGraphics.moveTo(first[0], first[1]);
+        for (const p of rest) this.rulerGraphics.lineTo(p[0], p[1]);
+        this.rulerGraphics.stroke({ width: 3, color: r.color, alpha: 0.9 });
+      }
+      const last = r.points[r.points.length - 1];
+      this.rulerGraphics.circle(last[0], last[1], 5).fill({ color: r.color, alpha: 0.9 });
     }
   }
   /** `DisplayBackend.setLighting`: repaint the lighting overlay. First the darkness sheet:

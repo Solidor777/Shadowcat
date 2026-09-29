@@ -314,6 +314,7 @@ export const en: Messages = {
   "tools.draw": "Draw",
   "tools.template": "Template",
   "tools.measure": "Measure",
+  "tools.shareRuler": "Share my ruler",
   "tools.ping": "Ping",
   "tools.wall": "Wall",
   "tools.region": "Region",

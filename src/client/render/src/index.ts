@@ -10,6 +10,7 @@ export { WallView } from "./wall-view";
 export { RegionView, regionShapeSpec, regionShapeOutline } from "./region-view";
 export { LightView } from "./light-view";
 export { PingView, type PingRing } from "./ping-view";
+export { RemoteRulerView, RULER_STALE_MS, rulerColor, rulerKey, type RemoteRulerPath } from "./remote-ruler-view";
 export { EmoteView, truncateForDisplay, MAX_GLYPH_DISPLAY_CHARS, MAX_OVERLAY_DISPLAY_CHARS, type EmoteGlyph, type EmoteKind } from "./emote-view";
 export { VfxView, vfxAnchorZIndex } from "./vfx-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";

@@ -359,6 +359,23 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound ruler frame with every field, points as coordinate pairs", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1.5, 2.5], [3, 4]], active: true, origin: "o1" }),
+    );
+    expect(m).toEqual({ type: "ruler", from: "u1", scene: "s1", points: [[1.5, 2.5], [3, 4]], active: true, origin: "o1" });
+    // A vertex that is not a pair is a malformed frame, never a partial one.
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2, 3]], active: true, origin: "o1" })),
+    ).toBeNull();
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2]], origin: "o1" })),
+    ).toBeNull();
+    expect(
+      parseServerMsg(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2]], active: true })),
+    ).toBeNull();
+  });
+
   it("parses path_result and path_error server frames", () => {
     const ok = parseServerMsg(
       JSON.stringify({
@@ -628,6 +645,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    ruler: { type: "ruler", from: "u", scene: "s", points: [[1, 2]], active: true, origin: "o" },
     explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
     scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {

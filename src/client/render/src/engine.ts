@@ -21,6 +21,7 @@ import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 import { EmoteView, type EmoteKind } from "./emote-view";
+import { RemoteRulerView } from "./remote-ruler-view";
 import { VfxView } from "./vfx-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
@@ -215,6 +216,10 @@ export class RenderEngine implements SceneToolHost {
   private lastVfxCount = 0;
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
+  /** Remote shared-ruler state, ticked each frame; drives `DisplayBackend.drawRulers`. */
+  private readonly remoteRulers = new RemoteRulerView();
+  /** Whether remote rulers were drawn last frame, so the ticker stops redrawing once idle. */
+  private rulersActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
    * Reassignable at runtime via {@link RenderEngine.setThemeColors} (a theme swap). */
   private gridColor: number;
@@ -497,6 +502,12 @@ export class RenderEngine implements SceneToolHost {
       if (glyphs.length > 0 || this.emotesActive) {
         this.backend.drawEmotes(glyphs);
         this.emotesActive = glyphs.length > 0;
+      }
+      const rulers = this.remoteRulers.tick(dt);
+      // Redraw only while remote rulers live (plus one final clear when they empty).
+      if (rulers.length > 0 || this.rulersActive) {
+        this.backend.drawRulers(rulers);
+        this.rulersActive = rulers.length > 0;
       }
       const perf = this.perf();
       const lastPerf = this.lastPerf;
@@ -821,6 +832,9 @@ export class RenderEngine implements SceneToolHost {
     }
     this.lightingBeforeLightSweep = null;
     this.lightingBeforeSweep = null;
+    // Remote rulers belong to the scene being left; the next update for the newly viewed scene
+    // redraws its own.
+    this.remoteRulers.clearAll();
     if (this.lastRawPayload !== undefined) {
       this.retargetLighting(this.toLighting(this.lastRawPayload));
       this.lastInput = this.toVisibility(this.lastRawPayload);
@@ -1444,6 +1458,41 @@ export class RenderEngine implements SceneToolHost {
     if (!spec) return;
     // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
     this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell(), kind);
+  }
+
+  /** Show or replace the remote shared ruler of one connection (`origin`) of `user`. Replaces
+   * only that connection's previous ruler, so one user measuring on two connections shows two
+   * rulers; an empty `points` clears it. The ruler expires on its own unless refreshed
+   * (`RULER_STALE_MS`). `points` arrive unclipped from the sender.
+   * @param user The measuring user's id.
+   * @param origin The sending connection's token (`RulerNotice.origin`).
+   * @param points The ruler's vertices in scene coordinates.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setRemoteRuler("user-a", "conn-1", [[0, 0], [70, 70]]);
+   * ```
+   */
+  setRemoteRuler(user: string, origin: string, points: [number, number][]): void {
+    this.remoteRulers.set(user, origin, points);
+  }
+
+  /** Remove the remote shared ruler of one connection (`origin`) of `user`, leaving every other
+   * connection's untouched.
+   * @param user The measuring user's id.
+   * @param origin The sending connection's token (`RulerNotice.origin`).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.clearRemoteRuler("user-a", "conn-1");
+   * ```
+   */
+  clearRemoteRuler(user: string, origin: string): void {
+    this.remoteRulers.clear(user, origin);
   }
 
   /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact

@@ -108,7 +108,12 @@ impl Harness {
     }
 
     async fn connect_with(&self, cookie: &str) -> Ws {
-        let url = format!("ws://{}/ws?world={}", self.addr, self.world);
+        self.connect_world(self.world, cookie).await
+    }
+
+    /// Connect to `world` (which need not be the harness's own) with `cookie`.
+    async fn connect_world(&self, world: Uuid, cookie: &str) -> Ws {
+        let url = format!("ws://{}/ws?world={}", self.addr, world);
         let mut req = url.into_client_request().unwrap();
         req.headers_mut().insert("cookie", cookie.parse().unwrap());
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
@@ -833,6 +838,27 @@ async fn recv_until(ws: &mut Ws, ty: &str) -> serde_json::Value {
     }
 }
 
+/// Reads frames until one of type `ty` and returns it with the `type` of every frame skipped on
+/// the way, so a test can assert that no frame of some type arrived before it (the socket
+/// delivers a connection's frames in order).
+async fn recv_until_collecting(ws: &mut Ws, ty: &str) -> (serde_json::Value, Vec<String>) {
+    let mut skipped = Vec::new();
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout")
+            .expect("stream ended")
+            .expect("ws error");
+        if let Message::Text(t) = msg {
+            let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+            if v["type"] == ty {
+                return (v, skipped);
+            }
+            skipped.push(v["type"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+}
+
 #[tokio::test]
 async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
     let h = spawn().await;
@@ -978,4 +1004,521 @@ async fn emote_relays_out_of_band_with_sender_stamped_and_drops_unauthorized() {
     // Out-of-band: no emote created an authoritative event (seq 1 is the join-time
     // config seed; the scene+token intent committed at seq 2).
     assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
+}
+
+/// A world-scoped scene document with an explicit `permissions.default` role.
+fn ruler_scene_doc(world: Uuid, id: Uuid, default_role: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "scope": { "kind": "world", "world_id": world },
+        "doc_type": "scene",
+        "schema_version": 1,
+        "permissions": { "default": default_role, "users": {}, "property_overrides": {} },
+        "engine": {
+            "grid": { "kind": "square", "size": 100.0 }, "background": null
+        },
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0,
+    })
+}
+
+fn ruler_update(scene: Uuid, points: serde_json::Value, active: bool) -> Message {
+    ruler_update_from(scene, points, active, "")
+}
+
+/// A `ruler_update` frame carrying the sending connection's `origin` token.
+fn ruler_update_from(
+    scene: Uuid,
+    points: serde_json::Value,
+    active: bool,
+    origin: &str,
+) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "type": "ruler_update", "scene": scene, "points": points, "active": active,
+            "origin": origin
+        })
+        .to_string(),
+    )
+}
+
+/// GM `a` (the world owner) and player `b` joined to the harness world, with `scene_docs`
+/// created by the GM and observed by both.
+async fn ruler_room(h: &Harness, scene_docs: Vec<serde_json::Value>) -> (Ws, Ws, Uuid) {
+    let cookie_b = h.add_member("b", WorldRole::Player).await;
+    let b_id = h
+        .repo
+        .member_id_by_username(h.world, "b")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut a = h.connect().await;
+    let mut b = h.connect_with(&cookie_b).await;
+    recv_until(&mut a, "welcome").await;
+    recv_until(&mut b, "welcome").await;
+    let ops: Vec<serde_json::Value> = scene_docs
+        .into_iter()
+        .map(|d| serde_json::json!({ "op": "create", "doc": d }))
+        .collect();
+    a.send(intent_msg(1, serde_json::Value::Array(ops)))
+        .await
+        .unwrap();
+    recv_until(&mut a, "event").await;
+    recv_until(&mut b, "event").await;
+    (a, b, b_id)
+}
+
+#[tokio::test]
+async fn ruler_broadcast_relayed_to_the_room() {
+    let h = spawn().await;
+    let scene = test_doc_id(9101);
+    let (mut a, mut b, b_id) =
+        ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    b.send(ruler_update(
+        scene,
+        serde_json::json!([[12.0, 34.0], [56.0, 78.0]]),
+        true,
+    ))
+    .await
+    .unwrap();
+
+    // The GM receives the sender-stamped frame whole.
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(r["from"], serde_json::to_value(b_id).unwrap());
+    assert_eq!(r["scene"], serde_json::to_value(scene).unwrap());
+    assert_eq!(r["points"], serde_json::json!([[12.0, 34.0], [56.0, 78.0]]));
+    assert_eq!(r["active"], true);
+
+    // Stopping is delivered with no points.
+    b.send(ruler_update(scene, serde_json::json!([]), false))
+        .await
+        .unwrap();
+    let stop = recv_until(&mut a, "ruler").await;
+    assert_eq!(stop["active"], false);
+    assert_eq!(stop["points"], serde_json::json!([]));
+    // `b` receives its own two frames too; they are consumed here so the origin check below
+    // reads the frame it is about.
+    assert_eq!(recv_until(&mut b, "ruler").await["active"], true);
+    assert_eq!(recv_until(&mut b, "ruler").await["active"], false);
+
+    // The relay is `ScenePing`'s: the sender's own connection receives the frame too, with the
+    // origin token it sent, so the originating client can recognize and drop it.
+    a.send(ruler_update_from(
+        scene,
+        serde_json::json!([[5.0, 5.0]]),
+        true,
+        "conn-a",
+    ))
+    .await
+    .unwrap();
+    for (who, w) in [("the sender", &mut a), ("the other member", &mut b)] {
+        let r = recv_until(w, "ruler").await;
+        assert_eq!(r["points"], serde_json::json!([[5.0, 5.0]]), "{who}");
+        assert_eq!(r["origin"], "conn-a", "{who} receives the origin unchanged");
+    }
+    // Out-of-band: no authoritative event beyond the join seed and the scene create.
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn ruler_update_silently_dropped_when_sender_lacks_read() {
+    let h = spawn().await;
+    let hidden = test_doc_id(9102);
+    let visible = test_doc_id(9103);
+    let (mut a, mut b, _) = ruler_room(
+        &h,
+        vec![
+            ruler_scene_doc(h.world, hidden, "none"),
+            ruler_scene_doc(h.world, visible, "observer"),
+        ],
+    )
+    .await;
+
+    // Send order is preserved, so a hidden-scene frame that slipped through would reach `a`
+    // BEFORE the legitimate one.
+    b.send(ruler_update(hidden, serde_json::json!([[1.0, 1.0]]), true))
+        .await
+        .unwrap();
+    b.send(ruler_update(visible, serde_json::json!([[2.0, 2.0]]), true))
+        .await
+        .unwrap();
+
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(r["scene"], serde_json::to_value(visible).unwrap());
+    assert_eq!(r["points"], serde_json::json!([[2.0, 2.0]]));
+}
+
+#[tokio::test]
+async fn ruler_update_rejected_past_max_points() {
+    let h = spawn().await;
+    let scene = test_doc_id(9104);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    let pts = |n: usize| {
+        serde_json::Value::Array((0..n).map(|i| serde_json::json!([i as f64, 0.0])).collect())
+    };
+    // One past the cap fails to parse and is answered to the sender alone; a coordinate past the
+    // magnitude bound is dropped silently.
+    b.send(ruler_update(scene, pts(257), true)).await.unwrap();
+    assert_eq!(
+        recv_until(&mut b, "error").await["code"],
+        "bad_message",
+        "an over-cap frame is a malformed frame, answered like any other"
+    );
+    b.send(ruler_update(
+        scene,
+        serde_json::json!([[1.0e12, 0.0]]),
+        true,
+    ))
+    .await
+    .unwrap();
+    // Exactly the cap is admitted, and is the FIRST ruler `a` receives.
+    b.send(ruler_update(scene, pts(256), true)).await.unwrap();
+
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(r["points"].as_array().unwrap().len(), 256);
+    // The sender is echoed its own admitted frame; the out-of-range frame sent before it drew no
+    // reply, so no `error` arrives ahead of that echo.
+    let (echo, skipped) = recv_until_collecting(&mut b, "ruler").await;
+    assert_eq!(echo["points"].as_array().unwrap().len(), 256);
+    assert!(
+        !skipped.iter().any(|ty| ty == "error"),
+        "an out-of-range coordinate is dropped silently, got frames {skipped:?}"
+    );
+}
+
+/// `JSON.stringify` turns `NaN` and `Infinity` into `null`, which `f64` deserialization rejects:
+/// a non-finite coordinate reaches the server as a malformed frame and the sender alone receives
+/// the generic `bad_message`; only a FINITE coordinate past the magnitude bound is dropped
+/// silently. Both are measured through the real socket, then a valid frame proves the
+/// connection survives and the first ruler `a` sees is that valid one.
+#[tokio::test]
+async fn ruler_update_null_coordinate_is_a_bad_message_and_out_of_range_is_dropped_silently() {
+    let h = spawn().await;
+    let scene = test_doc_id(9114);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    b.send(ruler_update(scene, serde_json::json!([[null, 0.0]]), true))
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_until(&mut b, "error").await["code"],
+        "bad_message",
+        "a null coordinate (a serialized NaN or Infinity) is a malformed frame"
+    );
+    b.send(ruler_update(
+        scene,
+        serde_json::json!([[1.0e12, 0.0]]),
+        true,
+    ))
+    .await
+    .unwrap();
+    b.send(ruler_update(scene, serde_json::json!([[3.0, 3.0]]), true))
+        .await
+        .unwrap();
+
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(
+        r["points"],
+        serde_json::json!([[3.0, 3.0]]),
+        "the out-of-range frame relayed nothing and the connection survived the malformed one"
+    );
+    // The sender is echoed the valid frame; the out-of-range frame sent before it drew no reply,
+    // so no `error` arrives between the `bad_message` above and that echo.
+    let (echo, skipped) = recv_until_collecting(&mut b, "ruler").await;
+    assert_eq!(echo["points"], serde_json::json!([[3.0, 3.0]]));
+    assert!(
+        !skipped.iter().any(|ty| ty == "error"),
+        "an out-of-range coordinate is dropped silently, got frames {skipped:?}"
+    );
+}
+
+#[tokio::test]
+async fn ruler_update_refused_when_scene_belongs_to_a_different_world() {
+    let h = spawn().await;
+    let scene = test_doc_id(9105);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    // The seeded owner also owns a second world holding its own scene.
+    let owner = h
+        .repo
+        .member_id_by_username(h.world, "u")
+        .await
+        .unwrap()
+        .unwrap();
+    let other = h.repo.create_world_owned("other", owner, 0).await.unwrap();
+    let foreign = test_doc_id(9106);
+    let mut o = h.connect_world(other.id, &h.cookie).await;
+    recv_until(&mut o, "welcome").await;
+    o.send(intent_msg(
+        1,
+        serde_json::json!([{ "op": "create", "doc": ruler_scene_doc(other.id, foreign, "observer") }]),
+    ))
+    .await
+    .unwrap();
+    recv_until(&mut o, "event").await;
+
+    b.send(ruler_update(foreign, serde_json::json!([[1.0, 1.0]]), true))
+        .await
+        .unwrap();
+    b.send(ruler_update(scene, serde_json::json!([[2.0, 2.0]]), true))
+        .await
+        .unwrap();
+
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(
+        r["scene"],
+        serde_json::to_value(scene).unwrap(),
+        "the foreign-world scene is refused"
+    );
+}
+
+/// A ruler is relayed unclipped: one GM ruler, three recipients with different sight (a GM, a
+/// player whose sight is walled off from most of the route, a player with no token on the
+/// scene). Every recipient receives the full route and the stop. The payloads are compared,
+/// not repository state.
+#[tokio::test]
+async fn ruler_is_relayed_unclipped_to_every_recipient_whatever_their_sight() {
+    let h = spawn().await;
+    let scene = test_doc_id(9107);
+    let cookie_gm2 = h.add_member("gm2", WorldRole::Gm).await;
+    let cookie_p1 = h.add_member("p1", WorldRole::Player).await;
+    let cookie_p2 = h.add_member("p2", WorldRole::Player).await;
+    let p1 = h
+        .repo
+        .member_id_by_username(h.world, "p1")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut sender = h.connect().await; // world owner (GM)
+    let mut gm2 = h.connect_with(&cookie_gm2).await;
+    let mut p1_ws = h.connect_with(&cookie_p1).await;
+    let mut p2_ws = h.connect_with(&cookie_p2).await;
+    for w in [&mut sender, &mut gm2, &mut p1_ws, &mut p2_ws] {
+        recv_until(w, "welcome").await;
+    }
+
+    // p1 owns a token at (50,50) with a sight wall at x=100; p2 owns nothing.
+    let token = serde_json::json!({
+        "id": test_doc_id(9108),
+        "scope": { "kind": "world", "world_id": h.world },
+        "doc_type": "token",
+        "schema_version": 1,
+        "owner": serde_json::to_value(p1).unwrap(),
+        "parent_id": scene,
+        "engine": { "x": 50.0, "y": 50.0, "w": 1.0, "h": 1.0, "rotation": 0.0 },
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    let wall = serde_json::json!({
+        "id": test_doc_id(9109),
+        "scope": { "kind": "world", "world_id": h.world },
+        "doc_type": "wall",
+        "schema_version": 1,
+        "parent_id": scene,
+        "engine": { "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true },
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    sender
+        .send(intent_msg(
+            1,
+            serde_json::json!([
+                { "op": "create", "doc": ruler_scene_doc(h.world, scene, "observer") },
+                { "op": "create", "doc": token },
+                { "op": "create", "doc": wall },
+            ]),
+        ))
+        .await
+        .unwrap();
+    for w in [&mut sender, &mut gm2, &mut p1_ws, &mut p2_ws] {
+        recv_until(w, "event").await;
+    }
+
+    // Only (60,50) and (70,50) lie inside p1's sight; p2 sees nothing at all.
+    let full = serde_json::json!([[250.0, 50.0], [60.0, 50.0], [70.0, 50.0], [260.0, 50.0]]);
+    sender
+        .send(ruler_update(scene, full.clone(), true))
+        .await
+        .unwrap();
+
+    for (who, w) in [
+        ("a GM", &mut gm2),
+        ("a player with walled-off sight", &mut p1_ws),
+        ("a player with no token", &mut p2_ws),
+    ] {
+        let r = recv_until(w, "ruler").await;
+        assert_eq!(r["points"], full, "{who} receives the full route");
+        assert_eq!(r["active"], true);
+    }
+
+    sender
+        .send(ruler_update(scene, serde_json::json!([]), false))
+        .await
+        .unwrap();
+    for (who, w) in [
+        ("a GM", &mut gm2),
+        ("a player with walled-off sight", &mut p1_ws),
+        ("a player with no token", &mut p2_ws),
+    ] {
+        let stop = recv_until(w, "ruler").await;
+        assert_eq!(stop["active"], false, "{who} receives the stop");
+        assert_eq!(stop["points"], serde_json::json!([]));
+    }
+}
+
+/// The server is the definition of a frame: an update flagged inactive reaches recipients with
+/// no points, and an update flagged active with no points reaches them as the stop.
+#[tokio::test]
+async fn ruler_frames_are_canonicalised_by_the_server() {
+    let h = spawn().await;
+    let scene = test_doc_id(9113);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    b.send(ruler_update(
+        scene,
+        serde_json::json!([[0.0, 0.0], [1.0, 1.0]]),
+        false,
+    ))
+    .await
+    .unwrap();
+    let stop = recv_until(&mut a, "ruler").await;
+    assert_eq!(stop["active"], false);
+    assert_eq!(stop["points"], serde_json::json!([]));
+
+    b.send(ruler_update(scene, serde_json::json!([]), true))
+        .await
+        .unwrap();
+    let empty_active = recv_until(&mut a, "ruler").await;
+    assert_eq!(empty_active["active"], false);
+    assert_eq!(empty_active["points"], serde_json::json!([]));
+
+    b.send(ruler_update(scene, serde_json::json!([[2.0, 2.0]]), true))
+        .await
+        .unwrap();
+    let live = recv_until(&mut a, "ruler").await;
+    assert_eq!(live["active"], true);
+    assert_eq!(live["points"], serde_json::json!([[2.0, 2.0]]));
+}
+
+/// Two connections of the SAME user both receive the frame, each carrying the origin of the
+/// connection that sent it, so a client can drop only its own connection's frame: the second
+/// device has no local preview to stand in for the ruler.
+#[tokio::test]
+async fn ruler_reaches_every_connection_of_the_senders_user_with_the_origin_unchanged() {
+    let h = spawn().await;
+    let scene = test_doc_id(9111);
+    let (mut a1, mut b, _) =
+        ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+    let mut a2 = h.connect().await; // the same user as `a1`, a second device
+    recv_until(&mut a2, "welcome").await;
+
+    a1.send(ruler_update_from(
+        scene,
+        serde_json::json!([[1.0, 2.0], [3.0, 4.0]]),
+        true,
+        "device-1",
+    ))
+    .await
+    .unwrap();
+
+    let owner = h
+        .repo
+        .member_id_by_username(h.world, "u")
+        .await
+        .unwrap()
+        .unwrap();
+    for (who, w) in [
+        ("the originating connection", &mut a1),
+        ("the same user's second connection", &mut a2),
+        ("another member", &mut b),
+    ] {
+        let r = recv_until(w, "ruler").await;
+        assert_eq!(
+            r["points"],
+            serde_json::json!([[1.0, 2.0], [3.0, 4.0]]),
+            "{who}"
+        );
+        assert_eq!(r["origin"], "device-1", "{who}");
+        assert_eq!(
+            r["from"],
+            serde_json::to_value(owner).unwrap(),
+            "{who}: the frame names the sending user"
+        );
+    }
+}
+
+/// The origin token is bounded like the other payload fields: past `MAX_RULER_ORIGIN_BYTES`
+/// the frame is dropped silently, at the bound it is relayed.
+#[tokio::test]
+async fn ruler_update_rejected_past_max_origin_bytes() {
+    let h = spawn().await;
+    let scene = test_doc_id(9112);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    let pts = serde_json::json!([[1.0, 1.0]]);
+    b.send(ruler_update_from(scene, pts.clone(), true, &"x".repeat(65)))
+        .await
+        .unwrap();
+    b.send(ruler_update_from(scene, pts, true, &"y".repeat(64)))
+        .await
+        .unwrap();
+    let r = recv_until(&mut a, "ruler").await;
+    assert_eq!(
+        r["origin"],
+        "y".repeat(64),
+        "the oversize origin was dropped; the first frame relayed is the one at the bound"
+    );
+}
+
+/// The ingress arm spends the sender's ruler budget: exactly `ratePerMin` frames (the shared
+/// fixture's number, read on both sides) are relayed, and the next ones never reach the room.
+/// Sender and receiver drain in lockstep, so no broadcast receiver can fall behind and the
+/// count does not depend on egress timing.
+#[tokio::test]
+async fn ruler_updates_are_rate_limited_per_user() {
+    let budget = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../client/core/src/__fixtures__/ruler-limits.json"
+    ))
+    .unwrap()["ratePerMin"]
+        .as_u64()
+        .unwrap() as usize;
+    let h = spawn().await;
+    let scene = test_doc_id(9110);
+    let (mut a, mut b, _) = ruler_room(&h, vec![ruler_scene_doc(h.world, scene, "observer")]).await;
+
+    for i in 0..budget {
+        b.send(ruler_update(
+            scene,
+            serde_json::json!([[i as f64, 0.0]]),
+            true,
+        ))
+        .await
+        .unwrap();
+        let relayed = recv_until(&mut a, "ruler").await;
+        assert_eq!(relayed["points"][0][0].as_f64().unwrap(), i as f64);
+        recv_until(&mut b, "ruler").await; // the sender's own copy, drained in lockstep
+    }
+    for _ in 0..3 {
+        b.send(ruler_update(
+            scene,
+            serde_json::json!([[9999.0, 0.0]]),
+            true,
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            recv_until(&mut a, "ruler")
+        )
+        .await
+        .is_err(),
+        "frames past the budget are dropped, never relayed"
+    );
 }

@@ -17,6 +17,8 @@ mod door_toggle;
 mod mover_light;
 /// `handle_reset_explored_fog`'s GM-only gate + happy-path effect.
 mod reset_explored_fog;
+/// Shared-ruler ingress bounds and unclipped delivery.
+mod ruler;
 mod senses;
 
 /// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
@@ -1716,120 +1718,6 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
     assert!(
         matches!(refused, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
         "a non-turn-owner's Hard preview is refused with the one generic wording; got {refused:?}"
-    );
-}
-
-/// `scene_ping_permitted` admits a token-less reader and refuses a foreign-world scene, a
-/// scene whose `permissions.default` denies READ, and a ghost id.
-#[tokio::test]
-async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
-    use crate::auth::role::ServerRole;
-    use crate::data::document::{DocRole, WorldRole};
-    use crate::data::membership::PermissionContext;
-    use crate::ws::room::RoomRegistry;
-
-    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-    let gm = repo
-        .create_user("gm", None, ServerRole::User, 0)
-        .await
-        .unwrap();
-    let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    let other_world = repo.create_world_owned("X", gm, 0).await.unwrap();
-    let p = repo
-        .create_user("player", None, ServerRole::User, 0)
-        .await
-        .unwrap();
-    repo.add_member(world.id, p, WorldRole::Spectator)
-        .await
-        .unwrap();
-    let spectator = PermissionContext {
-        user_id: p,
-        world_role: WorldRole::Spectator,
-    };
-    let gm_ctx = PermissionContext {
-        user_id: gm,
-        world_role: WorldRole::Gm,
-    };
-    let gm_ctx_other = PermissionContext {
-        user_id: gm,
-        world_role: WorldRole::Gm,
-    };
-
-    let reg = RoomRegistry::new();
-    let room = reg
-        .get_or_create(repo.as_ref(), world.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let room_other = reg
-        .get_or_create(repo.as_ref(), other_world.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let wdoc = crate::data::document::tests::world_scoped_doc;
-
-    let (vis_id, foreign_id, hidden_id) = (
-        crate::test_ids::test_uuid(0xB001),
-        crate::test_ids::test_uuid(0xB002),
-        crate::test_ids::test_uuid(0xB003),
-    );
-
-    // A readable scene in this world (default DocRole is `None`, so an explicit
-    // `Observer` default is required for the spectator to hold READ).
-    let mut vis = wdoc(world.id, vis_id, "scene");
-    vis.owner = Some(gm);
-    vis.permissions.default = DocRole::Observer;
-    room.publish(
-        repo.as_ref(),
-        &gm_ctx,
-        vec![crate::data::command::Operation::Create { doc: vis }],
-        0,
-        WriteOrigin::Client,
-    )
-    .await
-    .unwrap();
-
-    // A scene in a DIFFERENT world (same GM authoring it).
-    let mut foreign = wdoc(other_world.id, foreign_id, "scene");
-    foreign.owner = Some(gm);
-    room_other
-        .publish(
-            repo.as_ref(),
-            &gm_ctx_other,
-            vec![crate::data::command::Operation::Create { doc: foreign }],
-            0,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap();
-
-    // A scene in this world whose default grants nobody READ.
-    let mut hidden = wdoc(world.id, hidden_id, "scene");
-    hidden.owner = Some(gm);
-    hidden.permissions.default = DocRole::None;
-    room.publish(
-        repo.as_ref(),
-        &gm_ctx,
-        vec![crate::data::command::Operation::Create { doc: hidden }],
-        0,
-        WriteOrigin::Client,
-    )
-    .await
-    .unwrap();
-
-    // Token-less spectator may ping the scene they can read...
-    assert!(scene_ping_permitted(vis_id, &spectator, world.id, repo.as_ref()).await);
-    // ...but not a scene in another world, a scene that denies READ, or a ghost id.
-    assert!(!scene_ping_permitted(foreign_id, &spectator, world.id, repo.as_ref()).await);
-    assert!(!scene_ping_permitted(hidden_id, &spectator, world.id, repo.as_ref()).await);
-    assert!(
-        !scene_ping_permitted(
-            crate::test_ids::test_uuid(0xDEAD),
-            &spectator,
-            world.id,
-            repo.as_ref()
-        )
-        .await
     );
 }
 

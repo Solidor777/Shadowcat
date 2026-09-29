@@ -10,6 +10,7 @@ import { SceneSelection } from "../sceneSelection.svelte";
 import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
 import { SnapModePreference } from "../snapModePreference.svelte";
+import { ShareRulerPreference } from "../shareRulerPreference.svelte";
 import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
 import { PerformanceController } from "../performance.svelte";
 
@@ -88,12 +89,15 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     tokenSelection: over.tokenSelection ?? new TokenSelection(),
     sendPing: over.sendPing ?? (() => {}),
     sendEmote: over.sendEmote ?? (() => {}),
+    sendRulerUpdate: over.sendRulerUpdate ?? (() => {}),
+    shareRuler: over.shareRuler ?? new ShareRulerPreference("u1"),
     resetExploredFog: over.resetExploredFog ?? (() => {}),
     pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
     moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
     toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onEmote: over.onEmote ?? (() => () => {}),
+    onRuler: over.onRuler ?? (() => () => {}),
     onScrollingText: over.onScrollingText ?? (() => () => {}),
     onMoveOutcome: over.onMoveOutcome ?? (() => () => {}),
     chat: over.chat ?? {

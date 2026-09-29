@@ -81,6 +81,50 @@ fn emote_round_trips_and_is_out_of_band() {
 }
 
 #[test]
+fn ruler_round_trips_defaults_active_to_false_and_is_out_of_band() {
+    let c = ClientMsg::RulerUpdate {
+        scene: Uuid::from_u128(1),
+        points: vec![(1.5, 2.5), (3.0, 4.0)],
+        active: true,
+        origin: "conn-a".to_string(),
+    };
+    let s = serde_json::to_string(&c).unwrap();
+    assert!(s.contains("\"type\":\"ruler_update\""), "got {s}");
+    assert!(s.contains("\"points\":[[1.5,2.5],[3.0,4.0]]"), "got {s}");
+    let back: ClientMsg = serde_json::from_str(&s).unwrap();
+    assert!(matches!(
+        back,
+        ClientMsg::RulerUpdate { active: true, ref origin, .. } if origin == "conn-a"
+    ));
+
+    // An absent `active` reads as false (the stop signal), never true.
+    let no_active = serde_json::json!({
+        "type": "ruler_update", "scene": Uuid::from_u128(1), "points": [[0.0, 0.0]]
+    });
+    let parsed: ClientMsg = serde_json::from_value(no_active).unwrap();
+    assert!(matches!(
+        parsed,
+        ClientMsg::RulerUpdate { active: false, ref origin, .. } if origin.is_empty()
+    ));
+
+    let sv = ServerMsg::Ruler {
+        from: Uuid::from_u128(2),
+        scene: Uuid::from_u128(1),
+        points: vec![(1.5, 2.5)],
+        active: true,
+        origin: "conn-a".to_string(),
+    };
+    // Out-of-band: never buffered/resynced.
+    assert_eq!(sv.event_seq(), None);
+    let j = serde_json::to_value(&sv).unwrap();
+    assert_eq!(j["type"], "ruler");
+    assert_eq!(j["points"], serde_json::json!([[1.5, 2.5]]));
+    assert_eq!(j["active"], true);
+    assert_eq!(j["origin"], "conn-a");
+    assert_eq!(j["from"], serde_json::to_value(Uuid::from_u128(2)).unwrap());
+}
+
+#[test]
 fn client_hello_round_trips_and_is_tagged() {
     let m = ClientMsg::Hello {
         world: Uuid::from_u128(7),

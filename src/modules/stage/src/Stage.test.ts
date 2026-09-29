@@ -1,10 +1,10 @@
 import { test, expect, vi } from "vitest";
 import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
-import type { DisplayBackend, TokenNodeSpec } from "@shadowcat/render";
+import type { DisplayBackend, RemoteRulerPath, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, buildRegionDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
-import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
+import type { ReadableDocuments, FootprintLookup, Logger, RulerNotice } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController, SnapModePreference } from "@shadowcat/ui-kit";
 
@@ -33,8 +33,9 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null; rulers: RemoteRulerPath[] } {
   return {
+    rulers: [],
     destroyed: false,
     clearColor: null,
     gridColor: null,
@@ -57,6 +58,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     clearMeasure() {},
     drawPings() {},
     drawEmotes() {},
+    drawRulers(rulers: RemoteRulerPath[]) { this.rulers = rulers; },
     setVfx() {},
     removeVfx() {},
     tickVfx() {},
@@ -1020,6 +1022,66 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
   });
   await vi.waitFor(() => expect(playOneShot).toHaveBeenCalledWith("snd1", { channel: "sfx" }));
   vi.unstubAllGlobals();
+});
+
+test("onRuler drives the engine's remote rulers per connection: active draws, stop clears exactly that connection's", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let rulerCb: ((m: RulerNotice) => void) | null = null;
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      onRuler: (cb) => {
+        rulerCb = cb;
+        return () => {};
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(rulerCb).not.toBeNull();
+
+  rulerCb!({ from: "a", scene: "s1", points: [[0, 0], [10, 0]], active: true, origin: "o1" });
+  rulerCb!({ from: "b", scene: "s1", points: [[0, 5], [10, 5]], active: true, origin: "o2" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["a", "b"]);
+
+  rulerCb!({ from: "a", scene: "s1", points: [], active: false, origin: "o1" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.user)).toEqual(["b"]);
+
+  // `active: false` ends the ruler whatever points ride along: the flag, not the point count, decides.
+  rulerCb!({ from: "b", scene: "s1", points: [[3, 3]], active: false, origin: "o2" });
+  backend.tick!(16);
+  expect(backend.rulers).toEqual([]);
+});
+
+test("onRuler keys a remote ruler by connection: two origins of one user both render, and stopping one leaves the other", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let rulerCb: ((m: RulerNotice) => void) | null = null;
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      onRuler: (cb) => {
+        rulerCb = cb;
+        return () => {};
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+
+  rulerCb!({ from: "u1", scene: "s1", points: [[0, 0], [10, 0]], active: true, origin: "tablet" });
+  rulerCb!({ from: "u1", scene: "s1", points: [[0, 9], [10, 9]], active: true, origin: "laptop" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.origin)).toEqual(["tablet", "laptop"]);
+
+  rulerCb!({ from: "u1", scene: "s1", points: [], active: false, origin: "tablet" });
+  backend.tick!(16);
+  expect(backend.rulers.map((r) => r.origin)).toEqual(["laptop"]);
 });
 
 test("an emitter-bearing token committed into the store warms its emission asset's metadata", async () => {

@@ -49,7 +49,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onScrollingText, vfx, audio, onMoveOutcome, role, members, t } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onRuler, onScrollingText, vfx, audio, onMoveOutcome, role, members, t } = ctx;
 
   // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
   // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
@@ -164,6 +164,7 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offRuler: (() => void) | null = null;
     let offScrollingText: (() => void) | null = null;
     let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
@@ -470,6 +471,14 @@
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
+      // Shared rulers (never this connection's own frame): each sending CONNECTION's ruler is
+      // keyed by user id plus origin token, so one user measuring on two devices shows two
+      // rulers; an `active: false` frame clears exactly that connection's.
+      offRuler = onRuler((m) => {
+        if (m.active) e.setRemoteRuler(m.from, m.origin, m.points);
+        else e.clearRemoteRuler(m.from, m.origin);
+        host.dataset.lastRuler = `${m.from}:${m.active}:${m.points.length}`;
+      });
       // Region-triggered scrolling-text overlays reuse the SAME floating-overlay lifecycle
       // as a player-fired emote (`EmoteView.addEmote`) — never a second renderer — but declare
       // the "caption" draw treatment (smaller, wrapped, multi-line) rather than the emoji
@@ -530,6 +539,7 @@
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offRuler?.();
       offScrollingText?.();
       offVfx?.();
       offMoveOutcome?.();

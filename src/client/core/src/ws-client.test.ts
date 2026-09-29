@@ -1844,3 +1844,81 @@ describe("WsClient scrolling-text frames", () => {
     client.stop();
   });
 });
+
+describe("WsClient shared-ruler frames", () => {
+  it("a ruler server frame invokes onRuler with every field mapped", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onRuler: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(
+      JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [[1, 2], [3, 4]], active: true, origin: "o1" }),
+    );
+    onMessage(JSON.stringify({ type: "ruler", from: "u1", scene: "s1", points: [], active: false, origin: "o2" }));
+    await flush();
+    expect(received).toEqual([
+      { from: "u1", scene: "s1", points: [[1, 2], [3, 4]], active: true, origin: "o1" },
+      { from: "u1", scene: "s1", points: [], active: false, origin: "o2" },
+    ]);
+    client.stop();
+  });
+
+  it("sendRulerUpdate stamps this client's own origin token, distinct per client instance", async () => {
+    const sentA: Array<Record<string, unknown>> = [];
+    const sentB: Array<Record<string, unknown>> = [];
+    const make = (sink: Array<Record<string, unknown>>) =>
+      new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d: string) => sink.push(JSON.parse(d)), close: () => {} }),
+        handlers: { onCommand: () => {} },
+      });
+    const a = make(sentA);
+    const b = make(sentB);
+    await a.start();
+    await b.start();
+    await flush();
+    a.sendRulerUpdate("s1", [[1, 2]], true);
+    a.sendRulerUpdate("s1", [], false);
+    b.sendRulerUpdate("s1", [[3, 4]], true);
+    const rulersA = sentA.filter((m) => m.type === "ruler_update");
+    const rulersB = sentB.filter((m) => m.type === "ruler_update");
+    expect(rulersA.map((m) => m.origin)).toEqual([a.rulerOrigin, a.rulerOrigin]);
+    expect(rulersA[0]).toEqual({ type: "ruler_update", scene: "s1", points: [[1, 2]], active: true, origin: a.rulerOrigin });
+    expect(rulersB[0].origin).toBe(b.rulerOrigin);
+    expect(a.rulerOrigin).not.toBe(b.rulerOrigin);
+    expect(a.rulerOrigin.length).toBeGreaterThan(0);
+    expect(a.rulerOrigin.length).toBeLessThanOrEqual(64);
+    a.stop();
+    b.stop();
+  });
+
+  it("constructs and sends a ruler frame where crypto.randomUUID is absent (plain-HTTP LAN origin)", async () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
+    try {
+      const sent: Array<Record<string, unknown>> = [];
+      const client = new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d: string) => sent.push(JSON.parse(d)), close: () => {} }),
+        handlers: { onCommand: () => {} },
+      });
+      await client.start();
+      await flush();
+      client.sendRulerUpdate("s1", [[1, 2]], true);
+      const frame = sent.find((m) => m.type === "ruler_update")!;
+      expect(frame.origin).toBe(client.rulerOrigin);
+      expect(client.rulerOrigin).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      client.stop();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

@@ -34,6 +34,8 @@ use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
 use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
+use crate::ws::ruler::{canonical, origin_admissible, points_admissible, RULER_RATE_PER_MIN};
+use crate::ws::scene_broadcast_permitted;
 use crate::ws::time::now_millis;
 use crate::ws::MESSAGE_RATE_PER_MIN;
 
@@ -481,6 +483,9 @@ async fn handle_socket(
     // Per-user VFX one-shot budget (shared across this user's connections) — a SEPARATE
     // bucket from ping/emote/message, so a VFX burst cannot starve any other relay.
     let vfx_rate = state.ws.vfx_rate.clone();
+    // Per-user shared-ruler budget (shared across this user's connections) — its own bucket, so
+    // a live ruler drag cannot starve any other relay and vice versa.
+    let ruler_rate = state.ws.ruler_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
     // and worlds — a preview's target and cached outcome are world-independent).
     let preview_client = state.ws.link_preview_client.clone();
@@ -660,7 +665,7 @@ async fn handle_socket(
                                     // drop silently — no error frame, so a non-reader never learns
                                     // whether `scene` exists.
                                     if ping_rate.check(user_id, now_millis(), 30)
-                                        && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
+                                        && scene_broadcast_permitted(scene, &ctx, world_id, repo.as_ref())
                                             .await
                                     {
                                         room.broadcast_aux(ServerMsg::ScenePing {
@@ -693,6 +698,34 @@ async fn handle_socket(
                                             token,
                                             user: user_id,
                                             emote,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::RulerUpdate { scene, points, active, origin }) => {
+                                    // Out-of-band relay, same shape as `ScenePing` (silent drop on
+                                    // any denial — no error frame, so a non-reader never learns
+                                    // whether `scene` exists). Guard order: cheap rate check first
+                                    // (its own bucket), then the payload bounds (no I/O), then the
+                                    // authz lookup (one doc read per admitted frame). The sender is
+                                    // server-stamped; every connection in the room receives the
+                                    // frame in its `canonical` form (no `egress_loop` arm), the
+                                    // sender's own included, and `origin` lets the originating
+                                    // client drop it. An over-cap `points` list or a non-finite
+                                    // coordinate never reaches this arm: it fails to deserialize
+                                    // and takes the generic `BadMessage` reply.
+                                    if ruler_rate.check(user_id, now_millis(), RULER_RATE_PER_MIN)
+                                        && points_admissible(&points)
+                                        && origin_admissible(&origin)
+                                        && scene_broadcast_permitted(scene, &ctx, world_id, repo.as_ref())
+                                            .await
+                                    {
+                                        let (points, active) = canonical(points, active);
+                                        room.broadcast_aux(ServerMsg::Ruler {
+                                            from: user_id,
+                                            scene,
+                                            points,
+                                            active,
+                                            origin,
                                         });
                                     }
                                 }
@@ -1173,52 +1206,15 @@ async fn handle_socket(
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
 }
 
-/// Whether `ctx` may ping into `scene`: the doc must exist, be a `scene`, belong to THIS world,
-/// and grant the sender `cap::READ`. Admits a token-less spectator (READ on the scene is enough
-/// — deliberately weaker than `handle_pathfind`'s controls-a-token gate, which selects server
-/// state; ping selects none). Denial is a SILENT drop at the call site: any error frame or
-/// behavior split would leak scene existence to a non-reader.
-async fn scene_ping_permitted(
-    scene: Uuid,
-    ctx: &crate::data::membership::PermissionContext,
-    world_id: Uuid,
-    repo: &dyn crate::data::repository::Repository,
-) -> bool {
-    let Ok(Some(doc)) = repo.get_document(scene).await else {
-        return false;
-    };
-    if doc.doc_type != "scene" {
-        return false;
-    }
-    // World scope: a scene doc from another world is refused even for a member of both (the
-    // relay stamps THIS room).
-    if crate::data::document::world_of(&doc) != Some(world_id) {
-        return false;
-    }
-    let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
-        return false;
-    };
-    // A scene doc never carries an actor link, so the no-join resolution is
-    // exact — and fails closed if a non-scene doc ever reached here.
-    let access = crate::data::permission::resolve_access_world(
-        ctx.user_id,
-        ctx.world_role,
-        &doc,
-        &defaults.grants_for(&doc.doc_type),
-        crate::data::permission::effective_owner(&doc, None),
-    );
-    access.has(crate::data::permission::cap::READ)
-}
-
 /// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
 /// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
-/// same convention as `scene_ping_permitted`/`token_emote_permitted`.
+/// same convention as `scene_broadcast_permitted`/`token_emote_permitted`.
 fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
     ctx.world_role == crate::data::document::WorldRole::Gm
 }
 
 /// Whether `scene` may be targeted by `ClientMsg::ResetExploredFog`: the doc must exist, be a
-/// `"scene"` document, and belong to THIS room's world — mirrors `scene_ping_permitted`'s
+/// `"scene"` document, and belong to THIS room's world — mirrors `scene_broadcast_permitted`'s
 /// scene-ownership check (no `cap::READ` requirement: the caller is already known to be a GM,
 /// who has full authority over the world's own scenes).
 async fn reset_explored_fog_scene_ok(
@@ -1324,7 +1320,7 @@ const EMOTE_MAX_BYTES: usize = 16;
 /// scene ECS, parented to `scene`, and effectively owned by the sender (a GM is exempt from
 /// the ownership half, not the scene-membership half). Ownership routes through the SAME
 /// `token_effective_owner` rule `handle_pathfind`'s token gate and the write-authz path use —
-/// never a forked, looser test. Unlike `scene_ping_permitted` this reads the room's in-memory
+/// never a forked, looser test. Unlike `scene_broadcast_permitted` this reads the room's in-memory
 /// ECS (zero pool reads), and unlike ping a token-less member has NO standing here. Denial is
 /// a SILENT drop at the call site, so a non-owner never learns whether `token` exists.
 async fn token_emote_permitted(

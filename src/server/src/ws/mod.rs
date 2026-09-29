@@ -16,6 +16,7 @@ pub mod conn;
 pub(crate) mod move_clip;
 pub mod protocol;
 pub mod room;
+pub(crate) mod ruler;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
@@ -99,6 +100,46 @@ pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
 /// same no-fork reason `MESSAGE_RATE_PER_MIN` states above.
 pub(crate) const AUDIO_RATE_PER_MIN: usize = 30;
 
+/// Whether `ctx` may broadcast an out-of-band frame (`ScenePing`, `PlayVfx`, `RulerUpdate`)
+/// onto `scene`: the document must exist, be a `scene`, belong to THIS world, and grant the
+/// sender `cap::READ`. Admits a token-less spectator (READ on the scene is enough — deliberately
+/// weaker than `handle_pathfind`'s controls-a-token gate, which selects server state; a relay
+/// selects none). Denial is a SILENT drop at the call site: any error frame or behavior split
+/// would leak scene existence to a non-reader. ONE definition shared by every scene-addressed
+/// relay so their admission cannot drift; a relay adding a role restriction (`vfx::vfx_permitted`)
+/// applies it before calling this.
+pub(crate) async fn scene_broadcast_permitted(
+    scene: Uuid,
+    ctx: &crate::data::membership::PermissionContext,
+    world_id: Uuid,
+    repo: &dyn crate::data::repository::Repository,
+) -> bool {
+    let Ok(Some(doc)) = repo.get_document(scene).await else {
+        return false;
+    };
+    if doc.doc_type != "scene" {
+        return false;
+    }
+    // World scope: a scene doc from another world is refused even for a member of both (the
+    // relay stamps THIS room).
+    if crate::data::document::world_of(&doc) != Some(world_id) {
+        return false;
+    }
+    let Ok(defaults) = repo.world_cap_defaults(world_id).await else {
+        return false;
+    };
+    // A scene doc never carries an actor link, so the no-join resolution is
+    // exact — and fails closed if a non-scene doc ever reached here.
+    let access = crate::data::permission::resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &doc,
+        &defaults.grants_for(&doc.doc_type),
+        crate::data::permission::effective_owner(&doc, None),
+    );
+    access.has(crate::data::permission::cap::READ)
+}
+
 /// Realtime state shared in `AppState`. A thin handle today; the seam for future
 /// bus internals (actor pool / external broker) without touching callers.
 ///
@@ -131,6 +172,11 @@ pub struct WsState {
     /// the `/fx` chat command (`chat::fx::run_fx`) — at the same inline 30/min/user budget, so
     /// neither front door buys more plays than the other.
     pub vfx_rate: Arc<PingRateLimiter>,
+    /// Per-user shared-ruler budget (shared across a user's connections); a SEPARATE bucket from
+    /// `ping_rate`/`emote_rate`/`message_rate`/`vfx_rate` so a live ruler drag cannot starve any
+    /// other relay and vice versa. Charged at `ruler::RULER_RATE_PER_MIN` by the
+    /// `ClientMsg::RulerUpdate` arm in `ws::conn`.
+    pub ruler_rate: Arc<PingRateLimiter>,
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production
     /// constructor — never the test-only loopback-permitting one) and
@@ -230,6 +276,7 @@ impl WsState {
             message_rate: Arc::new(PingRateLimiter::new()),
             audio_rate: Arc::new(PingRateLimiter::new()),
             vfx_rate,
+            ruler_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
@@ -264,6 +311,7 @@ impl WsState {
             message_rate: Arc::new(PingRateLimiter::new()),
             audio_rate: Arc::new(PingRateLimiter::new()),
             vfx_rate,
+            ruler_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
