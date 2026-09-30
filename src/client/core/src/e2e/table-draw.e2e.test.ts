@@ -4,6 +4,7 @@
 // draw's `spec`/`raw` stay GM-only at every depth for a genuine second
 // connection, not a mocked `Access`. Also exercises the cycle/permission
 // refusals and a `DrawRule::Formula` table's range-matched outcome.
+import { randomUuid } from "../uuid";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient } from "../ws-client";
@@ -83,7 +84,7 @@ function buildTestTableDoc(
 async function createDoc(ws: WsClient, doc: WireDocument): Promise<void> {
   const intent: ClientMsg = {
     type: "intent",
-    intent_id: crypto.randomUUID(),
+    intent_id: randomUuid(),
     ops: [{ op: "create", doc }],
   };
   ws.send(intent);

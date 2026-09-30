@@ -59,6 +59,7 @@ import { MicVadSource, type MicVadDeps } from "./micVad";
 
 function stubDeps(overrides: Partial<MicVadDeps> = {}): MicVadDeps {
   return {
+    isAvailable: () => true,
     getUserMedia: async () => ({ getTracks: () => [] }) as unknown as MediaStream,
     addWorkletModule: async () => {},
     createWorkletNode: () =>
@@ -117,6 +118,35 @@ describe("MicVadSource", () => {
     const denial = await source.enable();
     expect(denial).toBe("permission-denied");
     expect(source.isEnabled()).toBe(false);
+  });
+
+  it("enable() reports unavailable without requesting the microphone when the platform withholds it", async () => {
+    let requested = false;
+    const deps = stubDeps({
+      isAvailable: () => false,
+      getUserMedia: async () => {
+        requested = true;
+        return { getTracks: () => [] } as unknown as MediaStream;
+      },
+    });
+    const source = new MicVadSource({
+      audioContext: {} as AudioContext,
+      workletUrl: "vad.worklet.js",
+      logger: { debug() {}, warn() {}, error() {} },
+      deps,
+    });
+    expect(await source.enable()).toBe("unavailable");
+    expect(requested).toBe(false);
+    expect(source.isEnabled()).toBe(false);
+  });
+
+  it("the default deps report unavailable where the platform has no media-device API (plain-HTTP LAN origin)", async () => {
+    const source = new MicVadSource({
+      audioContext: {} as AudioContext,
+      workletUrl: "vad.worklet.js",
+      logger: { debug() {}, warn() {}, error() {} },
+    });
+    expect(await source.enable()).toBe("unavailable");
   });
 
   it("disable() resets demand to 0 and stops the tracks", async () => {

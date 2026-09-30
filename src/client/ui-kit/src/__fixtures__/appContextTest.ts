@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController, NotConnectedError } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { Dice3DBridge } from "../dice3dInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
@@ -92,8 +92,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     sendRulerUpdate: over.sendRulerUpdate ?? (() => {}),
     shareRuler: over.shareRuler ?? new ShareRulerPreference("u1"),
     resetExploredFog: over.resetExploredFog ?? (() => {}),
-    pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
-    moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
+    pathfind: over.pathfind ?? (() => Promise.reject(new NotConnectedError())),
+    moveRequest: over.moveRequest ?? (() => Promise.reject(new NotConnectedError())),
     toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onEmote: over.onEmote ?? (() => () => {}),

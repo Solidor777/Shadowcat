@@ -990,7 +990,12 @@ are observations awaiting triage, not committed work.
   reruns of the same commit pass at one worker; at two workers the same commit
   gave one pass and one failure (the movement-budget gate spec consuming its
   whole 360s budget), which is a threshold being crossed rather than a defect in
-  that spec; before either change, four consecutive runs failed. Two samples is
+  that spec; before either change, four consecutive runs failed. CORRECTION: a
+  later, separate failure mode of that spec (the commit's outcome never arriving,
+  a 20s assertion timeout rather than a 360s hang) was not load at all: a move
+  committed by double-click was silently dropped when the tool was swapped before
+  the commit's route reply arrived (see the dropped-commit entry at the end of
+  this file). The 360s hangs were not shown to share that cause. Two samples is
   what supports this, not a characterization of long-run stability.
   The underlying cost is untouched: the renderer still redraws the full canvas
   every tick whether or not the scene changed, and the fixes buy headroom under
@@ -1065,3 +1070,70 @@ are observations awaiting triage, not committed work.
   so. The directory is now in the include, verified by a positive control rather
   than by a clean result: a deliberate type error is reported, and its removal
   returns the check to clean. Status: Resolved.
+
+- Title: A committed move was silently dropped when the tool was swapped.
+  Summary: The movement-budget gate browser spec failed intermittently with the
+  move outcome never arriving, and was read as load sensitivity. Trace forensics
+  showed the cause was a product defect: the measure tool's double-click commit
+  issues a fresh route request, and swapping tools before its reply arrived ran
+  the tool's deactivation, which invalidated the in-flight commit, so no move
+  request was ever sent. A player who double-clicks a goal and immediately picks
+  another tool lost the move with no message. The commit is now owned separately
+  from previews: deactivation detaches it and the request still runs. Every
+  rejection now reaches the player through one consumer of the move-outcome
+  signal in the stage (a warning notice), and a route request that fails or is
+  cut to nothing raises its own notice. Unit tests reproduce the original
+  sequence and were mutation-checked (removing each ownership guard turns a named
+  test red). Status: Resolved.
+
+- Title: A Windows/Chromium network error stalls the browser suite at page load.
+  Summary: A same-origin module fetch occasionally fails in the browser with
+  `net::ERR_NO_BUFFER_SPACE` (Winsock WSAENOBUFS), so the app never mounts and the
+  login step burned its whole test budget. Measured on the development host: it is
+  environmental. It reproduces with plain Chromium page loads (no test runner, no
+  GPU load) against a minimal Node static server as readily as against the
+  Shadowcat server (4 events in 3,000 loads versus 2 in 4,000), occurs at
+  TIME_WAIT counts of 680 to 2,647 of roughly 15,200 usable ports, and genuine
+  ephemeral-port exhaustion on that host surfaces as `EADDRINUSE` at about 15,300
+  sockets instead. The Winsock or Chromium mechanism is not established; candidates
+  not tested are a network filter driver or antivirus. Nothing in the repository
+  can remove it, so `login()` in the browser fixtures races the login form against
+  a failed-asset listener and fails within about a second with the failing URL and
+  net error instead of after the full timeout. No retry or timeout increase was
+  added. Status: Needs Review.
+
+- Title: The VFX spec asserted a value that exists for about 400 ms.
+  Summary: The FX-tool assertion that the stage's effect count reaches 2 after a
+  one-shot fires polled a count that returns to 1 when the four-frame effect ends,
+  so a poll pair could straddle the window. Two retained failing traces show the
+  second sprite drawn and gone between polls. The spec now latches the peak of the
+  attribute in the page before the click and asserts the peak, with a control spec
+  proving the latch records a rise that reverts inside one task. The same hazard
+  was then audited across every shell e2e spec that reads a state which comes and
+  goes by itself. Converted to a latch with a control spec: the dice overlay's
+  `settled` state (held 2.5 s, asserted for two overlays in sequence) now uses
+  `latchAttributeValues`, and its "stays idle after the player turns dice off" assertion
+  (which passed on the first read whether or not the toggle did anything) now compares
+  the ordered `transitions()` history across the second roll against a GM-overlay positive
+  control, and the combat tracker's auto-dismissing "your turn"
+  toast (5 s) now uses `latchTextSeen`. Already an in-page observer log:
+  `light-midwalk.spec.ts` (sweep and lit-bounding-box pairs) and the position
+  log in `hex-movement.spec.ts`. Audited and left polling because the value is
+  held until the test itself changes it or is a last-value attribute that
+  persists: `data-last-ruler` (the sender holds the drag while it is asserted),
+  `data-last-ping`, `data-last-scrolling-text`,
+  `data-last-move-outcome`, `data-measure-label`, `data-audio-playing`,
+  `data-duck-gain` (key held, then released), `data-token-positions`,
+  `data-token-count`, `data-level`, `data-perceived-tokens`, `data-fps-cap` and
+  `data-idle-skip`. Warning and error notices do not auto-dismiss, so the
+  plain-HTTP spec's alert assertion is stable. Status: Resolved.
+
+- Title: The compound-region authoring spec failed once to stage a part.
+  Summary: After arming the compound gesture, one drag staged no part (the hole
+  checkbox count stayed 0) in roughly 800 runs. The retained trace shows the
+  gesture delivered normally (hover, press, one move, release within 40 ms) about
+  200 ms after the stage reported ready, while the session's member hydration was
+  still completing. Not reproduced under page-side instrumentation in about 700
+  further runs; three mechanisms (no active scene at press, the compound flag not
+  armed at release, a hit-target change between the actionability check and the
+  press) remain unseparated. Status: Needs Review.

@@ -173,7 +173,7 @@ pub async fn router(state: AppState) -> Router {
     // Response headers every route gets. `X-Frame-Options`/`Referrer-Policy`/
     // `X-Content-Type-Options` are unconditional; a Content-Security-Policy is deliberately
     // NOT set here (owned by module signing/CSP work). `Strict-Transport-Security` is
-    // conditional on `Config.behind_tls_proxy`: HSTS instructs browsers to upgrade every future
+    // conditional on `Config::is_tls_fronted`: HSTS instructs browsers to upgrade every future
     // request to HTTPS, which is wrong to send over a plain HTTP loopback bind with no TLS
     // anywhere in the path. These two layers are NOT the outermost wrapping: the request-id +
     // trace layers below wrap them, so a request-id is stamped and the trace span opened
@@ -193,7 +193,7 @@ pub async fn router(state: AppState) -> Router {
             header::REFERRER_POLICY,
             HeaderValue::from_static("same-origin"),
         ));
-    let hsts_header = tower::util::option_layer(state.config.behind_tls_proxy.then(|| {
+    let hsts_header = tower::util::option_layer(state.config.is_tls_fronted().then(|| {
         SetResponseHeaderLayer::overriding(
             header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static("max-age=31536000; includeSubDomains"),

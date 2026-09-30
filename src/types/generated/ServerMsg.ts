@@ -7,6 +7,7 @@ import type { ContractDeclaration } from "./ContractDeclaration";
 import type { LightSample } from "./LightSample";
 import type { MergeErrorKind } from "./MergeErrorKind";
 import type { MergeOutcome } from "./MergeOutcome";
+import type { PathErrorReason } from "./PathErrorReason";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
@@ -327,9 +328,13 @@ budget_cells: number | null, } | { "type": "path_error",
  */
 request_id: string, 
 /**
- * Player-presentable failure text.
+ * Player-presentable failure text (`PathErrorReason::message`).
  */
-message: string, } | { "type": "move_error", 
+message: string, 
+/**
+ * The typed failure a client chooses its notice from.
+ */
+reason: PathErrorReason, } | { "type": "move_error", 
 /**
  * The refused move's correlation token.
  */

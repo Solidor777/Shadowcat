@@ -98,7 +98,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `login_per_min_per_identity` / `login_per_min_per_ip` | built-in | `/api/login` throttle budgets |
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
 | `trusted_proxies` | *(empty)* | Reverse-proxy IPs trusted to set `X-Forwarded-For` |
-| `behind_tls_proxy` | `false` | Declares a TLS-terminating reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy, the session cookie's `Secure` flag, and the HSTS response header |
+| `behind_tls_proxy` | `false` | Declares a TLS-terminating reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy, and is the only setting that gives the session cookie its `Secure` flag and sends the HSTS response header |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.
 `SHADOWCAT_LOG=debug`.
@@ -122,8 +122,10 @@ parse). In `shadowcat.toml`, use ordinary TOML array syntax: `trusted_proxies = 
 If that reverse proxy also terminates TLS, set `behind_tls_proxy = true`. A loopback bind
 (`127.0.0.1:30000`) is otherwise treated as local-only — the setup-token window opens without a
 token, the session cookie skips `Secure`, and no HSTS header is sent — which is wrong once a
-TLS-terminating proxy makes it internet-reachable. Setting this flag makes all three treat the
-deployment as exposed regardless of the bind address.
+TLS-terminating proxy makes it internet-reachable. Setting this flag makes the setup policy treat
+the deployment as exposed, marks the session cookie `Secure`, and sends HSTS. A plain-HTTP LAN
+bind (`--bind 0.0.0.0:30000` with no proxy) never gets a `Secure` cookie or HSTS: browsers refuse
+a `Secure` cookie set over plain HTTP from a non-loopback origin, so login would fail.
 
 ## Worlds and players
 

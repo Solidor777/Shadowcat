@@ -287,7 +287,8 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
 #[cfg(test)]
 mod astar_tests;
 
-/// Why a path request fails. Mapped to a `PathError` message at the wire boundary.
+/// Why a path request fails. The wire boundary converts it to a `PathErrorReason` through
+/// `From<PathFail>` (the `PathError` frame's typed reason and its presentable text).
 #[derive(Debug, PartialEq, Eq)]
 pub enum PathFail {
     /// Degenerate request: no destination, non-finite input, or an

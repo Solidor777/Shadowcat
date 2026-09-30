@@ -1359,6 +1359,14 @@ test("onMoveOutcome: a move_error rejection fires 'rejected'", async () => {
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected" });
 });
 
+test("onMoveOutcome: a move requested with no live transport fires 'rejected' and rejects", async () => {
+  const session = new WorldSession({ selfId: "u1", connect: () => { throw new Error("unused"); }, modules: [coreUiStub], logger: silentLogger });
+  const got: Array<{ tokenId: string; outcome: string }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  await expect(session.moveRequest("s1", "tok1", [[0, 0], [100, 0]])).rejects.toThrow("not connected");
+  expect(got).toEqual([{ tokenId: "tok1", outcome: "rejected" }]);
+});
+
 test("sendPing targets the viewed scene", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);

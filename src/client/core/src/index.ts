@@ -47,7 +47,8 @@ export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
 export { NotificationCenter } from "./notifications";
 export type { NotificationLevel, Notification, NotificationListener } from "./notifications";
 export { OptimisticClient } from "./optimistic";
-export { WsClient, MergeIntentError } from "./ws-client";
+export { noticeOncePerGesture } from "./gesture-notice";
+export { WsClient, MergeIntentError, NotConnectedError, RequestTimeoutError, PathfindError } from "./ws-client";
 export type {
   WsClientOptions,
   WsClientHandlers,

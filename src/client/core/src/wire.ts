@@ -41,6 +41,9 @@ export const DocRoleSchema = z.enum(["owner", "observer", "none"]);
 export const VisibilitySchema = z.enum(["all", "gm_only", "owner_or_gm"]);
 export const WorldRoleSchema = z.enum(["gm", "player", "spectator"]);
 export const RejectReasonSchema = z.enum(["forbidden", "conflict", "invalid"]);
+export const PathErrorReasonSchema = z.enum(["unreachable", "invalid", "exceeded"]);
+/** Why a pathfind failed, as the server reports it on a `path_error` frame. */
+export type WirePathErrorReason = z.infer<typeof PathErrorReasonSchema>;
 export const ResyncSourceSchema = z.enum(["buffer", "log"]);
 export const WsErrorCodeSchema = z.enum([
   "world_not_found",
@@ -1085,6 +1088,8 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** The typed failure a client chooses its notice from. */
+      reason: z.infer<typeof PathErrorReasonSchema>;
     }
   | {
       /** A `move_request` was rejected (token already moving, caller not owner, malformed
@@ -1392,6 +1397,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("path_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: PathErrorReasonSchema,
   }),
   z.object({
     type: z.literal("move_error"),

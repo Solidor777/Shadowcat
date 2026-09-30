@@ -427,9 +427,10 @@ pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> any
     Ok(key)
 }
 
-/// Build the signed, DB-backed session layer. Cookie is `Secure` whenever
-/// `Config::is_exposed()` is true (so loopback dev over http still works, but a
-/// loopback bind declared `behind_tls_proxy` gets a `Secure` cookie too).
+/// Build the signed, DB-backed session layer. Cookie is `Secure` exactly when
+/// `Config::is_tls_fronted()` is true (a declared TLS-terminating proxy). A plain-HTTP bind,
+/// loopback or LAN, gets a non-`Secure` cookie: browsers refuse to store a `Secure` cookie set
+/// from a non-secure, non-loopback origin, which would make LAN login impossible.
 ///
 /// # Examples
 ///
@@ -454,7 +455,7 @@ pub async fn session_layer(
     store.migrate().await?;
     let key = load_or_create_key(repo, config).await?;
     Ok(SessionManagerLayer::new(store)
-        .with_secure(config.is_exposed())
+        .with_secure(config.is_tls_fronted())
         .with_same_site(SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(Duration::days(7)))
         .with_signed(key))

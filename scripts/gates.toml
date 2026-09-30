@@ -211,7 +211,7 @@ workflow = "ci.yml"
 job = "ui-e2e"
 command = "pnpm --filter @shadowcat/shell e2e"
 tier = "ci-only"
-reason = "The browser end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding fixed port 31999 outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds the port to the tree under test."
+reason = "The browser end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding either fixed port (31999 for the loopback project, 32000 for the lan-plain-http project) outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds those ports to the tree under test."
 
 [[gate]]
 workflow = "ci.yml"
@@ -267,6 +267,12 @@ tier = "commit"
 workflow = "ci.yml"
 job = "docs"
 command = "pnpm lint:inline-tests"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:secure-context"
 tier = "commit"
 
 [[gate]]

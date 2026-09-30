@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
+  import { randomUuid } from "@shadowcat/core";
   import {
     BUILTIN_THEMES,
     DEFAULT_THEME_ID,
@@ -174,7 +175,7 @@
    * ```
    */
   function save(): void {
-    const id = themeId ?? crypto.randomUUID();
+    const id = themeId ?? randomUuid();
     theme.saveCustom(id, { label: name.trim(), base, tokens: overrides });
     theme.setActive(`custom:${id}`);
     theme.clearPreview(previewOwner);

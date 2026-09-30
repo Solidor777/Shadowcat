@@ -4,6 +4,7 @@
 // (`validate_engine`), never a client-owned interpretation of an opaque `system` blob. Only
 // genuinely game-system-owned shapes (`item`) and client-only resolution helpers are defined here.
 export type { WireDocument } from "./wire";
+import { randomUuid } from "./uuid";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
@@ -407,7 +408,7 @@ export function grantAuthor(doc: WireDocument, owner: string): WireDocument {
  * @param parentId The parent document id, or `null` for a top-level document.
  * @param system The opaque `system` body; always present on the wire (`{}` when a
  * doc_type's real data lives entirely in `engine`).
- * @param id An explicit id, or `undefined` to generate one via `crypto.randomUUID()`.
+ * @param id An explicit id, or `undefined` to generate one via `randomUuid()`.
  * @param engine The typed, server-validated engine body, or `undefined` for a
  * non-engine-defined doc_type (omitted from the wire object entirely).
  * @param name The envelope display name, or `null` (default) when the doc_type has none.
@@ -437,7 +438,7 @@ export function envelope(
 ): WireDocument {
   const now = Date.now();
   return {
-    id: id ?? crypto.randomUUID(),
+    id: id ?? randomUuid(),
     scope: { kind: "world", world_id: worldId },
     doc_type: docType,
     schema_version: 1,
@@ -481,7 +482,7 @@ function fnv1a32(str: string, seed: number): number {
  * FNV-1a 32-bit mixes (128 bits total) rather than true SHA-1 UUIDv5, because Web Crypto's
  * `subtle.digest` is async and every doc builder consuming this id — `envelope` included — is
  * synchronous; the version(5)/variant nibbles are set purely for id-shape parity with
- * `crypto.randomUUID()`, not RFC 4122 conformance. Collision risk is not a security boundary:
+ * `randomUuid()`, not RFC 4122 conformance. Collision risk is not a security boundary:
  * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a
  * (practically impossible) id collision would only ever surface as an ordinary id-uniqueness
  * conflict. Reference id scheme for singleton config-doc seeders (`faction-registry`,
@@ -833,7 +834,7 @@ export function buildTokenFromActor(
   }
   // Deep-clone so the embedded copy is independent by value at construction (not just after
   // the wire round-trip) — no aliasing of the source actor's name/engine/system/permissions.
-  const copy: WireDocument = { ...structuredClone(actor), id: crypto.randomUUID(), source: { id: actor.id, pack: null, version: 1 } };
+  const copy: WireDocument = { ...structuredClone(actor), id: randomUuid(), source: { id: actor.id, pack: null, version: 1 } };
   const doc = envelope(worldId, "token", sceneId, {}, id, base, null);
   doc.embedded = { actor: [copy] };
   return doc;

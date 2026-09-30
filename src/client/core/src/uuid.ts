@@ -1,6 +1,6 @@
-/** Secure-context-safe random UUIDs. `crypto.randomUUID` is exposed only in a secure context,
- * and plain-HTTP LAN play (a non-loopback origin) is not one, while `crypto.getRandomValues` is
- * available everywhere; this helper falls back to it so id generation never throws. */
+// Secure-context-safe random UUIDs. `crypto.randomUUID` is exposed only in a secure context,
+// and plain-HTTP LAN play (a non-loopback origin) is not one, while `crypto.getRandomValues` is
+// available everywhere; this helper falls back to it so id generation never throws.
 
 /** A random RFC 4122 version-4 UUID in lowercase hyphenated form. Uses `crypto.randomUUID` when
  * it is a function; otherwise builds the same shape from 16 `crypto.getRandomValues` bytes with

@@ -520,6 +520,66 @@ test("exposes the server's move-resolution outcome as data-last-move-outcome", a
   expect(host.dataset.lastMoveOutcome).toBe("executed");
 });
 
+test("a rejected move outcome raises one warning notice; executed and truncated raise none", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
+  const notices: Array<{ message: string; level: string | undefined }> = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message, level) => { notices.push({ message, level }); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  capturedCb!({ tokenId: "tok1", outcome: "executed" });
+  capturedCb!({ tokenId: "tok1", outcome: "truncated" });
+  expect(notices).toEqual([]);
+  capturedCb!({ tokenId: "tok1", outcome: "rejected" });
+  expect(notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("rejections sharing one gesture raise one notice; a new gesture or a gestureless rejection raises its own", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; gesture?: object; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
+  const notices: string[] = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message) => { notices.push(message); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  const g1 = {};
+  const g2 = {};
+  capturedCb!({ tokenId: "a", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "b", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "c", gesture: g1, outcome: "rejected" });
+  expect(notices).toHaveLength(1);
+  capturedCb!({ tokenId: "a", gesture: g2, outcome: "rejected" });
+  expect(notices).toHaveLength(2);
+  capturedCb!({ tokenId: "a", outcome: "rejected" });
+  capturedCb!({ tokenId: "b", outcome: "rejected" });
+  expect(notices).toHaveLength(4);
+  // An interleaved gestureless outcome must not make an earlier gesture speak again.
+  capturedCb!({ tokenId: "c", gesture: g1, outcome: "rejected" });
+  capturedCb!({ tokenId: "c", gesture: g2, outcome: "rejected" });
+  expect(notices).toHaveLength(4);
+});
+
 test("exposes each viewed-scene token's projected badge chips as data-token-badges", async () => {
   const store = new DocumentStore();
   store.applyCommand({

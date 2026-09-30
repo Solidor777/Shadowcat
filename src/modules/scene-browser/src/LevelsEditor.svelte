@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { SceneLevel } from "@shadowcat/core";
+  import { randomUuid, type SceneLevel } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -49,7 +49,7 @@
   function addLevel(): void {
     commit((clone) => {
       const bottom = clone.reduce((max, l) => Math.max(max, l.top), 0);
-      clone.push({ id: crypto.randomUUID(), name: "", bottom, top: bottom + 10, background: null });
+      clone.push({ id: randomUuid(), name: "", bottom, top: bottom + 10, background: null });
     });
   }
 

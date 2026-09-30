@@ -143,7 +143,7 @@
     sendEmote: (token, emote) => session.sendEmote(token, emote),
     resetExploredFog: (scene, opts) => session.resetExploredFog(scene, opts),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
-    moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
+    moveRequest: (s, tid, p, g) => session.moveRequest(s, tid, p, g),
     toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),
     onPing: (cb) => session.onPing(cb),
     onEmote: (cb) => session.onEmote(cb),

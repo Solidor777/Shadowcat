@@ -3056,8 +3056,8 @@ async fn hsts_header_present_only_when_behind_tls_proxy() {
 
 #[tokio::test]
 async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
-    // `is_exposed()` is true here (non-loopback bind), but HSTS reads `behind_tls_proxy`
-    // directly — see `Config::is_exposed`'s doc. A non-loopback bind with no TLS proxy
+    // `is_exposed()` is true here (non-loopback bind), but HSTS reads `is_tls_fronted`
+    // (the TLS-presuming predicate), not `is_exposed`: a non-loopback bind with no TLS proxy
     // declared has no TLS anywhere in the path, so sending HSTS would be wrong.
     let mut state = test_state().await;
     state.config = std::sync::Arc::new(crate::config::Config {
@@ -3080,10 +3080,10 @@ async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
 /// Build a `test_state()`-shaped state (uninitialized repo, one seeded user) whose `Config` is
 /// `mutate`d before the router is built, then log in and return the raw `set-cookie` header
 /// value — exercises the real `session_layer(&repo, &config)` construction inside `router`,
-/// not a config-level re-assertion of `is_exposed()` (see the anti-drift gotcha on
-/// `behind_tls_proxy_flips_setup_token_policy_and_session_secure_together` in
-/// `config::tests`: that test pins `session_layer`'s ARGUMENT, `config.is_exposed()`, but never
-/// actually builds a `session_layer` or inspects the cookie it produces).
+/// not a config-level re-assertion of `is_tls_fronted()` (see the anti-drift test
+/// `behind_tls_proxy_flips_setup_token_policy_and_tls_fronted_together` in `config::tests`,
+/// which pins the predicate but never builds a `session_layer` or inspects the cookie it
+/// produces).
 async fn login_set_cookie_header(mutate: impl FnOnce(&mut crate::config::Config)) -> String {
     let mut cfg = crate::config::Config::default();
     mutate(&mut cfg);
@@ -3135,11 +3135,13 @@ async fn session_cookie_is_secure_on_a_loopback_bind_behind_a_declared_tls_proxy
 }
 
 #[tokio::test]
-async fn session_cookie_is_secure_on_a_plain_non_loopback_bind() {
+async fn session_cookie_is_not_secure_on_a_plain_non_loopback_bind() {
+    // LAN play: browsers refuse to store a `Secure` cookie set over plain HTTP from a
+    // non-loopback origin, so the cookie must not carry the attribute without a declared proxy.
     let set_cookie = login_set_cookie_header(|cfg| cfg.bind = "0.0.0.0:30000".into()).await;
     assert!(
-        set_cookie.to_ascii_lowercase().contains("secure"),
-        "missing Secure attribute: {set_cookie}"
+        !set_cookie.to_ascii_lowercase().contains("secure"),
+        "unexpected Secure attribute: {set_cookie}"
     );
 }
 

@@ -131,6 +131,20 @@ describe("DuckingSettings", () => {
     controller.dispose();
   });
 
+  it("an unavailable microphone shows its own message and resets the checkbox", async () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    controller.micToggle = vi.fn().mockResolvedValue("unavailable");
+    const context = setAppContextForTest({ audio: audioFixture() });
+    render(DuckingSettings, { props: { controller }, context });
+    const micCheckbox = screen.getByLabelText("ducking.micSource.enable") as HTMLInputElement;
+    await fireEvent.click(micCheckbox);
+    await waitFor(() => {
+      expect(screen.getByText("ducking.micSource.denied.unavailable")).toBeTruthy();
+    });
+    expect(micCheckbox.checked).toBe(false);
+    controller.dispose();
+  });
+
   it("reflects the OS monitor's live status", async () => {
     const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
     const context = setAppContextForTest({ audio: audioFixture() });

@@ -76,9 +76,9 @@ pub struct Cli {
     pub retain_originals: Option<bool>,
     /// Declares that a TLS-terminating reverse proxy fronts this bind on the same host
     /// (`Config.behind_tls_proxy`). A loopback bind fronted this way is internet-reachable
-    /// even though the bind address itself is not — set this so the setup-token policy,
-    /// session-cookie `Secure` flag, and HSTS response header all treat the deployment as
-    /// exposed. Never inferred automatically.
+    /// even though the bind address itself is not — set this so the setup-token policy treats
+    /// the deployment as exposed, and so the session cookie is marked `Secure` and HSTS is sent
+    /// (both only make sense with TLS in the path). Never inferred automatically.
     #[arg(long)]
     pub behind_tls_proxy: Option<bool>,
     /// Subcommand; `None` (the default — no subcommand given) is ordinary serve mode. Every
@@ -223,12 +223,11 @@ pub struct Config {
     pub trusted_proxies: Vec<String>,
     /// Declares a TLS-terminating reverse proxy fronts `bind` on the same host. Default
     /// `false`. Two present-tense readers, at two different decision granularities:
-    /// `is_exposed()` folds this together with `is_loopback_bind()` into the single derived
-    /// predicate `setup_token_policy`'s `"auto"` arm, `AppState::resolve_setup_token`'s
-    /// warning, and the session cookie's `Secure` flag (`auth::session::session_layer`) all
-    /// read; the HSTS response header (`http::router`) reads this field DIRECTLY instead,
-    /// never through `is_exposed()` — see `is_exposed()`'s own doc for why HSTS's decision is
-    /// narrower.
+    /// `is_exposed()` folds this together with `is_loopback_bind()` into the derived predicate
+    /// `setup_token_policy`'s `"auto"` arm and `AppState::resolve_setup_token`'s warning read;
+    /// `is_tls_fronted()` returns this field alone, and the session cookie's `Secure` flag
+    /// (`auth::session::session_layer`) and the HSTS response header (`http::router`) both read
+    /// it. See `is_exposed()`'s own doc for why those two decisions are narrower.
     pub behind_tls_proxy: bool,
 }
 
@@ -555,15 +554,14 @@ impl Config {
     /// True when this deployment is reachable from beyond the local host: a non-loopback
     /// bind, OR a loopback bind explicitly declared `behind_tls_proxy` (a TLS-terminating
     /// reverse proxy on the same host forwards internet traffic to it). This is the predicate
-    /// every "is this deployment exposed" security decision reads — `setup_token_policy`'s
-    /// `"auto"` arm, `AppState::resolve_setup_token`'s warning, and the session cookie's
-    /// `Secure` flag (`auth::session::session_layer`) all call this rather than
+    /// every "is this deployment exposed" security decision reads: `setup_token_policy`'s
+    /// `"auto"` arm and `AppState::resolve_setup_token`'s warning call this rather than
     /// `is_loopback_bind()` directly, so those cannot drift out of agreement with each other
-    /// on this input. The HSTS response header (`http::router`) is a NARROWER decision and
-    /// reads `behind_tls_proxy` directly, never through this predicate: HSTS instructs a
-    /// browser to upgrade every future request to HTTPS, which is correct only when a TLS
-    /// proxy is actually declared in front of this bind — a plain non-loopback bind with no
-    /// TLS anywhere in the path is "exposed" by this predicate but must never send HSTS.
+    /// on this input. Decisions that only make sense when TLS is in the path (the session
+    /// cookie's `Secure` flag and the HSTS response header) are NARROWER and read
+    /// `is_tls_fronted` instead: a browser drops a `Secure` cookie set over plain HTTP from a
+    /// non-loopback origin (so LAN play could not log in) and ignores HSTS there, so a plain
+    /// non-loopback bind is "exposed" by this predicate but sends neither.
     ///
     /// # Examples
     ///
@@ -575,6 +573,26 @@ impl Config {
     /// ```
     pub fn is_exposed(&self) -> bool {
         !self.is_loopback_bind() || self.behind_tls_proxy
+    }
+
+    /// True when the deployment declares a TLS-terminating reverse proxy (`behind_tls_proxy`),
+    /// the only case where clients reach this server over HTTPS. The one predicate for every
+    /// decision that presumes TLS in the path: `auth::session::session_layer` sets the session
+    /// cookie's `Secure` attribute from it, and `http::router` sends `Strict-Transport-Security`
+    /// from it. A plain-HTTP bind (loopback or LAN) is not TLS-fronted, so it sets neither: a
+    /// browser refuses to store a `Secure` cookie from a non-secure, non-loopback origin.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut cfg = shadowcat::config::Config::default();
+    /// cfg.bind = "0.0.0.0:30000".into();
+    /// assert!(cfg.is_exposed() && !cfg.is_tls_fronted());
+    /// cfg.behind_tls_proxy = true;
+    /// assert!(cfg.is_tls_fronted());
+    /// ```
+    pub fn is_tls_fronted(&self) -> bool {
+        self.behind_tls_proxy
     }
 
     /// Resolve the `setup_token` string into the effective policy: `off` →

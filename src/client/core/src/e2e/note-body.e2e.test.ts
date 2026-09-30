@@ -5,6 +5,7 @@
 // received `Owner`/`Observer` on it, while the GM's own echo carries the
 // server-derived body (html/roll_button/doc_link) — never the client's
 // placeholder `body: []`.
+import { randomUuid } from "../uuid";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient } from "../ws-client";
@@ -126,7 +127,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
   await gmReader.start();
   await sleep(300);
 
-  gm.send({ type: "intent", intent_id: crypto.randomUUID(), ops: [{ op: "create", doc }] });
+  gm.send({ type: "intent", intent_id: randomUuid(), ops: [{ op: "create", doc }] });
   for (let i = 0; i < 50 && !echoed; i++) await sleep(100);
 
   expect(echoed).toBeDefined();
@@ -143,7 +144,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
   // Editing /engine/source re-derives body: read the post-update state back via HTTP.
   gm.send({
     type: "intent",
-    intent_id: crypto.randomUUID(),
+    intent_id: randomUuid(),
     ops: [
       {
         op: "update",
@@ -161,7 +162,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
   // A malformed doc-link span in the source is a rejected intent, not a silently-truncated body.
   gm.send({
     type: "intent",
-    intent_id: crypto.randomUUID(),
+    intent_id: randomUuid(),
     ops: [
       {
         op: "update",
@@ -177,7 +178,7 @@ test("note bodies are server-derived, private by default, and re-derive on a sou
   rejected = null;
   const childId = "20000000-0000-4000-8000-000000000002";
   const child = buildNoteDoc(world, null, "child", { owner: gmId, id: childId, parentId: fixtureDoc });
-  gm.send({ type: "intent", intent_id: crypto.randomUUID(), ops: [{ op: "create", doc: child }] });
+  gm.send({ type: "intent", intent_id: randomUuid(), ops: [{ op: "create", doc: child }] });
   for (let i = 0; i < 50 && rejected === null; i++) await sleep(100);
   expect(rejected).toBe("invalid");
 

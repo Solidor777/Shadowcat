@@ -15,8 +15,8 @@ interface WorkletProcessorOptions {
  * which this project does not otherwise pull in), so this file declares only the minimal
  * surface it calls. This is a TYPE-ONLY declaration (`declare class` emits no runtime code);
  * the identifier `AudioWorkletProcessor` it names resolves to the REAL global that exists
- * inside an AudioWorkletGlobalScope at runtime — this file is loaded there via
- * `audioContext.audioWorklet.addModule(new URL("./vad.worklet.ts", import.meta.url))`, never
+ * inside an AudioWorkletGlobalScope at runtime — this file is loaded there through the audio
+ * context's worklet module loader, `addModule(new URL("./vad.worklet.ts", import.meta.url))`, never
  * imported directly by test code (which is why `micVad.test.ts` tests `VadEngine` alone). */
 declare class AudioWorkletProcessor {
   /** The port this processor exchanges messages with its owning `AudioWorkletNode` over. */

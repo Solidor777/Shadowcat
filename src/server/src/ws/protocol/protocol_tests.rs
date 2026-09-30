@@ -287,10 +287,11 @@ fn pathfind_frames_round_trip() {
     let err = ServerMsg::PathError {
         request_id: Uuid::from_u128(1),
         message: "unreachable".into(),
+        reason: PathErrorReason::Unreachable,
     };
-    assert!(serde_json::to_string(&err)
-        .unwrap()
-        .contains("\"type\":\"path_error\""));
+    let json = serde_json::to_string(&err).unwrap();
+    assert!(json.contains("\"type\":\"path_error\""));
+    assert!(json.contains("\"reason\":\"unreachable\""));
 }
 
 #[test]

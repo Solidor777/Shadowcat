@@ -218,6 +218,8 @@ jobs:
         run: pnpm lint:file-size
       - name: No inline Rust test-module bodies
         run: pnpm lint:inline-tests
+      - name: No secure-context-only APIs (LAN plain-HTTP play)
+        run: pnpm lint:secure-context
       - name: No i18n keys as accessible text
         run: pnpm lint:aria-labels
       - name: Gate manifest matches CI

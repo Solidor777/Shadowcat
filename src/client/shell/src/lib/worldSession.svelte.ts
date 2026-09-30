@@ -1,5 +1,7 @@
 import {
+  randomUuid,
   WsClient,
+  NotConnectedError,
   OptimisticClient,
   DocumentStore,
   ContributionRegistry,
@@ -269,6 +271,8 @@ export class WorldSession {
     (msg: {
       /** The token that moved. */
       tokenId: string;
+      /** The `gesture` the request was issued with, when it had one. */
+      gesture?: object;
       /** The derived outcome; see `moveRequest`'s doc for how `executed`/`truncated`
        * are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
@@ -581,7 +585,7 @@ export class WorldSession {
     },
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.subscribeSearch(query, opts, onUpdate);
   }
 
@@ -765,7 +769,7 @@ export class WorldSession {
     this.#combat = new CombatController({
       documents: this.#optimistic,
       dispatchIntent: (ops) => this.dispatchIntent(ops),
-      sendCombat: (m) => (this.#ws ? this.#ws.combat(m) : Promise.reject(new Error("not connected"))),
+      sendCombat: (m) => (this.#ws ? this.#ws.combat(m) : Promise.reject(new NotConnectedError())),
       selfId: opts.selfId,
       role: () => (this.role === "gm" ? "gm" : this.role ? "player" : null),
       canEdit: (doc, path) => this.canEdit(doc, path),
@@ -851,7 +855,7 @@ export class WorldSession {
    * ```
    */
   dispatchIntent(ops: WireOperation[]): boolean {
-    const intentId = crypto.randomUUID();
+    const intentId = randomUuid();
     if (this.#ws?.connected) {
       this.#optimistic.applyIntent(intentId, ops);
       this.#ws.send({ type: "intent", intent_id: intentId, ops });
@@ -1144,7 +1148,7 @@ export class WorldSession {
     footprintRadius: number,
     token?: string,
   ): Promise<PathResult> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.pathfind(scene, start, waypoints, footprintRadius, token);
   }
 
@@ -1155,6 +1159,8 @@ export class WorldSession {
    * @param scene The scene the token moves on.
    * @param tokenId The token to move.
    * @param path The requested waypoints, in order.
+   * @param gesture Optional identity shared by every request one user gesture issues; echoed on the
+   * published outcome so the single consumer coalesces a multi-token gesture's notices.
    * @returns The broadcast `MoveStream` confirming the move (see `onMoveOutcome` for a
    * derived executed/truncated/rejected signal).
    * @example
@@ -1169,8 +1175,12 @@ export class WorldSession {
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ): Promise<MoveStream> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) {
+      for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected" });
+      return Promise.reject(new NotConnectedError());
+    }
     const p = this.#ws.moveRequest(scene, tokenId, path);
     // An observability signal derived from THIS SAME promise without altering its
     // resolution for the caller. Derived from geometry, NOT from the frame's `truncated`
@@ -1191,7 +1201,7 @@ export class WorldSession {
     p.then(
       (stream) => {
         const executed = goal !== null && stream.stop[0] === goal[0] && stream.stop[1] === goal[1];
-        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: executed ? "executed" : "truncated" });
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: executed ? "executed" : "truncated" });
       },
       // "rejected" covers every way this promise can fail to resolve with a MoveStream: a
       // genuine server `MoveError`, the 10s correlated-request timeout, or a transport
@@ -1199,7 +1209,7 @@ export class WorldSession {
       // a legal move whose confirmation is merely lost/delayed surfaces as "rejected", never
       // as a false "executed".
       () => {
-        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, outcome: "rejected" });
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected" });
       },
     );
     return p;
@@ -1207,7 +1217,9 @@ export class WorldSession {
 
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) —
    * a read-only observability signal, not a broadcast of every scene viewer's moves (that's
-   * `onMoveStream`, consumed internally for animation). Returns an unsubscribe.
+   * `onMoveStream`, consumed internally for animation). The `Stage` module is the single
+   * consumer that raises the player-visible notice from a `rejected` outcome. Returns an
+   * unsubscribe.
    * @param cb Called with the moved token and its derived outcome.
    * @returns A function that removes this listener.
    * @example
@@ -1222,6 +1234,8 @@ export class WorldSession {
     cb: (msg: {
       /** The token that moved. */
       tokenId: string;
+      /** The `gesture` the request was issued with, when it had one. */
+      gesture?: object;
       /** The derived outcome — see `moveRequest`'s doc for how `executed`/
        * `truncated` are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
@@ -1246,7 +1260,7 @@ export class WorldSession {
    * ```
    */
   sendChatMessage(opts: ChatSendOptions): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.sendChatMessage(opts);
   }
 
@@ -1263,7 +1277,7 @@ export class WorldSession {
    * ```
    */
   editChatMessage(messageId: string, content: string): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.editChatMessage(messageId, content);
   }
 
@@ -1279,7 +1293,7 @@ export class WorldSession {
    * ```
    */
   deleteChatMessage(messageId: string): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.deleteChatMessage(messageId);
   }
 
@@ -1300,7 +1314,7 @@ export class WorldSession {
    * ```
    */
   toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.toggleDoor(sceneId, wallId, to);
   }
 
@@ -1317,7 +1331,7 @@ export class WorldSession {
    * ```
    */
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.recalcRoll(messageId, rollId, ops);
   }
 
@@ -1332,7 +1346,7 @@ export class WorldSession {
    * ```
    * declare const session: WorldSession;
    * declare const childId: string;
-   * await session.mergeIntent({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId });
+   * await session.mergeIntent({ type: "merge_revert", request_id: randomUuid(), child_id: childId });
    * ```
    */
   mergeIntent(
@@ -1345,7 +1359,7 @@ export class WorldSession {
     >,
     opts: WsTimeoutOptions = {},
   ): Promise<WireMergeOutcome> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.merge(msg, opts);
   }
 
@@ -1359,7 +1373,7 @@ export class WorldSession {
    * ```
    */
   drawTable(opts: DrawTableOptions): Promise<void> {
-    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.drawTable(opts);
   }
 
@@ -1383,7 +1397,7 @@ export class WorldSession {
     onUpdate: (f: SceneFrame) => void,
     opts: SubscribeSceneOpts = {},
   ): SceneSubscription {
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const rec = { channel, onUpdate, asUser: opts.asUser, level: opts.level, handle: null as SceneSubscription | null, gen: 0 };
     this.#sceneSubs.set(id, rec);
     this.#establishScene(id, rec);

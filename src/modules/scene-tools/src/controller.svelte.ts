@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -119,6 +119,7 @@ export interface ToolContext {
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ) => Promise<MoveStream>;
   /** Request a door toggle on the named wall (from `AppContext.toggleDoor`) — the select
    * tool's click-to-toggle affordance. The server is the authority (reach + visibility, or
@@ -174,6 +175,76 @@ export interface ToolContext {
  * that never reaches `moveRequest`, a label that never reaches `t`). A member only a test
  * injects (`now`, the timer seams) is not on `AppContext` and stays optional. */
 export type HostToolContext = { [K in keyof ToolContext & keyof AppContext]-?: ToolContext[K] };
+
+/** The i18n key describing why a route request failed, chosen by the rejection's type and never
+ * by its text: `NotConnectedError` (no live transport), `RequestTimeoutError` (the server did not
+ * answer, which says nothing about whether a route exists), and `PathfindError`'s typed reason
+ * (`unreachable` is the server's own "no route", which it also reports for refusals it does not
+ * distinguish; `invalid`; `exceeded`). Any other rejection is reported as a generic failure, never
+ * as "no route".
+ * @param reason The rejection value of the route request.
+ * @returns The `tools.*` message key.
+ * @example
+ * ```
+ * const key = routeFailureKey(new Error("boom"));
+ * ```
+ */
+export function routeFailureKey(reason: unknown): string {
+  if (reason instanceof NotConnectedError) return "tools.moveDisconnected";
+  if (reason instanceof RequestTimeoutError) return "tools.moveTimeout";
+  if (reason instanceof PathfindError) {
+    if (reason.reason === "unreachable") return "tools.moveNoRoute";
+    if (reason.reason === "invalid") return "tools.moveInvalid";
+    return "tools.moveTooComplex";
+  }
+  return "tools.moveRejected";
+}
+
+/** Raises the toast for a failed route request, so a move that never reached `moveRequest` is not
+ * indistinguishable from a hung connection; the message comes from `routeFailureKey`. Rejections
+ * of `moveRequest` are NOT raised here: `WorldSession.moveRequest` publishes them to the one
+ * `AppContext.onMoveOutcome` consumer.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @param reason The rejection value of the route request.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyRouteFailure(ctx, new Error("no route"));
+ * ```
+ */
+function notifyRouteFailure(ctx: ToolContext, reason: unknown): void {
+  ctx.notify?.(ctx.t(routeFailureKey(reason)), "warning");
+}
+
+/** Raises the toast for a move continuation that threw synchronously, so the player is told the
+ * move did not happen instead of the failure surfacing as an unhandled rejection.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyMoveFailed(ctx);
+ * ```
+ */
+function notifyMoveFailed(ctx: ToolContext): void {
+  ctx.notify?.(ctx.t("tools.moveRejected"), "warning");
+}
+
+/** Raises the "blocked" toast for a route that resolved but never leaves its start, when the
+ * server cut it short (`PathResult.truncated`: the movement budget or a gate) or an arrest cell
+ * stopped it. A zero-displacement route that was NOT cut short means the token already stands on
+ * the goal, a legitimate no-op that stays silent.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @param result The resolved route, of fewer than two points.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * declare const result: import("@shadowcat/core").PathResult;
+ * notifyEmptyRoute(ctx, result);
+ * ```
+ */
+function notifyEmptyRoute(ctx: ToolContext, result: PathResult): void {
+  if (result.truncated || result.arrested) ctx.notify?.(ctx.t("tools.moveBlocked"), "warning");
+}
 
 /** The active (viewed) scene + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
@@ -1222,9 +1293,9 @@ export function makePingTool(ctx: ToolContext): SceneTool {
  * absence uniformly: `onPointerDown` falls back to the plain anchor-point measure when no
  * scene is active; `onPointerMove` silently no-ops (no route request, no fallback measure);
  * `onPointerUp` doesn't check for a scene at all, and calls `clearRoute()` while in route mode
- * UNLESS a commit is in flight (`committing`), in which case it returns without touching
- * `clearRoute`/`pendingSeq` — the in-flight commit owns its own teardown via `finish()`, and
- * calling `clearRoute()` here would bump `pendingSeq` and abort it. When route mode and an
+ * UNLESS a commit is in flight (`activeCommit`), in which case it returns without touching
+ * `clearRoute` — the in-flight commit owns its own teardown via `finish()`, and calling
+ * `clearRoute()` here would tear the route down under it. When route mode and an
  * active scene both hold, `onPointerDown` snaps a
  * waypoint onto the list, each `onPointerMove` issues an A* pathfind request
  * (`requestRoute`) from the selected token's center through any accumulated waypoints to
@@ -1257,12 +1328,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Track the in-flight pathfind so we can ignore stale responses that arrive
   // after a newer request has been issued (last-write-wins coalescing).
   let pendingSeq = 0;
-  // When a commit is in flight, suppress pointer-down/move/up so a trailing
-  // pointer-up cannot bump pendingSeq and invalidate the commit's seq guard.
-  // Also prevents a stray down from starting a second commit concurrently.
-  // Constraint: committing is set before seq is captured and cleared in finish()
-  // (resolve), the reject handler, or onDeactivate (abort path).
-  let committing = false;
+  // The commit the tool currently OWNS, or null. While set, pointer-down/move/up are suppressed
+  // so a trailing pointer-up cannot clear the route mid-commit and a stray down cannot start a
+  // second commit. INVARIANT: deactivation drops ownership (the overlay and route state belong
+  // to whichever tool is active next) but never cancels the request itself — a commit is a
+  // user decision already made, so its pathfind/`moveRequest` chain runs to completion detached.
+  let activeCommit: object | null = null;
 
   // Clock in ms; need not be monotonic (injected in tests; defaults to Date.now).
   const now = ctx.now ?? ((): number => Date.now());
@@ -1468,13 +1539,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   }
 
   /** Fires once the debounce window elapses for a move that was suppressed. Re-checks
-   * `committing` (mirrors onPointerMove's guard: firing here would otherwise bump
-   * `pendingSeq` mid-commit via `requestRoute` and invalidate the in-flight commit's seq
-   * guard) and re-resolves scene/start fresh rather than trusting values captured at
-   * suppression time. This is the deferred TRAILING fire that follows the leading-edge
-   * request `requestRoute` itself produces — see the field comments on
-   * `lastRouteRequestAt`/`pendingRouteGoal`/`pendingRouteTimer` above for why a
-   * hover-only stop (no further `onPointerMove`) needs one.
+   * `activeCommit` (mirrors onPointerMove's guard: a preview request fired here would
+   * otherwise draw over the in-flight commit's route) and re-resolves scene/start fresh
+   * rather than trusting values captured at suppression time. This is the deferred TRAILING
+   * fire that follows the leading-edge request `requestRoute` itself produces — see the
+   * field comments on `lastRouteRequestAt`/`pendingRouteGoal`/`pendingRouteTimer` above for
+   * why a hover-only stop (no further `onPointerMove`) needs one.
    * @example
    * ```
    * declare function firePendingRoute(): void;
@@ -1485,7 +1555,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     pendingRouteTimer = null;
     const goal = pendingRouteGoal;
     pendingRouteGoal = null;
-    if (!goal || committing) return;
+    if (!goal || activeCommit !== null) return;
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -1552,26 +1622,25 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * for this route, avoiding a redundant pathfind round-trip; when none is cached, issues one
    * pathfind then sends the moveRequest with its result.
    *
-   * Invariant: `committing` is set TRUE before `seq` is captured. It is cleared by `finish()`
-   * on whichever SETTLE branch still owns this commit (`seq === pendingSeq`) or by
-   * `onDeactivate` (abort path). The pathfind's resolve with a usable path is not a settle — it
-   * hands the commit off to `sendRequest`, which settles later. Clearing is deliberately NOT
-   * done on a STALE resolve/reject (`seq !== pendingSeq`, re-checked on all four async
-   * continuations: `sendRequest`'s resolve and reject, and the pathfind's resolve and reject): a
-   * stale branch means a newer commit, or `onDeactivate`, already bumped `pendingSeq` and now
-   * owns `committing` + teardown, so calling `finish()` here would release that LIVE commit's
-   * guard and teardown out from under it — `finish()` calls `clearRoute()`, which does
-   * `pendingSeq++`, so the newer commit's captured `seq` stops matching and its own settle
-   * silently becomes a no-op. What that costs the newer commit depends on the phase it was in:
-   * if it had already reached `sendRequest`, its `moveRequest` stays in flight and still
-   * executes server-side; if it was still mid-pathfind, its own resolve returns early at the
-   * same staleness check, BEFORE `sendRequest`, so no `moveRequest` is ever sent and the move
-   * simply does not happen. Either way the client loses ownership — `committing` drops while a
-   * request may still be outstanding, so `onPointerDown`'s `committing` guard no longer blocks a
-   * second `commitRoute`, and the overlay and waypoints are torn down early. This ensures
-   * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
-   * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
-   * commit proceeds.
+   * Ownership: `activeCommit` is set to a fresh token before any async work starts, which
+   * suppresses the tool's pointer handlers until the commit settles (`finish()`, on resolve,
+   * reject, an unusable pathfind result, or a rejected pathfind). INVARIANT: the pathfind and
+   * `moveRequest` continuations never consult `pendingSeq` — that counter guards PREVIEW
+   * responses only — so a tool swap (`onDeactivate`) cannot drop a commit the user already made.
+   * Deactivation instead clears `activeCommit`, DETACHING the commit: the request still
+   * executes, but `finish()` then leaves the overlay and route state alone because they belong
+   * to whichever tool is active next (`ctx.scene.clearOverlay` is shared). A commit started
+   * after a re-activation is a different token, so a detached commit's settle never releases
+   * its suppression. A second commit for the same token while a detached one is still in flight
+   * therefore sends a SECOND `move_request`; the server's per-token moving lock refuses whichever
+   * arrives while the token is moving, and that refusal reaches the player through the host's
+   * move-outcome consumer, exactly like any other rejected move. Failures before a request
+   * exists are raised here through `ToolContext.notify`: a rejected pathfind
+   * (`tools.moveNoRoute`) and a route that never leaves the start because the server truncated it
+   * (`tools.moveBlocked`); a zero-displacement route that was not truncated is a legitimate no-op
+   * (the token already stands on the goal) and stays silent. A rejected `moveRequest` is NOT
+   * reported here: `WorldSession.moveRequest` publishes it to the single
+   * `AppContext.onMoveOutcome` consumer, so a second notice from the tool would double it.
    * @param goal The commit target, in scene coords (post-snap).
    * @example
    * ```
@@ -1590,29 +1659,39 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     if (!scene || !start) return;
     const tokenId = [...ctx.tokenSelection.ids][0];
     const fp = HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS;
-    // Set committing BEFORE capturing seq so the pointer-up guard (committing check) is
-    // already in place before the async call starts. onPointerUp/Move check committing
-    // and return early, so they cannot bump pendingSeq while this commit is in flight.
-    committing = true;
-    const seq = ++pendingSeq;
-    // Teardown shared by the success path and the reject path.
-    const finish = (): void => { committing = false; clearRoute(); };
+    // Ownership is taken BEFORE any async work so the pointer handlers are already
+    // suppressed when the double-click's trailing pointer-up arrives. `pendingSeq++` retires
+    // any preview still in flight; the commit itself never reads it.
+    const commit: object = {};
+    activeCommit = commit;
+    pendingSeq++;
+    // Teardown shared by every settle path. Only the still-attached commit owns the overlay.
+    const finish = (): void => {
+      if (activeCommit !== commit) return;
+      activeCommit = null;
+      clearRoute();
+    };
 
-    // Inner function: given a proposed path, send the moveRequest and animate on resolve.
-    // `moveRequest` is narrowed to non-undefined here; `commitRoute` gates on it above.
+    // The commit's own identity is its gesture: every notice this commit raises, and the host's
+    // move-rejection notice for its request, go through `noticeOncePerGesture` under it, so the
+    // commit has ONE notice owner exactly as a drag does.
+    const notify = (raise: () => void): void => {
+      noticeOncePerGesture(commit, raise);
+    };
+
+    // Inner function: given a proposed path, send the moveRequest. `moveRequest` is narrowed to
+    // non-undefined here; `commitRoute` gates on it above.
     const moveRequest = ctx.moveRequest;
     const sendRequest = (proposedPath: [number, number][]): void => {
-      moveRequest(scene.id, tokenId, proposedPath).then(
-        () => {
-          // Stale: a newer commit (or onDeactivate) now owns committing + clearRoute.
-          if (seq !== pendingSeq) return;
-          // Animation is broadcast-driven via onMoveStream for all scene viewers;
-          // no local animation from the moveRequest resolve value.
-          finish();
-        },
-        // Stale reject: do nothing. Current reject: clear route (no move).
-        () => { if (seq === pendingSeq) finish(); },
-      );
+      // Animation is broadcast-driven via onMoveStream for all scene viewers; the settle only
+      // tears down the route overlay. A rejection is reported by the host's move-outcome consumer.
+      try {
+        moveRequest(scene.id, tokenId, proposedPath, commit).then(finish, finish);
+      } catch {
+        // A synchronous throw from the transport seam settles the commit like a rejection.
+        notify(() => notifyMoveFailed(ctx));
+        finish();
+      }
     };
 
     // Reuse the last previewed path when available (avoids a redundant pathfind round-trip).
@@ -1622,12 +1701,22 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     } else {
       ctx.pathfind(scene.id, start, [...waypoints, [goal.x, goal.y]], fp, selectedTokenId()).then(
         (result) => {
-          if (seq !== pendingSeq) return;
-          if (result.path.length < 2) { finish(); return; }
+          if (result.path.length < 2) {
+            notify(() => notifyEmptyRoute(ctx, result));
+            finish();
+            return;
+          }
           sendRequest(result.path);
         },
-        () => { if (seq === pendingSeq) finish(); },
-      );
+        (reason) => {
+          notify(() => notifyRouteFailure(ctx, reason));
+          finish();
+        },
+      ).catch(() => {
+        // A throw inside the resolve continuation (e.g. a throwing `notify`) is not covered by the
+        // rejection handler of the same `then`; it must still release the commit.
+        finish();
+      });
     }
   }
 
@@ -1635,8 +1724,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     onPointerDown(p: Point): boolean {
       if (inRouteMode()) {
         // A commit is in flight: ignore further input until it settles. Prevents a
-        // stray pointer-down from starting a second commit or bumping pendingSeq.
-        if (committing) return true;
+        // stray pointer-down from starting a second commit or adding a waypoint to its route.
+        if (activeCommit !== null) return true;
         const scene = activeScene(ctx);
         if (scene) {
           const snapped = ctx.scene.snap(p);
@@ -1664,9 +1753,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     },
     onPointerMove(p: Point): void {
       if (inRouteMode()) {
-        // Suppress preview requests during a commit: a new pathfind call would bump
-        // pendingSeq and invalidate the in-flight commit's seq guard.
-        if (committing) return;
+        // Suppress preview requests during a commit: a preview response would redraw the overlay
+        // over the route the commit owns.
+        if (activeCommit !== null) return;
         const scene = activeScene(ctx);
         const start = tokenCenter();
         if (scene && start) {
@@ -1705,8 +1794,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     onPointerUp(_p: Point): void {
       if (inRouteMode()) {
         // When a commit is in flight, the commit owns its own teardown via finish().
-        // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
-        if (committing) return;
+        // Do NOT call clearRoute() here — it would tear the route down under the commit.
+        if (activeCommit !== null) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
         // handled by the select-move tool / the server's `execute_move` gate — not here.
         clearRoute();
@@ -1724,12 +1813,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       anchor = null;
     },
     onDeactivate(): void {
-      // Tool-swap teardown: abort any in-flight commit and clear all overlays. clearRoute()
-      // unconditionally bumps pendingSeq, invalidating any in-flight commit's captured seq —
-      // its resolve/reject handler then bails (seq !== pendingSeq) instead of re-entering
-      // finish(). committing is cleared directly here (rather than via finish()) since
-      // finish() is never reached on this abort path.
-      committing = false;
+      // Tool-swap teardown: detach any in-flight commit (it keeps running; see `commitRoute`)
+      // and clear all overlays, retiring in-flight previews through `clearRoute`'s `pendingSeq++`.
+      activeCommit = null;
       clearRoute();
       // Also clear any in-progress plain-measure anchor.
       if (anchor) {
@@ -2286,21 +2372,39 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
     if (!scene || !ctx.pathfind || !ctx.moveRequest) return;
     const pathfind = ctx.pathfind;
     const moveRequest = ctx.moveRequest;
+    // One identity for every request this drag issues. The tool's own notices below and the host's
+    // move-rejection notice both go through `noticeOncePerGesture`, so the gesture has ONE notice
+    // owner: whichever failure comes first speaks for the whole drag, however its tokens fail.
+    const gesture: object = {};
+    const once = (raise: () => void): void => {
+      noticeOncePerGesture(gesture, raise);
+    };
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS, id)
-        .then((result) => {
-          if (result.path.length >= 2) return moveRequest(scene.id, id, result.path);
-        })
-        .catch(() => {
+      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS, id).then(
+        (result) => {
+          if (result.path.length < 2) {
+            if (result.truncated || result.arrested) once(() => notifyEmptyRoute(ctx, result));
+            ctx.scene.previewOverlay([]);
+            return;
+          }
           // A refusal (out-of-mask destination, a springing secret wall, an arrest region, the
-          // per-token in-flight lock) is the NORMAL outcome for a player. Swallowing it would
-          // leave the token silently not moving with no explanation, indistinguishable from a
-          // hung connection, so the preview line is dropped rather than left stale — the app-wide
-          // `onMoveOutcome` observability signal (wired at the Stage level) already surfaces the
-          // rejected/truncated/executed outcome for this same request.
+          // per-token in-flight lock, a timeout, a dropped socket) is the NORMAL outcome for a
+          // player. The preview line is dropped rather than left stale; the player-visible
+          // notice comes from the single `AppContext.onMoveOutcome` consumer, never from here.
+          moveRequest(scene.id, id, result.path, gesture).catch(() => ctx.scene.previewOverlay([]));
+        },
+        (reason) => {
+          once(() => notifyRouteFailure(ctx, reason));
           ctx.scene.previewOverlay([]);
-        });
+        },
+      ).catch(() => {
+        // A synchronous throw inside the resolve continuation (`moveRequest` itself throwing) is not
+        // covered by the rejection handler of the same `then`: drop the stale preview and tell the
+        // player once, rather than leaving an unhandled rejection.
+        ctx.scene.previewOverlay([]);
+        once(() => notifyMoveFailed(ctx));
+      });
     }
   };
 

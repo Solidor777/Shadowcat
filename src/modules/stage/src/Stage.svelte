@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
+  import { noticeOncePerGesture, resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -502,11 +502,19 @@
         });
         if (m.sound) audio.playOneShot(m.sound, { channel: "sfx" });
       });
-      // Read-only observability signal for the local player's own move requests —
-      // no behavior change to movement, just an outcome the client already
-      // receives via `WorldSession.moveRequest`'s resolution.
+      // The ONE consumer of the local player's own move outcomes: it mirrors the outcome onto the
+      // host for observability and raises the player-visible notice for a rejection (a refused
+      // move, the correlated-request timeout, a dropped socket). Every move-issuing path
+      // (`makeMeasureTool`'s commit, the select tool's drag release) reaches it through
+      // `WorldSession.moveRequest`, so none raises its own rejection notice.
+      // One notice per gesture: a multi-token drag issues one request per token, and every
+      // request of the same gesture shares its `gesture` identity. `noticeOncePerGesture` is the
+      // same owner the tools raise their own route-failure notices through, so a drag whose tokens
+      // fail differently still raises one notice. A request with no gesture is its own gesture.
       offMoveOutcome = onMoveOutcome((m) => {
         host.dataset.lastMoveOutcome = m.outcome;
+        if (m.outcome !== "rejected") return;
+        noticeOncePerGesture(m.gesture, () => ctx.notify(t("tools.moveRejected"), "warning"));
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.

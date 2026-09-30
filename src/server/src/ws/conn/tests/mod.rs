@@ -1385,7 +1385,7 @@ async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
     )
     .await;
     assert!(
-        matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+        matches!(player_result, ServerMsg::PathError { ref message, reason: PathErrorReason::Unreachable, .. } if message == "unreachable"),
         "non-GM in dark scene should be unreachable; got {player_result:?}"
     );
 }
@@ -1716,7 +1716,7 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
     .unwrap();
     let refused = handle_pathfind(request(0xF103), &player, &room, repo.as_ref()).await;
     assert!(
-        matches!(refused, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+        matches!(refused, ServerMsg::PathError { ref message, reason: PathErrorReason::Unreachable, .. } if message == "unreachable"),
         "a non-turn-owner's Hard preview is refused with the one generic wording; got {refused:?}"
     );
 }
@@ -1895,7 +1895,7 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
     )
     .await;
     assert!(
-        matches!(leaked, ServerMsg::PathError { .. }),
+        matches!(leaked, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "a player with no token in B must not route inside B; got {leaked:?}"
     );
 
@@ -1916,7 +1916,7 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
     )
     .await;
     assert!(
-        matches!(leaked_with_named_token, ServerMsg::PathError { .. }),
+        matches!(leaked_with_named_token, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "naming an owned token grants no presence in another scene; got {leaked_with_named_token:?}"
     );
 
@@ -2101,7 +2101,7 @@ async fn pathfind_naming_an_unowned_token_is_refused() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "an unowned token is refused generically; got {res:?}"
     );
 }
@@ -2243,7 +2243,7 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "a token outside the named scene is refused; got {res:?}"
     );
 }
@@ -2426,7 +2426,7 @@ async fn pathfind_naming_an_owned_token_ignores_a_lying_wire_footprint() {
     )
     .await;
     assert!(
-        matches!(res, ServerMsg::PathError { .. }),
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
         "the derived footprint does not fit the corridor, so no route is returned; got {res:?}"
     );
 }
@@ -2596,7 +2596,10 @@ async fn pathfind_refuses_an_oversized_derived_footprint() {
         repo.as_ref(),
     )
     .await;
-    assert!(matches!(res, ServerMsg::PathError { .. }), "got {res:?}");
+    assert!(
+        matches!(res, ServerMsg::PathError { reason: PathErrorReason::Unreachable, message: ref refusal_text, .. } if refusal_text == "unreachable"),
+        "got {res:?}"
+    );
 }
 
 /// `handle_move_request` executes a move, broadcasts `MoveStream` to the room,
@@ -4811,4 +4814,42 @@ fn ws_max_message_bytes_exceeds_the_largest_admissible_intent_and_stays_under_th
         WS_MAX_MESSAGE_BYTES < upload_max_bytes,
         "cap {WS_MAX_MESSAGE_BYTES} must stay well below the HTTP upload limit {upload_max_bytes}"
     );
+}
+
+/// Every pathfinder failure reaches the wire through one conversion, and each variant keeps its own
+/// typed reason and presentable text.
+#[test]
+fn path_fail_converts_to_its_wire_reason() {
+    use crate::scene::pathfinding::PathFail;
+    let cases = [
+        (
+            PathFail::Invalid,
+            PathErrorReason::Invalid,
+            "invalid request",
+        ),
+        (
+            PathFail::Unreachable,
+            PathErrorReason::Unreachable,
+            "unreachable",
+        ),
+        (
+            PathFail::Exceeded,
+            PathErrorReason::Exceeded,
+            "search exceeded",
+        ),
+    ];
+    for (fail, reason, text) in cases {
+        let converted = PathErrorReason::from(fail);
+        assert_eq!(converted, reason);
+        let ServerMsg::PathError {
+            message,
+            reason: carried,
+            ..
+        } = path_error(Uuid::nil(), converted)
+        else {
+            panic!("path_error must build a PathError");
+        };
+        assert_eq!(carried, reason);
+        assert_eq!(message, text);
+    }
 }

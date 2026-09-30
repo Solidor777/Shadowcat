@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { conditionTarget, buildUpdate, type Condition, type ConditionFx, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
+  import { randomUuid, conditionTarget, buildUpdate, type Condition, type ConditionFx, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -91,7 +91,7 @@
    */
   function add(): void {
     if (!registry) return;
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const c: Condition = { name: "New condition", icon: "⭐" };
     ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/conditions/${id}`, old: null, value: c }])]);
   }

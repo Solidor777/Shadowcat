@@ -2,6 +2,7 @@
 // local `syncState` display derivation. The 3-way pull/push/revert merge itself is computed
 // server-side (`crate::merge`, sent as `MergePull`/`MergePush`/`MergeRevert` intents) —
 // `TemplatesController` sends the intents; nothing in this module composes a merge `Update`.
+import { randomUuid } from "./uuid";
 import type { WireDocument, WirePermissionSet } from "./wire";
 import {
   structuralDiff, isPlacementExcluded, placementExclusions, isMergeableBandPointer, normalizeBase,
@@ -142,7 +143,7 @@ export function stampInstance(source: WireDocument, opts: StampOpts): WireDocume
   const now = Date.now();
   const stamped: WireDocument = {
     ...clone,
-    id: crypto.randomUUID(),
+    id: randomUuid(),
     scope: { kind: "world", world_id: opts.worldId },
     owner: opts.ownerId,
     permissions: opts.permissions ? structuredClone(opts.permissions) : defaultPerms(),

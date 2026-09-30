@@ -7,6 +7,7 @@
 // infinite-lifespan event included), the player's from the combat document's endpoints alone --
 // while the player's "combat" channel frame and pathfind reply reflect the server's visibility
 // and movement-budget rules.
+import { randomUuid } from "../uuid";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient, type WireWelcome } from "../ws-client";
@@ -184,13 +185,13 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   // Scene + registry update first: the registry write must be accepted before the combatants
   // that reference `movement` are created, so a genuine rejection surfaces immediately.
   gmRejects.length = 0;
-  gmClient.send({ type: "intent", intent_id: crypto.randomUUID(), ops: [{ op: "create", doc: sceneDoc }, registryUpdate] });
+  gmClient.send({ type: "intent", intent_id: randomUuid(), ops: [{ op: "create", doc: sceneDoc }, registryUpdate] });
   await waitFor(() => gmH.store.get(sceneId) !== undefined || gmRejects.length > 0);
   if (gmRejects.length > 0) throw new Error(`scene/registry rejected: ${JSON.stringify(gmRejects)}`);
 
   const creates: WireDocument[] = [tokenDoc, combatDoc, playerCombatantDoc, gmCombatantDoc, hiddenCombatantDoc];
   gmRejects.length = 0;
-  gmClient.send({ type: "intent", intent_id: crypto.randomUUID(), ops: creates.map((doc) => ({ op: "create" as const, doc })) });
+  gmClient.send({ type: "intent", intent_id: randomUuid(), ops: creates.map((doc) => ({ op: "create" as const, doc })) });
   await waitFor(() => gmH.store.get(combatId) !== undefined || gmRejects.length > 0);
   if (gmRejects.length > 0) throw new Error(`combat setup rejected: ${JSON.stringify(gmRejects)}`);
   await waitFor(() => playerH.store.get(combatId) !== undefined);

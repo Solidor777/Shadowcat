@@ -47,7 +47,7 @@ export interface PerformanceSettings {
 export type PerformancePreset = "auto" | "mobile" | "balanced" | "quality" | "custom";
 
 /** Device signals `resolveAuto` reads. Every field optional so a test can pin any subset, and so
- * an environment missing a probe (no `matchMedia`, no `navigator.deviceMemory` — Chromium-only)
+ * an environment missing a probe (no `matchMedia`, no device-memory signal — Chromium-only)
  * degrades to "unknown" rather than a synthesized false value. */
 export interface DeviceSignals {
   /** `matchMedia("(pointer: coarse)").matches` — a touch-primary pointing device. */
@@ -56,7 +56,7 @@ export interface DeviceSignals {
   compact?: boolean;
   /** `navigator.hardwareConcurrency`. */
   hardwareConcurrency?: number;
-  /** `navigator.deviceMemory`, in GiB — Chromium-only; absent on Firefox/Safari. */
+  /** The browser's device-memory signal in GiB (read by `readDeviceSignals`) — Chromium-only; absent on Firefox/Safari and on plain-HTTP LAN origins. */
   deviceMemoryGb?: number;
   /** `matchMedia("(prefers-reduced-motion: reduce)").matches`. */
   reducedMotion?: boolean;

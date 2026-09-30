@@ -318,11 +318,14 @@ export interface AppContext {
   /** Request server-authoritative move execution for `tokenId` along `path` on
    * `scene`. Resolves with the broadcast `MoveStream` on success; rejects on server
    * rejection or timeout. Animation is broadcast-driven for all viewers via onMoveStream;
-   * the resolve value signals success only. */
+   * the resolve value signals success only. `gesture` is an optional identity shared by every
+   * request one user gesture issues (a multi-token drag); each outcome carries it back so
+   * `onMoveOutcome`'s consumer raises one notice per gesture. */
   moveRequest: (
     scene: string,
     tokenId: string,
     path: [number, number][],
+    gesture?: object,
   ) => Promise<MoveStream>;
   /** Request a door toggle on the named wall (`closed`↔`open`; `locked` is GM-only). The
    * server authorizes positionally (an effectively-controlled token near and in sight of the
@@ -368,11 +371,14 @@ export interface AppContext {
     text: string;
   }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
-   * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
-   * unsubscribe. */
+   * read-only observability signal, not a broadcast of every scene viewer's moves. The `Stage`
+   * module is the single consumer that turns a `rejected` outcome into the player-visible
+   * notice, so no tool raises its own rejection notice. Returns an unsubscribe. */
   onMoveOutcome: (cb: (msg: {
     /** Token the move was requested for. */
     tokenId: string;
+    /** The `gesture` the request was issued with, when it had one. */
+    gesture?: object;
     /** `truncated` means the server stopped the move short (e.g. a movement-gate rejection
      * mid-path); `rejected` means no move happened at all. */
     outcome: "executed" | "truncated" | "rejected";

@@ -7,6 +7,7 @@ import {
   VisibilitySchema,
   WorldRoleSchema,
   RejectReasonSchema,
+  PathErrorReasonSchema,
   ResyncSourceSchema,
   WsErrorCodeSchema,
   SendMessageSchema,
@@ -86,6 +87,11 @@ describe("wire drift guard — enums", () => {
     expectTypeOf<
       z.infer<typeof RejectReasonSchema>
     >().toEqualTypeOf<Ts.RejectReason>();
+  });
+  it("PathErrorReason", () => {
+    expectTypeOf<
+      z.infer<typeof PathErrorReasonSchema>
+    >().toEqualTypeOf<Ts.PathErrorReason>();
   });
   it("ResyncSource", () => {
     expectTypeOf<
@@ -394,9 +400,15 @@ describe("parseServerMsg", () => {
         type: "path_error",
         request_id: "00000000-0000-0000-0000-000000000001",
         message: "unreachable",
+        reason: "unreachable",
       }),
     );
     expect(err?.type).toBe("path_error");
+    expect(
+      parseServerMsg(
+        JSON.stringify({ type: "path_error", request_id: "00000000-0000-0000-0000-000000000001", message: "x" }),
+      ),
+    ).toBeNull();
   });
 
   it("parses a well-formed move_stream frame", () => {
@@ -657,7 +669,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       truncated: false,
       budget_cells: null,
     },
-    path_error: { type: "path_error", request_id: "r", message: "x" },
+    path_error: { type: "path_error", request_id: "r", message: "x", reason: "unreachable" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },

@@ -16,6 +16,7 @@ import {
   type WireRecalcOp,
   type WireMergeOutcome,
   type WireMergeErrorKind,
+  type WirePathErrorReason,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
 import type { VfxPlayRequest } from "./vfx";
@@ -143,6 +144,49 @@ export interface MoveStream {
 
 /** The union of results a correlated request in `pending` can resolve to. */
 export type PendingResult = SearchPage | PathResult | MoveStream;
+
+/** Rejection of a request issued while no socket is open (never connected, closed, or awaiting a
+ * reconnect) or that was in flight when the socket closed. A distinct type so a caller tells "the link is down" from a refusal by `instanceof`
+ * rather than by matching the message text. */
+export class NotConnectedError extends Error {
+  /** Construct the rejection.
+   * @param message The description; defaults to `"not connected"`.
+   * @example new NotConnectedError();
+   */
+  constructor(message = "not connected") {
+    super(message);
+    this.name = "NotConnectedError";
+  }
+}
+
+/** Rejection of a correlated request whose reply never arrived within its timeout. A distinct
+ * type so a caller tells "the server did not answer in time" from a refusal by `instanceof`;
+ * a timeout says nothing about whether the request would have succeeded. */
+export class RequestTimeoutError extends Error {
+  /** Construct the rejection.
+   * @param message The description, naming the request that timed out.
+   * @example new RequestTimeoutError("pathfind request timeout");
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = "RequestTimeoutError";
+  }
+}
+
+/** Rejection carried by a failed pathfind: the server answered with a `path_error` frame. `reason`
+ * is the server's typed failure; `unreachable` also covers every refusal the server deliberately
+ * does not distinguish, so it discloses no more than "no route". */
+export class PathfindError extends Error {
+  /** Construct from the wire `path_error` frame.
+   * @param message The server's player-presentable text.
+   * @param reason The typed failure.
+   * @example new PathfindError("unreachable", "unreachable");
+   */
+  constructor(message: string, public readonly reason: WirePathErrorReason) {
+    super(message);
+    this.name = "PathfindError";
+  }
+}
 
 /** Rejection carried by a failed merge intent (`WsClient.merge`). `reason` is the raw
  * `WireMergeErrorKind` — `stale_resolutions`/`unknown_resolution`/`unresolvable` carry the
@@ -788,7 +832,7 @@ export class WsClient {
   /** Reject every in-flight correlated request (e.g. on disconnect/stop): the
    * request was sent on a socket that will not answer it, so fail fast rather
    * than wait out the timeout (which would also outlive the connection).
-   * @param reason Message for the `Error` every pending promise rejects with.
+   * @param reason Message for the `NotConnectedError` every pending promise rejects with.
    * @example
    * ```
    * // called from handleClose() / stop(); not part of the public API
@@ -798,7 +842,7 @@ export class WsClient {
   private failPending(reason: string): void {
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.pending.clear();
     // Live subscriptions are bound to this socket; a reconnect does not replay
@@ -806,7 +850,7 @@ export class WsClient {
     this.subscriptions.clear();
     for (const p of this.scenePending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.scenePending.clear();
     // Scene subscriptions are bound to this socket; WorldSession re-subscribes on
@@ -816,27 +860,27 @@ export class WsClient {
     // is unknown, so reject rather than silently resolve.
     for (const p of this.chatPending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.chatPending.clear();
     // Door toggles share the chat-op settle shape; same cleanup rule.
     for (const p of this.doorPending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.doorPending.clear();
     // Combat intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
     for (const p of this.combatPending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.combatPending.clear();
     // Merge intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the combat-intent cleanup above).
     for (const p of this.mergePending.values()) {
       clearTimeout(p.timer);
-      p.reject(new Error(reason));
+      p.reject(new NotConnectedError(reason));
     }
     this.mergePending.clear();
   }
@@ -1199,7 +1243,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(new PathfindError(msg.message, msg.reason));
         }
         break;
       }
@@ -1428,16 +1472,16 @@ export class WsClient {
    * ```
    */
   search(query: string, opts: WsSearchOptions = {}): Promise<SearchPage> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SearchPage>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("search request timeout"));
+        reject(new RequestTimeoutError("search request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({
@@ -1480,18 +1524,18 @@ export class WsClient {
     opts: WsSubscribeSearchOptions,
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SubscriptionHandle>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       this.subscriptions.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
         this.subscriptions.delete(request_id);
-        reject(new Error("subscribe request timeout"));
+        reject(new RequestTimeoutError("subscribe request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, {
         resolve: (page) => {
@@ -1545,18 +1589,18 @@ export class WsClient {
     onUpdate: (frame: SceneFrame) => void,
     opts: WsSubscribeSceneOptions = {},
   ): Promise<SceneSubscription> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SceneSubscription>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       this.sceneSubs.set(request_id, onUpdate);
       const timer = setTimeout(() => {
         this.scenePending.delete(request_id);
         this.sceneSubs.delete(request_id);
-        reject(new Error("scene subscribe timeout"));
+        reject(new RequestTimeoutError("scene subscribe timeout"));
       }, timeoutMs);
       this.scenePending.set(request_id, { resolve, reject, timer });
       // `as_user` (GM-only see-as-player) and `level` are omitted unless set; the server
@@ -1610,16 +1654,16 @@ export class WsClient {
     token?: string,
     opts: WsTimeoutOptions = {},
   ): Promise<PathResult> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<PathResult>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("pathfind request timeout"));
+        reject(new RequestTimeoutError("pathfind request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({
@@ -1664,16 +1708,16 @@ export class WsClient {
     path: [number, number][],
     opts: WsTimeoutOptions = {},
   ): Promise<MoveStream> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<MoveStream>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request_id);
-        reject(new Error("move_request timeout"));
+        reject(new RequestTimeoutError("move_request timeout"));
       }, timeoutMs);
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
@@ -1821,7 +1865,7 @@ export class WsClient {
    * ```
    */
   sendChatMessage(opts: ChatSendOptions): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({
       type: "send_message",
@@ -1853,7 +1897,7 @@ export class WsClient {
    * ```
    */
   editChatMessage(messageId: string, content: string): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "edit_message", request_id, message_id: messageId, content });
     return p;
@@ -1877,7 +1921,7 @@ export class WsClient {
    * ```
    */
   deleteChatMessage(messageId: string): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "delete_message", request_id, message_id: messageId });
     return p;
@@ -1903,7 +1947,7 @@ export class WsClient {
    * ```
    */
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({ type: "recalc_roll", request_id, message_id: messageId, roll_id: rollId, ops });
     return p;
@@ -1928,7 +1972,7 @@ export class WsClient {
    * ```
    */
   drawTable(opts: DrawTableOptions): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackChatOp(request_id);
     this.send({
       type: "draw_table",
@@ -1999,7 +2043,7 @@ export class WsClient {
    * ```
    */
   toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
-    const request_id = crypto.randomUUID();
+    const request_id = randomUuid();
     const p = this.trackDoorToggle(request_id);
     this.send({ type: "toggle_door", request_id, scene_id: sceneId, wall_id: wallId, to });
     return p;
@@ -2026,7 +2070,7 @@ export class WsClient {
    *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
-   * await client.combat({ type: "combat_advance", request_id: crypto.randomUUID(), combat_id: "c1" });
+   * await client.combat({ type: "combat_advance", request_id: randomUuid(), combat_id: "c1" });
    * ```
    */
   combat(
@@ -2042,12 +2086,12 @@ export class WsClient {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<void>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.combatPending.delete(msg.request_id);
-        reject(new Error("combat request timeout"));
+        reject(new RequestTimeoutError("combat request timeout"));
       }, timeoutMs);
       this.combatPending.set(msg.request_id, { resolve, reject, timer, seq: null });
       this.send(msg);
@@ -2057,7 +2101,7 @@ export class WsClient {
   /**
    * Send one of the three merge intent frames (`merge_pull`/`merge_push`/`merge_revert`).
    * Resolves with the correlated `merge_result`'s `WireMergeOutcome`; rejects with a
-   * `MergeIntentError` on a correlated `merge_error`, or a plain `Error` on timeout/disconnect.
+   * `MergeIntentError` on a correlated `merge_error`, or a `RequestTimeoutError` on timeout / `NotConnectedError` on disconnect.
    * A one-shot correlated request/reply, the same shape as `pathfind`/`search` — unlike
    * `combat`/chat ops, the reply carries the actual computed outcome rather than confirming via
    * the broadcast `event` echo.
@@ -2073,7 +2117,7 @@ export class WsClient {
    *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
-   * await client.merge({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: "c1" });
+   * await client.merge({ type: "merge_revert", request_id: randomUuid(), child_id: "c1" });
    * ```
    */
   merge(
@@ -2089,12 +2133,12 @@ export class WsClient {
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<WireMergeOutcome>((resolve, reject) => {
       if (!this.transport) {
-        reject(new Error("not connected"));
+        reject(new NotConnectedError());
         return;
       }
       const timer = setTimeout(() => {
         this.mergePending.delete(msg.request_id);
-        reject(new Error("merge request timeout"));
+        reject(new RequestTimeoutError("merge request timeout"));
       }, timeoutMs);
       this.mergePending.set(msg.request_id, { resolve, reject, timer });
       this.send(msg);

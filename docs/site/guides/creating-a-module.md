@@ -251,6 +251,26 @@ next load of that world (no hot enable/disable).
    Your module always loads through the real modules-folder → server →
    import-map path — never a static import — matching production exactly.
 
+## Plain-HTTP LAN play
+
+A server bound beyond loopback and reached over plain HTTP at a LAN address is
+not a secure context, so the browser withholds every `[SecureContext]` API there:
+`crypto.randomUUID`, `crypto.subtle`, the clipboard, service workers,
+`navigator.mediaDevices` and `AudioContext.audioWorklet`, `navigator.storage`,
+`navigator.locks`, `navigator.credentials`, `navigator.share`, `navigator.gpu`
+and `caches`. The withheld member reads as `undefined`, so reading it is silent
+but calling it, or reaching through it, throws a `TypeError`:
+`crypto.randomUUID()`, `navigator.share(...)` and
+`navigator.clipboard.writeText(...)` all throw on such a client. Your unit tests
+(Node) and a loopback browser session never see it. A member the client only
+reads as a property, such as `navigator.deviceMemory`, yields `undefined` without
+throwing and is not banned.
+Build ids with `randomUuid` from `@shadowcat/core`, which falls back to
+`crypto.getRandomValues` (available everywhere). For any other member, feature-detect
+it and degrade rather than assuming it exists. The engine's own modules are held to
+this by a lint gate that also rejects destructured, optional-chained and
+string-keyed spellings.
+
 ## Testing
 
 - **Unit tests** run in your module's own package with vitest against

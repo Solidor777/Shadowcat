@@ -21,6 +21,7 @@ export type { ClientMsg } from "./generated/ClientMsg";
 export type { ServerMsg } from "./generated/ServerMsg";
 export type { AudioOp } from "./generated/AudioOp";
 export type { RejectReason } from "./generated/RejectReason";
+export type { PathErrorReason } from "./generated/PathErrorReason";
 export type { ResyncSource } from "./generated/ResyncSource";
 export type { WsErrorCode } from "./generated/WsErrorCode";
 export type { Audience } from "./generated/Audience";

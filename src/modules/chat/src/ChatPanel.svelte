@@ -4,6 +4,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
+    randomUuid,
     buildUpdate,
     type ChannelRegistryEngine,
     type WireAudience,
@@ -142,7 +143,7 @@
    */
   function addChannel(): void {
     if (!registry) return;
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const name = newChannelName.trim() || t("chat.channels.newName");
     ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/channels/${id}`, old: null, value: { name } }])]);
     newChannelName = "";

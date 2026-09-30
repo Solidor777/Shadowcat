@@ -755,6 +755,52 @@ pub enum RejectReason {
     Invalid,
 }
 
+/// Why a `Pathfind` failed. Carried beside the player-presentable text on `PathError` so a
+/// client chooses its notice from a typed value rather than by matching the text.
+/// `Unreachable` is also what the server reports for every refusal it deliberately does not
+/// distinguish (a caller with no token in the scene, a turn or budget refusal), so a client can
+/// never learn more than "no route" from it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PathErrorReason;
+///
+/// let json = serde_json::to_value(PathErrorReason::Exceeded).unwrap();
+/// assert_eq!(json, serde_json::json!("exceeded"));
+/// assert_eq!(PathErrorReason::Unreachable.message(), "unreachable");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum PathErrorReason {
+    /// No route exists for the caller, or the server declines to say why.
+    Unreachable,
+    /// The request was structurally invalid.
+    Invalid,
+    /// The search exceeded its node budget before finding a route.
+    Exceeded,
+}
+
+impl PathErrorReason {
+    /// The player-presentable text sent beside this reason.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::PathErrorReason;
+    ///
+    /// assert_eq!(PathErrorReason::Invalid.message(), "invalid request");
+    /// ```
+    pub fn message(self) -> &'static str {
+        match self {
+            PathErrorReason::Unreachable => "unreachable",
+            PathErrorReason::Invalid => "invalid request",
+            PathErrorReason::Exceeded => "search exceeded",
+        }
+    }
+}
+
 /// The kind of asset mutation an `AssetChanged` frame reports.
 ///
 /// # Examples
@@ -1379,8 +1425,10 @@ pub enum ServerMsg {
     PathError {
         /// The failed pathfind's correlation token.
         request_id: Uuid,
-        /// Player-presentable failure text.
+        /// Player-presentable failure text (`PathErrorReason::message`).
         message: String,
+        /// The typed failure a client chooses its notice from.
+        reason: PathErrorReason,
     },
     /// A `MoveRequest` was rejected (token already moving, caller not owner, malformed path, etc.).
     /// Addressed to the originating connection only; never broadcast.

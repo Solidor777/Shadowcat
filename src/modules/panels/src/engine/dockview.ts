@@ -16,7 +16,7 @@ import type {
   TabPartInitParameters,
 } from "dockview-core";
 import { mount, unmount } from "svelte";
-import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
+import { consoleLogger, randomUuid, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
 import { i18n, theme } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
 import type { ExpandedLayout, LayoutOp, PopoutWindowLayout, Rect, ScreenRect } from "../layout/tree";
@@ -976,7 +976,7 @@ export class DockviewEngine implements EngineAdapter {
     // interprets it; ops address the window by it. A menu gesture always
     // mints fresh: a dormant record the panel belonged to stays intact for
     // the remaining panels until a restore gesture revives it.
-    const key = crypto.randomUUID();
+    const key = randomUuid();
     void this.#popOutPanel(id, key, rect);
   }
 
@@ -1050,7 +1050,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // #requestPopOut and restorePopouts
-   * await this.#popOutPanel("chat", crypto.randomUUID(), null);
+   * await this.#popOutPanel("chat", randomUuid(), null);
    * ```
    */
   #popOutPanel(id: string, key: string, rect: ScreenRect | null): Promise<boolean> {

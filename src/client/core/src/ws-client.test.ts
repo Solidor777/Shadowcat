@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { WsClient } from "./ws-client";
+import { WsClient, NotConnectedError, RequestTimeoutError, PathfindError } from "./ws-client";
 import type { MoveStream } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
 import type { ClientMsg, ServerMsg, WireOperation } from "./wire";
 import type { Connect } from "./transport";
+import { randomUuid } from "./uuid";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 const noop = { onCommand: () => {} };
@@ -895,9 +896,47 @@ describe("WsClient", () => {
         type: "path_error",
         request_id: sentFrame2.request_id,
         message: "unreachable",
+        reason: "unreachable",
       }),
     );
     await expect(p2).rejects.toThrow("unreachable");
+    await expect(p2).rejects.toMatchObject({ name: "PathfindError", reason: "unreachable" });
+  });
+
+  it("pathfind rejects with a typed PathfindError carrying each wire reason", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    for (const reason of ["unreachable", "invalid", "exceeded"] as const) {
+      const p = client.pathfind("scene-1", [0, 0], [[1, 1]], 0.5);
+      const frame = JSON.parse(sent.filter((x) => JSON.parse(x).type === "pathfind").at(-1)!);
+      onMessage(JSON.stringify({ type: "path_error", request_id: frame.request_id, message: "text", reason }));
+      const err = await p.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PathfindError);
+      expect((err as PathfindError).reason).toBe(reason);
+    }
+  });
+
+  it("pathfind rejects with RequestTimeoutError when no reply arrives, and NotConnectedError without a transport", async () => {
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const err = await client.pathfind("scene-1", [0, 0], [[1, 1]], 0.5, undefined, { timeoutMs: 1 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RequestTimeoutError);
+    expect(err).not.toBeInstanceOf(NotConnectedError);
+    const idle = new WsClient({ world: "w1", connect: () => Promise.reject(new Error("no")), handlers: noop });
+    await expect(idle.pathfind("scene-1", [0, 0], [[1, 1]], 0.5)).rejects.toBeInstanceOf(NotConnectedError);
   });
 
   it("pathfind sends the token id when given, and omits it when absent", async () => {
@@ -1541,7 +1580,7 @@ describe("WsClient", () => {
     onMessage(
       JSON.stringify({
         type: "door_toggle_error",
-        request_id: crypto.randomUUID(),
+        request_id: randomUuid(),
         message: "door rejected",
       }),
     );
@@ -1900,7 +1939,7 @@ describe("WsClient shared-ruler frames", () => {
     b.stop();
   });
 
-  it("constructs and sends a ruler frame where crypto.randomUUID is absent (plain-HTTP LAN origin)", async () => {
+  it("constructs and sends a ruler frame where the native UUID generator is absent (plain-HTTP LAN origin)", async () => {
     const real = globalThis.crypto;
     vi.stubGlobal("crypto", { getRandomValues: real.getRandomValues.bind(real) });
     try {

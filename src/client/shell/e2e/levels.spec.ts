@@ -95,7 +95,7 @@ async function uploadAsset(page: Page, filename: string, expectedCount: number):
 
 /** Opens the scene browser, opens the single default scene's `LevelsEditor`, authors two floors
  * ("Ground" [0,10) with `ground-bg.png`, "Upper" [10,20) with `upper-bg.png`), and returns their
- * server-assigned ids. `LevelsEditor.addLevel` generates a `crypto.randomUUID()` id with no
+ * server-assigned ids. `LevelsEditor.addLevel` generates a `randomUuid()` id with no
  * authorable override, so the ids are read back off each row's own `data-level-id` attribute
  * rather than assumed.
  * @param gm The GM's page.

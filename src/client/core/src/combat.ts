@@ -3,6 +3,7 @@
 // helpers that build/mutate combat/combatant documents through ordinary intents. The client
 // evaluates and stores no combat formula -- every resolved number comes from the "combat"
 // channel (parseCombats).
+import { randomUuid } from "./uuid";
 import type { ReadableDocuments } from "./store";
 import type { WireDocument, ClientMsg, WireCombatRollEntry, WireResourceOp, WireOperation } from "./wire";
 import type { CombatsView, CombatantView } from "./wire";
@@ -432,33 +433,33 @@ export class CombatController implements CombatApi {
   }
 
   start(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_start", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_start", request_id: randomUuid(), combat_id: combatId });
   }
 
   pause(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_pause", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_pause", request_id: randomUuid(), combat_id: combatId });
   }
 
   end(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_end", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_end", request_id: randomUuid(), combat_id: combatId });
   }
 
   advance(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_advance", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_advance", request_id: randomUuid(), combat_id: combatId });
   }
 
   rewind(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_rewind", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_rewind", request_id: randomUuid(), combat_id: combatId });
   }
 
   sort(combatId: string): Promise<void> {
-    return this.deps.sendCombat({ type: "combat_sort", request_id: crypto.randomUUID(), combat_id: combatId });
+    return this.deps.sendCombat({ type: "combat_sort", request_id: randomUuid(), combat_id: combatId });
   }
 
   roll(combatId: string, channel: string, rolls: WireCombatRollEntry[]): Promise<void> {
     return this.deps.sendCombat({
       type: "combat_roll",
-      request_id: crypto.randomUUID(),
+      request_id: randomUuid(),
       combat_id: combatId,
       channel,
       rolls,
@@ -468,7 +469,7 @@ export class CombatController implements CombatApi {
   modifyResource(combatId: string, combatantId: string, resource: string, op: WireResourceOp): Promise<void> {
     return this.deps.sendCombat({
       type: "combat_resource",
-      request_id: crypto.randomUUID(),
+      request_id: randomUuid(),
       combat_id: combatId,
       combatant_id: combatantId,
       resource,

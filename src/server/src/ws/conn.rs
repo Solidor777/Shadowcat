@@ -32,7 +32,7 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
-use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
+use crate::ws::protocol::{ClientMsg, PathErrorReason, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::ruler::{canonical, origin_admissible, points_admissible, RULER_RATE_PER_MIN};
 use crate::ws::scene_broadcast_permitted;
@@ -1366,6 +1366,29 @@ struct PathfindRequest {
     token: Option<Uuid>,
 }
 
+/// Builds the `PathError` reply for `reason`, deriving the presentable text from the reason so the
+/// two cannot disagree.
+fn path_error(request_id: Uuid, reason: PathErrorReason) -> ServerMsg {
+    ServerMsg::PathError {
+        request_id,
+        message: reason.message().to_string(),
+        reason,
+    }
+}
+
+impl From<crate::scene::pathfinding::PathFail> for PathErrorReason {
+    /// The one mapping from a pathfinder failure to the wire reason: every `PathFail` reaches the
+    /// wire through it, so the presentable text and the typed reason cannot disagree.
+    fn from(fail: crate::scene::pathfinding::PathFail) -> Self {
+        use crate::scene::pathfinding::PathFail;
+        match fail {
+            PathFail::Invalid => PathErrorReason::Invalid,
+            PathFail::Unreachable => PathErrorReason::Unreachable,
+            PathFail::Exceeded => PathErrorReason::Exceeded,
+        }
+    }
+}
+
 /// Resolve and execute a one-shot grid pathfind request.
 ///
 /// INVARIANT (no-lock-across-await): the scene read guard is taken twice — once to read
@@ -1418,10 +1441,7 @@ async fn handle_pathfind(
             s.user_owns_token_in_scene(ctx.user_id, scene)
         };
         if !present {
-            return ServerMsg::PathError {
-                request_id,
-                message: "unreachable".to_string(),
-            };
+            return path_error(request_id, PathErrorReason::Unreachable);
         }
     }
     // The world's capability grants — an input to the movement-budget clamp's `cap::READ`
@@ -1434,10 +1454,7 @@ async fn handle_pathfind(
     let world_defaults = match repo.world_cap_defaults(room.world_id).await {
         Ok(wd) => wd,
         Err(_) => {
-            return ServerMsg::PathError {
-                request_id,
-                message: "unreachable".to_string(),
-            };
+            return path_error(request_id, PathErrorReason::Unreachable);
         }
     };
     // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
@@ -1513,10 +1530,7 @@ async fn handle_pathfind(
                     r
                 }
                 None => {
-                    return ServerMsg::PathError {
-                        request_id,
-                        message: "unreachable".to_string(),
-                    };
+                    return path_error(request_id, PathErrorReason::Unreachable);
                 }
             }
         }
@@ -1543,10 +1557,7 @@ async fn handle_pathfind(
             match crate::ws::room::resolve_budget(&bg, is_gm) {
                 crate::ws::room::BudgetResolution::NotYourTurn
                 | crate::ws::room::BudgetResolution::Unresolvable => {
-                    return ServerMsg::PathError {
-                        request_id,
-                        message: "unreachable".to_string(),
-                    };
+                    return path_error(request_id, PathErrorReason::Unreachable);
                 }
                 crate::ws::room::BudgetResolution::Resolved {
                     budget_cells: b,
@@ -1592,15 +1603,7 @@ async fn handle_pathfind(
             truncated: outcome.truncated,
             budget_cells: reply_budget_cells,
         },
-        Err(e) => ServerMsg::PathError {
-            request_id,
-            message: match e {
-                crate::scene::pathfinding::PathFail::Invalid => "invalid request",
-                crate::scene::pathfinding::PathFail::Unreachable => "unreachable",
-                crate::scene::pathfinding::PathFail::Exceeded => "search exceeded",
-            }
-            .to_string(),
-        },
+        Err(e) => path_error(request_id, e.into()),
     }
 }
 

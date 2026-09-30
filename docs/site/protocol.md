@@ -82,7 +82,7 @@ Every `ServerMsg` variant:
 | `ruler` | A member's shared live ruler: the route they are measuring, relayed unclipped to every connection in the room, the sender's own included. Recipients always see the canonical form: a stop (`active: false`) carries no points and an active frame carries at least one. `from` is stamped by the server; `origin` is the sending connection's token, relayed as given and not verified, and the originating client drops its own frame by it |
 | `vfx` | A relayed VFX one-shot at scene coords (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
-| `path_error` | Pathfind request failed |
+| `path_error` | Pathfind request failed: player-presentable `message` plus a typed `reason` (`unreachable`, `invalid` or `exceeded`); `unreachable` is also what the server reports for refusals it does not distinguish |
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
 | `move_stream` | Broadcast move animation: timed position samples (empty for a glow-only recipient), per-recipient-clipped mover vision, per-recipient-admitted carried-light timeline, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |

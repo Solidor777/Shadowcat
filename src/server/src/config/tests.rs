@@ -503,18 +503,18 @@ fn is_exposed_true_for_non_loopback_bind_regardless_of_proxy_flag() {
     assert!(cfg.is_exposed());
 }
 
-/// Anti-drift: the three security decisions documented to read `is_exposed()`
-/// must all flip together when `behind_tls_proxy` is set on an otherwise-loopback
-/// bind — a fork here (one site still reading `is_loopback_bind` directly) would
-/// silently under-protect one of the three.
+/// Anti-drift: the setup-token policy reads `is_exposed()` and flips with `behind_tls_proxy` on a
+/// loopback bind; the TLS-presuming decisions (session `Secure`, HSTS) read `is_tls_fronted()`,
+/// which a plain non-loopback bind does NOT satisfy.
 #[test]
-fn behind_tls_proxy_flips_setup_token_policy_and_session_secure_together() {
+fn behind_tls_proxy_flips_setup_token_policy_and_tls_fronted_together() {
     let loopback_cfg = Config::default();
     assert!(matches!(
         loopback_cfg.setup_token_policy(),
         SetupTokenPolicy::Open
     ));
     assert!(!loopback_cfg.is_exposed());
+    assert!(!loopback_cfg.is_tls_fronted());
 
     let proxied_cfg = Config {
         behind_tls_proxy: true,
@@ -524,10 +524,19 @@ fn behind_tls_proxy_flips_setup_token_policy_and_session_secure_together() {
         proxied_cfg.setup_token_policy(),
         SetupTokenPolicy::Required(None)
     ));
-    // The session layer's `.with_secure(..)` argument reads `is_exposed()` directly
-    // (see `auth::session::session_layer`); asserting the shared predicate here pins
-    // both call sites to the same value without duplicating the session-layer plumbing.
     assert!(proxied_cfg.is_exposed());
+    assert!(proxied_cfg.is_tls_fronted());
+}
+
+/// A LAN bind (plain HTTP, no proxy) is exposed but not TLS-fronted.
+#[test]
+fn a_plain_non_loopback_bind_is_exposed_but_not_tls_fronted() {
+    let cfg = Config {
+        bind: "0.0.0.0:30000".into(),
+        ..Config::default()
+    };
+    assert!(cfg.is_exposed());
+    assert!(!cfg.is_tls_fronted());
 }
 
 #[test]

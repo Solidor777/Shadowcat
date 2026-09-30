@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildTokenDoc, buildSceneDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
+import { noticeOncePerGesture, DocumentStore, AssetResolver, RequestTimeoutError, PathfindError, buildTokenDoc, buildSceneDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { ToolController, makeSelectMoveTool, type ToolContext } from "./controller.svelte";
@@ -134,6 +134,15 @@ function harness(opts: {
   role: "gm" | "player";
   tokens: { id: string; x: number; y: number }[];
   moveRequestRejects?: boolean;
+  /** `moveRequest` throws synchronously instead of returning a promise. */
+  moveRequestThrows?: boolean;
+  /** How the route request resolves: rejects, or answers with a route that never leaves the start
+   * (`emptyBlocked` flags it truncated; `emptyPlain` is a zero-displacement route). */
+  pathfindMode?: "rejects" | "emptyBlocked" | "emptyPlain";
+  /** The rejection value `pathfindMode: "rejects"` throws; defaults to the server's `unreachable`. */
+  pathfindError?: () => unknown;
+  /** Only these token ids' route requests reject; the rest resolve normally. */
+  routeRejectsFor?: string[];
 }) {
   const docs = new DocumentStore();
   docs.applyCommand({
@@ -149,6 +158,7 @@ function harness(opts: {
 
   const dispatchedOps: WireOperation[] = [];
   const moveRequests: { scene: string; token: string; goal: [number, number] }[] = [];
+  const gestures: (object | undefined)[] = [];
   const previewOverlayCalls: unknown[][] = [];
   let t = 0;
 
@@ -157,13 +167,20 @@ function harness(opts: {
 
   const sel = new TokenSelection();
 
-  const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints) => {
+  const notices: { message: string; level: string | undefined }[] = [];
+  const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints, _footprint, token) => {
+    if (token !== undefined && opts.routeRejectsFor?.includes(token)) throw (opts.pathfindError ?? (() => new PathfindError("unreachable", "unreachable")))();
+    if (opts.pathfindMode === "rejects") throw (opts.pathfindError ?? (() => new PathfindError("unreachable", "unreachable")))();
+    if (opts.pathfindMode === "emptyBlocked") return { path: [start], cost: 0, arrested: false, truncated: true, budgetCells: 0 };
+    if (opts.pathfindMode === "emptyPlain") return { path: [start], cost: 0, arrested: false, truncated: false, budgetCells: null };
     const goal = waypoints.at(-1)!;
     return { path: [start, goal], cost: 1, arrested: false, truncated: false, budgetCells: null };
   };
-  const moveRequest: ToolContext["moveRequest"] = (scene, token, path): Promise<MoveStream> => {
+  const moveRequest: ToolContext["moveRequest"] = (scene, token, path, gesture): Promise<MoveStream> => {
     const goal = path.at(-1)!;
     moveRequests.push({ scene, token, goal });
+    gestures.push(gesture);
+    if (opts.moveRequestThrows) throw new Error("transport seam threw");
     if (opts.moveRequestRejects) return Promise.reject(new Error("refused"));
     return Promise.resolve({
       requestId: "r1", tokenId: token, mover: "u1", scene, startServerMs: 0,
@@ -183,6 +200,7 @@ function harness(opts: {
     tokenSelection: sel,
     pathfind,
     moveRequest,
+    notify: (message, level) => notices.push({ message, level }),
   };
   const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
 
@@ -213,6 +231,8 @@ function harness(opts: {
     get dispatchedOps(): WireOperation[] { return dispatchedOps; },
     get moveRequests(): { scene: string; token: string; goal: [number, number] }[] { return moveRequests; },
     get previewOverlayCalls(): unknown[][] { return previewOverlayCalls; },
+    get gestures(): (object | undefined)[] { return gestures; },
+    get notices(): { message: string; level: string | undefined }[] { return notices; },
     documents: docs,
   };
 }
@@ -256,6 +276,101 @@ test("a refused player move surfaces feedback rather than failing silently", asy
   expect(h.moveRequests.length).toBeGreaterThan(0); // the request WAS made
   expect(h.previewOverlayCalls.at(-1)).toEqual([]); // preview cleared, not left stale
   expect((h.documents.get("t1")!.engine as { x: number }).x).toBe(0); // never moved locally
+});
+
+test("a rejected drag route request raises the no-route notice and drops the preview", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects" });
+  h.select(["t1"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests).toEqual([]);
+  expect(h.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
+});
+
+
+test("a drag route failure is worded by `routeFailureKey`: a typed rejection reaches its own notice", async () => {
+  const typed = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects", pathfindError: () => new PathfindError("boom", "invalid") });
+  typed.select(["t1"]);
+  await typed.drag({ dx: 100, dy: 0 });
+  expect(typed.notices).toEqual([{ message: "tools.moveInvalid", level: "warning" }]);
+  expect(typed.previewOverlayCalls.at(-1)).toEqual([]);
+  const textOnly = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "rejects", pathfindError: () => new Error("not connected") });
+  textOnly.select(["t1"]);
+  await textOnly.drag({ dx: 100, dy: 0 });
+  expect(textOnly.notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a drag whose tokens fail differently has ONE notice owner: the tool's notice and the host's rejection share the gesture", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], routeRejectsFor: ["t1"] });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  // t1's route failed and the tool spoke for the gesture; t2's request went out under the same gesture.
+  expect(h.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  expect(h.gestures).toHaveLength(1);
+  const hostNotices: string[] = [];
+  expect(noticeOncePerGesture(h.gestures[0], () => hostNotices.push("tools.moveRejected"))).toBe(false);
+  expect(hostNotices).toEqual([]);
+});
+
+test("a multi-token drag whose route requests all time out raises one timeout notice", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], pathfindMode: "rejects", pathfindError: () => new RequestTimeoutError("pathfind request timeout") });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.notices).toEqual([{ message: "tools.moveTimeout", level: "warning" }]);
+});
+
+test("a multi-token drag whose route requests all fail raises one notice, not one per token", async () => {
+  const rejected = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }, { id: "t3", x: 200, y: 0 }], pathfindMode: "rejects" });
+  rejected.select(["t1", "t2", "t3"]);
+  await rejected.drag({ dx: 100, dy: 0 });
+  expect(rejected.notices).toEqual([{ message: "tools.moveNoRoute", level: "warning" }]);
+  const blocked = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], pathfindMode: "emptyBlocked" });
+  blocked.select(["t1", "t2"]);
+  await blocked.drag({ dx: 100, dy: 0 });
+  expect(blocked.notices).toEqual([{ message: "tools.moveBlocked", level: "warning" }]);
+});
+
+test("every moveRequest of one drag shares one gesture identity; the next drag gets a fresh one", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }] });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.gestures).toHaveLength(2);
+  expect(h.gestures[0]).toBeDefined();
+  expect(h.gestures[1]).toBe(h.gestures[0]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.gestures).toHaveLength(4);
+  expect(h.gestures[2]).not.toBe(h.gestures[0]);
+});
+
+test("a synchronous throw from moveRequest is caught: preview dropped and one notice", async () => {
+  // An unhandled rejection also fails the whole vitest run, so the assertions below pin the
+  // recovery (preview dropped, exactly one notice) that the catch path provides.
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], moveRequestThrows: true });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  await flush();
+  expect(h.moveRequests).toHaveLength(2);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
+  expect(h.notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
+});
+
+test("a route that never leaves the start raises the blocked notice only when the server truncated it", async () => {
+  const blocked = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "emptyBlocked" });
+  blocked.select(["t1"]);
+  await blocked.drag({ dx: 100, dy: 0 });
+  expect(blocked.notices).toEqual([{ message: "tools.moveBlocked", level: "warning" }]);
+  const plain = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], pathfindMode: "emptyPlain" });
+  plain.select(["t1"]);
+  await plain.drag({ dx: 100, dy: 0 });
+  expect(plain.notices).toEqual([]);
+});
+
+test("a rejected moveRequest raises no notice from the tool: the host's move-outcome consumer owns it", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }], moveRequestRejects: true });
+  h.select(["t1"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests.length).toBe(1);
+  expect(h.notices).toEqual([]);
 });
 
 test("a GM click on a light marker selects it for editing; a wall click selects the wall", () => {

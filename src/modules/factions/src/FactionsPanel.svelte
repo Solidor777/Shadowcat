@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { resolveTokenActor, buildUpdate, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { randomUuid, resolveTokenActor, buildUpdate, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -56,7 +56,7 @@
    */
   function add(): void {
     if (!registry) return;
-    const id = crypto.randomUUID();
+    const id = randomUuid();
     const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral", movement: [] };
     ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/factions/${id}`, old: null, value: f }])]);
   }
