@@ -27,8 +27,10 @@
 //!    to close: an HTTP/2 connection resolves only when its streams end, and a WebSocket is a
 //!    stream, so draining without telling the sessions would wait on them. The drain itself is
 //!    bounded by [`ConnLimits::drain_timeout`]: connections still open past it have their IO
-//!    failed (the `kill` module), and a task still running [`ABORT_WAIT`] after that is aborted
-//!    and reported in [`DrainReport::aborted`], because a connection task ends when its IO errors.
+//!    failed (the `kill` module) and `drive` drops one that has not ended [`KILL_GRACE`] later
+//!    ([`DrainReport::dropped`]); a task still running [`ABORT_WAIT`] after the IO failed (one not
+//!    in `drive`, or one `drive` could not run) is aborted and reported in
+//!    [`DrainReport::aborted`]. A connection task ends when its IO errors, so each is a defect.
 //! 4. Every live connection is bounded, not only the half-open ones. [`ConnLimits::max_live`] and
 //!    [`ConnLimits::max_live_per_peer`] cap connections from hand-off until the connection task
 //!    AND every [`ConnLease`] taken from its requests have ended, keyed and exempted exactly like
@@ -52,6 +54,7 @@ mod pruned;
 use std::future::Future;
 use std::io;
 use std::pin::{pin, Pin};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -258,7 +261,7 @@ pub enum ServeEnd {
 /// use shadowcat::http::conn_serve::DrainReport;
 ///
 /// let clean = DrainReport::default();
-/// assert_eq!((clean.killed, clean.aborted, clean.panicked), (0, 0, 0));
+/// assert_eq!((clean.killed, clean.aborted, clean.panicked, clean.dropped), (0, 0, 0, 0));
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DrainReport {
@@ -272,6 +275,10 @@ pub struct DrainReport {
     pub aborted: usize,
     /// Connection tasks that panicked, at any point of the serve loop's life.
     pub panicked: usize,
+    /// Connections force-dropped by `drive` because they did not end within [`KILL_GRACE`] after
+    /// their IO was failed, for any reason. A connection ends by itself when its IO errors, so a
+    /// nonzero count is a defect.
+    pub dropped: usize,
 }
 
 /// What [`serve_router`] returns.
@@ -305,8 +312,9 @@ pub struct ServeOutcome {
 /// connection is allowed to end by itself. Derived, never typed.
 pub const ABORT_WAIT: Duration = KILL_GRACE.saturating_add(ABORT_MARGIN);
 
-/// How long a connection whose IO has been failed is allowed to end by itself. One scheduler turn
-/// per connection plus hyper's error path fit well inside it. Chosen, not measured.
+/// How long `drive` lets a connection whose IO has been failed end by itself before dropping it.
+/// One scheduler turn per connection plus hyper's error path fit well inside it. Chosen, not
+/// measured.
 pub const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// Covers the scheduling delay between the end of [`KILL_GRACE`] and the connection task's
@@ -412,6 +420,7 @@ where
         PeerSlots::new(limits.max_live, limits.max_live_per_peer).named("live connections"),
     );
     let kill = KillSignal::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
     let mut tasks = JoinSet::new();
     let mut drain = DrainReport::default();
 
@@ -441,6 +450,7 @@ where
             Ending {
                 signal_tx: &signal_tx,
                 kill: &kill,
+                dropped: &dropped,
             },
             limits,
         );
@@ -460,6 +470,7 @@ where
         &mut drain,
     )
     .await;
+    drain.dropped = dropped.load(Ordering::Relaxed);
     ServeOutcome {
         end,
         drain_deadline,
@@ -479,22 +490,47 @@ impl Drop for AbortOnDrop {
 
 /// Drives one hyper connection to completion, calling `graceful` once when `signal_tx` closes or
 /// `idle` resolves.
+///
+/// The one force-end path: when `kill` fires the connection's IO already fails (the `kill`
+/// module), so the connection normally ends by itself; if it has not ended [`KILL_GRACE`] later it
+/// is dropped and counted in `dropped`. Every reason takes this path, so the drain deadline and a
+/// per-connection cut end a connection identically.
 async fn drive<C>(
     conn: C,
     signal_tx: watch::Sender<()>,
     idle: impl Future<Output = ()>,
     graceful: impl Fn(Pin<&mut C>),
+    kill: Arc<ConnKill>,
+    dropped: &AtomicUsize,
 ) where
     C: Future<Output = Result<(), hyper::Error>>,
 {
     let mut conn = pin!(conn);
     let mut signal_closed = pin!(signal_tx.closed().fuse());
     let mut idle = pin!(idle.fuse());
+    let mut killed = pin!(kill.fired());
     loop {
         tokio::select! {
             result = conn.as_mut() => {
                 if let Err(err) = result {
                     tracing::trace!("failed to serve connection: {err:#}");
+                }
+                return;
+            }
+            reason = &mut killed => {
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(err) = result {
+                            tracing::trace!("failed to serve connection: {err:#}");
+                        }
+                    }
+                    () = tokio::time::sleep(KILL_GRACE) => {
+                        tracing::error!(
+                            ?reason,
+                            "connection dropped: it did not end after its IO failed"
+                        );
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 return;
             }
@@ -616,13 +652,16 @@ async fn read_h2_preface<I: AsyncRead + Unpin>(
     })
 }
 
-/// The two ways the serve loop ends a connection: the graceful drain signal and the deadline's kill.
+/// What the serve loop ends a connection with: the graceful drain signal, the deadline's kill and
+/// the count of connections `drive` had to drop.
 #[derive(Clone, Copy)]
 struct Ending<'a> {
     /// Closes when the drain begins; every connection task waits on it.
     signal_tx: &'a watch::Sender<()>,
     /// Fires at the drain deadline; every connection's IO answers it with an error.
     kill: &'a KillSignal,
+    /// Incremented by `drive` for each connection it force-drops.
+    dropped: &'a Arc<AtomicUsize>,
 }
 
 /// Spawns one connection onto `tasks`; the task holds `live` (its cap slot) until it ends.
@@ -641,6 +680,8 @@ fn spawn_connection<I: ServeIo>(
 ) {
     let h2 = io.is_h2();
     let kill = ending.kill.connection();
+    let drive_kill = kill.clone();
+    let dropped = ending.dropped.clone();
     let service = TowerToHyperService::new(
         LeaseService::new(Extension(ConnectInfo(meta)).layer(app), live.clone())
             .map_request(|req: Request<Incoming>| req.map(Body::new)),
@@ -659,7 +700,15 @@ fn spawn_connection<I: ServeIo>(
                         .keep_alive_timeout(limits.h2_ping_timeout)
                         .serve_connection(TokioIo::new(io), service);
                     let idle = idle_for(live.watch_streams(), limits.h2_idle);
-                    drive(conn, signal_tx, idle, |c| c.graceful_shutdown()).await;
+                    drive(
+                        conn,
+                        signal_tx,
+                        idle,
+                        |c| c.graceful_shutdown(),
+                        drive_kill,
+                        &dropped,
+                    )
+                    .await;
                 }
                 Err(err) => tracing::trace!("h2 connection closed before its preface: {err}"),
             }
@@ -675,9 +724,14 @@ fn spawn_connection<I: ServeIo>(
                 .header_read_timeout(limits.header_read)
                 .serve_connection(TokioIo::new(io), service)
                 .with_upgrades();
-            drive(conn, signal_tx, std::future::pending(), |c| {
-                c.graceful_shutdown()
-            })
+            drive(
+                conn,
+                signal_tx,
+                std::future::pending(),
+                |c| c.graceful_shutdown(),
+                drive_kill,
+                &dropped,
+            )
             .await;
         }
         drop(live);

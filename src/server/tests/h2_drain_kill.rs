@@ -1,18 +1,17 @@
 //! The shutdown drain deadline against HTTP/2 connections that cannot end on their own: a live
 //! WebSocket tunnel, a peer that has stopped reading a stream, and a peer that has stopped reading
-//! the socket. The deadline closes the connection by failing its IO; it must never abort the
-//! connection task, because aborting an HTTP/2 connection task that carries a live tunnel trips a
-//! debug assertion in h2's stream counting.
+//! the socket. The deadline closes the connection by failing its IO, and the connection must end
+//! through that failure: `DrainReport::aborted == 0` (no task was cancelled) and
+//! `DrainReport::dropped == 0` (`drive` did not have to drop the connection) are what show the
+//! IO failure, and not a last resort, ended it.
 //!
 //! A task that panics is caught by its `JoinSet` and surfaces only as a log line, so these tests
 //! install a process-global panic hook that counts every panic, and assert the count did not move.
 //! That is why this is its own test binary and why its tests hold `SERIAL`: the counter is process
 //! state, and a panic belongs to a test only while no other test runs.
 //!
-//! The hook detects the assertion only in a build with debug assertions; there it is what
-//! `DrainReport::aborted == 0` cannot see, and without debug assertions `aborted == 0` alone
-//! carries the check. `a_caught_panic_is_counted` is the positive control: it proves the hook is
-//! installed and counting before any other test relies on its silence.
+//! `a_caught_panic_is_counted` is the positive control: it proves the hook is installed and
+//! counting before any other test relies on its silence.
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -157,6 +156,11 @@ async fn assert_killed_cleanly(s: Scenario, panics_before: usize) {
         "a connection task had to be aborted: {:?}",
         out.drain
     );
+    assert_eq!(
+        out.drain.dropped, 0,
+        "a connection had to be dropped after its IO failed: {:?}",
+        out.drain
+    );
     assert_eq!(out.drain.panicked, 0, "{:?}", out.drain);
     assert_eq!(
         PANICS.load(Ordering::SeqCst),
@@ -216,7 +220,7 @@ async fn a_caught_panic_is_counted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_live_tunnel_is_closed_at_the_deadline_without_aborting_its_connection() {
+async fn a_live_tunnel_is_closed_at_the_deadline() {
     let _serial = SERIAL.lock().await;
     install_hook();
     let before = PANICS.load(Ordering::SeqCst);
@@ -239,8 +243,7 @@ async fn a_tunnel_whose_peer_stopped_reading_the_stream_is_closed_at_the_deadlin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stalled_tunnel_told_to_close_is_closed_at_the_deadline_without_aborting_its_connection()
-{
+async fn a_stalled_tunnel_told_to_close_is_closed_at_the_deadline() {
     let _serial = SERIAL.lock().await;
     install_hook();
     let before = PANICS.load(Ordering::SeqCst);

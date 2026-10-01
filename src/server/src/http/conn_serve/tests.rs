@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
+use super::kill::KillReason;
 use super::*;
 
 /// Short bounds so a stall is observable in well under a second.
@@ -1029,4 +1030,96 @@ async fn a_task_ending_kill_grace_after_the_kill_is_not_aborted() {
         report.aborted, 0,
         "the abort raced a connection's own grace: {report:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// `drive`: the one force-end path
+// ---------------------------------------------------------------------------------------------
+
+/// Sets its flag when dropped, so a test can tell a dropped `conn` from one that merely stopped
+/// being polled.
+struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Runs `drive` over `conn` on its own task and returns the handle, with the `signal_tx` receiver
+/// that keeps the graceful signal from closing.
+fn start_drive(
+    conn: impl Future<Output = Result<(), hyper::Error>> + Send + 'static,
+    kill: Arc<ConnKill>,
+    dropped: Arc<AtomicUsize>,
+) -> (tokio::task::JoinHandle<()>, watch::Receiver<()>) {
+    let (signal_tx, signal_rx) = watch::channel(());
+    let task = tokio::spawn(async move {
+        drive(
+            conn,
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            kill,
+            &dropped,
+        )
+        .await;
+    });
+    (task, signal_rx)
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_connection_that_ends_when_its_io_fails_is_not_dropped() {
+    for reason in [KillReason::Drain, KillReason::Stall] {
+        let kill = ConnKill::new();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut io = Replay {
+            prefix: Vec::new(),
+            pos: 0,
+            inner: Stuck,
+            kill: kill.clone(),
+        };
+        let conn = async move {
+            let _ = io.read(&mut [0u8; 4]).await;
+            Ok(())
+        };
+        let (task, _keep) = start_drive(conn, kill.clone(), dropped.clone());
+        tokio::task::yield_now().await;
+        let fired_at = Instant::now();
+        kill.fire(reason);
+        timeout(KILL_GRACE, task)
+            .await
+            .expect("drive did not return once the connection ended")
+            .unwrap();
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "{reason:?}");
+        assert!(fired_at.elapsed() < KILL_GRACE, "{reason:?}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_connection_that_ignores_its_failed_io_is_dropped_exactly_kill_grace_after_the_fire() {
+    for reason in [KillReason::Drain, KillReason::Stall] {
+        let kill = ConnKill::new();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let was_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = DropFlag(was_dropped.clone());
+        let conn = async move {
+            let _flag = flag;
+            std::future::pending::<Result<(), hyper::Error>>().await
+        };
+        let (task, _keep) = start_drive(conn, kill.clone(), dropped.clone());
+        tokio::task::yield_now().await;
+        let fired_at = Instant::now();
+        kill.fire(reason);
+        timeout(KILL_GRACE * 2, task)
+            .await
+            .expect("drive never force-ended a connection that ignored its failed IO")
+            .unwrap();
+        assert_eq!(fired_at.elapsed(), KILL_GRACE, "{reason:?}");
+        assert_eq!(dropped.load(Ordering::SeqCst), 1, "{reason:?}");
+        assert!(
+            was_dropped.load(Ordering::SeqCst),
+            "{reason:?}: not dropped"
+        );
+    }
 }

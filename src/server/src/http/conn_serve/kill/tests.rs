@@ -202,3 +202,24 @@ fn the_signal_holds_references_for_the_live_connections_not_every_one_accepted()
         assert_eq!(poll(conn, &waker), Poll::Ready(KillReason::Drain));
     }
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn fired_pends_before_the_fire_and_resolves_with_the_reason_after_it() {
+    let kill = ConnKill::new();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), kill.fired())
+            .await
+            .is_err(),
+        "fired() resolved before the fire"
+    );
+    let waiting = {
+        let kill = kill.clone();
+        tokio::spawn(async move { kill.fired().await })
+    };
+    while kill.waker_count() == 0 {
+        tokio::task::yield_now().await;
+    }
+    kill.fire(KillReason::Stall);
+    assert_eq!(waiting.await.unwrap(), KillReason::Stall);
+    assert_eq!(kill.fired().await, KillReason::Stall);
+}

@@ -251,7 +251,7 @@ async fn the_drain_hook_runs_before_the_drain_so_a_session_can_end() {
 }
 
 #[tokio::test]
-async fn a_drain_that_outlasts_its_bound_closes_the_remaining_connections_without_aborting_them() {
+async fn a_drain_that_outlasts_its_bound_closes_the_remaining_connections_through_their_io() {
     let s = start(ConnLimits {
         drain_timeout: Duration::from_millis(300),
         ..ConnLimits::default()
@@ -269,9 +269,14 @@ async fn a_drain_that_outlasts_its_bound_closes_the_remaining_connections_withou
     assert_eq!(end.end, ServeEnd::Shutdown);
     assert_eq!(s.drained.load(Ordering::SeqCst), 1);
     assert_eq!(
-        (end.drain.killed, end.drain.aborted, end.drain.panicked),
-        (1, 0, 0),
-        "the stuck connection must be closed through its IO, not aborted"
+        (
+            end.drain.killed,
+            end.drain.aborted,
+            end.drain.dropped,
+            end.drain.panicked
+        ),
+        (1, 0, 0, 0),
+        "the stuck connection must be closed through its IO, not dropped or aborted"
     );
     timeout(Duration::from_secs(5), client.driver)
         .await

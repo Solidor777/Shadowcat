@@ -346,12 +346,14 @@ which ends the serve loop with an error log.
     waits of `serve_with` use it. At the deadline `serve_router` fires a kill signal that every
     connection's IO (`Replay`, in all five of `poll_read`, `poll_write`, `poll_write_vectored`,
     `poll_flush`, `poll_shutdown`) answers with an I/O error, so hyper ends the connection through
-    its own error path. `KILL_GRACE` (2 s) later any task still running is aborted and reported in
-    `DrainReport::aborted` at error level (a connection task that does not end when its IO errors is
-    a defect), and a panicking connection task is reported in `DrainReport::panicked`. Sessions hyper
+    its own error path. A connection whose IO was failed and that has not ended `KILL_GRACE` (2 s)
+    later is dropped by `drive` and counted in `DrainReport::dropped`, and a task still running
+    `ABORT_WAIT` (`KILL_GRACE` plus 1 s) after the failure (one not in `drive`) is aborted and
+    counted in `DrainReport::aborted`, each at error level (a connection that does not end when its
+    IO errors is a defect); a panicking connection task is reported in `DrainReport::panicked`. Sessions hyper
     cannot see are then waited for `max(remaining, SESSION_GRACE)`, `SESSION_GRACE` being the Close
     bound plus one second, so `serve_with` returns within `drain_timeout + SESSION_GRACE`
-    (`+ KILL_GRACE` only when a task outlives its killed IO).
+    (`+ ABORT_WAIT` only when a task outlives its killed IO).
   - Stalled peers: every WebSocket send goes through `ws::bounded_sink::BoundedSink`, constructed
     once in `handle_socket` and used for the pre-join refusals, the Welcome and every later frame. A
     send pending for `SEND_STALL_TIMEOUT` (60 s, chosen) fails as stalled and ends the session, which

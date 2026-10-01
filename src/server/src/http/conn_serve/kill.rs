@@ -127,6 +127,12 @@ impl ConnKill {
         Poll::Pending
     }
 
+    /// Resolves with the reason once the switch has fired. A pending `fired()` registers the
+    /// polling task's waker like an IO method does, so one task polling both stays one waker.
+    pub(super) async fn fired(&self) -> KillReason {
+        std::future::poll_fn(|cx| self.poll_reason(cx)).await
+    }
+
     /// `Ok` while the switch has not fired (registering `cx`'s waker for the firing), otherwise the
     /// error every IO method returns.
     pub(super) fn check(&self, cx: &mut Context<'_>) -> io::Result<()> {
