@@ -496,7 +496,7 @@ fn replay(prefix: &[u8], tail: &[u8]) -> Replay<Probe> {
         prefix: prefix.to_vec(),
         pos: 0,
         inner: Probe::new(tail),
-        kill: KillSwitch::never(),
+        kill: ConnKill::new(),
     }
 }
 
@@ -659,7 +659,7 @@ async fn every_io_method_fails_once_the_kill_signal_has_fired() {
             prefix: b"PRI".to_vec(),
             pos: 0,
             inner: Probe::new(b"tail"),
-            kill: signal.switch(),
+            kill: signal.connection(),
         };
         run_op(&mut io, op)
             .await
@@ -680,7 +680,7 @@ async fn a_task_parked_in_any_io_method_is_woken_and_failed_by_the_kill_signal()
             prefix: Vec::new(),
             pos: 0,
             inner: Stuck,
-            kill: signal.switch(),
+            kill: signal.connection(),
         };
         let parked = tokio::spawn(async move { run_op(&mut io, op).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -702,7 +702,7 @@ async fn dropping_the_kill_signal_does_not_fail_the_io() {
         prefix: Vec::new(),
         pos: 0,
         inner: Probe::new(b"tail"),
-        kill: signal.switch(),
+        kill: signal.connection(),
     };
     drop(signal);
     let mut buf = [0u8; 4];

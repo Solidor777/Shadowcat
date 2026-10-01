@@ -71,7 +71,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use tower::{Layer, ServiceExt};
 
-use self::kill::{KillSignal, KillSwitch};
+use self::kill::{ConnKill, KillSignal};
 pub use self::live::ConnLease;
 use self::live::{idle_for, LeaseService, LiveState};
 use crate::http::peer_slots::PeerSlots;
@@ -508,8 +508,8 @@ async fn drive<C>(
 const H2_PREFACE_LEN: usize = 24;
 
 /// An IO wrapper that yields `prefix` before reading from `inner`; writes go straight through.
-/// Every method first asks `kill` (see the `kill` module), so the drain deadline reaches a
-/// connection parked in any of them.
+/// Every method first asks `kill` (see the `kill` module), so a firing reaches a connection parked
+/// in any of them.
 struct Replay<I> {
     /// The octets already read from `inner`, served first.
     prefix: Vec<u8>,
@@ -517,8 +517,8 @@ struct Replay<I> {
     pos: usize,
     /// The underlying connection.
     inner: I,
-    /// Answers the drain deadline with an I/O error.
-    kill: KillSwitch,
+    /// Fails the IO once the connection is told to end.
+    kill: Arc<ConnKill>,
 }
 
 impl<I: AsyncRead + Unpin> AsyncRead for Replay<I> {
@@ -589,7 +589,7 @@ async fn read_h2_preface<I: AsyncRead + Unpin>(
     mut io: I,
     limit: Duration,
     interrupted: impl Future<Output = ()>,
-    kill: KillSwitch,
+    kill: Arc<ConnKill>,
 ) -> io::Result<Replay<I>> {
     let mut prefix = vec![0u8; H2_PREFACE_LEN];
     let mut filled = 0;
@@ -639,7 +639,7 @@ fn spawn_connection<I: ServeIo>(
     limits: ConnLimits,
 ) {
     let h2 = io.is_h2();
-    let kill = ending.kill.switch();
+    let kill = ending.kill.connection();
     let service = TowerToHyperService::new(
         LeaseService::new(Extension(ConnectInfo(meta)).layer(app), live.clone())
             .map_request(|req: Request<Incoming>| req.map(Body::new)),
