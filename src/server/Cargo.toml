@@ -105,6 +105,9 @@ gethostname = "1.1.0"
 # in the graph through axum; only the feature set is stated here.
 hyper = { version = "1", default-features = false, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio", "server-auto", "service", "http1", "http2"] }
+# h2: the public `h2::StreamId` a request carries as an extension, nameable from a service that hyper
+# drives (MIT). Resolves to the vendored copy through the workspace `[patch.crates-io]`.
+h2 = "0.4"
 # time: certificate validity timestamps (MIT OR Apache-2.0).
 time = "0.3.55"
 

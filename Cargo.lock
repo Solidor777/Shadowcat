@@ -3709,6 +3709,7 @@ dependencies = [
  "geo",
  "gethostname",
  "glam",
+ "h2",
  "hecs",
  "http-body",
  "hyper",

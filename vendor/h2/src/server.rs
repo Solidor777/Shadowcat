@@ -1683,6 +1683,10 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing method");
         }
 
+        // The request carries its stream id as the public `StreamId`, so a service can
+        // correlate a request with the wire frames of its stream.
+        b = b.extension(crate::StreamId::from_internal(stream_id));
+
         let has_protocol = pseudo.protocol.is_some();
         if has_protocol {
             if is_connect {

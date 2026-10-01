@@ -9,7 +9,9 @@ over it.
 
 ## Changes to upstream
 
-Two arms in `src/proto/streams/state.rs`:
+Three changes: two arms in `src/proto/streams/state.rs` and one request extension in `src/server.rs`.
+
+The arms:
 
 - `State::recv_eof` converts `Closed(Cause::ScheduledLibraryReset(_))` into
   `Closed(Cause::Error(<BrokenPipe>))`.
@@ -34,9 +36,18 @@ find it.
 
 The reproducers are `src/server/test-support/tests/vendored_h2_connection_end.rs` (debug builds
 only: the assertion exists only under `debug_assertions`) and the drain-kill integration test in the
-server crate.
+server crate. The stream-id extension is covered by
+`src/server/test-support/tests/vendored_h2_stream_id.rs`.
+
+### Stream id on the request
+
+`Peer::convert_poll_message` in `src/server.rs` adds `h2::StreamId::from_internal(stream_id)` to
+every server request's extensions. `h2::StreamId` is the public type (`u32::from` reads it), so a
+service that receives the request through hyper, which forwards h2's request extensions untouched,
+can correlate the request with the wire frames of its stream. hyper does not expose the stream id
+otherwise.
 
 ## Maintenance
 
-On every `h2` release, check whether it contains an equivalent connection-end fix; if it does, drop
-`vendor/h2` and the `[patch.crates-io]` entry.
+On every `h2` release, check whether it contains an equivalent connection-end fix and a stream-id
+request extension; if it does, drop `vendor/h2` and the `[patch.crates-io]` entry.
