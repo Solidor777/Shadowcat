@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
 members = ["src/server", "src/server/test-support"]
+# `vendor/h2` is a patched dependency, never a member: fmt, clippy and the doctests must not run
+# over it. `exclude` keeps that true even if a future `members` glob would otherwise reach it.
+exclude = ["vendor/h2"]
+
+# `h2` carries two connection-end fixes (`State::recv_eof`, `State::handle_error`) that release
+# the stream slots of a scheduled-reset stream when the connection ends. Every `h2` consumer in
+# the graph resolves to this copy.
+[patch.crates-io]
+h2 = { path = "vendor/h2" }
 
 # Argon2 is a deliberately CPU-bound KDF, so an unoptimized build runs it an order of magnitude
 # slower than intended and that cost dominates any dev or test run that creates accounts or logs

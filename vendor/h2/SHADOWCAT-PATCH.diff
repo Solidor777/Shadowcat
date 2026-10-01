@@ -1,0 +1,44 @@
+--- a/src/proto/streams/state.rs
++++ b/src/proto/streams/state.rs
+@@ -298,6 +298,10 @@
+     /// Handle a connection-level error.
+     pub fn handle_error(&mut self, err: &proto::Error) {
+         match self.inner {
++            // A scheduled reset can no longer be written once the connection has failed;
++            // closing with the connection error lets `Counts::transition_after` release the
++            // stream's slot, which a `ScheduledLibraryReset` state never does.
++            Closed(Cause::ScheduledLibraryReset(_)) => self.inner = Closed(Cause::Error(err.clone())),
+             Closed(..) => {}
+             _ => {
+                 tracing::trace!("handle_error; err={:?}", err);
+@@ -308,6 +312,17 @@
+ 
+     pub fn recv_eof(&mut self) {
+         match self.inner {
++            // A scheduled reset can no longer be written once the connection has ended;
++            // closing with an error lets `Counts::transition_after` release the stream's slot.
++            Closed(Cause::ScheduledLibraryReset(_)) => {
++                self.inner = Closed(Cause::Error(
++                    io::Error::new(
++                        io::ErrorKind::BrokenPipe,
++                        "stream closed because of a broken pipe",
++                    )
++                    .into(),
++                ));
++            }
+             Closed(..) => {}
+             ref state => {
+                 tracing::trace!("recv_eof; state={:?}", state);
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -1683,6 +1683,10 @@
+             malformed!("malformed headers: missing method");
+         }
+ 
++        // The request carries its stream id as the public `StreamId`, so a service can
++        // correlate a request with the wire frames of its stream.
++        b = b.extension(crate::StreamId::from_internal(stream_id));
++
+         let has_protocol = pseudo.protocol.is_some();
+         if has_protocol {
+             if is_connect {
