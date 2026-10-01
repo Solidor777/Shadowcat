@@ -25,6 +25,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build client bundle (embedded by the server)
         run: pnpm build
+      # The vendored h2 is hashed on every OS (a Windows checkout must hash like the stored LF) and
+      # compared with the real upstream archive, which needs the network.
+      - name: Vendored h2 equals upstream plus the committed patch (all OSes)
+        run: pnpm lint:vendor:upstream
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -277,6 +281,8 @@ jobs:
         run: pnpm lint:secure-context
       - name: No second TLS crypto backend (ring only)
         run: pnpm lint:crypto-backend
+      - name: Vendored crates hold nothing but upstream plus the committed patch
+        run: pnpm lint:vendor
       - name: No i18n keys as accessible text
         run: pnpm lint:aria-labels
       - name: Gate manifest matches CI

@@ -36,6 +36,13 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "pnpm lint:vendor:upstream"
+tier = "ci-only"
+reason = "Downloads the upstream h2 archive to prove the recorded upstream hashes and the committed patch; a commit hook must not need the network. The offline mode of the same script runs in the commit tier."
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
 tier = "ci-only"
 reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
@@ -335,6 +342,12 @@ tier = "commit"
 workflow = "ci.yml"
 job = "docs"
 command = "pnpm lint:crypto-backend"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:vendor"
 tier = "commit"
 
 [[gate]]
