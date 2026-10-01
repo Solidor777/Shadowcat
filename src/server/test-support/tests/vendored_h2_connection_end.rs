@@ -13,11 +13,16 @@
 //! writes park once `block` is set (a peer that stopped reading) and whose reads fail on demand.
 //!
 //! Two arms of the vendored `state.rs` are under test. The clean-EOF test needs the
-//! `State::recv_eof` arm. The two transport-failure tests over `Gate` are released by either arm
-//! (the sweep of `State::recv_eof` that runs when the connection drops finds the stream still in
-//! the store); the hyper test is the one that needs the `State::handle_error` arm, because hyper's
-//! stream task has finished by the time the transport fails and the failure sweep removes the
-//! unreferenced stream from the store before any later sweep can find it.
+//! `State::recv_eof` arm. A transport failure runs `Streams::handle_error` (the failure sweep)
+//! and then, when the connection drops, `Streams::recv_eof` (the drop sweep). A stream whose
+//! reset-expiration window is still open (`Stream::reset_at` is `Some`, so
+//! `Stream::is_released` is false) survives the failure sweep and is released by the drop sweep's
+//! `State::recv_eof` arm. A stream whose window has already expired is removed from the store by
+//! the failure sweep's `Counts::transition_after` while still counted, so the drop sweep never
+//! finds it and only the `State::handle_error` arm releases it. The reset-expiration window is
+//! `h2::server::Builder::reset_stream_duration` (default `h2`'s `DEFAULT_RESET_STREAM_SECS`, one
+//! second); `Duration::ZERO` makes the window expired by the time the failure is injected, so
+//! the state that needs the `handle_error` arm is constructed directly rather than waited for.
 #![cfg(debug_assertions)]
 
 use std::io;
@@ -113,10 +118,17 @@ enum End {
 
 /// Runs one connection to its end and returns whether the server task panicked.
 ///
+/// `reset_duration` is the server's `reset_stream_duration` (`None` keeps `h2`'s default).
+///
 /// The client opens a POST with the initial send `window`, so the server's response DATA and its
 /// END_STREAM stay queued; the server drops every handle while the request is still open
 /// (`NO_ERROR` scheduled reset), then the connection ends as `end` says.
-async fn connection_end_panicked(end: End, writer_parked: bool, window: u32) -> bool {
+async fn connection_end_panicked(
+    end: End,
+    writer_parked: bool,
+    window: u32,
+    reset_duration: Option<Duration>,
+) -> bool {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let block = Arc::new(AtomicBool::new(false));
     let fail = Arc::new(Mutex::new(Fail::default()));
@@ -129,7 +141,11 @@ async fn connection_end_panicked(end: End, writer_parked: bool, window: u32) -> 
     let (ended_tx, ended_rx) = tokio::sync::oneshot::channel::<()>();
 
     let server = tokio::spawn(async move {
-        let mut conn = h2::server::handshake(gate).await.unwrap();
+        let mut builder = h2::server::Builder::new();
+        if let Some(duration) = reset_duration {
+            builder.reset_stream_duration(duration);
+        }
+        let mut conn = builder.handshake::<_, Bytes>(gate).await.unwrap();
         let (request, mut respond) = conn.accept().await.unwrap().unwrap();
         let body = request.into_body();
         let mut send = respond
@@ -202,13 +218,23 @@ async fn connection_end_panicked(end: End, writer_parked: bool, window: u32) -> 
 /// Each connection end must release the stream in both.
 const WINDOWS: [u32; 2] = [0, 1024];
 
-/// Runs every window and writer state for `end` and returns the combinations that panicked.
+/// The server's reset-expiration windows under test: `h2`'s default leaves the stream inside its
+/// window when the connection ends, `Duration::ZERO` leaves it expired. Each connection end must
+/// release the stream in both.
+const RESET_DURATIONS: [Option<Duration>; 2] = [None, Some(Duration::ZERO)];
+
+/// Runs every window, writer state and reset-expiration window for `end` and returns the
+/// combinations that panicked.
 async fn panicking_combinations(end: End) -> Vec<String> {
     let mut panicked = Vec::new();
     for window in WINDOWS {
         for parked in [true, false] {
-            if connection_end_panicked(end, parked, window).await {
-                panicked.push(format!("window={window} writer_parked={parked}"));
+            for reset_duration in RESET_DURATIONS {
+                if connection_end_panicked(end, parked, window, reset_duration).await {
+                    panicked.push(format!(
+                        "window={window} writer_parked={parked} reset_duration={reset_duration:?}"
+                    ));
+                }
             }
         }
     }
@@ -240,73 +266,4 @@ async fn scheduled_reset_stream_is_released_when_the_connection_ends_by_connecti
         panicked.is_empty(),
         "a connection abort left a counted stream behind: {panicked:?}"
     );
-}
-
-/// Quiet interval between the response being fully handed to `h2` and the transport failing.
-///
-/// Measured against the unpatched `State::handle_error`: a failure injected after 0.6 s or less
-/// leaves the stream reachable by the later `State::recv_eof` sweep, from 1.0 s on the stream is
-/// already gone from the store when that sweep runs, so only the `handle_error` arm releases it.
-/// 1.5 s keeps the margin above that boundary.
-const HYPER_WAIT_MS: u64 = 1500;
-
-/// hyper's h2 server answers a request whose body stays open (POST) with a response larger than
-/// the client's stream window, so the response DATA and its END_STREAM sit queued behind the
-/// window and the stream becomes a scheduled `NO_ERROR` reset once hyper drops its handles; the
-/// transport then fails (`ConnectionAborted`, the kind the connection kill produces). Returns
-/// whether the server task panicked.
-async fn hyper_connection_end_panicked(post: bool) -> bool {
-    let (server_io, client_io) = tokio::io::duplex(1 << 20);
-    let block = Arc::new(AtomicBool::new(false));
-    let fail = Arc::new(Mutex::new(Fail::default()));
-    let gate = Gate {
-        inner: server_io,
-        block: block.clone(),
-        fail: fail.clone(),
-    };
-    let service = hyper::service::service_fn(|_request: Request<hyper::body::Incoming>| async {
-        Ok::<_, std::convert::Infallible>(Response::new(http_body_util::Full::new(Bytes::from(
-            vec![2u8; 8 * 1024],
-        ))))
-    });
-    let (ended_tx, ended_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        let connection =
-            hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(hyper_util::rt::TokioIo::new(gate), service);
-        let _ = connection.await;
-        let _ = ended_tx.send(());
-    });
-    let client = tokio::spawn(async move {
-        let (mut send_request, connection) = h2::client::Builder::new()
-            .initial_window_size(1024)
-            .handshake::<_, Bytes>(client_io)
-            .await
-            .unwrap();
-        let driver = tokio::spawn(connection);
-        let request = Request::builder()
-            .method(if post { Method::POST } else { Method::GET })
-            .uri("https://example.com/")
-            .body(())
-            .unwrap();
-        let (response, _request_body) = send_request.send_request(request, !post).unwrap();
-        let _response = response.await.unwrap();
-        tokio::time::sleep(Duration::from_millis(HYPER_WAIT_MS)).await;
-        fail_io(&fail, io::ErrorKind::ConnectionAborted);
-        let _ = ended_rx.await;
-        driver.abort();
-        let _ = driver.await;
-    });
-    client.await.unwrap();
-    server.await.is_err()
-}
-
-#[tokio::test]
-async fn hyper_zombie_stream_is_released_when_the_transport_fails() {
-    for post in [true, false] {
-        assert!(
-            !hyper_connection_end_panicked(post).await,
-            "post={post}: a counted stream survived the failed transport"
-        );
-    }
 }
