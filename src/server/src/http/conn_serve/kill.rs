@@ -34,8 +34,10 @@
 //! bound, so a `Replay` is polled by tokio tasks directly.
 
 use std::io;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
+
+use super::pruned::Pruned;
 
 /// Why a connection's IO was failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +151,9 @@ struct SignalState {
     /// Set by [`KillSignal::fire`]; a connection created afterwards starts fired.
     fired: bool,
     /// Every connection switch handed out, as a weak reference so an ended connection's switch is
-    /// freed with its IO.
-    conns: Vec<Weak<ConnKill>>,
+    /// freed with its IO; pruned on insert, so its length is bounded by the live connections and
+    /// not by the number ever accepted.
+    conns: Pruned<ConnKill>,
 }
 
 /// The serve loop's side: hands out a [`ConnKill`] per connection and fires them all at the drain
@@ -166,7 +169,7 @@ impl KillSignal {
         Self {
             state: Mutex::new(SignalState {
                 fired: false,
-                conns: Vec::new(),
+                conns: Pruned::new(),
             }),
         }
     }
@@ -183,12 +186,18 @@ impl KillSignal {
         conn
     }
 
+    /// How many switch references the signal holds, live and dead.
+    #[cfg(test)]
+    pub(super) fn registry_len(&self) -> usize {
+        lock(&self.state).conns.len()
+    }
+
     /// Fires every connection's switch with [`KillReason::Drain`].
     pub(super) fn fire(&self) {
         let live: Vec<Arc<ConnKill>> = {
             let mut state = lock(&self.state);
             state.fired = true;
-            state.conns.iter().filter_map(Weak::upgrade).collect()
+            state.conns.live()
         };
         for conn in live {
             conn.fire(KillReason::Drain);

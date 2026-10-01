@@ -181,3 +181,24 @@ fn firing_one_connection_leaves_the_others_alone() {
     assert_eq!(poll(&one, &waker), Poll::Ready(KillReason::Stall));
     assert_eq!(poll(&other, &waker), Poll::Pending);
 }
+
+#[test]
+fn the_signal_holds_references_for_the_live_connections_not_every_one_accepted() {
+    let signal = KillSignal::new();
+    let held: Vec<Arc<ConnKill>> = (0..3).map(|_| signal.connection()).collect();
+    let mut peak = 0;
+    for _ in 0..100_000 {
+        drop(signal.connection());
+        peak = peak.max(signal.registry_len());
+    }
+    assert!(
+        peak <= (2 * held.len()).max(super::super::pruned::PRUNE_FLOOR) + 1,
+        "the registry reached {peak} entries with {} connections live",
+        held.len()
+    );
+    signal.fire();
+    let (_wakes, waker) = counting();
+    for conn in &held {
+        assert_eq!(poll(conn, &waker), Poll::Ready(KillReason::Drain));
+    }
+}

@@ -47,6 +47,7 @@
 
 mod kill;
 mod live;
+mod pruned;
 
 use std::future::Future;
 use std::io;
