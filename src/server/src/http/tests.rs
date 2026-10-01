@@ -14,6 +14,7 @@ pub(crate) async fn test_state() -> AppState {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        tls: crate::tls::TlsRuntime::disabled(),
     }
 }
 
@@ -463,13 +464,11 @@ async fn login_throttle_budget_is_config_tunable() {
 
 /// A `TestServer` served over a REAL loopback TCP connection (not the
 /// default mock transport), so `throttle::ClientIp` resolves an actual
-/// `SocketAddr` via `into_make_service_with_connect_info` — the mock
+/// `ConnMeta` via `http::into_service` — the mock
 /// transport never populates `ConnectInfo`, which would leave the
 /// per-IP throttle branches silently untested.
 async fn real_transport_server(state: AppState) -> axum_test::TestServer {
-    let app = router(state)
-        .await
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = crate::http::into_service(router(state).await);
     axum_test::TestServer::builder()
         .http_transport()
         .save_cookies()
@@ -2941,6 +2940,7 @@ async fn file_backed_state() -> (AppState, tempfile::TempDir) {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        tls: crate::tls::TlsRuntime::disabled(),
     };
     (state, tmp)
 }
@@ -3029,49 +3029,7 @@ async fn security_response_headers_are_set_on_every_response_without_hsts_by_def
         res.header(axum::http::header::REFERRER_POLICY),
         "same-origin"
     );
-    // Not behind a TLS proxy by default: HSTS over plain HTTP is wrong and must be absent.
-    assert!(res
-        .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
-        .is_none());
-}
-
-#[tokio::test]
-async fn hsts_header_present_only_when_behind_tls_proxy() {
-    let mut state = test_state().await;
-    state.config = std::sync::Arc::new(crate::config::Config {
-        behind_tls_proxy: true,
-        ..crate::config::Config::default()
-    });
-    let server = axum_test::TestServer::builder()
-        .save_cookies()
-        .build(router(state).await)
-        .unwrap();
-    let res = server.get("/health").await;
-    res.assert_status_ok();
-    assert_eq!(
-        res.header(axum::http::header::STRICT_TRANSPORT_SECURITY),
-        "max-age=31536000; includeSubDomains"
-    );
-}
-
-#[tokio::test]
-async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
-    // `is_exposed()` is true here (non-loopback bind), but HSTS reads `is_tls_fronted`
-    // (the TLS-presuming predicate), not `is_exposed`: a non-loopback bind with no TLS proxy
-    // declared has no TLS anywhere in the path, so sending HSTS would be wrong.
-    let mut state = test_state().await;
-    state.config = std::sync::Arc::new(crate::config::Config {
-        bind: "0.0.0.0:30000".into(),
-        behind_tls_proxy: false,
-        ..crate::config::Config::default()
-    });
-    assert!(state.config.is_exposed());
-    let server = axum_test::TestServer::builder()
-        .save_cookies()
-        .build(router(state).await)
-        .unwrap();
-    let res = server.get("/health").await;
-    res.assert_status_ok();
+    // HSTS is opt-in (`Config.hsts_max_age_secs`): absent by default.
     assert!(res
         .maybe_header(axum::http::header::STRICT_TRANSPORT_SECURITY)
         .is_none());
@@ -3079,11 +3037,9 @@ async fn hsts_header_absent_on_non_loopback_bind_without_tls_proxy() {
 
 /// Build a `test_state()`-shaped state (uninitialized repo, one seeded user) whose `Config` is
 /// `mutate`d before the router is built, then log in and return the raw `set-cookie` header
-/// value — exercises the real `session_layer(&repo, &config)` construction inside `router`,
-/// not a config-level re-assertion of `is_tls_fronted()` (see the anti-drift test
-/// `behind_tls_proxy_flips_setup_token_policy_and_tls_fronted_together` in `config::tests`,
-/// which pins the predicate but never builds a `session_layer` or inspects the cookie it
-/// produces).
+/// value — exercises the real `session_layer(&repo, &config)` construction inside `router`.
+/// The axum-test mock transport carries no `ConnectInfo`, so every request here is plain HTTP;
+/// the per-scheme flavours are exercised in `scheme::tests`.
 async fn login_set_cookie_header(mutate: impl FnOnce(&mut crate::config::Config)) -> String {
     let mut cfg = crate::config::Config::default();
     mutate(&mut cfg);
@@ -3123,21 +3079,13 @@ async fn session_cookie_is_not_secure_on_a_plain_loopback_bind() {
         !set_cookie.to_ascii_lowercase().contains("secure"),
         "unexpected Secure attribute: {set_cookie}"
     );
-}
-
-#[tokio::test]
-async fn session_cookie_is_secure_on_a_loopback_bind_behind_a_declared_tls_proxy() {
-    let set_cookie = login_set_cookie_header(|cfg| cfg.behind_tls_proxy = true).await;
-    assert!(
-        set_cookie.to_ascii_lowercase().contains("secure"),
-        "missing Secure attribute: {set_cookie}"
-    );
+    assert!(set_cookie.starts_with("sc_sid="), "{set_cookie}");
 }
 
 #[tokio::test]
 async fn session_cookie_is_not_secure_on_a_plain_non_loopback_bind() {
     // LAN play: browsers refuse to store a `Secure` cookie set over plain HTTP from a
-    // non-loopback origin, so the cookie must not carry the attribute without a declared proxy.
+    // non-loopback origin, so a plain-HTTP request never gets a `Secure` cookie.
     let set_cookie = login_set_cookie_header(|cfg| cfg.bind = "0.0.0.0:30000".into()).await;
     assert!(
         !set_cookie.to_ascii_lowercase().contains("secure"),

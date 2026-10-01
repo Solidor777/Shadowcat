@@ -1,8 +1,10 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
+  import { plainHttpHint } from "./lib/plainHttpHint";
+  import { TlsStatusLoader } from "./lib/tlsStatusLoader.svelte";
   import { notifications, t } from "@shadowcat/ui-kit";
   import { Entry } from "@shadowcat/module-entry";
-  import { getMe, listWorlds, withRetry, type Me } from "./lib/api";
+  import { getMe, getTlsStatus, listWorlds, withRetry, type Me } from "./lib/api";
   import {
     loadSessionState,
     setLastWorld,
@@ -40,6 +42,7 @@
   import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
   import { vfx } from "@shadowcat/module-vfx";
   import { ducking } from "@shadowcat/module-ducking";
+  import { untrack } from "svelte";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -61,6 +64,29 @@
   let booted = $state(false);
   let bootStillTrying = $state(false);
   let session = $state<WorldSession | null>(null);
+  /** The server's published TLS status (`tls.status`): `null` until read, or when the read
+   * failed, in which case the TLS-dependent hints stay silent rather than guessing. */
+  const tls = new TlsStatusLoader(getTlsStatus);
+  void tls.ensure();
+
+  /** After a run of first-connect WebSocket failures, offers the plain-HTTP address when
+   * `plainHttpHint` finds the failure looks like the browser refusing `wss:` (see its doc for the
+   * discriminator).
+   * @param failures The consecutive failure count.
+   * @example
+   * ```
+   * await hintPlainHttpIfWssRefused(3);
+   * ```
+   */
+  async function hintPlainHttpIfWssRefused(failures: number): Promise<void> {
+    const url = await plainHttpHint(failures, {
+      location,
+      currentTls: () => tls.status,
+      loadTls: () => tls.ensure(),
+      fetchMe: () => fetch("/api/me", { credentials: "same-origin" }),
+    });
+    if (url !== null) notifications.push("warning", t("ws.plainHttpHint", { url }));
+  }
 
   /** Resolves the app's initial route on load: fetches identity, applies the
    * saved locale, and — only when the URL or a persisted `lastWorld` could
@@ -116,7 +142,8 @@
             pruneStaleWorlds(worlds.map((w) => w.id));
             const resolved = resolveBootWorld(currentRoute(), last, worlds);
             if (resolved.enterWorldId) {
-              enterWorld(resolved.enterWorldId); // reload returns you to the URL's/last world
+              // Reload returns you to the URL's/last world; the session follows the route.
+              navigate({ name: "world", id: resolved.enterWorldId });
               return;
             }
             if (resolved.clearLastWorld) setLastWorld(null); // stale (deleted / revoked) — clear it
@@ -170,25 +197,25 @@
     return me !== null;
   }
 
-  /** Enters a world: opens its WebSocket session, persists it as
-   * `lastWorld`, and navigates to `#/world/<id>`. A no-op if identity has
-   * not been established yet (`me` is `null`).
+  /** Opens the WebSocket session for `worldId`. Not reactive: the caller (the session effect
+   * below) decides when a session exists.
    * @param worldId - The world to enter.
+   * @param selfId - The signed-in user's id.
+   * @returns The new session, already entering `worldId`.
    * @example
    * ```
-   * enterWorld("w1");
+   * const s = openSession("w1", "u1");
    * ```
    */
-  function enterWorld(worldId: string) {
-    if (!me) return;
+  function openSession(worldId: string, selfId: string): WorldSession {
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
     const s = new WorldSession({
-      selfId: me.id,
+      selfId,
       connect: webSocketConnect(wsUrl),
       modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
-      onEvicted: () => leaveWorld(),
+      onEvicted: () => navigate({ name: "worlds" }),
       onReject: (reason, detail) =>
         notifications.push(
           "warning",
@@ -197,35 +224,78 @@
       // The audio refusal reason is already player-presentable free text produced server-side
       // (unlike `RejectReason`'s fixed key set) — pushed raw, never through `t()`.
       onAudioError: (reason) => notifications.push("warning", reason),
+      // A browser can render an https: page after a certificate exception and still refuse
+      // `wss:`; the same server answers plain HTTP on the same port, so name that address.
+      onConnectFailure: (n) => void hintPlainHttpIfWssRefused(n),
+      // A welcome (first connect or reconnect) re-reads the TLS status when every earlier read failed.
+      onWelcome: () => void tls.ensure(),
     });
-    session = s;
     void s.enter(worldId);
-    setLastWorld(worldId);
+    return s;
+  }
+
+  /** Enters a world by navigating to its route; the session effect below opens the session.
+   * @param worldId - The world to enter.
+   * @example
+   * ```
+   * enterWorld("w1");
+   * ```
+   */
+  function enterWorld(worldId: string) {
     navigate({ name: "world", id: worldId });
   }
 
-  /** Leaves the current world: tears down the session, clears `lastWorld`,
-   * and navigates back to the worlds list.
+  /** Leaves the current world by navigating to the worlds list; the session effect below tears
+   * the session down.
    * @example
    * ```
    * leaveWorld();
    * ```
    */
   function leaveWorld() {
-    session?.leave();
-    session = null;
-    setLastWorld(null);
     navigate({ name: "worlds" });
   }
 
   const route = $derived(currentRoute());
+  /** The world the route names, `null` for every other route. A string, so the session effect
+   * below re-runs only when the world changes: `navigate` and the `hashchange` it triggers each
+   * assign an equal-but-distinct route object. */
+  const routeWorldId = $derived(route.name === "world" ? route.id : null);
+
+  // The route is the single source of truth for the session: a session exists exactly while the
+  // route names a world, the app has booted and an identity is known, and it is the session OF
+  // THAT WORLD. Every way the route changes (entry screen, eviction, the back/forward buttons, an
+  // edited URL, boot's resolved world) reaches the same owner here, so no path can leave a
+  // session running for a route that no longer names its world. The effect depends on the world
+  // id only (and on `booted`/`me`), never on the session it creates; its cleanup tears the
+  // session down and clears `lastWorld`, and the next run sets it again for the new world.
+  $effect(() => {
+    const worldId = routeWorldId;
+    if (!booted || !me || worldId === null) return;
+    const selfId = me.id;
+    // Everything below reads or writes reactive state other than the three dependencies above
+    // (`session`, the persisted UI state); none of it may re-run this effect.
+    const s = untrack(() => {
+      const opened = openSession(worldId, selfId);
+      session = opened;
+      setLastWorld(worldId);
+      return opened;
+    });
+    return () => {
+      s.leave();
+      if (session === s) session = null;
+      setLastWorld(null);
+    };
+  });
 </script>
 
 {#if !booted}
   <p class="connecting">{bootStillTrying ? "Still trying…" : "Loading…"}</p>
-{:else if route.name === "world" && session?.role && session?.world}
-  <Table {session} {leaveWorld} serverRole={me?.server_role === "admin" ? "admin" : "user"} />
-{:else if route.name === "world"}
+{:else if route.name === "world" && me && session?.role && session?.world}
+  {#key session}
+    <Table {session} {leaveWorld} tls={tls.status} serverRole={me?.server_role === "admin" ? "admin" : "user"} />
+  {/key}
+{:else if route.name === "world" && me}
   <p class="connecting">Connecting…</p>
 {:else}
   <Entry {onAuthenticated} onEnterWorld={enterWorld} />

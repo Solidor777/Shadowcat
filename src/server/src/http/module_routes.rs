@@ -98,6 +98,7 @@ impl InstalledModuleInfo {
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let modules = list_installed_modules(user, State(state)).await;
@@ -181,6 +182,7 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let result = serve_module_file(
@@ -275,6 +277,7 @@ const MAX_ENABLED_MODULES: usize = 256;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let ids = get_world_enabled_modules(user, State(state), Path(world.id)).await.unwrap();
@@ -328,6 +331,7 @@ pub async fn get_world_enabled_modules(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = set_world_enabled_modules(

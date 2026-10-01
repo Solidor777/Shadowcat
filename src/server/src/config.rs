@@ -10,6 +10,51 @@ use figment::providers::{Env, Format, Serialized, Toml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
 
+/// Built-in HTTPS mode (`Config.tls`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::TlsMode;
+///
+/// assert_eq!(TlsMode::default(), TlsMode::Auto);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+#[value(rename_all = "lower")]
+pub enum TlsMode {
+    /// The listener answers TLS on the same port as plain HTTP.
+    #[default]
+    Auto,
+    /// No TLS: a connection whose first byte is a TLS record is dropped.
+    Off,
+}
+
+/// ACME challenge type (`Config.acme_challenge`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::AcmeChallenge;
+///
+/// assert_eq!(AcmeChallenge::default(), AcmeChallenge::TlsAlpn01);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+pub enum AcmeChallenge {
+    /// Validation certificate answered on the TLS port (`acme-tls/1` ALPN); CA validates on 443.
+    #[default]
+    #[serde(rename = "tls-alpn-01")]
+    #[value(name = "tls-alpn-01")]
+    TlsAlpn01,
+    /// Token served over plain HTTP at `/.well-known/acme-challenge/`; CA validates on 80.
+    #[serde(rename = "http-01")]
+    #[value(name = "http-01")]
+    Http01,
+}
+
+/// Default ACME directory (Let's Encrypt production).
+pub const DEFAULT_ACME_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
 /// CLI flags. Every field is optional so it only overrides lower layers when
 /// explicitly provided.
 ///
@@ -74,13 +119,62 @@ pub struct Cli {
     /// (`Config.retain_originals`); `--retain-originals false` discards it.
     #[arg(long)]
     pub retain_originals: Option<bool>,
-    /// Declares that a TLS-terminating reverse proxy fronts this bind on the same host
-    /// (`Config.behind_tls_proxy`). A loopback bind fronted this way is internet-reachable
-    /// even though the bind address itself is not — set this so the setup-token policy treats
-    /// the deployment as exposed, and so the session cookie is marked `Secure` and HSTS is sent
-    /// (both only make sense with TLS in the path). Never inferred automatically.
+    /// Declares that a reverse proxy fronts this bind on the same host (`Config.behind_proxy`).
+    /// A loopback bind fronted this way is internet-reachable even though the bind address
+    /// itself is not — set this so the setup-token policy treats the deployment as exposed.
+    /// Never inferred automatically. The per-request scheme (cookie flavour, HSTS) is learned
+    /// from `X-Forwarded-Proto` sent by a peer listed in `trusted_proxies`.
     #[arg(long)]
-    pub behind_tls_proxy: Option<bool>,
+    pub behind_proxy: Option<bool>,
+    /// Built-in HTTPS mode override (`auto` | `off`).
+    #[arg(long, value_enum)]
+    pub tls: Option<TlsMode>,
+    /// Operator TLS certificate chain (PEM). Pairs with `--tls-key`.
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+    /// Operator TLS private key (PEM). Pairs with `--tls-cert`.
+    #[arg(long)]
+    pub tls_key: Option<String>,
+    /// Extra DNS names / IP literals the self-signed certificate must cover (comma separated).
+    #[arg(long, value_delimiter = ',')]
+    pub tls_hostnames: Option<Vec<String>>,
+    /// List this machine's hostname (and `<hostname>.local`) in the self-signed certificate
+    /// (`Config.tls_advertise_hostname`). Off by default: the certificate is shown to every peer
+    /// before authentication and hostnames often carry a person's name.
+    #[arg(long)]
+    pub tls_advertise_hostname: Option<bool>,
+    /// TLS state directory override (default: sibling `tls/` beside the db file).
+    #[arg(long)]
+    pub tls_dir: Option<String>,
+    /// Public `https://` origin players reach this server at (published in `/api/config`).
+    #[arg(long)]
+    pub public_url: Option<String>,
+    /// DNS names to obtain a certificate for through ACME (comma separated).
+    #[arg(long, value_delimiter = ',')]
+    pub acme_domains: Option<Vec<String>>,
+    /// PEM file with the private ACME CA's root (or intermediate + root) to trust.
+    #[arg(long)]
+    pub acme_ca_root: Option<String>,
+    /// ACME account contact e-mail.
+    #[arg(long)]
+    pub acme_email: Option<String>,
+    /// Confirms the ACME CA's terms of service are accepted.
+    #[arg(long)]
+    pub acme_terms_agreed: Option<bool>,
+    /// ACME challenge type (`tls-alpn-01` | `http-01`).
+    #[arg(long, value_enum)]
+    pub acme_challenge: Option<AcmeChallenge>,
+    /// ACME directory URL (must be `https://`).
+    #[arg(long)]
+    pub acme_directory: Option<String>,
+    /// Opt-in HSTS `max-age` in seconds; sent only on CA-trusted native TLS or trusted-proxy
+    /// HTTPS requests.
+    #[arg(long)]
+    pub hsts_max_age_secs: Option<u64>,
+    /// One-shot: regenerate the persisted self-signed certificate and exit. Mutually exclusive
+    /// with `--backup-to`, `--restore-from` and any subcommand.
+    #[arg(long)]
+    pub tls_regenerate: bool,
     /// Subcommand; `None` (the default — no subcommand given) is ordinary serve mode. Every
     /// root flag above parses unconditionally regardless of which variant, if any, this holds.
     #[command(subcommand)]
@@ -126,8 +220,9 @@ pub struct AudioMonitorArgs {
     /// Localhost port to bind. `0` binds an ephemeral port (printed on start).
     #[arg(long, default_value_t = 31998)]
     pub port: u16,
-    /// Additional allowed `Origin` header values, beside the built-in
-    /// `http://localhost:30000`/`http://127.0.0.1:30000` defaults.
+    /// Allowed `Origin` header values. When none are given the built-in defaults apply
+    /// (`http`/`https` on `localhost`/`127.0.0.1` port 30000, `audio_monitor::server::DEFAULT_ALLOWED_ORIGINS`);
+    /// a non-empty list replaces them.
     #[arg(long)]
     pub allow_origin: Vec<String>,
     /// Initial watched-process substrings (case-insensitive); default `discord` when empty.
@@ -213,22 +308,63 @@ pub struct Config {
     /// this — never lower it below a value that still bounds a scripted flood.
     pub world_create_per_min_per_account: Option<usize>,
     /// Exact peer IP addresses trusted to set `X-Forwarded-For` (reverse-proxy deployments only).
-    /// Default empty — `ClientIp` never consults the header and resolves solely from the TCP peer
-    /// address. Matched by EXACT address only, not CIDR range
+    /// Parsed as IP literals when the configuration is extracted, so an entry that is not an IP
+    /// address is a boot error naming the key and the value. Default empty — `ClientIp` never
+    /// consults the header and resolves solely from the TCP peer
+    /// address. Matched by EXACT address only (an IPv4-mapped IPv6 form and its IPv4 form are the
+    /// same address), not CIDR range
     /// (self-hosting operators list every trusted proxy's address explicitly; a typical single
     /// reverse-proxy-on-the-same-host deployment needs one entry, e.g. `"127.0.0.1"`). A request
     /// whose immediate TCP peer is NOT in this list gets its `X-Forwarded-For` header ignored
     /// entirely, regardless of content — this is what prevents an arbitrary internet client from
     /// spoofing its own address by sending the header directly.
-    pub trusted_proxies: Vec<String>,
-    /// Declares a TLS-terminating reverse proxy fronts `bind` on the same host. Default
-    /// `false`. Two present-tense readers, at two different decision granularities:
-    /// `is_exposed()` folds this together with `is_loopback_bind()` into the derived predicate
-    /// `setup_token_policy`'s `"auto"` arm and `AppState::resolve_setup_token`'s warning read;
-    /// `is_tls_fronted()` returns this field alone, and the session cookie's `Secure` flag
-    /// (`auth::session::session_layer`) and the HSTS response header (`http::router`) both read
-    /// it. See `is_exposed()`'s own doc for why those two decisions are narrower.
-    pub behind_tls_proxy: bool,
+    #[serde(deserialize_with = "deserialize_ip_list")]
+    pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Declares a reverse proxy fronts `bind` on the same host. Default `false`, never
+    /// inferred. `is_exposed()` folds it with `is_loopback_bind()` into the predicate
+    /// `setup_token_policy`'s `"auto"` arm and `AppState::resolve_setup_token`'s warning read.
+    /// Whether a given request arrived over HTTPS is NOT decided here: it is decided per request
+    /// by `http::scheme::request_scheme` (native TLS, or `X-Forwarded-Proto` from a peer in
+    /// `trusted_proxies`).
+    pub behind_proxy: bool,
+    /// Built-in HTTPS mode: `auto` (default; TLS answered on the same port as plain HTTP) or `off`.
+    pub tls: TlsMode,
+    /// Operator certificate chain (PEM path). Both or neither of `tls_cert`/`tls_key`.
+    pub tls_cert: Option<String>,
+    /// Operator private key (PEM path).
+    pub tls_key: Option<String>,
+    /// Extra DNS names / IP literals the self-signed certificate must cover, and (DNS entries)
+    /// hostnames published as HTTPS origins.
+    pub tls_hostnames: Vec<String>,
+    /// Whether the self-signed certificate lists this machine's hostname and its `<hostname>.local`
+    /// form. Default `false`: the certificate is presented to every peer before authentication,
+    /// and a machine hostname commonly embeds a person's name. Turning it on lets players reach
+    /// the server by machine name over HTTPS without a name-mismatch error stacked on the
+    /// self-signed trust warning. Changing the value regenerates the persisted certificate at the
+    /// next start (which re-shows the browser warning once). Interface IP addresses are always
+    /// listed.
+    pub tls_advertise_hostname: bool,
+    /// TLS state directory (self-signed material, ACME account). `None` → sibling `tls/` beside
+    /// the db file.
+    pub tls_dir: Option<String>,
+    /// Absolute `https://` origin players use to reach this server. Published as the ASCII
+    /// serialization of the origin `https_origin_of` extracts (scheme, lowercased host, and a
+    /// port unless it is the scheme default); the value must be exactly an origin.
+    pub public_url: Option<String>,
+    /// DNS names to obtain a certificate for through ACME.
+    pub acme_domains: Vec<String>,
+    /// PEM file with the private ACME CA's root (or intermediate + root) to trust for ACME only.
+    pub acme_ca_root: Option<String>,
+    /// ACME account contact e-mail.
+    pub acme_email: Option<String>,
+    /// Must be `true` to use ACME: confirms the CA's terms of service are accepted.
+    pub acme_terms_agreed: bool,
+    /// ACME challenge type.
+    pub acme_challenge: AcmeChallenge,
+    /// ACME directory URL; must be `https://`.
+    pub acme_directory: String,
+    /// Opt-in HSTS `max-age` (seconds). `None` (default) never sends HSTS.
+    pub hsts_max_age_secs: Option<u64>,
 }
 
 impl Default for Config {
@@ -255,7 +391,21 @@ impl Default for Config {
             invite_per_min_per_ip: None,
             world_create_per_min_per_account: None,
             trusted_proxies: Vec::new(),
-            behind_tls_proxy: false,
+            behind_proxy: false,
+            tls: TlsMode::Auto,
+            tls_cert: None,
+            tls_key: None,
+            tls_hostnames: Vec::new(),
+            tls_advertise_hostname: false,
+            tls_dir: None,
+            public_url: None,
+            acme_domains: Vec::new(),
+            acme_ca_root: None,
+            acme_email: None,
+            acme_terms_agreed: false,
+            acme_challenge: AcmeChallenge::TlsAlpn01,
+            acme_directory: DEFAULT_ACME_DIRECTORY.into(),
+            hsts_max_age_secs: None,
         }
     }
 }
@@ -280,9 +430,182 @@ pub enum SetupTokenPolicy {
     Required(Option<String>),
 }
 
+/// The retired configuration key `behind_proxy` replaced (TOML key, and the lowercase form the
+/// `SHADOWCAT_` env provider produces).
+const RETIRED_BEHIND_TLS_PROXY_KEY: &str = "behind_tls_proxy";
+
+/// Boot error text for the retired key: names the replacement and why ignoring it is unsafe.
+const RETIRED_BEHIND_TLS_PROXY_MESSAGE: &str = "behind_tls_proxy was renamed behind_proxy; it declares that a reverse proxy fronts this bind. Ignoring it would treat a proxied loopback deployment as local-only. Delete the behind_tls_proxy line/variable even if its value is false. If a reverse proxy fronts this server, migrate fully: (1) set behind_proxy = true; (2) list the proxy's address in trusted_proxies, because the server learns the request scheme (X-Forwarded-Proto) and the client address (X-Forwarded-For) only from a listed proxy, and without the entry every request is treated as plain HTTP; (3) make the proxy OVERWRITE X-Forwarded-Proto (and X-Forwarded-For) with its own values rather than pass a client-supplied header through.";
+
+/// A configuration contradiction or malformed TLS/ACME value, decidable from configuration
+/// values alone (no file or network I/O). Everything that needs I/O degrades at runtime instead
+/// (see `tls::TlsRuntime`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::Config;
+///
+/// let cfg = Config { tls_cert: Some("cert.pem".into()), ..Default::default() };
+/// let err = cfg.validate_tls().unwrap_err();
+/// assert!(err.to_string().contains("tls_key"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TlsConfigError {
+    /// An operator certificate and ACME domains were both configured.
+    #[error(
+        "tls_cert/tls_key and acme_domains are mutually exclusive: choose one certificate source"
+    )]
+    PemAndAcme,
+    /// `tls = "off"` together with certificate material.
+    #[error("tls = \"off\" contradicts {0}; remove it or set tls = \"auto\"")]
+    OffWithMaterial(&'static str),
+    /// Exactly one of `tls_cert`/`tls_key` was set.
+    #[error("tls_cert and tls_key must be set together; {0} is missing")]
+    HalfPemPair(&'static str),
+    /// ACME domains without the terms-of-service confirmation.
+    #[error(
+        "acme_domains requires acme_terms_agreed = true (accepting the CA's terms of service)"
+    )]
+    AcmeWithoutTerms,
+    /// An `acme_domains` entry that is not a plain DNS name.
+    #[error("acme_domains entry {0:?} must be a plain DNS name (no IP literal, wildcard, scheme, port or path)")]
+    AcmeDomainInvalid(String),
+    /// ACME needs somewhere to persist its account and certificate.
+    #[error(
+        "acme_domains needs a persistent tls_dir: the database is in-memory and tls_dir is unset"
+    )]
+    AcmeNeedsTlsDir,
+    /// A malformed `tls_hostnames` entry.
+    #[error("tls_hostnames entry {0:?} must be a DNS name or IP literal (no scheme, port or path; a wildcard only as a leading \"*.\")")]
+    HostnameInvalid(String),
+    /// `public_url` is not an `https://` origin.
+    #[error("public_url {0:?} must be an https:// origin: scheme, host and optional port only (no user information, path, query or fragment)")]
+    PublicUrlInvalid(String),
+    /// `acme_directory` is not an `https://` URL.
+    #[error("acme_directory {0:?} must be an https:// URL")]
+    AcmeDirectoryNotHttps(String),
+    /// `acme_ca_root` without any `acme_domains`.
+    #[error("acme_ca_root only applies together with acme_domains")]
+    AcmeCaRootWithoutDomains,
+}
+
+/// Whether `entry` is a syntactically valid certificate host entry: an IP literal, or a DNS
+/// name of 1-63 character `[A-Za-z0-9-]` labels (no leading/trailing hyphen, at most 253
+/// characters). `allow_wildcard` admits a single leading `*.` label. Scheme, port, path, brackets
+/// and trailing dots are all rejected by construction.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::is_valid_host_entry;
+///
+/// assert!(is_valid_host_entry("game.example.com", false));
+/// assert!(is_valid_host_entry("192.0.2.7", false));
+/// assert!(is_valid_host_entry("*.example.com", true));
+/// assert!(!is_valid_host_entry("*.example.com", false));
+/// assert!(!is_valid_host_entry("https://example.com", true));
+/// assert!(!is_valid_host_entry("example.com:443", true));
+/// ```
+pub fn is_valid_host_entry(entry: &str, allow_wildcard: bool) -> bool {
+    if entry.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let name = if allow_wildcard {
+        entry.strip_prefix("*.").unwrap_or(entry)
+    } else {
+        entry
+    };
+    if name.is_empty() || name.len() > 253 {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+/// Deserializes a list of IP-address strings, failing with the offending entry's text so a boot
+/// error names both the key (added by the config layer) and the value.
+///
+/// # Examples
+///
+/// ```
+/// let mut ok = serde_json::Deserializer::from_str(r#"["127.0.0.1"]"#);
+/// let ips = shadowcat::config::deserialize_ip_list(&mut ok).unwrap();
+/// assert_eq!(ips, vec!["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]);
+/// let mut bad = serde_json::Deserializer::from_str(r#"["nope"]"#);
+/// let err = shadowcat::config::deserialize_ip_list(&mut bad).unwrap_err();
+/// assert!(err.to_string().contains("nope"));
+/// ```
+pub fn deserialize_ip_list<'de, D>(deserializer: D) -> Result<Vec<std::net::IpAddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<String> = Deserialize::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|entry| {
+            entry.trim().parse().map_err(|_| {
+                serde::de::Error::custom(format!("entry {entry:?} is not an IP address"))
+            })
+        })
+        .collect()
+}
+
+/// Whether `raw` parses as an absolute `https://` URL that names a host.
+fn is_https_url_with_host(raw: &str) -> bool {
+    url::Url::parse(raw)
+        .map(|p| p.scheme() == "https" && p.host_str().is_some())
+        .unwrap_or(false)
+}
+
+/// The `https://` origin `raw` denotes (`scheme://host[:port]`, default port elided), or `None`
+/// when `raw` is not an `https://` URL that is exactly an origin: it must name a host and carry no
+/// user information, no path other than `/`, no query and no fragment. This is the single
+/// definition of a valid `public_url`; [`Config::validate_tls`] rejects what it rejects and the
+/// published origin is what it returns, so the two cannot disagree.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::https_origin_of;
+///
+/// assert_eq!(https_origin_of("https://Play.Example/").as_deref(), Some("https://play.example"));
+/// assert_eq!(https_origin_of("https://play.example:30000").as_deref(), Some("https://play.example:30000"));
+/// assert_eq!(https_origin_of("https://play.example:443").as_deref(), Some("https://play.example"));
+/// assert_eq!(https_origin_of("https://u:p@play.example"), None);
+/// assert_eq!(https_origin_of("https://play.example/lobby"), None);
+/// assert_eq!(https_origin_of("https://play.example/?x=1"), None);
+/// assert_eq!(https_origin_of("https://play.example/#f"), None);
+/// assert_eq!(https_origin_of("http://play.example"), None);
+/// ```
+pub fn https_origin_of(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    let exact = url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none();
+    exact.then(|| url.origin().ascii_serialization())
+}
+
 impl Config {
     /// Layer file + env over defaults via figment, then apply CLI overrides in
     /// code so CLI strictly wins (figment cannot easily skip `None` CLI fields).
+    ///
+    /// Fails on anything that cannot be read as configuration at all (malformed TOML, a value of
+    /// the wrong type, an IP-list entry that is not an IP address, the retired
+    /// `behind_tls_proxy` key). It does NOT run [`Config::validate_tls`]: the cross-field TLS
+    /// checks belong to the entry points that actually use TLS settings (serving and
+    /// `--tls-regenerate`), so a database backup or restore is never blocked by an unrelated TLS
+    /// mistake in the same configuration file.
     ///
     /// # Examples
     ///
@@ -300,10 +623,18 @@ impl Config {
             .config
             .clone()
             .unwrap_or_else(|| "shadowcat.toml".into());
-        let mut cfg: Config = Figment::from(Serialized::defaults(Config::default()))
+        let figment = Figment::from(Serialized::defaults(Config::default()))
             .merge(Toml::file(&config_path)) // missing file is ignored
-            .merge(Env::prefixed("SHADOWCAT_"))
-            .extract()?;
+            .merge(Env::prefixed("SHADOWCAT_"));
+        // The retired key is detected in every file/env layer BEFORE extraction: `Config` no
+        // longer names it, so a stale value would otherwise be dropped silently and a proxied
+        // loopback deployment would run as local-only.
+        if figment.contains(RETIRED_BEHIND_TLS_PROXY_KEY) {
+            return Err(Box::new(figment::Error::from(
+                RETIRED_BEHIND_TLS_PROXY_MESSAGE,
+            )));
+        }
+        let mut cfg: Config = figment.extract()?;
 
         if let Some(v) = cli.bind {
             cfg.bind = v;
@@ -338,8 +669,50 @@ impl Config {
         if let Some(v) = cli.backups_dir {
             cfg.backups_dir = Some(v);
         }
-        if let Some(v) = cli.behind_tls_proxy {
-            cfg.behind_tls_proxy = v;
+        if let Some(v) = cli.behind_proxy {
+            cfg.behind_proxy = v;
+        }
+        if let Some(v) = cli.tls {
+            cfg.tls = v;
+        }
+        if let Some(v) = cli.tls_cert {
+            cfg.tls_cert = Some(v);
+        }
+        if let Some(v) = cli.tls_key {
+            cfg.tls_key = Some(v);
+        }
+        if let Some(v) = cli.tls_hostnames {
+            cfg.tls_hostnames = v;
+        }
+        if let Some(v) = cli.tls_advertise_hostname {
+            cfg.tls_advertise_hostname = v;
+        }
+        if let Some(v) = cli.tls_dir {
+            cfg.tls_dir = Some(v);
+        }
+        if let Some(v) = cli.public_url {
+            cfg.public_url = Some(v);
+        }
+        if let Some(v) = cli.acme_domains {
+            cfg.acme_domains = v;
+        }
+        if let Some(v) = cli.acme_ca_root {
+            cfg.acme_ca_root = Some(v);
+        }
+        if let Some(v) = cli.acme_email {
+            cfg.acme_email = Some(v);
+        }
+        if let Some(v) = cli.acme_terms_agreed {
+            cfg.acme_terms_agreed = v;
+        }
+        if let Some(v) = cli.acme_challenge {
+            cfg.acme_challenge = v;
+        }
+        if let Some(v) = cli.acme_directory {
+            cfg.acme_directory = v;
+        }
+        if let Some(v) = cli.hsts_max_age_secs {
+            cfg.hsts_max_age_secs = Some(v);
         }
         Ok(cfg)
     }
@@ -552,47 +925,137 @@ impl Config {
     }
 
     /// True when this deployment is reachable from beyond the local host: a non-loopback
-    /// bind, OR a loopback bind explicitly declared `behind_tls_proxy` (a TLS-terminating
-    /// reverse proxy on the same host forwards internet traffic to it). This is the predicate
-    /// every "is this deployment exposed" security decision reads: `setup_token_policy`'s
-    /// `"auto"` arm and `AppState::resolve_setup_token`'s warning call this rather than
-    /// `is_loopback_bind()` directly, so those cannot drift out of agreement with each other
-    /// on this input. Decisions that only make sense when TLS is in the path (the session
-    /// cookie's `Secure` flag and the HSTS response header) are NARROWER and read
-    /// `is_tls_fronted` instead: a browser drops a `Secure` cookie set over plain HTTP from a
-    /// non-loopback origin (so LAN play could not log in) and ignores HSTS there, so a plain
-    /// non-loopback bind is "exposed" by this predicate but sends neither.
+    /// bind, OR a loopback bind explicitly declared `behind_proxy` (a reverse proxy on the same
+    /// host forwards internet traffic to it). This is the predicate every "is this deployment
+    /// exposed" security decision reads: `setup_token_policy`'s `"auto"` arm and
+    /// `AppState::resolve_setup_token`'s warning call this rather than `is_loopback_bind()`
+    /// directly, so those cannot drift out of agreement with each other on this input. Which
+    /// scheme a request used is a separate, per-request question answered only by
+    /// `http::scheme::request_scheme`.
     ///
     /// # Examples
     ///
     /// ```
     /// let mut cfg = shadowcat::config::Config::default(); // loopback, no proxy
     /// assert!(!cfg.is_exposed());
-    /// cfg.behind_tls_proxy = true;
+    /// cfg.behind_proxy = true;
     /// assert!(cfg.is_exposed());
     /// ```
     pub fn is_exposed(&self) -> bool {
-        !self.is_loopback_bind() || self.behind_tls_proxy
+        !self.is_loopback_bind() || self.behind_proxy
     }
 
-    /// True when the deployment declares a TLS-terminating reverse proxy (`behind_tls_proxy`),
-    /// the only case where clients reach this server over HTTPS. The one predicate for every
-    /// decision that presumes TLS in the path: `auth::session::session_layer` sets the session
-    /// cookie's `Secure` attribute from it, and `http::router` sends `Strict-Transport-Security`
-    /// from it. A plain-HTTP bind (loopback or LAN) is not TLS-fronted, so it sets neither: a
-    /// browser refuses to store a `Secure` cookie from a non-secure, non-loopback origin.
+    /// Resolve the TLS state directory: explicit `tls_dir`, else a sibling `tls/` directory beside
+    /// the db file via `db_sibling_dir`. `None` when neither exists (in-memory or unparseable db
+    /// with no `tls_dir`): key material then lives only in process memory.
     ///
     /// # Examples
     ///
     /// ```
-    /// let mut cfg = shadowcat::config::Config::default();
-    /// cfg.bind = "0.0.0.0:30000".into();
-    /// assert!(cfg.is_exposed() && !cfg.is_tls_fronted());
-    /// cfg.behind_tls_proxy = true;
-    /// assert!(cfg.is_tls_fronted());
+    /// let cfg = shadowcat::config::Config {
+    ///     db: "data/shadowcat.db".into(),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(cfg.tls_path(), Some(std::path::Path::new("data").join("tls")));
+    /// let memory = shadowcat::config::Config { db: "sqlite::memory:".into(), ..Default::default() };
+    /// assert_eq!(memory.tls_path(), None);
     /// ```
-    pub fn is_tls_fronted(&self) -> bool {
-        self.behind_tls_proxy
+    pub fn tls_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(dir) = &self.tls_dir {
+            return Some(std::path::PathBuf::from(dir));
+        }
+        self.db_sibling_dir("tls")
+    }
+
+    /// Rejects configuration that is contradictory or malformed in a way decidable from the
+    /// VALUES alone. Called by every entry point that uses TLS settings (`main`'s serve and
+    /// `--tls-regenerate` paths, `test_server`), never by [`Config::load`]. Boundary rule: no
+    /// file or network I/O happens here, so anything that needs I/O (an unreadable PEM, an
+    /// unreachable ACME directory, an unwritable `tls_dir`) is left to degrade at runtime
+    /// without taking plain HTTP down.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::Config;
+    ///
+    /// assert!(Config::default().validate_tls().is_ok());
+    /// let bad = Config { public_url: Some("http://example.com".into()), ..Default::default() };
+    /// assert!(bad.validate_tls().is_err());
+    /// ```
+    pub fn validate_tls(&self) -> Result<(), TlsConfigError> {
+        let has_pem = self.tls_cert.is_some() || self.tls_key.is_some();
+        let has_acme = !self.acme_domains.is_empty();
+        if has_pem && has_acme {
+            return Err(TlsConfigError::PemAndAcme);
+        }
+        if self.tls == TlsMode::Off {
+            if has_pem {
+                return Err(TlsConfigError::OffWithMaterial("tls_cert/tls_key"));
+            }
+            if has_acme {
+                return Err(TlsConfigError::OffWithMaterial("acme_domains"));
+            }
+        }
+        match (&self.tls_cert, &self.tls_key) {
+            (Some(_), None) => return Err(TlsConfigError::HalfPemPair("tls_key")),
+            (None, Some(_)) => return Err(TlsConfigError::HalfPemPair("tls_cert")),
+            _ => {}
+        }
+        if has_acme {
+            if !self.acme_terms_agreed {
+                return Err(TlsConfigError::AcmeWithoutTerms);
+            }
+            for d in &self.acme_domains {
+                if d.parse::<std::net::IpAddr>().is_ok()
+                    || d.starts_with("*.")
+                    || !is_valid_host_entry(d, false)
+                {
+                    return Err(TlsConfigError::AcmeDomainInvalid(d.clone()));
+                }
+            }
+            if self.tls_path().is_none() {
+                return Err(TlsConfigError::AcmeNeedsTlsDir);
+            }
+        } else if self.acme_ca_root.is_some() {
+            return Err(TlsConfigError::AcmeCaRootWithoutDomains);
+        }
+        for h in &self.tls_hostnames {
+            if !is_valid_host_entry(h, true) {
+                return Err(TlsConfigError::HostnameInvalid(h.clone()));
+            }
+        }
+        if let Some(u) = &self.public_url {
+            if https_origin_of(u).is_none() {
+                return Err(TlsConfigError::PublicUrlInvalid(u.clone()));
+            }
+        }
+        if !is_https_url_with_host(&self.acme_directory) {
+            return Err(TlsConfigError::AcmeDirectoryNotHttps(
+                self.acme_directory.clone(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Operator-facing warnings decidable from configuration alone, logged once at boot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = shadowcat::config::Config { behind_proxy: true, ..Default::default() };
+    /// assert_eq!(cfg.startup_warnings().len(), 1);
+    /// assert!(shadowcat::config::Config::default().startup_warnings().is_empty());
+    /// ```
+    pub fn startup_warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.behind_proxy && self.trusted_proxies.is_empty() {
+            out.push(
+                "behind_proxy is set but trusted_proxies is empty: the request scheme and client address cannot be learned from X-Forwarded-Proto / X-Forwarded-For, so every request is treated as plain HTTP from the proxy's own address. List the proxy's address in trusted_proxies."
+                    .to_string(),
+            );
+        }
+        out
     }
 
     /// Resolve the `setup_token` string into the effective policy: `off` →
@@ -623,30 +1086,29 @@ impl Config {
         }
     }
 
-    /// Whether `ip` is a configured trusted proxy (`trusted_proxies`), matched by exact address.
-    /// An unparseable entry in `trusted_proxies` is skipped (warned), not fatal.
+    /// Whether `ip` is a configured trusted proxy (`trusted_proxies`), matched by exact address
+    /// after both sides are reduced to their canonical form ([`std::net::IpAddr::to_canonical`]),
+    /// so a dual-stack socket's `::ffff:192.0.2.1` peer matches a configured `192.0.2.1` and the
+    /// reverse. Every trust decision (the scheme decider, `ClientIp`, the listener's per-IP cap
+    /// exemption) goes through this one function.
     ///
     /// # Examples
     ///
     /// ```
     /// use std::net::IpAddr;
     /// let cfg = shadowcat::config::Config {
-    ///     trusted_proxies: vec!["127.0.0.1".into()],
+    ///     trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
     ///     ..Default::default()
     /// };
     /// assert!(cfg.is_trusted_proxy("127.0.0.1".parse::<IpAddr>().unwrap()));
+    /// assert!(cfg.is_trusted_proxy("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
     /// assert!(!cfg.is_trusted_proxy("8.8.8.8".parse::<IpAddr>().unwrap()));
     /// ```
     pub fn is_trusted_proxy(&self, ip: std::net::IpAddr) -> bool {
+        let ip = ip.to_canonical();
         self.trusted_proxies
             .iter()
-            .any(|s| match s.parse::<std::net::IpAddr>() {
-                Ok(configured) => configured == ip,
-                Err(_) => {
-                    tracing::warn!(entry = %s, "trusted_proxies: unparseable IP address, skipped");
-                    false
-                }
-            })
+            .any(|configured| configured.to_canonical() == ip)
     }
 }
 

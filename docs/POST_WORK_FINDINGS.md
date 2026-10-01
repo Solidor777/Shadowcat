@@ -1137,3 +1137,70 @@ are observations awaiting triage, not committed work.
   further runs; three mechanisms (no active scene at press, the compound flag not
   armed at release, a hit-target change between the actionability check and the
   press) remain unseparated. Status: Needs Review.
+
+- Title: `axum` was built without its `http2` feature.
+  Summary: Advertising ALPN `h2` on the built-in HTTPS listener would have made every
+  h2-negotiating browser fail, because `axum::serve` was HTTP/1-only in this workspace. The
+  feature is enabled (server, dev and test-support); an h2 extended-CONNECT WebSocket round trip
+  and the browser `nextHopProtocol` test now pin it. Status: Resolved.
+
+- Title: A fresh database path failed to open on first run.
+  Summary: `SqliteRepository::connect` did not create a missing database file, so the very first
+  start of the binary on a new path exited with "unable to open database file"; reproduced on an
+  older release binary. `connect` now creates it; direct pool opens (backup, read-only) stay
+  non-creating. Status: Resolved.
+
+- Title: A harness-revert mutation was green on one listener branch.
+  Summary: Reverting the TLS-off (`TcpListener`) branch of the shared test harness to
+  `SocketAddr` connect info did not fail any test, because the `ClientIp` test only served the
+  sniffing listener. The test now runs the TLS-off, sniffing-plain and sniffing-TLS listeners and
+  the mutation is red. Status: Resolved.
+
+- Title: `lint:secure-context` and the HTTPS secure-context browser test.
+  Summary: The gate bans naming the `Crypto` UUID member outside its owner-signed allow-list. The
+  HTTPS and plain-HTTP browser specs now share one measured member table
+  (`e2e-support/secure-context.ts`): it includes the second-level microphone entry, is measured
+  through one dynamic-key lookup, and the HTTPS spec asserts the same present set on the HTTPS LAN
+  origin and on the secure `http://127.0.0.1` control, non-empty on Chromium and Firefox. The
+  HTTPS spec is listed in the gate's `allowedFiles` for the `randomUUID` rule alone (no other rule
+  or file), so it can assert that the UUID member is a function on the HTTPS origin, the positive
+  counterpart of its absence on plain HTTP. Status: Resolved (owner ruling).
+
+- Title: HTTPS-First interstitial is browser UI, invisible to DevTools.
+  Summary: After Chromium blocks an upgraded navigation with `ERR_BLOCKED_BY_CLIENT`, the tab's
+  document is an empty `chrome-error://chromewebdata/` page (one accessibility node, blank
+  screenshot) in Playwright's Chromium (headless, headed, over CDP) and in a windowed Chrome for
+  Testing, because the prompt is a browser-UI dialog; DevTools DOM, accessibility tree, mouse and
+  keyboard input cannot reach it, and keyboard or coordinate input through DevTools did not reach
+  the plain-HTTP page. A capture of the browser window shows it, and on Windows UI Automation
+  invokes its "Continue to site" button, which reaches the plain-HTTP app (automated in the
+  Chromium upgrade spec). Status: Resolved on Windows; macOS and Linux have drivers
+  (`e2e-support/invoke-button.jxa`, `invoke-button.py`) that only the CI matrix can measure (the
+  TODO entry lists what the first run must show).
+
+- Title: An h2 debug assertion trips under the shutdown IO kill.
+  Summary: At the drain deadline `serve_router` fails the IO of every connection still open, which
+  ends the h2 connection through its own error path. With a WebSocket tunnel whose peer has
+  stopped reading, told to close and then cut at the deadline, the `h2` crate's
+  `debug_assert!(!self.has_streams())` in `impl Drop for Counts` still fires in a debug build
+  (`tests/h2_drain_kill.rs`, `DrainReport { killed: 1, aborted: 0, panicked: 1 }`), exactly as it
+  does when the connection task is aborted. Release builds compile the assertion out. The other
+  stalled cases (live tunnel, zero-window peer, peer that stops reading the socket) end cleanly.
+  Mechanism (read from an `h2=trace` run of the reproducer): the session ends while the tunnel
+  stream has unsent DATA (Welcome and Close, flow-control window 0), so dropping its handles
+  schedules an implicit reset (`Closed(ScheduledLibraryReset)`) that queues behind that DATA and
+  is never written; when the connection then dies, `Counts::transition_after` does not release a
+  stream in that state, so `Counts` drops with a counted stream. Any connection end with such a
+  stream alive trips it (h2 0.4.19 is the newest release). Status: Open; the reproducing test is
+  red and needs an owner decision on the connection-ownership design.
+
+- Title: Stray `*.tmp` files after a cancelled or crashed asset write.
+  Summary: Asset upload staging and replace write to `<id>.<uuid>.tmp` beside the asset; a request
+  cut at shutdown (or a crash) leaves the file, and nothing removes it. The state is otherwise
+  consistent (the replace commits its row before the swap). Read, not executed. Status: Needs Review.
+
+- Title: Route and session could disagree in the shell.
+  Summary: A `hashchange` to another world's route, or Back after leaving a world, left the old
+  session running under a route that no longer named its world, and a world route without an
+  identity showed "Connecting..." forever. One effect in `App.svelte` now owns the session from
+  the route's world id. Reproduced first by `App.session.test.ts`. Status: Resolved.

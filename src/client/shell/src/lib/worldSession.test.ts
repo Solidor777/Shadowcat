@@ -2446,3 +2446,31 @@ test("the share-ruler preference a session exposes is keyed by that session's us
   expect(new WorldSession({ selfId: "alice", connect, modules: [], logger: silentLogger }).shareRuler.enabled).toBe(true);
   localStorage.clear();
 });
+
+test("onWelcome fires for the first welcome and again for each reconnect's welcome", async () => {
+  const onWelcome = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(2),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onWelcome,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(onWelcome).toHaveBeenCalledTimes(2));
+  session.leave();
+});
+
+test("connection failures before the first Welcome are forwarded with their running count", async () => {
+  const counts: number[] = [];
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: () => Promise.reject(new Error("wss refused")),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onConnectFailure: (n) => counts.push(n),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(counts.slice(0, 2)).toEqual([1, 2]), { timeout: 5000 });
+  session.leave();
+});

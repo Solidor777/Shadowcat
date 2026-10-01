@@ -1,6 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { clickScene, dragScenePath, sceneCenter, sceneOrigin } from "./stage-gestures";
+import { measureSecureContextMembers, SECURE_CONTEXT_MEMBERS, ALWAYS_PRESENT } from "../e2e-support/secure-context";
 
 // Plain-HTTP LAN play. This file runs under the `lan-plain-http` Playwright project, which serves
 // the app from a non-loopback hostname mapped to the loopback test server, so the browser itself
@@ -62,41 +63,12 @@ async function assertLanShape(page: Page): Promise<void> {
   expect(shape).toEqual({ isSecureContext: false, getRandomValues: "function" });
 }
 
-/** Members recorded per owner object; every entry is `[SecureContext]` in its Web IDL. */
-const SECURE_CONTEXT_MEMBERS = {
-  crypto: ["subtle"],
-  navigator: ["mediaDevices", "clipboard", "serviceWorker", "storage", "locks", "share", "credentials", "deviceMemory", "gpu"],
-  audioContext: ["audioWorklet"],
-} as const;
-
 test("measured: which browser APIs an insecure origin withholds", async ({ page }) => {
   await page.goto("/");
-  const measured = await page.evaluate((members) => {
-    const context = new AudioContext();
-    try {
-      const owners: Record<string, Record<string, unknown>> = {
-        crypto: crypto as unknown as Record<string, unknown>,
-        navigator: navigator as unknown as Record<string, unknown>,
-        audioContext: context as unknown as Record<string, unknown>,
-      };
-      const w = window as unknown as Record<string, unknown>;
-      const out: Record<string, string> = { isSecureContext: String(window.isSecureContext) };
-      for (const [owner, names] of Object.entries(members)) {
-        for (const name of names) out[`${owner}.${name}`] = typeof owners[owner][name];
-      }
-      out["crypto.getRandomValues"] = typeof crypto.getRandomValues;
-      out["navigator.hardwareConcurrency"] = typeof navigator.hardwareConcurrency;
-      for (const name of ["Notification", "AudioContext", "AudioWorkletNode", "BroadcastChannel", "localStorage", "WebAssembly", "caches", "indexedDB"]) {
-        out[name] = typeof w[name];
-      }
-      return out;
-    } finally {
-      void context.close();
-    }
-  }, SECURE_CONTEXT_MEMBERS);
+  const measured = await measureSecureContextMembers(page);
   test.info().attach("measured-apis", { body: JSON.stringify(measured, null, 2), contentType: "application/json" });
   expect(measured.isSecureContext).toBe("false");
-  expect(measured["crypto.getRandomValues"]).toBe("function");
+  for (const [name, type] of Object.entries(ALWAYS_PRESENT)) expect(measured[name], name).toBe(type);
   for (const [owner, names] of Object.entries(SECURE_CONTEXT_MEMBERS)) {
     for (const name of names) expect(measured[`${owner}.${name}`], `${owner}.${name}`).toBe("undefined");
   }

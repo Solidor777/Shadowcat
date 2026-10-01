@@ -349,3 +349,29 @@ so they wait for a ruling rather than shipping with the uncontested batch.
   limit. (S-M)
 - TODO: Scene-switch asset preload broadcast warming `AssetResolver` ahead of `Activate` —
   measure the stutter before building. (M)
+
+## Owner-authorized deferrals: physical devices and manual browser UI (built-in HTTPS)
+- TODO: Run the built-in HTTPS checks that automation cannot reach, on real hardware, and record
+  the outcome in the hosting guide's browser table: (a) real Safari (iPhone, and macOS): `wss://`
+  after accepting the self-signed certificate exception, the WebSocket-failure hint text, whether a
+  typed `http://<lan-address>` is upgraded, and the loopback `ws://` refusal the Playwright WebKit
+  build shows; (b) real Android Chrome: `wss://` after accepting the certificate exception and the
+  WebSocket-failure hint text; (d) any browser's behaviour for a PUBLIC IP address typed as
+  `http://`. The owner authorized deferring (a), (b) and (d): they need physical devices and a
+  person driving browser UI, which nothing in the repo can simulate.
+
+## Chromium HTTPS-First "continue" on macOS and Linux (not owner-authorized; awaiting CI)
+- TODO: Confirm the macOS and Linux drivers of the Chromium HTTPS-First prompt on the CI runners.
+  The prompt is browser UI, not web content, so only the operating system's accessibility API
+  reaches it (DevTools DOM, the accessibility tree, mouse and keyboard input and clicks at the
+  button's measured position all failed to reach it). `e2e-support/browser-ui.ts` dispatches to
+  Windows UI Automation (run against a real browser), macOS System Events through JavaScript for
+  Automation (`invoke-button.jxa`) and Linux AT-SPI through PyGObject (`invoke-button.py`); the
+  `ui-e2e-https` job runs the interactive test on all three systems (Linux under a virtual display,
+  a session bus and the accessibility bus). Neither non-Windows driver could be run from the
+  Windows development machine. The first CI run must show, per platform: the test
+  "HTTPS-First's 'Continue to site' reaches the plain-HTTP app" passes (the button is found by the
+  pinned English name, invoked, and the plain-HTTP login form appears). If a driver fails, the
+  failure text names the step (no accessibility access on macOS, no AT-SPI application for the
+  browser's process id on Linux, button name not found) and the driver is fixed from it; only a
+  platform that cannot be driven after that may be proposed to the owner as a conditional deferral.

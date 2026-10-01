@@ -120,7 +120,7 @@ impl Default for AuthThrottle {
 }
 
 /// Infallible client-IP extractor: `Some` when the server is served with connect-info (production,
-/// via `into_make_service_with_connect_info`), `None` under the axum-test mock transport — IP
+/// via `http::into_service`, which supplies `ConnectInfo<ConnMeta>`), `None` under the axum-test mock transport — IP
 /// throttling degrades to identity-only there, never a 500. Behind a configured trusted reverse
 /// proxy (`Config::trusted_proxies`), resolves through `X-Forwarded-For` instead of the raw TCP
 /// peer — see `resolve_client_ip`'s doc for the exact trust-walk algorithm. Default configuration
@@ -145,8 +145,8 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
     ) -> Result<Self, Self::Rejection> {
         let peer = parts
             .extensions
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|ci| ci.0.ip());
+            .get::<axum::extract::ConnectInfo<crate::tls::ConnMeta>>()
+            .map(|ci| ci.0.peer.ip());
         let Some(peer) = peer else {
             return Ok(ClientIp(None));
         };
@@ -170,6 +170,7 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
 /// right-to-left (nearest hop first) against `config.is_trusted_proxy`: each trusted-proxy entry
 /// is a hop to skip past; the first non-trusted or unparseable entry is the client. Falls back to
 /// `peer` if the header is absent/empty, or every entry turns out to be a trusted-proxy address.
+/// The result is always in canonical form (`IpAddr::to_canonical`).
 ///
 /// # Examples
 ///
@@ -177,7 +178,7 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
 /// use shadowcat::config::Config;
 /// use shadowcat::http::throttle::resolve_client_ip;
 ///
-/// let cfg = Config { trusted_proxies: vec!["10.0.0.1".into()], ..Default::default() };
+/// let cfg = Config { trusted_proxies: vec!["10.0.0.1".parse().unwrap()], ..Default::default() };
 /// let peer = "10.0.0.1".parse().unwrap();
 /// let real = resolve_client_ip(peer, Some("203.0.113.9"), &cfg);
 /// assert_eq!(real, "203.0.113.9".parse::<std::net::IpAddr>().unwrap());
@@ -187,6 +188,9 @@ pub fn resolve_client_ip(
     forwarded: Option<&str>,
     config: &crate::config::Config,
 ) -> std::net::IpAddr {
+    // Both the peer and a forwarded entry come back canonical (an IPv4-mapped IPv6 address becomes
+    // its IPv4 form), so per-client throttle keys never split one host across two spellings.
+    let peer = peer.to_canonical();
     let Some(header) = forwarded else { return peer };
     let entries: Vec<&str> = header
         .split(',')
@@ -196,7 +200,7 @@ pub fn resolve_client_ip(
     for entry in entries.iter().rev() {
         match entry.parse::<std::net::IpAddr>() {
             Ok(ip) if config.is_trusted_proxy(ip) => continue, // another trusted hop; keep walking left
-            Ok(ip) => return ip,   // first non-trusted entry: the real client
+            Ok(ip) => return ip.to_canonical(), // first non-trusted entry: the real client
             Err(_) => return peer, // malformed entry: fail safe to the verified TCP peer
         }
     }

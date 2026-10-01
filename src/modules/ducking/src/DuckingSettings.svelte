@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { httpsTargets } from "@shadowcat/core";
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { DuckSourcesController } from "./controller";
   import type { MicVadDenialReason } from "./micVad";
@@ -17,7 +18,32 @@
     controller: DuckSourcesController;
   } = $props();
 
-  const { t, audio } = getAppContext();
+  const appContext = getAppContext();
+  const { t, audio } = appContext;
+
+  /**
+   * The message for a microphone denial. An `unavailable` microphone on a page that is not a
+   * secure context has one remedy when the server also answers HTTPS: the address that does.
+   * Without TLS on the server the only remedy is loopback, which the generic message names.
+   * @param reason The denial `MicVadSource.enable` returned.
+   * @returns The player-facing text.
+   * @example
+   * ```
+   * // module-private; not part of the public API — rendered under the mic toggle
+   * const text = denialText("unavailable");
+   * ```
+   */
+  function denialText(reason: MicVadDenialReason): string {
+    // `tls` is read at use time: it is reactive context state, not a value fixed at mount. The
+    // https address is offered only from a plain-http page (from an https page the microphone is
+    // already available, so the denial has another cause) and only when there is one to offer.
+    const tls = appContext.tls;
+    if (reason === "unavailable" && tls?.enabled && window.location.protocol === "http:") {
+      const url = httpsTargets(tls, window.location)[0];
+      if (url !== undefined) return t("ducking.micSource.denied.unavailableHttpsAvailable", { url });
+    }
+    return t(`ducking.micSource.denied.${reason}`);
+  }
 
   let depth = $state(audio.duck.depth);
 
@@ -172,7 +198,7 @@
       />
     </label>
     <p class="denial" role="alert" aria-live="assertive">
-      {#if micDenial}{t(`ducking.micSource.denied.${micDenial}`)}{/if}
+      {#if micDenial}{denialText(micDenial)}{/if}
     </p>
   </fieldset>
 
@@ -215,6 +241,9 @@
       />
     </label>
     <p aria-live="polite">{t(`ducking.osSource.status.${osStatus}`)}</p>
+    {#if osStatus !== "connected" && osStatus !== "unsupported" && window.location.protocol === "https:"}
+      <p class="hint">{t("ducking.osSource.httpsHint")}</p>
+    {/if}
     <p class="command-line">{t("ducking.osSource.commandLine")}: <code>{commandLine}</code></p>
   </fieldset>
 
@@ -242,6 +271,10 @@
   }
   .denial {
     color: var(--danger);
+  }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.875rem;
   }
   .command-line code {
     user-select: all;

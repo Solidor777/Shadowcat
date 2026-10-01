@@ -20,6 +20,8 @@ mod reset_explored_fog;
 /// Shared-ruler ingress bounds and unclipped delivery.
 mod ruler;
 mod senses;
+/// `egress_loop`'s Close send is bounded when the peer has stopped reading.
+mod shutdown_bound;
 
 /// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
 /// push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.

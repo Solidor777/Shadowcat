@@ -27,6 +27,8 @@ pub mod data;
 /// SQLite pool bootstrap (deliberately single-connection).
 pub mod db;
 pub mod dice;
+/// Open-descriptor budget: raising `RLIMIT_NOFILE` and fitting the connection caps to it.
+pub mod fd_budget;
 /// The engine's formula language (server twin of `@shadowcat/formula`).
 pub mod formula;
 /// Liveness probe endpoint plumbing.
@@ -44,6 +46,7 @@ pub mod scene;
 /// Server-side rollable-table draws (`ClientMsg::DrawTable` -> a posted
 /// `Segment::TableDraw` chat message).
 pub mod tables;
+pub mod tls;
 /// Per-world export/import: builds/reads the `.tar` bundle format (see
 /// `data::world_bundle` for the row/manifest types, `http::world_bundle` for
 /// the HTTP routes).

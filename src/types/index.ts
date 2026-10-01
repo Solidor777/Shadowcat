@@ -62,6 +62,9 @@ export type { MergeErrorKind } from "./generated/MergeErrorKind";
 
 // HTTP API DTOs
 export type { ServerConfig } from "./generated/ServerConfig";
+export type { TlsStatus } from "./generated/TlsStatus";
+export type { TlsSource } from "./generated/TlsSource";
+export type { TlsAdminStatus } from "./generated/TlsAdminStatus";
 export type { WorldEntry } from "./generated/WorldEntry";
 
 // Module toolchain

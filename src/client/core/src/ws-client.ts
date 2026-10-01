@@ -495,6 +495,13 @@ export interface WsClientHandlers {
   /** An out-of-band relayed VFX one-shot (carries no seq).
    * @param msg The effect's scene, position, asset, and sending user. */
   onVfx?(msg: VfxNotice): void;
+  /** A connection attempt failed (connect rejected, socket closed, or no `welcome` before the
+   * watchdog) before this client has EVER been welcomed. `consecutive` counts the failures since
+   * `start()` and is monotonically increasing; it never fires once a `welcome` has been received,
+   * so a mid-session drop is not reported here. The seam for a first-connect diagnostic hint
+   * (for example a self-signed certificate a browser refuses for `wss:`).
+   * @param consecutive Failed attempts so far, starting at 1. */
+  onConnectFailure?(consecutive: number): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -570,6 +577,9 @@ export class WsClient {
   /** Count of reconnect attempts since the last successful Welcome; resets only on Welcome,
    * never on socket `open`. */
   private reconnectAttempt = 0;
+  /** True once any `welcome` has been received by this instance; gates `onConnectFailure`, which
+   * reports only failures BEFORE the first welcome. */
+  #hasEverWelcomed = false;
   /** Next seq to apply; the client-side ordering watermark. Persists across
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
@@ -1109,7 +1119,10 @@ export class WsClient {
    * increments on every call and resets ONLY on a successful Welcome (`handleFrame`'s
    * `"welcome"` case), not on socket `open` — so a server that accepts the socket but never
    * welcomes keeps backing off across watchdog-close/reconnect cycles instead of retrying at
-   * the base delay forever. Not exported.
+   * the base delay forever. While this client has never been welcomed, each call also reports the
+   * failure run to `WsClientHandlers.onConnectFailure` (with the running count, starting at 1)
+   * before sleeping; after the first `welcome` it never does, so a mid-session drop is silent.
+   * Not exported.
    * @example
    * ```
    * // called from open()'s catch and from handleClose(); not part of the public API
@@ -1118,6 +1131,9 @@ export class WsClient {
    */
   private scheduleReconnect(): void {
     const attempt = this.reconnectAttempt++;
+    if (!this.#hasEverWelcomed) {
+      this.safeEmit(() => this.opts.handlers.onConnectFailure?.(attempt + 1));
+    }
     const ceiling = Math.min(
       this.backoffMaxMs,
       this.backoffBaseMs * 2 ** attempt,
@@ -1161,6 +1177,7 @@ export class WsClient {
         // reset here so an accepted-but-degraded server (open, never welcomes)
         // keeps backing off instead of retrying at the base delay forever.
         this.reconnectAttempt = 0;
+        this.#hasEverWelcomed = true;
         this.serverOffsetMs = msg.server_time - this.now();
         this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
         // Catch up anything applied-after our watermark (initial sync or a

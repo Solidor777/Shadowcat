@@ -107,7 +107,16 @@ conjunction with current state. This milestone generalizes that into a queryable
 lands it must become the single producer feeding the existing redaction-context interface — a
 second, independently-derived source for the same decision is the fork-a-decision class this
 codebase produces most.**
-→ Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution) → compendium/pack serving (`Scope::Compendium` is stored and indexed since M2 but every route 404s it; scope and priority await the owner ruling logged in `TODO.md`).
+→ Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, Steam OpenID + plain-executable distribution) → compendium/pack serving (`Scope::Compendium` is stored and indexed since M2 but every route 404s it; scope and priority await the owner ruling logged in `TODO.md`).
+## Built-in HTTPS — ACME issuance (unbuilt remainder)
+The listener, certificate sources (operator PEM, self-signed), degradation ladder, scheme decider,
+per-scheme cookies, HSTS and client changes are built (see [`design/built-in-https.md`](design/built-in-https.md)).
+Remaining: automatic certificates through `instant-acme` — `tls-alpn-01` (resolver challenge slot
+and `acme-tls/1` selection already exist) and `http-01` (unauthenticated `/.well-known/acme-challenge/{token}`
+route), account persistence under the `tls` directory, renewal and backoff, private-CA support through
+`acme_ca_root`, and a `reqwest`-backed ACME `HttpClient`. The `acme_*` keys are already parsed and
+validated; until issuance lands a configured `acme_domains` degrades to the self-signed certificate.
+
 ## Documentation campaign (cross-phase, runs alongside feature work)
 
 Infrastructure, guides, and Sweeps 1–14 are complete (record in [`HISTORY.md`](HISTORY.md)).

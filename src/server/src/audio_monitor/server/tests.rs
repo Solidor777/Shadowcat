@@ -293,3 +293,51 @@ async fn a_watch_frame_replaces_the_live_list_without_a_restart() {
 
     server.abort();
 }
+
+/// With no `--allow-origin`, every origin in `DEFAULT_ALLOWED_ORIGINS` (both schemes, both
+/// loopback spellings) completes the upgrade and an unlisted one does not.
+#[tokio::test]
+async fn the_default_allowlist_admits_all_four_default_origins() {
+    let port = free_port().await;
+    let args = AudioMonitorArgs {
+        port,
+        allow_origin: vec![],
+        watch: vec![],
+    };
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(FakeMonitor::new(vec![Ok(vec![])]))),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for origin in super::DEFAULT_ALLOWED_ORIGINS {
+        let mut req = format!("ws://127.0.0.1:{port}/levels")
+            .into_client_request()
+            .unwrap();
+        req.headers_mut().insert("Origin", origin.parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .unwrap_or_else(|e| panic!("{origin} refused: {e}"));
+        let hello = ws.next().await.unwrap().unwrap();
+        let hello: serde_json::Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+        assert_eq!(hello["type"], "hello", "{origin}");
+    }
+    let mut req = format!("ws://127.0.0.1:{port}/levels")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Origin", "https://evil.example".parse().unwrap());
+    let refused = tokio_tungstenite::connect_async(req).await;
+    let first = match refused {
+        Err(_) => None,
+        Ok((mut ws, _)) => ws.next().await,
+    };
+    assert!(
+        !matches!(&first, Some(Ok(m)) if m.to_text().is_ok_and(|t| t.contains("hello"))),
+        "an unlisted origin must never receive a hello frame"
+    );
+    server.abort();
+}

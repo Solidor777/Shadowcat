@@ -115,6 +115,7 @@ impl std::io::Write for ChannelWriter {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
 /// let response = export_world(State(state), admin, Path(world.id)).await.unwrap();
@@ -365,6 +366,7 @@ async fn stream_bundle_upload(
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// # };
 /// let admin_id = uuid::Uuid::new_v4();
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });

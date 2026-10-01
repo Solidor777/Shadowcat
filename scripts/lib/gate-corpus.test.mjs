@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
@@ -84,6 +84,15 @@ test.skipIf(!existsSync(SKILLS_ROOT))(
     expect(sources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
   },
 );
+
+test("sources() skips git-ignored generated output directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "gate-corpus-skip-"));
+  for (const dir of ["kept", "test-results", "node_modules"]) {
+    mkdirSync(join(root, dir));
+    writeFileSync(join(root, dir, "a.js"), "");
+  }
+  expect(sources(root, [".js"]).map(norm).map((p) => p.slice(norm(root).length + 1))).toEqual(["kept/a.js"]);
+});
 
 // Regression: git exports GIT_INDEX_FILE into every process it spawns a hook or script from (e.g.
 // mid `git commit -- <paths>`), and `-C skillsRoot` does not override it — an unrelated repository

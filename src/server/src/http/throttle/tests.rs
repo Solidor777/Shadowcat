@@ -31,7 +31,7 @@ fn at_capacity_new_keys_fail_closed_until_expired_keys_are_swept() {
 #[test]
 fn resolve_client_ip_trusted_peer_no_header_returns_peer() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
@@ -39,9 +39,37 @@ fn resolve_client_ip_trusted_peer_no_header_returns_peer() {
 }
 
 #[test]
+fn resolve_client_ip_returns_canonical_addresses() {
+    let cfg = crate::config::Config {
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
+        ..Default::default()
+    };
+    let v4: std::net::IpAddr = "198.51.100.7".parse().unwrap();
+    let mapped_peer: std::net::IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+    assert_eq!(
+        resolve_client_ip(mapped_peer, Some("::ffff:198.51.100.7"), &cfg),
+        v4,
+        "a mapped forwarded entry is the IPv4 client"
+    );
+    assert_eq!(
+        resolve_client_ip(
+            "::ffff:198.51.100.7".parse().unwrap(),
+            Some("not-an-ip"),
+            &cfg
+        ),
+        v4,
+        "the fallback to the peer is canonical too"
+    );
+    assert_eq!(
+        resolve_client_ip("::ffff:198.51.100.7".parse().unwrap(), None, &cfg),
+        v4
+    );
+}
+
+#[test]
 fn resolve_client_ip_single_hop_header_returns_the_client() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
@@ -54,7 +82,7 @@ fn resolve_client_ip_single_hop_header_returns_the_client() {
 #[test]
 fn resolve_client_ip_walks_past_trusted_hops_to_the_untrusted_entry() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
@@ -74,7 +102,7 @@ fn resolve_client_ip_walks_past_trusted_hops_to_the_untrusted_entry() {
 #[test]
 fn resolve_client_ip_falls_back_to_peer_when_every_hop_is_trusted() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into(), "10.0.0.2".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
@@ -88,7 +116,7 @@ fn resolve_client_ip_falls_back_to_peer_when_every_hop_is_trusted() {
 #[test]
 fn resolve_client_ip_malformed_entry_falls_back_to_peer() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
@@ -98,7 +126,7 @@ fn resolve_client_ip_malformed_entry_falls_back_to_peer() {
 #[test]
 fn resolve_client_ip_empty_or_whitespace_header_falls_back_to_peer() {
     let cfg = crate::config::Config {
-        trusted_proxies: vec!["10.0.0.1".into()],
+        trusted_proxies: vec!["10.0.0.1".parse().unwrap()],
         ..Default::default()
     };
     let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();

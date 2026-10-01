@@ -22,6 +22,10 @@ export const SKIP_DIRS = new Set([
   "target",
   ".git",
   "dist-docs",
+  // Playwright's per-run output. It is git-ignored generated output, and the HTTPS specs launch a
+  // full browser profile inside it (vendor extensions and minified bundles included), so a walk that
+  // reaches it reports a tree nobody wrote.
+  "test-results",
 ]);
 
 // ts-rs output, never hand-written — the owner ruled this whole population out of scope. Excluded

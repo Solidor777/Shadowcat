@@ -140,6 +140,13 @@ export interface WorldSessionOpts {
    * player-presentable reason (fire-and-forget frame — there is no correlated reply to
    * reject instead). The shell surfaces it as a toast. */
   onAudioError?: (reason: string) => void;
+  /** Called on each connection failure before the session's first `welcome` (see
+   * `WsClientHandlers.onConnectFailure`), with the running count. The shell turns a run of them
+   * into a first-connect hint; a headless caller may leave it unset. */
+  onConnectFailure?: (consecutive: number) => void;
+  /** Called on every `welcome` this session receives: the first connect and each reconnect. The
+   * shell uses it to re-read the server's TLS status when an earlier read failed. */
+  onWelcome?: () => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -1511,6 +1518,7 @@ export class WorldSession {
           this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
+          this.opts.onWelcome?.();
           void this.#onWelcome(w);
         },
         // After resync, authoritative state is current and the optimistic view has
@@ -1557,6 +1565,7 @@ export class WorldSession {
           for (const cb of this.#rulerListeners) cb(msg);
         },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
+        onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {
           // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a vfx
           // one-shot broadcasts room-wide and must render only for recipients currently

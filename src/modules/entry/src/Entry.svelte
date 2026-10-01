@@ -1,5 +1,7 @@
 <script lang="ts">
   import { getConfig, getMe } from "./entryApi";
+  import type { TlsStatus } from "@shadowcat/types";
+  import HttpsNotice from "./views/HttpsNotice.svelte";
   import Setup from "./views/Setup.svelte";
   import Login from "./views/Login.svelte";
   import WorldSelect from "./views/WorldSelect.svelte";
@@ -20,6 +22,8 @@
    * shell's hash route (see the module-level comment above `onAuthenticated`/`onEnterWorld`). */
   type Step = "loading" | "setup" | "login" | "worlds";
   let step = $state<Step>("loading");
+  /** The server's published TLS status; `null` until `getConfig` resolves (or when it fails). */
+  let tls = $state<TlsStatus | null>(null);
 
   /**
    * Decide which entry step to render on load: `setup` when the server has
@@ -36,6 +40,7 @@
   async function decideStart() {
     try {
       const cfg = await getConfig();
+      tls = cfg.tls;
       if (!cfg.initialized) {
         step = "setup";
         return;
@@ -68,8 +73,10 @@
 
 {#if step === "setup"}
   <Setup onDone={() => (step = "login")} />
+  {#if tls}<HttpsNotice {tls} />{/if}
 {:else if step === "login"}
   <Login onAuthed={afterLogin} />
+  {#if tls}<HttpsNotice {tls} />{/if}
 {:else if step === "worlds"}
   <WorldSelect onEnter={onEnterWorld} />
 {:else}

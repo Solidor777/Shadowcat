@@ -17,6 +17,7 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
+use axum::Extension;
 use futures_util::stream::StreamExt;
 use futures_util::{Sink, SinkExt};
 use serde::Deserialize;
@@ -32,6 +33,7 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
+use crate::ws::bounded_sink::{BoundedSink, CLOSE_SEND_TIMEOUT, SEND_STALL_TIMEOUT};
 use crate::ws::protocol::{ClientMsg, PathErrorReason, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::ruler::{canonical, origin_admissible, points_admissible, RULER_RATE_PER_MIN};
@@ -220,8 +222,10 @@ fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
-/// // `router` wires this handler at `GET /ws` (see `http::router`'s own example).
+/// // `router` wires this handler at `GET /ws` (HTTP/1.1 upgrade) and `CONNECT /ws` (RFC 8441,
+/// // WebSockets over HTTP/2); see `http::router`'s own example.
 /// // A real socket is required: `WebSocketUpgrade` extraction needs hyper's
 /// // actual upgrade machinery, absent from the in-process mock transport.
 /// let server = axum_test::TestServer::builder()
@@ -247,20 +251,28 @@ pub async fn ws_handler(
     user: AuthUser,
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
+    lease: Option<Extension<crate::http::conn_serve::ConnLease>>,
 ) -> Response {
+    // The connection's lease (absent when the router is not served through
+    // `http::conn_serve::serve_router`) moves into the session task: hyper runs an HTTP/2
+    // WebSocket as a detached upgrade, so this lease is the only thing that keeps the
+    // connection counted as busy (HTTP/2 idle bound) and its cap slot held while the session
+    // lives.
+    let lease = lease.map(|Extension(l)| l);
     // Acquired HERE, synchronously, still within the HTTP request cycle hyper's own
     // graceful-shutdown accounting tracks — never inside the task `on_upgrade` spawns. That
     // task starts running strictly AFTER the 101 response is written, so if the guard were
-    // taken there instead, `WsState::live_connection_count` could read zero, `axum::serve`
-    // could resolve, and `wait_for_drain` could return, all before the spawned task has run
-    // its first line — the exact drain-accounting gap this ordering closes. Moved into the
-    // upgrade closure so `handle_socket` holds it for the connection's whole lifetime;
-    // `handle_socket` must never acquire a second one.
+    // taken there instead, `WsState::live_connection_count` could read zero and
+    // `WsState::wait_for_drain` could return before the spawned task has run its first line —
+    // the exact drain-accounting gap this ordering closes. Moved into the upgrade closure so
+    // `handle_socket` holds it for the connection's whole lifetime; `handle_socket` must never
+    // acquire a second one.
     let connection_guard = state.ws.connection_guard();
     ws.max_message_size(WS_MAX_MESSAGE_BYTES)
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
-            handle_socket(socket, state, user.id, user.role, q.world, connection_guard)
+        .on_upgrade(move |socket| async move {
+            let _lease = lease;
+            handle_socket(socket, state, user.id, user.role, q.world, connection_guard).await
         })
 }
 
@@ -319,6 +331,30 @@ where
         intent_id: None,
     };
     sink.send(text(&out)).await.map_err(|_| ())
+}
+
+/// Sends a Close frame, giving up after `CLOSE_SEND_TIMEOUT`. The result is ignored by every
+/// caller: the session is ending either way.
+async fn send_close<S>(sink: &mut S)
+where
+    S: Sink<Message> + Unpin,
+{
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, sink.send(Message::Close(None))).await;
+}
+
+/// Sends one error frame and then a Close frame. Every send is bounded by the sink
+/// (`BoundedSink`), so a peer that is not reading cannot hold the session task here.
+async fn reject_join<S>(sink: &mut S, code: WsErrorCode, message: &str)
+where
+    S: Sink<Message> + Unpin,
+{
+    let _ = sink
+        .send(text(&ServerMsg::Error {
+            code,
+            message: message.into(),
+        }))
+        .await;
+    send_close(sink).await;
 }
 
 /// Send a non-`Event` broadcast frame unchanged. `MoveStream` must never reach here — it
@@ -381,27 +417,17 @@ async fn handle_socket(
     // `ws_handler`'s own doc for why acquiring it in here instead would leave a window where
     // `wait_for_drain` can return before this task has run its first line.
     let repo = state.repo.clone();
+    let shutdown = state.ws.shutdown.clone();
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::WorldNotFound,
-                    message: "world not found".into(),
-                }))
-                .await;
-            let _ = s.send(Message::Close(None)).await;
+            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            reject_join(&mut s, WsErrorCode::WorldNotFound, "world not found").await;
             return;
         }
         Err(_) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::Internal,
-                    message: "internal".into(),
-                }))
-                .await;
+            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            reject_join(&mut s, WsErrorCode::Internal, "internal").await;
             return;
         }
     };
@@ -412,14 +438,8 @@ async fn handle_socket(
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
         Err(_) => {
-            let mut s = socket;
-            let _ = s
-                .send(text(&ServerMsg::Error {
-                    code: WsErrorCode::Forbidden,
-                    message: "not a member of this world".into(),
-                }))
-                .await;
-            let _ = s.send(Message::Close(None)).await;
+            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            reject_join(&mut s, WsErrorCode::Forbidden, "not a member of this world").await;
             tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
             return;
         }
@@ -444,7 +464,6 @@ async fn handle_socket(
     let egress_repo = repo.clone();
     let modules_dir = state.config.modules_path();
     let module_scan_cache = state.ws.module_scan_cache.clone();
-    let shutdown = state.ws.shutdown.clone();
     // Seeded at connect time, not the epoch: a freshly-opened connection must not read as
     // already-silent before its first inbound frame has had a chance to arrive. `std::time::
     // Instant`, never `SystemTime`/`now_millis` — a wall-clock step (an NTP correction, a
@@ -454,7 +473,7 @@ async fn handle_socket(
     let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let egress_last_activity = last_activity.clone();
     let mut egress = tokio::spawn(egress_loop(
-        sink,
+        BoundedSink::new(sink, shutdown.clone(), SEND_STALL_TIMEOUT),
         rx,
         erx,
         EgressConnState {
@@ -2345,7 +2364,7 @@ async fn egress_loop<S>(
             res = shutdown.changed() => {
                 let should_close = res.is_err() || *shutdown.borrow_and_update();
                 if should_close {
-                    let _ = sink.send(Message::Close(None)).await;
+                    let _ = send_close(&mut sink).await;
                     break;
                 }
             }
@@ -2366,7 +2385,7 @@ async fn egress_loop<S>(
                 // stale liveness stamp is not an invariant worth ending this task over.
                 let idle = last_activity.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
                 if idle >= PING_TIMEOUT {
-                    let _ = sink.send(Message::Close(None)).await;
+                    let _ = send_close(&mut sink).await;
                     break;
                 }
                 if sink.send(text(&ServerMsg::Ping)).await.is_err() {
@@ -2649,7 +2668,7 @@ async fn egress_loop<S>(
                                 // down when this egress task exits.
                                 if user.is_none() || *user == Some(ctx.user_id) {
                                     let _ = sink.send(text(inner.as_ref())).await;
-                                    let _ = sink.send(Message::Close(None)).await;
+                                    let _ = send_close(&mut sink).await;
                                     true
                                 } else {
                                     false

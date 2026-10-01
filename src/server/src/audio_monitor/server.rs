@@ -104,6 +104,25 @@ enum IncomingFrame {
     },
 }
 
+/// The `Origin` values admitted when no `--allow-origin` is given: the default page origin of the
+/// main server (port 30000) over both schemes and both loopback spellings. One list, so the
+/// plain-HTTP and built-in-HTTPS origins cannot drift apart.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio_monitor::server::DEFAULT_ALLOWED_ORIGINS;
+///
+/// assert!(DEFAULT_ALLOWED_ORIGINS.contains(&"https://localhost:30000"));
+/// assert_eq!(DEFAULT_ALLOWED_ORIGINS.len(), 4);
+/// ```
+pub const DEFAULT_ALLOWED_ORIGINS: [&str; 4] = [
+    "http://localhost:30000",
+    "http://127.0.0.1:30000",
+    "https://localhost:30000",
+    "https://127.0.0.1:30000",
+];
+
 /// Shared server state: the origin allowlist, the live watch list (mutated by `watch`
 /// frames), and the most recent poll result the background polling thread published.
 struct SharedState {
@@ -167,8 +186,7 @@ pub(super) async fn run_with_monitor(
     };
     let mut allow_origin = args.allow_origin;
     if allow_origin.is_empty() {
-        allow_origin.push("http://localhost:30000".to_string());
-        allow_origin.push("http://127.0.0.1:30000".to_string());
+        allow_origin.extend(DEFAULT_ALLOWED_ORIGINS.iter().map(|o| o.to_string()));
     }
 
     let latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>> =

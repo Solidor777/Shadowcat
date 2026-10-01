@@ -162,6 +162,7 @@ impl SheetFixture {
             auth_throttle: std::sync::Arc::new(crate::http::throttle::AuthThrottle::new()),
             write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
             preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+            tls: crate::tls::TlsRuntime::disabled(),
         };
         SheetFixture {
             _dir: dir,

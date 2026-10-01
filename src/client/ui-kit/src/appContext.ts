@@ -1,6 +1,6 @@
 import { getContext, setContext } from "svelte";
 import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice } from "@shadowcat/core";
-import type { WorldRole } from "@shadowcat/types";
+import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -133,6 +133,13 @@ export interface AppContext {
    * confers it. Advisory: it decides whether an admin-only control is
    * rendered; the server re-checks every request. */
   serverRole: "admin" | "user";
+  /** The server's published TLS status (`GET /api/config`), or `null` while it is unread or when
+   * reading it failed. Reactive: the shell retries a failed read with backoff and again on every
+   * WebSocket welcome (first connect and reconnects) while it is still `null`, so read it at use
+   * time rather than caching it.
+   * Advisory: it decides which explanatory message a secure-context-only feature shows
+   * (`https-access` in `@shadowcat/core` derives the addresses); it grants nothing. */
+  tls: TlsStatus | null;
   /** The current user's id (ownership checks). */
   selfId: string;
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding

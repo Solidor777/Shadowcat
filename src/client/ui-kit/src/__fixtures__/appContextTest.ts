@@ -71,6 +71,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     // Defaults to a plain user: a world GM is not a server admin, so
     // admin-only surfaces stay hidden unless a test opts in explicitly.
     serverRole: over.serverRole ?? "user",
+    tls: over.tls ?? null,
     selfId: over.selfId ?? "u-self",
     canEdit: over.canEdit ?? (() => true),
     canCreate: over.canCreate ?? (() => (over.role ?? "gm") === "gm"),

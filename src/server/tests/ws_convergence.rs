@@ -60,6 +60,7 @@ async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        tls: shadowcat::tls::TlsRuntime::disabled(),
     };
     let app = http::router(state).await;
 

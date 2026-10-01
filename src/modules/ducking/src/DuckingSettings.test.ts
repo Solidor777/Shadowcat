@@ -145,12 +145,77 @@ describe("DuckingSettings", () => {
     controller.dispose();
   });
 
+  it("an unavailable microphone on a server that answers HTTPS names the https address", async () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    controller.micToggle = vi.fn().mockResolvedValue("unavailable");
+    const tls = {
+      enabled: true,
+      source: "self-signed" as const,
+      https_origins: [window.location.origin.replace("http:", "https:")],
+      alpn: ["h2", "http/1.1"],
+    };
+    const context = setAppContextForTest({
+      audio: audioFixture(),
+      tls,
+      t: (key, params) => (params ? `${key} ${JSON.stringify(params)}` : key),
+    });
+    render(DuckingSettings, { props: { controller }, context });
+    await fireEvent.click(screen.getByLabelText("ducking.micSource.enable"));
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          `ducking.micSource.denied.unavailableHttpsAvailable ${JSON.stringify({ url: tls.https_origins[0] + "/" })}`,
+        ),
+      ).toBeTruthy();
+    });
+    controller.dispose();
+  });
+
+  it("on an https page an unavailable microphone keeps the generic message, never an https address", async () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    controller.micToggle = vi.fn().mockResolvedValue("unavailable");
+    const tls = {
+      enabled: true,
+      source: "self-signed" as const,
+      https_origins: ["https://play.example"],
+      alpn: ["h2", "http/1.1"],
+    };
+    const context = setAppContextForTest({ audio: audioFixture(), tls });
+    vi.stubGlobal("location", { ...window.location, protocol: "https:" });
+    try {
+      render(DuckingSettings, { props: { controller }, context });
+      await fireEvent.click(screen.getByLabelText("ducking.micSource.enable"));
+      await waitFor(() => {
+        expect(screen.getByText("ducking.micSource.denied.unavailable")).toBeTruthy();
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      controller.dispose();
+    }
+  });
+
   it("reflects the OS monitor's live status", async () => {
     const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
     expect(screen.getByText("ducking.osSource.status.connecting")).toBeTruthy();
     controller.dispose();
+  });
+
+  it("shows the loopback-ws hint on an https page while the OS monitor is not connected, never on http", async () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const context = setAppContextForTest({ audio: audioFixture() });
+    const first = render(DuckingSettings, { props: { controller }, context });
+    expect(screen.queryByText("ducking.osSource.httpsHint")).toBeNull();
+    first.unmount();
+    vi.stubGlobal("location", { ...window.location, protocol: "https:" });
+    try {
+      render(DuckingSettings, { props: { controller }, context });
+      expect(screen.getByText("ducking.osSource.httpsHint")).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+      controller.dispose();
+    }
   });
 
   it("the depth slider forwards its value to audio.duck.setDepth and never touches the mirror", async () => {

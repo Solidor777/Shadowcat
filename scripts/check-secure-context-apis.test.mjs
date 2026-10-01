@@ -1,5 +1,8 @@
 import { test, expect } from "vitest";
-import { scanSecureContext, scanSecureContextDetailed, isCovered, assertGateLive, runGate, allowedFileSet, svelteRegions, SEAM_FILE, MIC_SEAM_FILE, RULES } from "./check-secure-context-apis.mjs";
+import { existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { scanSecureContext, scanSecureContextDetailed, isCovered, assertGateLive, runGate, allowedFileSet, svelteRegions, SEAM_FILE, HTTPS_SPEC_FILE, MIC_SEAM_FILE, RULES } from "./check-secure-context-apis.mjs";
 
 test("a raw crypto.randomUUID call is a violation", () => {
   const v = scanSecureContext("src/modules/chat/src/ChatPanel.svelte", "const a = 1;\nconst id = crypto.randomUUID();\n");
@@ -17,6 +20,14 @@ test("the helper file and its test may name it; every other file may not", () =>
   expect(scanSecureContext("src\\client\\core\\src\\uuid.test.ts", "crypto.randomUUID()")).toEqual([]);
   expect(scanSecureContext("src/client/shell/e2e/fixtures.ts", "delete Crypto.prototype.randomUUID")).toHaveLength(1);
   expect(scanSecureContext("src/client/core/src/uuid2.ts", "crypto.randomUUID()")).toHaveLength(1);
+});
+
+test("the HTTPS e2e spec may name the UUID member and no other gated member", () => {
+  expect(scanSecureContext(HTTPS_SPEC_FILE, "typeof crypto.randomUUID")).toEqual([]);
+  expect(scanSecureContext(HTTPS_SPEC_FILE, "crypto.subtle")).toHaveLength(1);
+  expect(scanSecureContext(HTTPS_SPEC_FILE, "navigator.mediaDevices")).toHaveLength(1);
+  expect(scanSecureContext("src/client/shell/e2e/https-same-port.spec.ts", "crypto.randomUUID()")).toHaveLength(1);
+  expect(RULES.find((r) => r.id === "randomUUID").allowedFiles).toHaveLength(3);
 });
 
 test("the replacement helper's own name is not a violation", () => {
@@ -315,4 +326,11 @@ test.each([
   ["a const", "const caches = new Map();\ncaches.open('x');\n"],
 ])("%s shadows the global `caches`", (_name, code) => {
   expect(scanSecureContext("src/modules/x/src/a.ts", code)).toEqual([]);
+});
+
+test("every allowed file exists, so an allow-list entry cannot outlive the file it names", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  for (const file of [SEAM_FILE, HTTPS_SPEC_FILE, MIC_SEAM_FILE, ...allowedFileSet()]) {
+    expect(existsSync(resolve(root, file)), file).toBe(true);
+  }
 });

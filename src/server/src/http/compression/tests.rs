@@ -45,3 +45,23 @@ fn excludes_a_websocket_upgrade_response_regardless_of_content_type() {
         .unwrap();
     assert!(!predicate.should_compress(&upgrade));
 }
+
+/// The RFC 8441 (HTTP/2) WebSocket reply is a `200` with an empty body, not a `101`, so the status
+/// exclusion above does not cover it. It stays uncompressed only because tower-http's default
+/// size predicate treats an exact-zero body as not compressible; this pins that reliance (the
+/// `Accept-Encoding` header sits on the request and never reaches the predicate).
+#[test]
+fn a_200_empty_body_response_is_not_compressed() {
+    let predicate = AssetAndWsSafePredicate::new();
+    let h2_ws_accept = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap();
+    assert!(!predicate.should_compress(&h2_ws_accept));
+    let with_length = Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_LENGTH, "0")
+        .body(Body::empty())
+        .unwrap();
+    assert!(!predicate.should_compress(&with_length));
+}

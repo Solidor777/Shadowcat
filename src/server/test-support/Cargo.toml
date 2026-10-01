@@ -13,7 +13,7 @@ publish = false
 # dev-dependency never participates in building the library itself.
 shadowcat = { path = ".." }
 
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "http2"] }
 dashmap = "6"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -25,6 +25,16 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde_json = "1"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# The TLS-capable harness dials the server with rustls clients under the explicit ring provider
+# (the dependency graph must never contain a second TLS backend; `pnpm lint:crypto-backend` proves it).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+ring = "0.17"
+h2 = "0.4"
+http = "1"
+bytes = "1"
 url = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4"] }

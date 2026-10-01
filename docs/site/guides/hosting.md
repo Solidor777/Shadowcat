@@ -31,7 +31,8 @@ server. The binary lands in `target/release/` (`shadowcat` /  `shadowcat.exe`).
 ```
 
 The log prints `shadowcat listening` with the bind address — default
-`127.0.0.1:30000`. Open `http://localhost:30000/` in a browser.
+`127.0.0.1:30000`. Open `http://localhost:30000/` in a browser (`https://localhost:30000/` also
+works and shows a one-time certificate warning).
 
 With no admin account yet, the app shows a **setup form** that creates the first
 admin. Whether that form needs a token depends on the `setup_token` policy:
@@ -97,35 +98,209 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `retain_originals` | `true` | Keep each converted upload's original bytes (`<uuid>.orig`) for reconvert/download; `false` saves disk |
 | `login_per_min_per_identity` / `login_per_min_per_ip` | built-in | `/api/login` throttle budgets |
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
-| `trusted_proxies` | *(empty)* | Reverse-proxy IPs trusted to set `X-Forwarded-For` |
-| `behind_tls_proxy` | `false` | Declares a TLS-terminating reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy, and is the only setting that gives the session cookie its `Secure` flag and sends the HSTS response header |
+| `trusted_proxies` | *(empty)* | Reverse-proxy IP addresses trusted to set `X-Forwarded-For` and `X-Forwarded-Proto`; every entry must be an IP address (anything else stops the server at start, naming the entry) |
+| `behind_proxy` | `false` | Declares a reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy. Replaces `behind_tls_proxy`, which now stops the server at start |
+| `tls` | `auto` | Built-in HTTPS: `auto` serves TLS on the same port beside plain HTTP, `off` serves plain HTTP only |
+| `tls_cert` / `tls_key` | *(unset)* | Your own certificate chain and private key (PEM); both or neither |
+| `tls_hostnames` | *(empty)* | Extra DNS names / IP addresses the self-signed certificate must cover |
+| `tls_advertise_hostname` | `false` | List this machine's hostname (and `<hostname>.local`) in the self-signed certificate. Off by default because the certificate is shown to anyone who connects, before any login, and machine names often contain a person's name. Turn it on if players type the machine name; the price is that the name is visible to every peer that reaches the port. Changing it regenerates the certificate at the next start (browsers warn once more) |
+| `tls_dir` | `tls/` beside the db | Where the self-signed certificate and key are kept |
+| `public_url` | *(unset)* | The `https://` origin players should use (scheme, host and optional port only: user information, a path, a query or a fragment stop the server at start), published in `GET /api/config` |
+| `hsts_max_age_secs` | *(unset: no HSTS)* | Opt-in `Strict-Transport-Security` (read the HSTS section first) |
+| `acme_domains`, `acme_email`, `acme_terms_agreed`, `acme_challenge`, `acme_directory`, `acme_ca_root` | *(unset)* | Accepted and validated; certificate issuance is not available in this version |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.
 `SHADOWCAT_LOG=debug`.
 
+## HTTPS and plain HTTP on one port
+
+Shadowcat serves **both** `https://` and plain `http://` on the same port. The first byte of each
+connection decides which one it is, so there is nothing to configure to get HTTPS and no redirect
+ever moves a player from one to the other. **Plain HTTP works from any address, always** — a
+TLS problem of any kind (a bad certificate file, an unwritable certificate directory) is logged and
+reported, and never stops plain HTTP from serving.
+
+On start the log lists every address:
+
+```text
+https://192.168.1.20:30000  (encrypted, browser warns once)
+http://192.168.1.20:30000  (unencrypted, no warning)
+```
+
+### The default certificate
+
+With `tls = "auto"` (the default) Shadowcat creates one self-signed certificate the first time it
+runs and reuses it on every later start. It is stored in `tls/` beside the database file (`tls_dir`
+moves it; an in-memory database keeps the certificate in memory for the life of the process, so it
+changes on every start). The private key file is readable by its owner only (mode `0600`
+on macOS/Linux; an owner-only access list on Windows). Shadowcat restricts the directory only when
+it creates it (`0700` / owner-only access list); a directory you point `tls_dir` at that already
+exists keeps its permissions. If the operating system refuses to restrict the key file, the key is
+not written at all: the server logs it and serves an in-memory certificate for that run.
+
+The certificate covers `localhost`, the loopback addresses, every entry of `tls_hostnames`, and the
+LAN and global addresses of the machine's network adapters at the time it was generated (virtual
+adapters such as Docker bridges and Hyper-V switches are skipped). It does **not** list the
+machine's hostname unless you set `tls_advertise_hostname = true` (see the table above for why); a
+browser then shows a name-mismatch error on top of the trust warning if a player types that name.
+It is regenerated only when it expires within 30 days, when the file cannot be read, when a
+`tls_hostnames` entry is missing from it, or when it lists the machine hostname while
+`tls_advertise_hostname` is off (for example after you turn the option back off). A new network address does **not** regenerate it — that
+would make every player accept the browser warning again after each DHCP change; the log notes the
+mismatch once instead. Force a new certificate with:
+
+```bash
+./shadowcat --tls-regenerate
+```
+
+which regenerates, prints the new fingerprint and exits (it cannot be combined with `--backup-to`,
+`--restore-from` or a subcommand).
+
+**What players see.** A self-signed certificate is not vouched for by any authority, so each
+browser shows a full-page "connection is not private" warning once per browser per certificate,
+and again whenever the certificate changes. Clicking through gives an encrypted connection without
+proof of who the server is. That is the reason plain HTTP stays fully supported: a player who does
+not want the warning can use the `http://` address and simply has no encryption.
+
+When the page is opened over plain HTTP from a non-loopback address and HTTPS is available, the
+login screen offers the `https://` address in a dismissible notice (the dismissal is remembered per
+address). It never blocks the login.
+
+**Plain HTTP is unencrypted.** The login cookie, the password typed into the login form and all
+game traffic cross the network in the clear. On a home network you trust that is usually
+acceptable; for play over the internet, use HTTPS.
+
+The certificate fingerprints (the served certificate's and the self-signed fallback's) are logged at
+start and whenever a certificate is regenerated or reloaded. The fingerprint appears only in the server log and in the admin-only `GET
+/api/admin/tls` response. It is deliberately not shown to players: a fingerprint fetched over the
+channel being checked proves nothing.
+
+### Your own certificate
+
+```toml
+tls_cert = "/etc/shadowcat/fullchain.pem"
+tls_key = "/etc/shadowcat/privkey.pem"
+```
+
+Both keys or neither. The chain and key are checked at start (the key must match the leaf); the
+files are re-read every 60 seconds so a renewed certificate takes effect without a restart, and a
+failed re-read keeps the previous good certificate. A connection that names a host the certificate
+covers gets this certificate; a connection by IP address, with no name, or for a name the
+certificate does not cover gets the self-signed certificate that carries the addresses. If the
+files cannot be used at boot, the server falls back to the self-signed certificate, logs why, and
+reports `degraded_from: operator` on the admin route — it never refuses to start over a TLS file.
+
+`public_url = "https://vtt.example:30000"` publishes the address players should use (`GET
+/api/config`, `tls.https_origins`). The login notice offers a published address whose host the
+player is already using; otherwise it offers the published addresses; with none published it offers
+the address the player is on, switched to `https://`.
+
+### Turning it off
+
+`tls = "off"` serves plain HTTP only; a client that opens a TLS connection is dropped. Nothing else
+changes.
+
+### HSTS (opt-in, read the warning)
+
+`hsts_max_age_secs = 31536000` adds `Strict-Transport-Security` to responses. HSTS is remembered
+per **host name**, not per port: a browser that has seen it will refuse to use plain `http://` for
+that host for the whole `max-age`, which ends plain-HTTP play for that browser, and on a
+self-signed certificate turns the bypassable warning into a hard error. It is sent only when the
+client-facing connection is TLS **and** either a trusted proxy fronts the server or the connection
+was served the operator certificate for a name it covers; a connection served the self-signed
+certificate never receives it. It is off by default, without `includeSubDomains` or `preload`.
+
+### One session per scheme
+
+The session cookie is `sc_sid` over plain HTTP and `__Host-sc_sid` (with `Secure`, `HttpOnly`,
+`SameSite=Lax`, `Path=/`) over HTTPS. A browser therefore holds one login per scheme and switching
+between `http://` and `https://` means logging in again. Browser storage (UI preferences kept in
+`localStorage`) is also separate per origin. Upgrading a server that used the previous cookie
+name logs every player out once.
+
+### Microphone and other secure-context features
+
+Browsers only allow microphone capture (the ducking module's voice-activity source), and some other
+APIs, on a secure context: an `https://` page or `localhost`. Over plain HTTP from a LAN address the
+module reports that the feature needs a secure connection and, when the server answers HTTPS, names
+the `https://` address to open.
+
 ### Behind a reverse proxy
 
-By default the per-IP login/invite throttle keys off the raw TCP peer address. Behind a reverse
-proxy that terminates the client connection, that peer is always the proxy itself, so every real
-client collapses into one shared throttle bucket. Setting `trusted_proxies` to the proxy's address
-(e.g. `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` for a reverse proxy on the same host) makes the server
-trust that peer's `X-Forwarded-For` header and resolve the real client address from it instead.
-Entries are matched by exact IP address only, never a CIDR range — list every trusted proxy
-explicitly. A request whose immediate TCP peer is not in this list has its `X-Forwarded-For` header
-ignored entirely, so an untrusted client cannot spoof its own address by sending the header
-directly.
+If a reverse proxy terminates TLS in front of Shadowcat, keep Shadowcat on loopback and set
+`behind_proxy = true` (the setting was called `behind_tls_proxy`; the old name now stops the server
+at start with a message, in the environment, the TOML file and on the command line, so a proxied
+loopback deployment is never mistaken for a local-only one — delete the old key even if its value
+was `false`). `behind_proxy` makes a loopback bind count as exposed for the setup-token policy.
+
+The per-IP login/invite throttle keys off the raw TCP peer address, which behind a proxy is the
+proxy itself. Setting `trusted_proxies` to the proxy's address makes the server trust that peer's
+`X-Forwarded-For` (real client address) and `X-Forwarded-Proto` (whether the client used HTTPS,
+which selects the `Secure` cookie flavour and the HSTS decision). Entries are matched by exact IP
+address, never a CIDR range. A request whose immediate peer is not listed has both headers ignored.
+The server reads the rightmost value of the last `X-Forwarded-Proto` line, so configure the proxy
+to **set** the header rather than append to whatever the client sent. Setting `behind_proxy`
+with an empty `trusted_proxies` logs a warning, because the scheme and client address then cannot
+be learned.
 
 `trusted_proxies` is a list, so the env-var form needs bracket syntax even for one entry:
 `SHADOWCAT_TRUSTED_PROXIES=[127.0.0.1]` (a bare `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` fails to
 parse). In `shadowcat.toml`, use ordinary TOML array syntax: `trusted_proxies = ["127.0.0.1"]`.
+Peers listed in `trusted_proxies` are exempt from the per-address connection cap that protects the
+listener (every player behind the proxy shares that address).
 
-If that reverse proxy also terminates TLS, set `behind_tls_proxy = true`. A loopback bind
-(`127.0.0.1:30000`) is otherwise treated as local-only — the setup-token window opens without a
-token, the session cookie skips `Secure`, and no HSTS header is sent — which is wrong once a
-TLS-terminating proxy makes it internet-reachable. Setting this flag makes the setup policy treat
-the deployment as exposed, marks the session cookie `Secure`, and sends HSTS. A plain-HTTP LAN
-bind (`--bind 0.0.0.0:30000` with no proxy) never gets a `Secure` cookie or HSTS: browsers refuse
-a `Secure` cookie set over plain HTTP from a non-loopback origin, so login would fail.
+### Automatic certificates (ACME)
+
+The `acme_*` keys (`acme_domains`, `acme_email`, `acme_terms_agreed`, `acme_challenge`,
+`acme_directory`, `acme_ca_root`) are accepted and their values are validated at start, but
+certificate issuance is **not available in this version**. With `acme_domains` set the server logs
+that ACME is disabled, serves the self-signed certificate, and reports `degraded_from: acme` with
+the reason on the admin route. Use `tls_cert`/`tls_key` (for example from a certificate you renew
+with your own tooling) until issuance ships.
+
+### Browsers that upgrade `http://` to HTTPS
+
+Some browsers can rewrite a typed `http://` address to `https://`. Because this server answers TLS
+on the same port, an upgrade reaches the self-signed certificate and lands on the browser's
+certificate warning, which can be clicked through, or the browser falls back to `http://`. The
+table records what was measured and how. Engines behave differently per operating system, so a row
+states the OS it was measured on; the CI matrix runs these rows on Windows, Linux and macOS, and
+the test suite fails on CI for a row with no measurement on that OS (reporting what it observed), so
+the rows are completed from those runs. Every row was measured with a private (RFC 1918) address; a
+public or shared-address-space (`100.64.0.0/10`) address is upgraded by browsers like any internet
+host, so on such an address the tests skip with a message locally and fail on CI.
+
+| Browser and setting | Typed `http://<LAN address>` | How verified |
+|---|---|---|
+| Chromium, default settings | Loads over `http://` (no upgrade of an explicit `http://` address) | Automated (Playwright), asserted; measured on Windows |
+| Chromium, "Always use secure connections" | Upgrade attempted, fails on the certificate, navigation blocked (`ERR_BLOCKED_BY_CLIENT`). The document shown is empty to automation, so its "continue" control cannot be reached; what a person sees is unverified | Attempt and block automated (net log), measured on Windows; the "continue" click was tried (keyboard and coordinate clicks) and is not drivable |
+| Chromium, direct `https://` (certificate error page) | Certificate interstitial; "Advanced" then "Proceed" reaches the app | Automated, including the click; measured on Windows |
+| Firefox, HTTPS-Only Mode (default private-address exemption) | Loads over `http://` | Automated (Playwright), asserted; measured on Windows |
+| Firefox, HTTPS-Only Mode, a DNS name | Upgrade attempted, certificate error page; proceeding reaches the app | Error automated and asserted (measured on Windows), proceeding approximated by ignoring certificate errors |
+| Firefox, HTTPS-Only Mode with `upgrade_local` on | Same as the DNS-name row | Automated (Playwright), asserted; measured on Windows |
+| WebKit (Playwright build), default | Loads over `http://` | Automated (Playwright), asserted; measured on Windows |
+| Safari on macOS or iOS, Chrome and Firefox on Android, any browser on a public IP address | — | Not run: UNVERIFIED |
+
+The strict modes (Chromium's "Always use secure connections", Firefox with `upgrade_local`) are
+non-default settings; players who enable them get the certificate warning on every `http://`
+LAN address and can click through it, or set `tls = "off"` on the server.
+
+### What has not been verified on real devices
+
+`wss://` behaviour on iOS Safari and on Android Chrome after accepting the self-signed exception,
+and the browser-upgrade behaviour of real (non-automated) browsers, have not been run on physical
+devices: **UNVERIFIED**. The client shows a hint after three failed WebSocket connection attempts on
+an `https://` page that uses the self-signed certificate, pointing to the same server's `http://`
+address.
+
+### Voice ducking from an HTTPS page
+
+An `https://` page connecting to the ducking module's local monitor (`ws://127.0.0.1:<port>`) is a
+mixed-content connection. Chromium and Firefox allow it for loopback (measured on Windows); the
+WebKit build measured here (Playwright's) refuses it. Real Safari has not been tested. In such a browser the OS-monitor
+source cannot connect from an `https://` page — open the server over plain `http://` or use another
+browser for that feature. The settings section shows this hint on `https://` pages while the
+monitor is not connected.
 
 ## Worlds and players
 
@@ -155,6 +330,7 @@ Everything lives beside the database file unless configured elsewhere:
 ├── shadowcat.db     the world state (single SQLite file)
 ├── assets/          uploaded images/files (content-addressed by UUID)
 ├── modules/         installed community modules (one folder per module)
+├── tls/             the self-signed certificate and its private key (created on first start)
 └── backups/         in-app backup output
 ```
 
@@ -187,14 +363,25 @@ server also writes backups into `backups_dir` through the admin-only
 **LAN**: bind beyond loopback — `--bind 0.0.0.0:30000` — and open TCP 30000 in
 the OS firewall (Windows Defender prompts on first listen; on Linux
 `ufw allow 30000/tcp`; macOS System Settings → Firewall). Players connect to
-`http://<your-lan-ip>:30000/`. Remember: a non-loopback bind flips the default
-setup policy to token-required — read the token from the log on first boot.
+`http://<your-lan-ip>:30000/` (no warning, unencrypted) or
+`https://<your-lan-ip>:30000/` (encrypted, one certificate warning per browser); both are printed in
+the log at start. Remember: a non-loopback bind flips the default setup policy to token-required —
+read the token from the log on first boot.
 
-**Internet / reverse proxy**: keep Shadowcat on loopback and put a TLS proxy in
-front. The one thing proxies get wrong: the client runs over a WebSocket at
-`/ws`, so **upgrade headers must be forwarded**:
+**Internet**: forward the external port to the Shadowcat port and use the `https://` address, with
+your own certificate for a public name (see above) or accepting the certificate warning. A
+reverse proxy in front of a loopback bind also works; the client runs over a WebSocket at `/ws`,
+so **upgrade headers must be forwarded**, and the proxy must tell Shadowcat which scheme the
+player used:
 
 ```nginx
+# In the http block. The Connection header is "upgrade" for a WebSocket handshake and empty
+# (not sent) for every other request, so pooled upstream connections can be reused.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
 server {
     listen 443 ssl;
     server_name vtt.example;
@@ -203,13 +390,124 @@ server {
         proxy_pass http://127.0.0.1:30000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-Terminate HTTPS at the proxy; Shadowcat itself speaks plain HTTP.
+with `behind_proxy = true` and `trusted_proxies = ["127.0.0.1"]` in Shadowcat's configuration.
+
+Caddy proxies WebSocket connections itself, and by default sets `X-Forwarded-For`,
+`X-Forwarded-Proto` and `X-Forwarded-Host` while ignoring any values a client sent (unless the
+client is listed in its `trusted_proxies`; do not list clients), per the
+[`reverse_proxy` reference](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy). So the
+whole site is:
+
+```caddyfile
+vtt.example {
+    reverse_proxy 127.0.0.1:30000
+}
+```
+
+Traefik adds `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` by default
+([FAQ](https://doc.traefik.io/traefik/getting-started/faq/)), and trusts forwarded headers a client
+sends only from the addresses in the entry point's `forwardedHeaders.trustedIPs` (or when
+`forwardedHeaders.insecure` is on; leave both unset for a public entry point), per its
+[entry point reference](https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/).
+A file-provider router and service pointing at Shadowcat:
+
+```yaml
+http:
+  routers:
+    shadowcat:
+      rule: Host(`vtt.example`)
+      entryPoints: [websecure]
+      service: shadowcat
+      tls: {}
+  services:
+    shadowcat:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:30000
+```
+
+In both, Shadowcat's `trusted_proxies` must list the address the proxy connects from (`127.0.0.1`
+when it runs on the same host). HAProxy and other proxies need the equivalent: forward
+`Upgrade`/`Connection` for the WebSocket, and send both `X-Forwarded-For` and `X-Forwarded-Proto`,
+overwriting rather than appending to any value the client supplied; check your proxy's documentation
+for its exact setting.
+
+Shadowcat speaks HTTP/1.1 on plain connections (HTTP/2 without TLS, "h2c", is not supported), so
+a proxy must use HTTP/1.1 to reach a plain upstream; over TLS it speaks what the client negotiates
+(`h2` or `http/1.1`).
+
+Shadowcat closes an HTTP/1.1 connection that sends no request for 30 seconds, an HTTP/2
+connection that has had no request in flight for 60 seconds (a live WebSocket counts as a request
+in flight), and an HTTP/2 connection that stops answering pings. It also caps live connections at
+2048 in total and 256 per client address; addresses listed in `trusted_proxies` are exempt from
+the per-address cap, which is why a reverse proxy in front of Shadowcat must be listed there. A
+proxy that pools idle upstream connections must drop them sooner than that, or it will try to
+reuse a connection Shadowcat has already closed. For
+nginx, an `upstream` block that uses `keepalive` holds an idle upstream connection for
+`keepalive_timeout`, which defaults to 60 seconds
+([`ngx_http_upstream_module`](https://nginx.org/en/docs/http/ngx_http_upstream_module.html)), so
+set it below 30:
+
+```nginx
+upstream shadowcat {
+    server 127.0.0.1:30000;
+    keepalive 16;
+    keepalive_timeout 20s;
+}
+```
+
+(use `proxy_pass http://shadowcat;` with the `proxy_http_version 1.1;` and
+`proxy_set_header Connection $connection_upgrade;` lines of the sample above). nginx's upstream
+`keepalive` documentation requires the `Connection` request header to be cleared for pooled
+HTTP/1.1 connections, and its `proxy_set_header` documentation says a header whose value is empty
+is not passed on, which is why the `map` above yields an empty value for requests that are not
+upgrades. The `map` in nginx's own WebSocket guide yields `close` there instead, which makes nginx
+close the upstream connection after every ordinary request and leaves the `keepalive` pool unused.
+WebSocket connections are unaffected by Shadowcat's idle bounds: the HTTP/1.1 bound applies to the
+wait for a request head, not to an upgraded connection, and an HTTP/2 connection carrying a live
+WebSocket is not idle.
+
+### Connection caps and open-file limits
+
+When a cap refuses a connection, the server logs one warning per 10 seconds that names the cap
+(pre-hand-off or live connections), how many connections were refused since the last warning and
+one refused client. A client is an IPv4 address or an IPv6 /64 prefix, the same unit the
+per-address cap counts. Nothing is logged per refused connection.
+
+Every connection holds one open file descriptor, so the caps only mean something if the process may
+hold that many. On Linux and macOS the server raises its soft open-file limit to the hard limit at
+startup (on macOS no higher than the system's `kern.maxfilesperproc`). It then reads the limit back
+and fits both caps inside that limit minus 512 descriptors kept for the database, asset files, logs
+and outbound requests, keeping the ratio between them. If the limit is too low to back the default
+caps (the common default of 1024 is), the caps are reduced and a startup warning says to what; raise
+the limit with `ulimit -n` or, under systemd, `LimitNOFILE=`, to restore them. Windows has no
+comparable per-process limit and the caps are not reduced there.
+
+### Shutdown
+
+On Ctrl+C or SIGTERM the server tells every WebSocket session to close, then gives open
+connections 5 seconds to finish. A session whose client has stopped reading is given 2 seconds to
+send its close message and is then dropped; no single message may take longer than 60 seconds to
+send, so a client that stops reading while connected is dropped on its own. Connections still open
+after the 5 seconds are closed, and WebSocket sessions get a further 3 seconds at least to finish,
+so the server exits within about 8 seconds.
+
+A request that is still running at that point is cut off, not finished. The operations that can be
+running that long leave recoverable state: a chunked upload is lost with the process, the client
+starts it again, and its partly written `*.tmp` file stays in the world's asset folder; an asset
+replace commits its database row before it swaps the file, so a cut replace leaves at most one
+stray `*.tmp` file beside the asset (the row is then one version ahead of unchanged bytes and
+clients fetch it again); such `*.tmp` files can be deleted; a backup that is cut off leaves a backup
+folder without `manifest.json`, which restore refuses, and which can be deleted; a world export
+only reads.
 
 ## Mobile
 
@@ -227,7 +525,9 @@ shadowcat audio-monitor --port 31998 --allow-origin http://localhost:30000 --wat
 ```
 
 The Settings section prints this exact command line (with `--allow-origin` set to the page's
-own origin) — copy it verbatim rather than retyping it. It runs entirely on your own machine,
+own origin, so an `https://` page prints an `https://` origin) — copy it verbatim rather than
+retyping it. Without `--allow-origin` the monitor admits `http://` and `https://` on `localhost` and
+`127.0.0.1` at port 30000. It runs entirely on your own machine,
 never uploads anything, and only ever reports the peak level of processes matching `--watch`
 (default `discord`) — every other running application stays invisible to it and to the page.
 

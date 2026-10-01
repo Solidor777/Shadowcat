@@ -1,0 +1,51 @@
+// Invokes the named button inside ONE process's windows through macOS accessibility (System Events).
+// It acts only on that process's own element tree (never global keyboard or mouse input), so it
+// cannot reach another application. Exit status: 0 invoked, 3 no such button, anything else is a
+// failure of the driver itself (for example accessibility access not granted).
+// Why accessibility: Chromium shows the HTTPS-First "Continue to site" prompt as browser UI, not as
+// a web page, so it is absent from the DOM, the accessibility tree DevTools exposes and screenshots
+// of the page; only the operating system's accessibility API reaches it.
+// usage: osascript -l JavaScript invoke-button.jxa <pid> <button name>
+ObjC.import("stdlib");
+
+var NOT_FOUND = 3;
+
+function run(argv) {
+  var pid = parseInt(argv[0], 10);
+  var name = argv[1];
+  var events = Application("System Events");
+  var matches = events.processes.whose({ unixId: pid })();
+  if (matches.length === 0) {
+    $.exit(NOT_FOUND);
+  }
+  var proc = matches[0];
+  // Chromium builds its accessibility tree on demand; this is the documented switch a client sets
+  // on the application element to request it.
+  try {
+    proc.attributes.byName("AXManualAccessibility").value = true;
+  } catch (e) {
+    // Not every build exposes the attribute; the window walk below reports what is reachable.
+  }
+  var windows = proc.windows();
+  for (var w = 0; w < windows.length; w++) {
+    var elements;
+    try {
+      elements = windows[w].entireContents();
+    } catch (e) {
+      continue;
+    }
+    for (var i = 0; i < elements.length; i++) {
+      try {
+        if (elements[i].role() === "AXButton" && elements[i].name() === name) {
+          elements[i].actions.byName("AXPress").perform();
+          console.log("INVOKED");
+          $.exit(0);
+        }
+      } catch (e) {
+        // An element that vanished mid-walk is skipped, not fatal.
+      }
+    }
+  }
+  console.log("NOT FOUND");
+  $.exit(NOT_FOUND);
+}

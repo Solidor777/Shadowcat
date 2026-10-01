@@ -10,8 +10,24 @@ function mockFetch(status: number, body?: unknown) {
 }
 
 test("getConfig returns the parsed config", async () => {
-  mockFetch(200, { initialized: true });
-  expect(await api.getConfig()).toEqual({ initialized: true });
+  const body = {
+    initialized: true,
+    tls: { enabled: true, source: "self-signed", https_origins: [], alpn: ["h2", "http/1.1"] },
+  };
+  mockFetch(200, body);
+  expect(await api.getConfig()).toEqual(body);
+});
+
+test("a missing or malformed tls block leaves initialized readable and tls null", async () => {
+  mockFetch(200, { initialized: false });
+  expect(await api.getConfig()).toEqual({ initialized: false, tls: null });
+  mockFetch(200, { initialized: false, tls: { enabled: "yes" } });
+  expect(await api.getConfig()).toEqual({ initialized: false, tls: null });
+});
+
+test("getConfig rejects a body whose initialized flag is not a boolean", async () => {
+  mockFetch(200, { tls: null });
+  await expect(api.getConfig()).rejects.toThrow();
 });
 
 test("getMe returns null on 401, the id on 200", async () => {

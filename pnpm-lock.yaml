@@ -545,6 +545,9 @@ importers:
 
   src/modules/entry:
     dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
       '@shadowcat/types':
         specifier: workspace:*
         version: link:../../types

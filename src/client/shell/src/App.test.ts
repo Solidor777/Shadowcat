@@ -217,3 +217,24 @@ test("a reject's detail renders as a literal text node, never markup", async () 
   expect(notice?.message).toContain("<b>evil</b>");
   vi.unstubAllGlobals();
 });
+
+test("a failed first read of the TLS status is retried, so TLS-dependent messages do not stay silent", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api, "getMe").mockResolvedValue(null);
+    const tls = { enabled: true, source: "self-signed" as const, https_origins: [], alpn: ["h2"] };
+    const read = vi
+      .spyOn(api, "getTlsStatus")
+      .mockRejectedValueOnce(new Error("transient"))
+      .mockResolvedValue(tls);
+    render(App);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(read).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read, "no further reads once it has succeeded").toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});

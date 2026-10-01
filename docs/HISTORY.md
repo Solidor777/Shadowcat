@@ -3778,3 +3778,84 @@ Delivered:
 - **Docs**: `docs/TODO.md` gains the two owner-approval sections; `docs/design/ARCHITECTURE.md`
   §4 marks photometric lighting and advanced vision modes as built; `docs/PLAN.md` Phase 4
   points at the compendium ruling; the hosting guide documents `behind_tls_proxy` and `log_dir`.
+
+## Built-in HTTPS — phase 2a ✅
+Design and rationale: [`design/built-in-https.md`](design/built-in-https.md); operator guide:
+`docs/site/guides/hosting.md`. ACME issuance is the unbuilt remainder (`PLAN.md`).
+
+- **Server**: one port serves plain HTTP and TLS (`tls::listener::SniffListener`, first byte
+  `0x16`, one 10 s deadline over sniff and handshake, global cap 1024 and a per-peer cap of 32
+  keyed by `peer_key` (canonical IPv4, IPv6 masked to /64) with trusted-proxy peers exempt, the
+  snapshot taken after the ClientHello arrives (`sniff_and_hello`, then `finish`: two stages, so a
+  test lands a hot swap between them without a hook in the production path), an accept-error pause
+  (`http::conn_serve::on_accept_error`), port released on drop); the serve loop is owned by
+  `http::conn_serve::serve_router` (`axum::serve` installs no hyper timer): ALPN picks the HTTP
+  version (plain connections are HTTP/1.1 only; no h2c), hyper's `http1`/`http2` builders are used
+  directly (the auto builder's version read has no timer), a 30 s HTTP/1 header-read timeout also
+  closes idle keep-alive connections, an `h2` preface is read under that bound, and HTTP/2
+  keep-alive pings run at 30 s / 20 s, an HTTP/2 connection with no request in flight for 60 s is
+  closed (`ConnLease` per request and per response body, moved by `ws_handler` into the session task
+  so a live WebSocket counts), live connections are capped globally and per `peer_key` from hand-off
+  until the connection task and every lease end (`http::peer_slots::PeerSlots`, shared with the
+  accept-time caps; the trusted-proxy exemption travels as `ConnMeta::cap_exempt`); a source that
+  ends drains like a shutdown (`serve_router`'s `on_drain` hook runs `WsState::trigger_shutdown`
+  first, the drain has one deadline, `ConnLimits::drain_timeout`; connections past it have their IO
+  failed, then any task still running is aborted and reported) and `http::serve` returns an error; every
+  WebSocket send is bounded (`ws::bounded_sink::BoundedSink`); the connection caps are fitted to the
+  process's open-file limit (`fd_budget`);
+  `LazyConfigAcceptor` split into `hello_phase`/`finish_phase` over an immutable `Snapshot` held
+  in `CertResolver` (`CertResolver::update` derives and installs under one write lock;
+  `Snapshot::select` runs once per connection); certificate sources (operator PEM with 60 s
+  reload, persisted ECDSA P-256 self-signed, in-memory fallback, `tls = "off"`) and the
+  degradation ladder with the boot-error boundary in `Config::validate_tls` (called by the
+  serving, `--tls-regenerate` and `test_server` entry points, not by `Config::load`); the
+  self-signed SANs omit the machine hostname and its `.local` form unless
+  `tls_advertise_hostname` is set (a persisted certificate that disagrees regenerates), and
+  certificate fingerprints and operator-PEM SAN coverage are logged; explicit ring provider; `http::scheme::{classify, request_scheme,
+  hsts_max_age, into_service}` and `ConnMeta` as the single scheme/serving shape; per-scheme
+  session cookies (`sc_sid` / `__Host-sc_sid`) with the `__Host-` removal normaliser; opt-in HSTS
+  gated on the client-facing scheme and the selected certificate; `/ws` routed for GET and
+  CONNECT (RFC 8441) with `axum`'s `http2` feature enabled; retired `behind_tls_proxy` key
+  fails boot with the full migration text, `trusted_proxies` is a `Vec<IpAddr>` parsed at
+  extraction (a bad entry fails boot naming it), `public_url` must be an `https://` origin
+  (`config::https_origin_of`), `behind_proxy` + empty `trusted_proxies` warns; `TlsStatus` in `GET /api/config`
+  and the admin-only `GET /api/admin/tls` (fingerprints); `--tls-regenerate`; key file protected before any secret byte is written (Windows protected
+  owner-only DACL / Unix 0600; only directories the code creates are restricted; a protection
+  failure aborts the write); audio-monitor origin allow-list for `https://` pages;
+  `SqliteRepository::connect` creates a missing database file (a first-run failure that
+  pre-dated this work, now logged); `test_server` refuses a wildcard `--bind`.
+- **Client**: `ServerConfigSchema` Zod mirror with a drift test; `@shadowcat/core` `https-access`
+  decisions; the dismissible per-origin HTTPS notice on the entry view; `AppContext.tls`;
+  `WsClient` `onConnectFailure` and the plain-HTTP hint after three failed first connects on a
+  self-signed `https:` page (confirmed by a same-origin `/api/me` probe); microphone and
+  OS-monitor messages; the `tls` read retries with backoff.
+- **Dependencies**: rustls (ring only), tokio-rustls, rcgen, x509-parser, netdev, ring,
+  tower-cookies, gethostname, time; all MIT / Apache-2.0 / ISC / Zlib family, `webpki-roots`
+  (CDLA-Permissive-2.0) reachable only through a dev dependency. Release binary +901,632 bytes
+  (+3.8 %, 23,452,672 to 24,354,304) against the 60 MiB budget.
+  `hyper`, `hyper-util` and `tower` (`util`) became direct dependencies (already in the graph).
+  `pnpm lint:crypto-backend` fails if a second TLS backend enters `Cargo.lock` (its
+  `FORBIDDEN_CRATES` is the one list).
+- **Verification**: 4,370 Rust tests and doctests (`cargo test --all`, 0 failed); `tls_policy`, `tls_listener`, `tls_http`,
+  `tls_cli`, `first_run` integration suites; Playwright projects for Chromium, Firefox and WebKit
+  against the machine's real non-loopback address (secure context and cookie attributes,
+  mixed-scheme sessions and logout, the untrusted-certificate baseline, `wss` and HTTP/2, plain
+  HTTP on the TLS port, loopback `ws://` from an https page) and six HTTPS-upgrade projects, run
+  by the `ui-e2e-https` CI job on an ubuntu, windows and macos matrix (`ui-e2e` runs the loopback
+  project); outcomes that differ by engine and OS are asserted per (project, platform) and only
+  the Windows cells are measured; on CI a cell with no measurement (and a CGNAT or public address)
+  fails with the observed value, so the first CI run on Linux and macOS produces those
+  measurements, which are then recorded in the tables.
+  Mutation witnesses, each verified landed, red, and restored byte-identical: unified cookie
+  names, inverted sniffer dispatch, HSTS gate ignoring the selected certificate, the scheme decider
+  trusting an untrusted `X-Forwarded-Proto`, `.connect` route removed, `finish_phase` re-selecting,
+  test harness reverted to `SocketAddr` (the first attempt at that witness was green on the
+  TLS-off branch and exposed a test gap that is now closed), and for the listener and serving
+  hardening: a lost `update`, the header-read timeout removed, an identity `peer_key`, the snapshot
+  taken before the hello, a non-canonical trusted-proxy match, the key-file protection ignored, a
+  stale `<key>.tmp`, hostname-always SANs, origins hidden, a dropped `persist_error`.
+- **Measured browser facts** (recorded in the hosting guide's table): all three engines negotiate
+  `h2` and complete the `wss` welcome; WebKit refuses loopback `ws://` from an https page; Firefox
+  HTTPS-Only exempts private addresses, Chromium's HTTPS-First Mode does not: its upgraded
+  navigation is blocked (`ERR_BLOCKED_BY_CLIENT`) and the page it then shows is empty to
+  automation (the certificate interstitial of a direct `https://` navigation is clicked through); real iOS Safari and Android Chrome remain unverified (`TODO.md`).

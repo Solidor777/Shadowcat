@@ -1534,7 +1534,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // standard's, not a declaration in this tree.
   "enum", "anyOf", "oneOf",
   // URL grammar terms from the standard the SSRF guard parses against.
-  "https", "userinfo",
+  "userinfo",
   // The filesystem RENAME syscall, whose backticks mark the one atomic operation apart from the
   // same sentence's ordinary use of the word.
   "rename",
@@ -1579,13 +1579,13 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
 // whole token.
 export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Crates this repo depends on, named as the owner of whatever they expose.
-  "tokio", "clap", "reqwest", "serde_json", "ammonia", "polyanya",
+  "tokio", "clap", "serde_json", "ammonia", "polyanya",
   // Rust primitive and std types.
   "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
   "SqlitePoolOptions", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
-  "undefined", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
+  "undefined", "Map", "Window", "IntersectionObserver", "structuredClone",
   // Third-party UI libraries this repo depends on but does not declare (the dockview panel
   // library, TypeDoc's own internals).
   "DockviewComponent", "PopoutWindowService", "AsapEvent", "DockviewApi", "PanelApiImpl",

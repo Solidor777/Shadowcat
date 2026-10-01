@@ -28,6 +28,10 @@ export default [
       "debug/",
       // Docs pipeline output: generated sites/scratch, never hand-written code.
       ".docs-tmp/", "dist-docs/", "docs/site/.vitepress/cache/", "docs/site/.vitepress/dist/",
+      // Playwright's per-run output: git-ignored, and it holds whole browser profiles (vendor
+      // extensions, minified bundles) that the HTTPS specs launch inside it. Linting it fails the
+      // gate on code nobody wrote, and only on a machine that has run the browser suite.
+      "**/test-results/",
       // Worked-example lib builds (the root "dist/" ignore is top-level only).
       "examples/*/dist/"],
   },

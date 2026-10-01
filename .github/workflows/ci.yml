@@ -155,7 +155,8 @@ jobs:
       - name: Install PipeWire dev headers (Linux)
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
-      - run: pnpm --filter @shadowcat/shell e2e
+      - run: pnpm --filter @shadowcat/shell e2e:build
+      - run: pnpm --filter @shadowcat/shell exec playwright test --project=loopback
       # The traces this uploads are the only forensic channel for a failure that
       # reproduces on the runner but not locally; `playwright.config.ts` retains
       # them on failure solely because this step collects them. `if: failure()`
@@ -164,6 +165,60 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-results
+          path: src/client/shell/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Plain-HTTP LAN play and built-in HTTPS in real browsers, on every OS the server ships for.
+  # Browser engines differ per OS (certificate-error wording, HTTPS-upgrade branches, loopback
+  # mixed-content rules), so each expected outcome in the specs is keyed by (project, platform)
+  # and a cell measured on one OS only FAILS here on the others, reporting what it observed, so the
+  # first run on each OS supplies the measurement.
+  # The loopback suite keeps its single Ubuntu placement above: it drives no per-OS behaviour.
+  ui-e2e-https:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install PipeWire dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
+      - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit
+      - run: pnpm --filter @shadowcat/shell e2e:build
+      # The Chromium HTTPS-First prompt is browser UI, reachable only through the platform's
+      # accessibility API: Windows UI Automation, macOS System Events, Linux AT-SPI (the drivers
+      # under src/client/shell/e2e-support/invoke-button.*). Linux needs a virtual display, a
+      # session bus and the accessibility bus; the macOS and Linux drivers are first measured here.
+      - name: Install the Linux accessibility driver dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb at-spi2-core dbus-x11 python3-gi gir1.2-atspi-2.0
+      - name: Chromium HTTPS-First interstitial (browser-UI driver)
+        shell: bash
+        run: |
+          interstitial='pnpm --filter @shadowcat/shell exec playwright test --project=https-upgrade-chromium --project=https-upgrade-chromium-named --grep "Continue to site"'
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            dbus-run-session -- xvfb-run -a bash -c "(/usr/libexec/at-spi-bus-launcher --launch-immediately &) ; sleep 2 ; dbus-send --session --print-reply --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set string:org.a11y.Status string:IsEnabled variant:boolean:true ; $interstitial"
+          else
+            eval "$interstitial"
+          fi
+      - run: pnpm --filter @shadowcat/shell exec playwright test --project=lan-plain-http --project="https-*" --grep-invert "Continue to site"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-https-${{ matrix.os }}
           path: src/client/shell/test-results/
           retention-days: 7
           if-no-files-found: ignore
@@ -220,6 +275,8 @@ jobs:
         run: pnpm lint:inline-tests
       - name: No secure-context-only APIs (LAN plain-HTTP play)
         run: pnpm lint:secure-context
+      - name: No second TLS crypto backend (ring only)
+        run: pnpm lint:crypto-backend
       - name: No i18n keys as accessible text
         run: pnpm lint:aria-labels
       - name: Gate manifest matches CI

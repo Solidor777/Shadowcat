@@ -204,14 +204,70 @@ workflow = "ci.yml"
 job = "ui-e2e"
 command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
 tier = "setup"
-reason = "Installs the Chromium build the browser e2e step drives; a prerequisite, not a check in its own right."
+reason = "Installs the Chromium build the loopback browser e2e step drives; a prerequisite, not a check in its own right."
 
 [[gate]]
 workflow = "ci.yml"
 job = "ui-e2e"
-command = "pnpm --filter @shadowcat/shell e2e"
+command = "pnpm --filter @shadowcat/shell e2e:build"
+tier = "setup"
+reason = "Builds the client bundle and the server binary the browser e2e step serves; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=loopback"
 tier = "ci-only"
-reason = "The browser end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding either fixed port (31999 for the loopback project, 32000 for the lan-plain-http project) outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds those ports to the tree under test."
+reason = "The loopback browser end-to-end suite, one of the end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding a fixed port outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds those ports to the tree under test."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit"
+tier = "setup"
+reason = "Installs the Chromium, Firefox and WebKit builds the HTTPS projects drive on every OS; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell e2e:build"
+tier = "setup"
+reason = "Builds the client bundle and the server binary the HTTPS projects serve; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "sudo apt-get install -y xvfb at-spi2-core dbus-x11 python3-gi gir1.2-atspi-2.0"
+tier = "ci-only"
+reason = "Installs the virtual display, session bus and AT-SPI packages the Linux browser-UI driver needs; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "interstitial='pnpm --filter @shadowcat/shell exec playwright test --project=https-upgrade-chromium --project=https-upgrade-chromium-named --grep \"Continue to site\"' if [ \"$RUNNER_OS\" = \"Linux\" ]; then dbus-run-session -- xvfb-run -a bash -c \"(/usr/libexec/at-spi-bus-launcher --launch-immediately &) ; sleep 2 ; dbus-send --session --print-reply --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Properties.Set string:org.a11y.Status string:IsEnabled variant:boolean:true ; $interstitial\" else eval \"$interstitial\" fi"
+tier = "ci-only"
+reason = "Drives Chromium's HTTPS-First prompt, which is browser UI reachable only through the platform accessibility API (UI Automation, System Events, AT-SPI). It needs a real browser window, on Linux a virtual display and accessibility bus, on macOS a granted accessibility permission, and the fixed HTTPS port and non-loopback address the other HTTPS projects use, so only CI's isolated runners are a faithful target."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e-https"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=lan-plain-http --project=\"https-*\" --grep-invert \"Continue to site\""
+tier = "ci-only"
+reason = "Plain-HTTP LAN play and built-in HTTPS in real browsers on the three-OS matrix, apart from the interstitial driver run by the step above. The projects browse to the machine's own non-loopback address and hold fixed ports (32000, 32001) that playwright.config.ts reuses outside CI, so a developer machine can drive another session's binary; only CI's isolated runner binds them to the tree under test."
 
 [[gate]]
 workflow = "ci.yml"
@@ -273,6 +329,12 @@ tier = "commit"
 workflow = "ci.yml"
 job = "docs"
 command = "pnpm lint:secure-context"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:crypto-backend"
 tier = "commit"
 
 [[gate]]

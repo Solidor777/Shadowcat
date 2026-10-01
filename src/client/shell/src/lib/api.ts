@@ -1,5 +1,5 @@
-import type { WorldEntry } from "@shadowcat/types";
-import type { WireDocument } from "@shadowcat/core";
+import type { TlsStatus, WorldEntry } from "@shadowcat/types";
+import { ServerConfigSchema, type WireDocument } from "@shadowcat/core";
 import type { PersistedTheme } from "@shadowcat/ui-kit";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
@@ -114,6 +114,26 @@ export async function getMe(): Promise<Me | null> {
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
   return (await res.json()) as Me;
+}
+
+/** Fetches the server's published TLS status (the `tls` block of `GET /api/config`).
+ *
+ * The entry package reads `GET /api/config` through its own `getConfig` instead of sharing this
+ * function, by design: `@shadowcat/module-entry` is a swappable module package and must not
+ * depend on shell internals, and the two readers have different lifetimes (the entry view needs a
+ * fresh `initialized` flag before login; the shell keeps one status for the session and retries
+ * it with backoff, see `TlsStatusLoader`). Both validate against the Zod mirror of the generated
+ * `TlsStatus` type (`ServerConfigSchema` here, `TlsStatusSchema` in the entry reader), so the
+ * wire shape has one definition.
+ * @returns The validated status; throws on a non-2xx response or a body that fails
+ * `ServerConfigSchema`.
+ * @example
+ * ```
+ * const tls = await getTlsStatus();
+ * ```
+ */
+export async function getTlsStatus(): Promise<TlsStatus> {
+  return ServerConfigSchema.parse(await getJson<unknown>("/api/config")).tls;
 }
 
 /** Logs the caller out server-side. Awaits the request but does not inspect

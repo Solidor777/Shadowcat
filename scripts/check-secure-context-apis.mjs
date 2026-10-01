@@ -6,7 +6,11 @@
 // `undefined`, so the call throws `TypeError` on every LAN client while unit tests (Node) and the
 // e2e suite's loopback project (a secure context) never see it. `Crypto.getRandomValues` is not
 // `[SecureContext]`, so the single seam that builds UUIDs from it, `randomUuid` in
-// `@shadowcat/core`, is the only place allowed to name the missing member.
+// `@shadowcat/core`, is the only place allowed to name the missing member, together with the
+// seam's own test (`uuid.test.ts`) and the HTTPS secure-context e2e test file (`HTTPS_SPEC_FILE`). That
+// file is listed for the `randomUUID` rule alone: it asserts that the member IS a function on the
+// built-in HTTPS origin, the positive counterpart of the plain-HTTP absence the rest of this gate
+// protects, and no other rule or file is widened for it.
 //
 // The gate bans only members whose ABSENCE BREAKS THE CLIENT: a call or a property read on
 // `undefined` throws `TypeError` on a LAN origin. A member the client merely READS as a property
@@ -63,6 +67,10 @@ import { norm, under } from "./lib/gate-corpus.mjs";
 /** The file that defines the seam; the scan must include it or the gate is inert. */
 export const SEAM_FILE = "src/client/core/src/uuid.ts";
 
+/** The HTTPS secure-context e2e test file: the only e2e file that names the UUID member, to assert it
+ * is a function on the HTTPS origin. Allowed for the `randomUUID` rule only. */
+export const HTTPS_SPEC_FILE = "src/client/shell/e2e/https-secure-context.spec.ts";
+
 /** The microphone source: the only file that names `navigator.mediaDevices` and `audioWorklet`. */
 export const MIC_SEAM_FILE = "src/modules/ducking/src/micVad.ts";
 
@@ -89,8 +97,9 @@ export const RULES = [
     owner: null,
     members: ["randomUUID"],
     bare: true,
-    // `uuid.ts` defines the seam and `uuid.test.ts` pins its fallback.
-    allowedFiles: [SEAM_FILE, "src/client/core/src/uuid.test.ts"],
+    // `uuid.ts` defines the seam, `uuid.test.ts` pins its fallback, and `HTTPS_SPEC_FILE` asserts
+    // the member exists on the HTTPS origin.
+    allowedFiles: [SEAM_FILE, "src/client/core/src/uuid.test.ts", HTTPS_SPEC_FILE],
     replacement: "`randomUuid()` from `@shadowcat/core` (falls back to `crypto.getRandomValues` where `crypto.randomUUID` is absent)",
   },
   { id: "crypto.subtle", owner: "crypto", members: ["subtle"], allowedFiles: [], replacement: UNUSED_MEMBER_REPLACEMENT },

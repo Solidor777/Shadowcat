@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
+/// Bounded-send `Sink` adapter: a session whose peer stopped reading ends instead of hanging.
+pub mod bounded_sink;
 pub mod conn;
 pub(crate) mod move_clip;
 pub mod protocol;
@@ -203,13 +205,14 @@ pub struct WsState {
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Cloned by `ws::conn::handle_socket` into each connection's `EgressConnState` so its
     /// egress loop can select on it and exit gracefully (send a Close frame, then return) once
-    /// `trigger_shutdown` fires — see `main`'s `with_graceful_shutdown` wiring.
+    /// `trigger_shutdown` fires — see `http::serve_with`'s drain hook.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     /// Count of currently-live WebSocket connection tasks. `axum::WebSocketUpgrade::on_upgrade`
-    /// spawns its callback as a task DETACHED from the hyper connection future that produced the
-    /// 101 handshake — that connection future completes at the handshake itself, so
-    /// `axum::serve(..).with_graceful_shutdown(..)` resolves once ordinary HTTP requests drain
-    /// and does NOT wait for a live WebSocket session to finish closing. `connection_guard`
+    /// spawns its callback as a task DETACHED from the request future that produced the
+    /// handshake response, and over HTTP/1.1 the hyper connection future completes at the
+    /// handshake itself, so `http::conn_serve::serve_router` does not wait for such a session to
+    /// finish closing (an HTTP/2 session is a stream of its connection, so the connection does
+    /// outlive it). `connection_guard`
     /// increments this on connect and decrements it (waking `drain_notify`) when the guard
     /// drops at the end of `ws::conn::handle_socket`; `wait_for_drain` is what actually blocks a
     /// caller until every such task has exited.
@@ -326,7 +329,8 @@ impl WsState {
     /// Signal every live connection's `egress_loop` to exit gracefully: send a Close frame and
     /// return. This alone does NOT guarantee the connection's task has finished exiting by the
     /// time it returns — see `wait_for_drain` for the mechanism that actually waits for that.
-    /// Called once from `main`'s Ctrl+C/SIGTERM handler.
+    /// Called by `http::serve_with` as `serve_router`'s drain hook, for a shutdown request and for
+    /// a serve loop whose connection source ended alike.
     ///
     /// # Examples
     ///
@@ -385,10 +389,10 @@ impl WsState {
     /// dropped), or `timeout` elapses — whichever comes first. Returns `true` if every
     /// connection drained within the timeout, `false` on timeout (some connections were still
     /// live). This is the mechanism that closes the gap `trigger_shutdown`'s own doc names:
-    /// `axum::serve(..).with_graceful_shutdown(..)` does not itself wait for a WebSocket
-    /// session's task to finish, so a caller (`main`, after `axum::serve(..).await` returns)
-    /// must call this explicitly before letting the process (and its tokio runtime) exit, or an
-    /// in-flight `Message::Close` send can be dropped mid-write.
+    /// `http::conn_serve::serve_router` does not itself wait for an HTTP/1.1 WebSocket session's
+    /// task to finish, so a caller (`http::serve_with`, after `serve_router` returns) must call
+    /// this explicitly before letting the process (and its tokio runtime) exit, or an in-flight
+    /// `Message::Close` send can be dropped mid-write.
     ///
     /// # Examples
     ///

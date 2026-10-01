@@ -31,7 +31,7 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
-import type { CombatsPayload, DoorState } from "@shadowcat/types";
+import type { CombatsPayload, DoorState, ServerConfig, TlsStatus } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -2279,3 +2279,29 @@ export function parseCombats(payload: unknown, logger?: Logger): CombatsView {
     })),
   };
 }
+
+/** Where the served certificate comes from — the Zod mirror of the generated `TlsSource`. */
+export const tlsSourceSchemaImpl = z.enum(["self-signed", "operator", "acme"]);
+
+/** The public `tls` block of `GET /api/config` — the Zod mirror of the generated `TlsStatus`. The
+ * generated type, the Rust struct and this schema share ONE field list, so a field added on the
+ * server (for example `alpn`) that this schema lacks fails the type-level guard in the test suite
+ * and fails compilation of `TlsStatusSchema`. */
+export const tlsStatusSchemaImpl = z.object({
+  enabled: z.boolean(),
+  source: tlsSourceSchemaImpl.nullable(),
+  https_origins: z.array(z.string()),
+  alpn: z.array(z.string()),
+});
+
+/** The `tls` block schema, typed against the generated `TlsStatus`. */
+export const TlsStatusSchema: z.ZodType<TlsStatus> = tlsStatusSchemaImpl;
+
+/** The `GET /api/config` body — the Zod mirror of the generated `ServerConfig`. */
+export const serverConfigSchemaImpl = z.object({
+  initialized: z.boolean(),
+  tls: tlsStatusSchemaImpl,
+});
+
+/** The `/api/config` schema, typed against the generated `ServerConfig`. */
+export const ServerConfigSchema: z.ZodType<ServerConfig> = serverConfigSchemaImpl;

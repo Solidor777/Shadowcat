@@ -85,6 +85,8 @@ export {
   parseCombats,
   EMPTY_COMBATS,
   CombatsPayloadSchema,
+  ServerConfigSchema,
+  TlsStatusSchema,
 } from "./wire";
 export type {
   ServerMsg,
@@ -202,3 +204,16 @@ export { snapshotBase, stampInstance, findInstances, syncState } from "./templat
 export type { StampOpts, SyncState } from "./templates";
 export { PRESETS, resolveAuto, parsePersisted, serializePersisted, effectiveSettings, PERFORMANCE_STORAGE_KEY, fpsCapToTickerValue } from "./performance";
 export type { PerformanceSettings, PerformancePreset, DeviceSignals, PersistedPerformance } from "./performance";
+export {
+  DISMISS_KEY_PREFIX,
+  WS_HINT_AFTER_FAILURES,
+  dismiss,
+  httpWorksWhileSocketFails,
+  httpsTargets,
+  isDismissed,
+  isLoopbackHost,
+  plainHttpUrl,
+  shouldHintPlainHttp,
+  shouldShowHttpsNotice,
+  type LocationLike,
+} from "./https-access";

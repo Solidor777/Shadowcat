@@ -145,3 +145,11 @@ test("withRetry's jittered delay never exceeds the base value (pinned to the flo
   }
 });
 
+
+test("getTlsStatus returns the validated tls block and rejects a body without it", async () => {
+  const tls = { enabled: true, source: "self-signed", https_origins: [], alpn: ["h2", "http/1.1"] };
+  mockFetch(200, { initialized: true, tls });
+  expect(await api.getTlsStatus()).toEqual(tls);
+  mockFetch(200, { initialized: true });
+  await expect(api.getTlsStatus()).rejects.toThrow();
+});

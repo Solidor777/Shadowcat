@@ -238,7 +238,9 @@ pub struct SqliteRepository {
 
 impl SqliteRepository {
     /// Connect to `url` (e.g. "sqlite::memory:" or "sqlite:///path/to.db")
-    /// and run migrations. `url` is parsed once via
+    /// and run migrations. A database file that does not exist is created; that is logged at
+    /// info with its path, so a mistyped `db` on an existing deployment (which yields an empty
+    /// database, not an error) is visible in the first log lines. `url` is parsed once via
     /// [`crate::db::parse_connect_options`] and the resulting options open
     /// the pool through [`crate::db::connect_pool_with_options`] — never
     /// restated here.
@@ -257,7 +259,16 @@ impl SqliteRepository {
     /// # }
     /// ```
     pub async fn connect(url: &str) -> Result<Self, DataError> {
-        let connect_options = crate::db::parse_connect_options(url)?;
+        // Server startup creates a missing database file: a first run against the default
+        // `./shadowcat.db` (or any bare path) must succeed. The one-shot backup/restore paths
+        // open their pools through `db::connect_pool` instead and never create, so a mistyped
+        // path there stays an error instead of yielding an empty database.
+        let connect_options = crate::db::parse_connect_options(url)?.create_if_missing(true);
+        if let Ok(Some(file)) = crate::db::database_file(url) {
+            if !file.exists() {
+                tracing::info!(path = %file.display(), "database file does not exist; creating a new empty database");
+            }
+        }
         let pool = crate::db::connect_pool_with_options(connect_options.clone()).await?;
         sqlx::migrate!()
             .run(&pool)

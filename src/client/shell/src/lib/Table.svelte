@@ -1,8 +1,10 @@
 <script lang="ts">
   import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
+  import type { TlsStatus } from "@shadowcat/types";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
+  import { untrack } from "svelte";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
   import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, resetSessionState } from "./sessionState.svelte";
@@ -14,9 +16,10 @@
   const panels = new PanelsBridge(consoleLogger());
 
   let {
-    session,
+    session: sessionProp,
     leaveWorld,
     serverRole,
+    tls,
   }: {
     /** The entered world's session, non-null by the time `App` mounts `Table` (it
      * renders `Table` only once role+world are set from Welcome). */
@@ -26,7 +29,24 @@
     /** The caller's server tier — see `AppContext.serverRole` for the fail-closed
      * derivation and its cosmetic-only status. */
     serverRole: "admin" | "user";
+    /** The server's published TLS status, `null` when it could not be read; see
+     * `AppContext.tls`. */
+    tls: TlsStatus | null;
   } = $props();
+
+  // One `session` for this Table's whole life: every controller and context entry below is built
+  // from it once, at init. `App` renders `Table` inside `{#key session}`, so a different session
+  // mounts a fresh Table instead of reaching this one as a changed prop; the untracked read states
+  // that once-only capture. `serverRole`, `tls` and `leaveWorld` can change while mounted, so the
+  // context reads them live (getters and a closure).
+  const session = untrack(() => sessionProp);
+  // Fails loudly if a caller swaps the session on a mounted Table instead of remounting it: the
+  // controllers above were built from the first one and would keep serving it.
+  $effect(() => {
+    if (sessionProp !== session) {
+      throw new Error("Table received a different session than it was mounted with; render it inside {#key session}");
+    }
+  });
 
   // Sheet panels: the controller registers `sheet:<docId>` contributions on demand; the
   // panel host mounts + floats them. Constructed before setAppContext so `openDocument` is
@@ -61,9 +81,7 @@
   const snapModePreference = new SnapModePreference();
 
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
-  // `session` is fixed per Table, so capturing it once here is intended (see the identical
-  // rationale on the `setAppContext` call below).
-  // svelte-ignore state_referenced_locally
+  // `session` is fixed per Table (see its capture above).
   const templates = new TemplatesController({
     store: session.store,
     documents: session.documents,
@@ -88,8 +106,7 @@
 
   // App renders <Table> only once role+world are set (Welcome received), so these
   // are non-null at init. setContext must run during init, not in markup; the
-  // session/leaveWorld are fixed per Table, so capturing them once is intended.
-  // svelte-ignore state_referenced_locally
+  // session is fixed per Table, so capturing it once is intended.
   setAppContext({
     contributions: session.contributions,
     store: session.store,
@@ -97,7 +114,15 @@
     combat: session.combat,
     world: session.world!,
     role: session.role!,
-    serverRole,
+    // A getter, not a captured value: the caller's tier is a prop that follows the loaded account.
+    get serverRole() {
+      return serverRole;
+    },
+    // A getter, not a captured value: `tls` is a prop the shell refreshes after a failed first
+    // read, and consumers must see the current one.
+    get tls() {
+      return tls;
+    },
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
     canCreate: (docType) => session.canCreate(docType),
@@ -169,7 +194,7 @@
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
-    leaveWorld,
+    leaveWorld: () => leaveWorld(),
     logout: async () => {
       await logout();
       resetSessionState();

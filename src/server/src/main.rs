@@ -32,6 +32,13 @@ async fn main() -> anyhow::Result<()> {
     if cli.command.is_some() && (cli.backup_to.is_some() || cli.restore_from.is_some()) {
         anyhow::bail!("a subcommand and --backup-to/--restore-from are mutually exclusive");
     }
+    if cli.tls_regenerate
+        && (cli.command.is_some() || cli.backup_to.is_some() || cli.restore_from.is_some())
+    {
+        anyhow::bail!(
+            "--tls-regenerate is mutually exclusive with --backup-to, --restore-from and subcommands"
+        );
+    }
     if let Some(shadowcat::config::CliCommand::AudioMonitor(args)) = cli.command.take() {
         // No `Config` is resolved yet on this early-return path (this subcommand never
         // reaches `Config::load` below), so there is no `log_dir` to derive a rotation
@@ -47,8 +54,16 @@ async fn main() -> anyhow::Result<()> {
     let backup_to = cli.backup_to.clone();
     let restore_from = cli.restore_from.clone();
     let force = cli.force;
+    let tls_regenerate = cli.tls_regenerate;
 
     let config = Config::load(cli)?;
+
+    if tls_regenerate {
+        let _log_guard = init_tracing(config.logs_path().as_deref())?;
+        config.validate_tls()?;
+        run_tls_regenerate(&config)?;
+        return Ok(());
+    }
 
     if let Some(dir) = backup_to {
         let _log_guard = init_tracing(config.logs_path().as_deref())?;
@@ -66,6 +81,10 @@ async fn main() -> anyhow::Result<()> {
     // on an early return otherwise.
     let _log_guard = init_tracing(config.logs_path().as_deref())?;
 
+    // Serving is the path that uses the TLS settings; `Config::load` leaves them unchecked so the
+    // backup/restore modes above are not blocked by them.
+    config.validate_tls()?;
+
     let repo = SqliteRepository::connect(&config.db)
         .await?
         .with_modules_dir(config.modules_path());
@@ -82,6 +101,21 @@ async fn main() -> anyhow::Result<()> {
     let initialized = seeded || repo.admin_exists().await?;
     let setup_token = AppState::resolve_setup_token(&config);
 
+    for warning in config.startup_warnings() {
+        tracing::warn!("{warning}");
+    }
+    shadowcat::tls::install_default_provider();
+    let tls = shadowcat::tls::TlsRuntime::start(&config);
+    shadowcat::tls::TlsRuntime::spawn_maintenance(&tls);
+    if config.hsts_max_age_secs.is_some()
+        && config.trusted_proxies.is_empty()
+        && tls.status().source == Some(shadowcat::tls::TlsSource::SelfSigned)
+    {
+        tracing::warn!(
+            "hsts_max_age_secs is set but the active certificate is self-signed and no trusted proxy is configured: HSTS is only ever sent on CA-trusted native TLS or trusted-proxy HTTPS requests, so it will not be sent"
+        );
+    }
+
     let state = AppState {
         repo: Arc::new(repo),
         config: Arc::new(config.clone()),
@@ -93,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        tls: tls.clone(),
     };
 
     shadowcat::auth::session::spawn_session_sweep(&state.repo);
@@ -101,32 +136,61 @@ async fn main() -> anyhow::Result<()> {
         state.upload_rate.clone(),
     );
 
-    let ws_state = state.ws.clone();
-    let listener = tokio::net::TcpListener::bind(&config.bind).await?;
+    // Both connection caps are fitted to one descriptor budget, derived from the soft limit as it
+    // is AFTER the raise attempt (`fd_budget`).
+    let nofile = shadowcat::fd_budget::raise_nofile_limit();
+    let (sniff_limits, conn_limits, clamp) = shadowcat::fd_budget::fit_to_descriptor_budget(
+        nofile.soft,
+        shadowcat::tls::listener::Limits::default(),
+        shadowcat::http::conn_serve::ConnLimits::default(),
+    );
+    if let Some(clamp) = clamp {
+        tracing::warn!(
+            soft_limit = clamp.soft,
+            budget = clamp.budget,
+            pre_handoff_cap = clamp.pre_handoff_after,
+            live_cap = clamp.live_after,
+            floors_exceed_budget = clamp.floors_exceed_budget,
+            "the open-file limit cannot back the default connection caps; they were reduced to fit. \
+             Raise the limit (ulimit -n / LimitNOFILE) to restore them"
+        );
+    }
+
+    let tcp = tokio::net::TcpListener::bind(&config.bind).await?;
+    let bound = tcp.local_addr()?;
+    // One port serves plain HTTP and TLS; the first byte of each connection decides
+    // (`tls::listener::SniffListener`).
+    let listener = shadowcat::tls::listener::SniffListener::new(
+        tcp,
+        tls.clone(),
+        Arc::new(config.clone()),
+        sniff_limits,
+    );
     tracing::info!(bind = %config.bind, "shadowcat listening");
-    // `http::serve` wraps `axum::serve(..).with_graceful_shutdown(..)` (which is what gives the
-    // connect-info service so `throttle::ClientIp` resolves a real address — production only;
-    // axum-test's mock transport has none, degrading the IP throttle to identity-only there
-    // without a 500) with a post-shutdown drain of any still-live WebSocket connection task —
-    // see `http::serve`'s own doc for why that drain step is necessary at all.
-    http::serve(listener, state, shutdown_signal(ws_state)).await?;
+    // Process tests read the bound port from these `reachable at http://<addr>:<port>` lines, so
+    // that form is a stable contract.
+    for line in tls.startup_lines(bound) {
+        tracing::info!("reachable at {line}");
+    }
+    // `http::serve_with` runs `http::conn_serve::serve_router` (per-connection `ConnMeta` connect-info,
+    // so `throttle::ClientIp` and the scheme decider see a real peer; header-read, HTTP/2 idle,
+    // keep-alive and live-connection bounds), tells live WebSocket sessions to close when the
+    // drain begins, and then waits for their tasks; see `http::serve_with`.
+    http::serve_with(listener, state, shutdown_signal(), conn_limits).await?;
     Ok(())
 }
 
-/// Resolves once Ctrl+C or (on Unix) SIGTERM arrives, having already told every live
-/// WebSocket connection's egress loop to close (`WsState::trigger_shutdown`) — this is the
-/// future `http::serve` passes to `axum::serve(..).with_graceful_shutdown`. That alone does
-/// NOT wait for a WebSocket connection's task to actually finish exiting (see
-/// `ws::conn::egress_loop`'s `shutdown` select arm for where the signal is received, and
-/// `http::serve`'s own doc for the separate drain step that waits for the task to exit).
+/// Resolves once Ctrl+C or (on Unix) SIGTERM arrives. This is the future `http::serve_with` passes to
+/// `http::conn_serve::serve_router` as its shutdown trigger; telling WebSocket sessions to close
+/// and waiting for them is `http::serve_with`'s drain step, shared with the source-ended path.
 ///
 /// # Examples
 ///
 /// ```text
-/// // Passed directly to `axum::serve(..).with_graceful_shutdown(shutdown_signal(ws_state))`;
+/// // Passed directly to `http::serve_with(listener, state, shutdown_signal(), limits)`;
 /// // not callable in a doctest (it blocks on a real OS signal).
 /// ```
-async fn shutdown_signal(ws: shadowcat::ws::WsState) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -151,7 +215,6 @@ async fn shutdown_signal(ws: shadowcat::ws::WsState) {
         _ = terminate => {}
     }
     tracing::info!("shutdown signal received; closing live connections");
-    ws.trigger_shutdown();
 }
 
 /// One-shot `--backup-to` mode: snapshot the resolved db + assets into
@@ -183,6 +246,32 @@ async fn run_backup(config: &Config, out_dir: &std::path::Path, force: bool) -> 
         manifest.asset_file_count,
         manifest.db_bytes,
         manifest.shadowcat_version,
+    );
+    Ok(())
+}
+
+/// One-shot `--tls-regenerate` mode: replaces the persisted self-signed certificate with a fresh
+/// one advertising the current local addresses and configured `tls_hostnames`, prints its
+/// SHA-256 fingerprint, and returns — the caller exits before any server startup runs. Requires
+/// an on-disk TLS directory (`Config::tls_path`); an in-memory database with no `tls_dir` has
+/// nothing to regenerate because its certificate lives only in process memory.
+fn run_tls_regenerate(config: &Config) -> anyhow::Result<()> {
+    let dir = config.tls_path().ok_or_else(|| {
+        anyhow::anyhow!(
+            "--tls-regenerate requires a persistent TLS directory: the database is in-memory and tls_dir is unset"
+        )
+    })?;
+    let cert = shadowcat::tls::selfsigned::force_regenerate(
+        &dir,
+        &config.tls_hostnames,
+        &shadowcat::tls::selfsigned::SanSources::detect(config.tls_advertise_hostname),
+        &shadowcat::tls::selfsigned::RcgenGenerator,
+        time::OffsetDateTime::now_utc(),
+    )?;
+    println!(
+        "regenerated {}: sha256 {}",
+        shadowcat::tls::selfsigned::cert_path(&dir).display(),
+        cert.fingerprint()
     );
     Ok(())
 }

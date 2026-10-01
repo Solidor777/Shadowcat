@@ -1,3 +1,4 @@
+import { TlsStatusSchema } from "@shadowcat/core";
 import type { ServerConfig, WorldEntry } from "@shadowcat/types";
 
 /**
@@ -7,7 +8,7 @@ import type { ServerConfig, WorldEntry } from "@shadowcat/types";
  * @example
  * ```
  * // module-private; not part of the public API
- * const cfg = await getJson<ServerConfig>("/api/config");
+ * const cfg = await getJson<unknown>("/api/config");
  * ```
  */
 async function getJson<T>(url: string): Promise<T> {
@@ -40,19 +41,40 @@ async function postJson(url: string, body: unknown): Promise<Response> {
   });
 }
 
+/** The parts of `GET /api/config` the entry flow reads. */
+interface PublicConfig {
+  /** Whether an administrator exists (Setup is unavailable once true). */
+  initialized: boolean;
+  /** The published TLS block, or `null` when absent or malformed. */
+  tls: ServerConfig["tls"] | null;
+}
+
+/** `GET /api/config` before validation: each field is checked on its own. */
+interface RawPublicConfig {
+  /** Expected to be a boolean. */
+  initialized?: unknown;
+  /** Expected to satisfy `TlsStatusSchema`. */
+  tls?: unknown;
+}
+
 /**
- * Fetch the server's public configuration.
- * @returns The server config. Field semantics are defined by the generated
- * `ServerConfig` type (from the Rust
- * source) — not restated here.
+ * Fetch the server's public configuration. `initialized` is parsed on its own: it decides whether
+ * the Setup form is reachable, so a missing or malformed `tls` block must never hide it. A `tls`
+ * block that does not parse yields `null`, which only suppresses the HTTPS notice.
+ * @returns `initialized` and the `tls` block (`null` when absent or malformed). Field semantics
+ * are defined by the generated `ServerConfig` type (from the Rust source) — not restated here.
  * @example
  * ```
  * // module-private; not part of the public API
  * const cfg = await getConfig();
  * ```
  */
-export function getConfig(): Promise<ServerConfig> {
-  return getJson<ServerConfig>("/api/config");
+export async function getConfig(): Promise<PublicConfig> {
+  const body = await getJson<RawPublicConfig>("/api/config");
+  if (typeof body.initialized !== "boolean") throw new Error("/api/config: initialized is not a boolean");
+  const initialized = body.initialized;
+  const tls = TlsStatusSchema.safeParse(body.tls);
+  return { initialized, tls: tls.success ? tls.data : null };
 }
 
 /**

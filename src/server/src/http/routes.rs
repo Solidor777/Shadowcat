@@ -55,6 +55,7 @@ use crate::ws::room::RoomStatsSnapshot;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let status = health(State(state)).await;
 /// assert!(status.0.db_connected);
@@ -93,6 +94,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let rooms = debug_rooms(admin, State(state)).await;
@@ -137,6 +139,7 @@ pub async fn debug_rooms(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let manifest = admin_backup(admin, State(state)).await.unwrap();
@@ -277,6 +280,7 @@ const MAX_UI_STATE_BYTES: usize = 64 * 1024;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
 /// let val = get_ui_state(user, State(state)).await.unwrap();
@@ -338,6 +342,7 @@ pub async fn get_ui_state(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
 /// let result = put_ui_state(user, State(state), Json(serde_json::json!({"theme": "dark"}))).await;
@@ -377,22 +382,27 @@ pub async fn put_ui_state(
 }
 
 /// Public server bootstrap info for the SPA's first-load routing (setup vs
-/// login). Exposes nothing beyond the `initialized` bit the setup-409 already
-/// reveals.
+/// login) plus the built-in HTTPS status. Exposes nothing beyond the `initialized` bit the
+/// setup-409 already reveals and the non-secret `tls` block (no fingerprint, no paths).
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::http::routes::ServerConfig;
 ///
-/// let cfg = ServerConfig { initialized: true };
-/// assert_eq!(serde_json::to_value(&cfg).unwrap(), serde_json::json!({"initialized": true}));
+/// let cfg = ServerConfig { initialized: true, tls: shadowcat::tls::TlsRuntime::disabled().status() };
+/// let json = serde_json::to_value(&cfg).unwrap();
+/// assert_eq!(json["initialized"], true);
+/// assert_eq!(json["tls"]["enabled"], false);
 /// ```
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ServerConfig {
     /// Whether a first admin exists (routes the SPA to setup vs login).
     pub initialized: bool,
+    /// Built-in HTTPS status: whether TLS is answered, the source of the certificate, the
+    /// published `https://` origins and the negotiated ALPN protocols.
+    pub tls: crate::tls::TlsStatus,
 }
 
 /// Whether a first admin exists. Unauthenticated; reachable before init.
@@ -418,6 +428,7 @@ pub struct ServerConfig {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let resp = config(State(state)).await;
 /// assert!(resp.0.initialized);
@@ -426,7 +437,51 @@ pub struct ServerConfig {
 pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         initialized: state.initialized.load(Ordering::Relaxed),
+        tls: state.tls.status(),
     })
+}
+
+/// The admin-only TLS diagnostics: certificate fingerprints (the out-of-band value an operator
+/// compares against the browser's certificate viewer), expiry, the source a failed configuration
+/// degraded from, and the last TLS-side error. Gated by the `AdminUser` extractor — a
+/// server-tier gate, never a world role. The fingerprint is deliberately absent from the public
+/// `/api/config`: a fingerprint fetched over the very channel it would verify proves nothing.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::admin_tls;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let status = admin_tls(admin, State(state)).await;
+/// assert!(!status.0.public.enabled);
+/// # }
+/// ```
+pub async fn admin_tls(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Json<crate::tls::TlsAdminStatus> {
+    Json(state.tls.admin_status())
 }
 
 /// A real Argon2id hash of a throwaway password, computed once. The unknown-user
@@ -468,6 +523,7 @@ fn anti_enumeration_phc() -> &'static str {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
 /// let resp = server
@@ -569,6 +625,7 @@ pub async fn login(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
 /// let resp = server.post("/api/logout").await;
@@ -627,6 +684,7 @@ pub struct SetupRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let body = SetupRequest { username: "admin".into(), password: "pw-admin".into(), token: None };
 /// let result = setup(State(state), Json(body)).await;
@@ -795,6 +853,7 @@ pub struct UserEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let body = CreateUserRequest { username: "player1".into(), password: "pw-player".into(), server_role: None };
@@ -855,6 +914,7 @@ pub async fn create_user(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let users = list_users(admin, State(state)).await.unwrap();
@@ -912,6 +972,7 @@ pub async fn list_users(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// // `delete_user` also clears the caller's session-store row, so the
 /// // `tower_sessions` table must exist first — the same migration the real
@@ -994,6 +1055,7 @@ pub struct ResetPasswordRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// // `reset_user_password` also clears the target's session-store rows, so the
 /// // `tower_sessions` table must exist first, same as `delete_user`'s own example.
@@ -1157,6 +1219,7 @@ pub struct WorldEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let worlds = list_worlds(user, State(state)).await.unwrap();
@@ -1213,6 +1276,7 @@ pub async fn list_worlds(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = CreateWorldRequest { name: "Curse of Strahd".into() };
@@ -1297,6 +1361,7 @@ pub async fn create_world(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = delete_world(user, State(state), Path(world.id)).await;
@@ -1386,6 +1451,7 @@ pub struct MemberEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let members = list_members(user, State(state), Path(world.id)).await.unwrap();
@@ -1488,6 +1554,7 @@ pub struct AddMemberRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = AddMemberRequest { user: pl, role: WorldRole::Player };
@@ -1647,6 +1714,7 @@ impl From<crate::data::sqlite::InviteRecord> for InviteEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = CreateInviteRequest { role: WorldRole::Player };
@@ -1720,6 +1788,7 @@ pub async fn create_invite(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let invites = list_invites(user, State(state), Path(world.id)).await.unwrap();
@@ -1768,6 +1837,7 @@ pub async fn list_invites(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = revoke_invite(user, State(state), Path((world.id, uuid::Uuid::new_v4()))).await;
@@ -1864,6 +1934,7 @@ pub struct AcceptInviteRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: pl, username: "pl".into(), role: ServerRole::User };
 /// let body = AcceptInviteRequest { code: minted.code };
@@ -1975,6 +2046,7 @@ pub async fn accept_invite(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = remove_member(user, State(state), Path((world.id, pl))).await;
@@ -2022,6 +2094,7 @@ pub async fn remove_member(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let doc = Document {
@@ -2107,6 +2180,7 @@ pub struct DocQuery {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let q = DocQuery { r#type: "actor".into() };
@@ -2218,6 +2292,7 @@ pub struct WorldSnapshot {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let snapshot = world_snapshot(user, State(state), Path(world.id)).await.unwrap();
@@ -2325,6 +2400,7 @@ fn by_id_not_found(e: crate::data::DataError) -> AppError {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = get_document(user, State(state), Path(uuid::Uuid::new_v4())).await;
@@ -2456,6 +2532,7 @@ pub struct PatchRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = PatchRequest {
@@ -2566,6 +2643,7 @@ pub async fn patch_document(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let cmd = delete_document(user, State(state), Path(doc_id)).await.unwrap();
@@ -2665,6 +2743,7 @@ fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let defaults = get_world_capability_defaults(user, State(state), Path(world.id)).await.unwrap();
@@ -2710,6 +2789,7 @@ pub async fn get_world_capability_defaults(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = set_world_capability_defaults(user, State(state), Path(world.id), Json(WorldCapDefaults::default())).await;
@@ -2761,6 +2841,7 @@ const MAX_CAPABILITY_REQUIREMENTS: usize = 256;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let reqs = get_world_capability_requirements(user, State(state), Path(world.id)).await.unwrap();
@@ -2806,6 +2887,7 @@ pub async fn get_world_capability_requirements(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let reqs = vec![CapabilityRequirement {
@@ -2978,6 +3060,7 @@ fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), A
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = get_world_contract_declarations(user, State(state), Path(world.id)).await.unwrap();
@@ -3023,6 +3106,7 @@ pub async fn get_world_contract_declarations(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = vec![ContractDeclaration {
@@ -3226,6 +3310,7 @@ fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppEr
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = get_world_schema_declarations(user, State(state), Path(world.id)).await.unwrap();
@@ -3271,6 +3356,7 @@ pub async fn get_world_schema_declarations(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = vec![SchemaDeclaration {
