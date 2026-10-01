@@ -27,7 +27,7 @@
 //!    to close: an HTTP/2 connection resolves only when its streams end, and a WebSocket is a
 //!    stream, so draining without telling the sessions would wait on them. The drain itself is
 //!    bounded by [`ConnLimits::drain_timeout`]: connections still open past it have their IO
-//!    failed (the `kill` module), and a task still running [`KILL_GRACE`] after that is aborted
+//!    failed (the `kill` module), and a task still running [`ABORT_WAIT`] after that is aborted
 //!    and reported in [`DrainReport::aborted`], because a connection task ends when its IO errors.
 //! 4. Every live connection is bounded, not only the half-open ones. [`ConnLimits::max_live`] and
 //!    [`ConnLimits::max_live_per_peer`] cap connections from hand-off until the connection task
@@ -264,9 +264,10 @@ pub struct DrainReport {
     /// Connections still open at the drain deadline, which were then closed by an I/O error
     /// delivered through their IO (see the `kill` module).
     pub killed: usize,
-    /// Connection tasks still running [`KILL_GRACE`] after the deadline, which were aborted. A
-    /// connection task ends when its IO errors, so a nonzero count is a defect. Counts connection
-    /// tasks only: WebSocket session tasks are not in the serve loop's set.
+    /// Connection tasks that finished cancelled. Only the final `abort_all` of the drain cancels a
+    /// connection task, so each is one that did not end within [`ABORT_WAIT`] of its IO being
+    /// failed; a nonzero count is a defect. Counts connection tasks only: WebSocket session tasks
+    /// are not in the serve loop's set.
     pub aborted: usize,
     /// Connection tasks that panicked, at any point of the serve loop's life.
     pub panicked: usize,
@@ -298,19 +299,28 @@ pub struct ServeOutcome {
     pub drain: DrainReport,
 }
 
-/// Time between the drain deadline's kill signal and aborting whatever connection task is still
-/// running. Only a task that does not observe its IO's error reaches the abort, and aborting an
-/// HTTP/2 connection task that carries a live tunnel trips a debug assertion in h2, so the wait
-/// is long enough for any task that does observe it to end: one scheduler turn per connection
-/// plus the h2 error path. Chosen, not measured.
+/// How long the drain waits, after failing every connection's IO, before aborting a task that is
+/// still running: [`KILL_GRACE`] plus `ABORT_MARGIN`, so the abort can never race the time a
+/// connection is allowed to end by itself. Derived, never typed.
+pub const ABORT_WAIT: Duration = KILL_GRACE.saturating_add(ABORT_MARGIN);
+
+/// How long a connection whose IO has been failed is allowed to end by itself. One scheduler turn
+/// per connection plus hyper's error path fit well inside it. Chosen, not measured.
 pub const KILL_GRACE: Duration = Duration::from_secs(2);
 
-/// Records the result of reaping one connection task; a panic is an error-level event.
+/// Covers the scheduling delay between the end of [`KILL_GRACE`] and the connection task's
+/// completion being observed by the serve loop's join. Chosen, not measured.
+const ABORT_MARGIN: Duration = Duration::from_secs(1);
+
+/// Records the result of reaping one connection task: a panic is an error-level event, and a
+/// cancelled join is an abort (only `drain_tasks`' `abort_all` cancels a connection task).
 fn note_join(result: Result<(), JoinError>, report: &mut DrainReport) {
     if let Err(err) = result {
         if err.is_panic() {
             report.panicked += 1;
             tracing::error!("connection task panicked: {err}");
+        } else if err.is_cancelled() {
+            report.aborted += 1;
         }
     }
 }
@@ -322,11 +332,47 @@ async fn join_all(tasks: &mut JoinSet<()>, report: &mut DrainReport) {
     }
 }
 
+/// Ends the connection tasks in `tasks`: waits for them until `deadline`, then calls `kill` (which
+/// fails every connection's IO) and waits `abort_wait` more, then aborts whatever still runs. Each
+/// step is counted in `report`: `killed` is the number open at the deadline, `aborted` the number
+/// that finished cancelled.
+async fn drain_tasks(
+    tasks: &mut JoinSet<()>,
+    deadline: Instant,
+    kill: impl FnOnce(),
+    abort_wait: Duration,
+    report: &mut DrainReport,
+) {
+    if tokio::time::timeout_at(deadline, join_all(tasks, report))
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    report.killed = tasks.len();
+    tracing::warn!(
+        open = report.killed,
+        "connection drain timed out; closing the remaining connections"
+    );
+    kill();
+    if tokio::time::timeout(abort_wait, join_all(tasks, report))
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            still_running = tasks.len(),
+            "connection tasks did not end after their IO was failed; aborting them"
+        );
+        tasks.abort_all();
+        join_all(tasks, report).await;
+    }
+}
+
 /// Serves `app` on connections from `source` until `shutdown` resolves or the source ends, then
 /// runs `on_drain` and drains every live connection. Each connection is told to
 /// `graceful_shutdown`; the ones still open [`ConnLimits::drain_timeout`] after `on_drain` are
 /// closed by an I/O error on their IO (the `kill` module), and any task still running
-/// [`KILL_GRACE`] later is aborted and reported in [`DrainReport::aborted`].
+/// [`ABORT_WAIT`] later is aborted and reported in [`DrainReport::aborted`].
 ///
 /// `on_drain` runs exactly once, before the drain, for both causes. It is where the caller tells
 /// sessions hyper cannot see to end: an HTTP/2 connection resolves only when its streams end, and
@@ -405,25 +451,14 @@ where
     // connections to drain when the loop ended for any reason other than `shutdown` resolving.
     drop(watcher);
     drop(source);
-    let drained = tokio::time::timeout_at(drain_deadline, join_all(&mut tasks, &mut drain)).await;
-    if drained.is_err() {
-        drain.killed = tasks.len();
-        tracing::warn!(
-            open = drain.killed,
-            "connection drain timed out; closing the remaining connections"
-        );
-        kill.fire();
-        let closed = tokio::time::timeout(KILL_GRACE, join_all(&mut tasks, &mut drain)).await;
-        if closed.is_err() {
-            drain.aborted = tasks.len();
-            tracing::error!(
-                aborted = drain.aborted,
-                "connection tasks did not end after their IO was failed; aborting them"
-            );
-            tasks.abort_all();
-            join_all(&mut tasks, &mut drain).await;
-        }
-    }
+    drain_tasks(
+        &mut tasks,
+        drain_deadline,
+        || kill.fire(),
+        ABORT_WAIT,
+        &mut drain,
+    )
+    .await;
     ServeOutcome {
         end,
         drain_deadline,

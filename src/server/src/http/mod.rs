@@ -384,7 +384,7 @@ pub async fn router(state: AppState) -> Router {
 
 /// Bound on the shutdown drain: [`conn_serve::ConnLimits::drain_timeout`], measured from the moment
 /// sessions are told to close. Connections still open past it are closed by an I/O error on their
-/// IO and, after [`conn_serve::KILL_GRACE`], aborted. A connection whose egress loop is merely
+/// IO and, after [`conn_serve::ABORT_WAIT`], aborted. A connection whose egress loop is merely
 /// draining a large resync replay is expected to finish well inside this; one stuck past it must
 /// not block process exit indefinitely.
 pub(crate) const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -395,7 +395,7 @@ pub(crate) const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Durati
 /// told to close, so the grace is that bound plus one second of scheduling slack.
 ///
 /// Every documented shutdown bound derives from this constant and the drain timeout: `serve_with`
-/// returns within `drain_timeout + SESSION_GRACE`, or `drain_timeout + conn_serve::KILL_GRACE +
+/// returns within `drain_timeout + SESSION_GRACE`, or `drain_timeout + conn_serve::ABORT_WAIT +
 /// SESSION_GRACE` when a connection task outlives its killed IO.
 ///
 /// # Examples

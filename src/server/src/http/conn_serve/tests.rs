@@ -953,3 +953,80 @@ async fn a_held_lease_keeps_the_slot_after_the_connection_has_ended() {
     tokio::time::sleep(Duration::from_millis(900)).await;
     let _served = open_served(addr).await;
 }
+
+// ---------------------------------------------------------------------------------------------
+// `drain_tasks`: the deadline, the kill, the abort wait and what each is counted as
+// ---------------------------------------------------------------------------------------------
+
+/// The drain bound the `drain_tasks` controls use; the paused clock makes its length irrelevant.
+const TEST_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Runs `drain_tasks` over `tasks` with the production `abort_wait` and returns the report.
+async fn run_drain(tasks: &mut JoinSet<()>, kill: impl FnOnce()) -> DrainReport {
+    let mut report = DrainReport::default();
+    drain_tasks(
+        tasks,
+        Instant::now() + TEST_DEADLINE,
+        kill,
+        ABORT_WAIT,
+        &mut report,
+    )
+    .await;
+    report
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_task_parked_past_the_kill_and_the_abort_wait_is_counted_aborted() {
+    let mut tasks = JoinSet::new();
+    tasks.spawn(std::future::pending::<()>());
+    tasks.spawn(async {});
+    let report = run_drain(&mut tasks, || {}).await;
+    assert_eq!(report.killed, 1, "{report:?}");
+    assert_eq!(report.aborted, 1, "{report:?}");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_task_that_ends_when_the_kill_fires_is_killed_and_not_aborted() {
+    let mut tasks = JoinSet::new();
+    let (fire, fired) = tokio::sync::oneshot::channel::<()>();
+    tasks.spawn(async move {
+        let _ = fired.await;
+    });
+    let report = run_drain(&mut tasks, move || {
+        let _ = fire.send(());
+    })
+    .await;
+    assert_eq!(report.killed, 1, "{report:?}");
+    assert_eq!(report.aborted, 0, "{report:?}");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_drain_with_nothing_open_at_the_deadline_reports_nothing() {
+    let mut tasks = JoinSet::new();
+    tasks.spawn(async {});
+    let report = run_drain(&mut tasks, || {
+        panic!("nothing was open, so nothing is killed")
+    })
+    .await;
+    assert_eq!(report, DrainReport::default());
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_task_ending_kill_grace_after_the_kill_is_not_aborted() {
+    let mut tasks = JoinSet::new();
+    let (fire, fired) = tokio::sync::oneshot::channel::<()>();
+    // Stands in for `drive`: after the kill it takes its whole `KILL_GRACE` to end.
+    tasks.spawn(async move {
+        let _ = fired.await;
+        tokio::time::sleep(KILL_GRACE).await;
+    });
+    let report = run_drain(&mut tasks, move || {
+        let _ = fire.send(());
+    })
+    .await;
+    assert_eq!(report.killed, 1, "{report:?}");
+    assert_eq!(
+        report.aborted, 0,
+        "the abort raced a connection's own grace: {report:?}"
+    );
+}
