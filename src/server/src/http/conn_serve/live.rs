@@ -26,7 +26,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tower::Service;
 
-use super::egress::{Egress, StallCounters, StallUnit};
+use super::egress::{Egress, StallCounters, StallUnit, STREAM_TABLE_CAP};
 use super::pruned::Pruned;
 use super::stream_exec::{current_cut, StreamCut};
 use super::EGRESS_FLOOR_BYTES;
@@ -44,10 +44,9 @@ pub(super) struct LiveState {
     /// marker is freed with its body. Pruned on insert, so its length is bounded by the live
     /// streams and not by the number ever served.
     markers: Mutex<Pruned<StreamMarker>>,
-    /// The serve loop's cut counters, shared by every connection.
-    stalls: Arc<StallCounters>,
-    /// What the connection's writer has done: the connection unit's evidence, written by the
-    /// connection's IO and read by the sampler.
+    /// What the connection's writer and streams have done: the connection unit's evidence and the
+    /// table of live HTTP/2 streams, written by the connection's IO and read by the sampler. It
+    /// also holds the serve loop's cut counters, shared by every connection.
     egress: Arc<Egress>,
 }
 
@@ -60,12 +59,20 @@ impl LiveState {
     /// State for a connection that holds `slot` and counts its cuts in `stalls`, with no stream in
     /// flight.
     pub(super) fn new(slot: Slot, stalls: Arc<StallCounters>) -> Arc<Self> {
+        Self::with_table_cap(slot, stalls, STREAM_TABLE_CAP)
+    }
+
+    /// State like [`LiveState::new`] whose stream table holds at most `table_cap` entries.
+    pub(super) fn with_table_cap(
+        slot: Slot,
+        stalls: Arc<StallCounters>,
+        table_cap: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             _slot: slot,
             streams: watch::channel(0).0,
             markers: Mutex::new(Pruned::new()),
-            stalls,
-            egress: Arc::new(Egress::default()),
+            egress: Arc::new(Egress::new(stalls, table_cap)),
         })
     }
 
@@ -76,7 +83,7 @@ impl LiveState {
 
     /// Counts one cut under `unit` in the serve loop's counters.
     pub(super) fn record_stall(&self, unit: StallUnit) {
-        self.stalls.record_stall(unit);
+        self.egress.record_stall(unit);
     }
 
     /// Counts one more stream in flight until the returned lease (and its clones) drop.
@@ -131,7 +138,7 @@ impl LiveState {
     /// The cut counts of the serve loop this connection belongs to.
     #[cfg(test)]
     pub(super) fn stall_counts(&self) -> super::StallCuts {
-        self.stalls.snapshot()
+        self.egress.counters().snapshot()
     }
 
     /// How many markers the registry holds, live and dead.

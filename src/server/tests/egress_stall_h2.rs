@@ -80,7 +80,8 @@ async fn a_stream_with_no_credit_is_cut_alone_and_the_connection_keeps_serving()
         drain.stall_cuts,
         StallCuts {
             stream: 1,
-            connection: 0
+            connection: 0,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );
@@ -192,7 +193,8 @@ async fn steady_data_on_a_sibling_and_a_live_tunnel_do_not_postpone_a_stalled_st
         drain.stall_cuts,
         StallCuts {
             stream: 1,
-            connection: 0
+            connection: 0,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );
@@ -230,7 +232,8 @@ async fn a_live_tunnel_with_no_response_is_never_cut_and_survives_a_siblings_cut
         drain.stall_cuts,
         StallCuts {
             stream: 1,
-            connection: 0
+            connection: 0,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );
@@ -267,7 +270,8 @@ async fn a_sparse_producer_with_a_healthy_reader_is_not_cut_across_five_windows(
             drain.stall_cuts,
             StallCuts {
                 stream: 0,
-                connection: 0
+                connection: 0,
+                tracker_overflow: 0,
             },
             "gap {gap_factor}: {drain:?}"
         );
@@ -308,7 +312,8 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
         drain.stall_cuts,
         StallCuts {
             stream: 0,
-            connection: 1
+            connection: 1,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );
@@ -363,7 +368,8 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
         drain.stall_cuts,
         StallCuts {
             stream: 0,
-            connection: 1
+            connection: 1,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );

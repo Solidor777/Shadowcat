@@ -53,6 +53,13 @@
 //!    [`ConnLimits::egress_floor`] bytes. Both run on `drive`'s sampler tick, the connection unit
 //!    first; a parked writer is the connection unit's case alone. Every cut is counted in
 //!    [`DrainReport::stall_cuts`].
+//! 7. An HTTP/2 connection's IO walks the frames of both directions (the `egress` module's frame
+//!    parser) and keeps a table of the connection's live client streams in step with the wire: an
+//!    entry is created when a request's HEADERS frame is read and removed only when the wire shows
+//!    the stream ended. The table's cap is the stream limit (`H2_MAX_CONCURRENT_STREAMS`) plus a
+//!    derived parse lag, and it fails closed: a connection whose table would outgrow it is cut and
+//!    counted in [`StallCuts::tracker_overflow`]. The highest length any table reached is
+//!    [`DrainReport::stream_table_peak`].
 //!
 //! Timeout semantics measured against hyper 1.x: the HTTP/1 header-read timeout is armed on every
 //! wait for a request head, so it bounds both a slow head and an idle keep-alive gap; it does not
@@ -90,7 +97,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use tower::{Layer, ServiceExt};
 
-use self::egress::{Sampler, StallCounters, StallUnit, WriteCounter};
+use self::egress::{ReadObserver, Sampler, StallCounters, StallUnit, WriteCounter};
 use self::kill::{ConnKill, KillReason, KillSignal};
 pub use self::live::ConnLease;
 use self::live::{idle_for, LeaseService, LiveState};
@@ -237,6 +244,37 @@ const H2_SEND_BUF_BYTES: usize = 64 * 1024;
 // A buffer smaller than one chunk would make every chunk wait for credit it cannot be granted.
 const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_FLOOR_BYTES);
 
+/// How many streams a client may have open on one HTTP/2 connection
+/// (`http2::Builder::max_concurrent_streams`). Set explicitly so the bound on the egress stream
+/// table, `max_concurrent_streams + PARSE_LAG_SLACK`, does not depend on a library default. 100 is
+/// the minimum RFC 9113 section 6.5.2 recommends for SETTINGS_MAX_CONCURRENT_STREAMS, and it halves
+/// the slots a stalled stream holds against hyper's default of 200.
+const H2_MAX_CONCURRENT_STREAMS: u32 = 100;
+
+/// How many RST_STREAM frames h2 itself generates, over a connection's life, for protocol errors in
+/// frames the peer sent before it ends the connection with GOAWAY(ENHANCE_YOUR_CALM)
+/// (`http2::Builder::max_local_error_reset_streams`). Equals h2's own default and is set
+/// explicitly, as `Some`, so a library change cannot silently move a security limit and `None`
+/// (no guard) cannot be reached by accident. The count never decays. A reset hyper or this module
+/// sends, a CANCEL, an implicit reset and a stall cut do not count.
+const H2_MAX_LOCAL_ERROR_RESETS: usize = 1024;
+
+/// The HTTP/2 connection builder every h2 connection is served with: one place sets the stream
+/// executor, timer, extended CONNECT, the send buffer, the stream and error-reset limits and the
+/// keep-alive pings.
+fn h2_builder(limits: &ConnLimits) -> http2::Builder<StreamExec> {
+    let mut builder = http2::Builder::new(StreamExec);
+    builder
+        .timer(TokioTimer::new())
+        .enable_connect_protocol()
+        .max_send_buf_size(H2_SEND_BUF_BYTES)
+        .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
+        .max_local_error_reset_streams(Some(H2_MAX_LOCAL_ERROR_RESETS))
+        .keep_alive_interval(Some(limits.h2_ping_interval))
+        .keep_alive_timeout(limits.h2_ping_timeout);
+    builder
+}
+
 /// Time bounds applied to every served connection.
 ///
 /// # Examples
@@ -331,6 +369,7 @@ pub enum ServeEnd {
 /// let clean = DrainReport::default();
 /// assert_eq!((clean.killed, clean.aborted, clean.panicked, clean.dropped), (0, 0, 0, 0));
 /// assert_eq!(clean.stall_cuts.stream, 0);
+/// assert_eq!(clean.stream_table_peak, 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DrainReport {
@@ -351,6 +390,9 @@ pub struct DrainReport {
     /// Responses cut for making no progress, by the bound that cut them, over the serve loop's
     /// life.
     pub stall_cuts: StallCuts,
+    /// The most entries any connection's table of HTTP/2 streams held at once. Bounded by the
+    /// table's cap: the streams h2 admits plus the parse lag it tolerates.
+    pub stream_table_peak: usize,
 }
 
 /// How many responses each egress bound cut. One field per bound; a cut increments exactly one.
@@ -362,6 +404,7 @@ pub struct DrainReport {
 ///
 /// assert_eq!(StallCuts::default().stream, 0);
 /// assert_eq!(StallCuts::default().connection, 0);
+/// assert_eq!(StallCuts::default().tracker_overflow, 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StallCuts {
@@ -371,6 +414,9 @@ pub struct StallCuts {
     /// Connections closed because their socket accepted fewer than [`ConnLimits::egress_floor`]
     /// response bytes over [`ConnLimits::egress_window`] while their writer was parked.
     pub connection: usize,
+    /// Connections closed because their table of HTTP/2 streams outgrew its cap, which only a
+    /// parser defect or a peer outside the protocol can cause.
+    pub tracker_overflow: usize,
 }
 
 /// What [`serve_router`] returns.
@@ -593,6 +639,7 @@ where
     .await;
     drain.dropped = dropped.load(Ordering::Relaxed);
     drain.stall_cuts = stalls.snapshot();
+    drain.stream_table_peak = stalls.table_peak();
     tracing::info!(?end, ?drain, "connection serve loop ended");
     ServeOutcome {
         end,
@@ -731,20 +778,25 @@ struct Replay<I> {
     /// Fails the IO once the connection is told to end.
     kill: Arc<ConnKill>,
     /// Counts what the writer accepted and tracks whether it is parked: the connection unit's
-    /// evidence.
+    /// evidence. On HTTP/2 it also keeps the stream table in step with the frames written.
     writes: WriteCounter,
+    /// On HTTP/2, walks what the codec reads: the stream table's creator and its peer-reset
+    /// removal.
+    reads: ReadObserver,
 }
 
 impl<I> Replay<I> {
     /// IO over `inner` that first serves `prefix`, fails once `kill` fires, and reports its
     /// writes to `writes`.
     fn new(prefix: Vec<u8>, inner: I, kill: Arc<ConnKill>, writes: WriteCounter) -> Self {
+        let reads = writes.read_observer();
         Self {
             prefix,
             pos: 0,
             inner,
             kill,
             writes,
+            reads,
         }
     }
 }
@@ -760,10 +812,17 @@ impl<I: AsyncRead + Unpin> AsyncRead for Replay<I> {
         if this.pos < this.prefix.len() {
             let n = (this.prefix.len() - this.pos).min(buf.remaining());
             buf.put_slice(&this.prefix[this.pos..this.pos + n]);
+            this.reads
+                .after_read(&this.prefix[this.pos..this.pos + n], &this.kill);
             this.pos += n;
             return Poll::Ready(Ok(()));
         }
-        Pin::new(&mut this.inner).poll_read(cx, buf)
+        let before = buf.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = result {
+            this.reads.after_read(&buf.filled()[before..], &this.kill);
+        }
+        result
     }
 }
 
@@ -895,13 +954,7 @@ fn spawn_connection<I: ServeIo>(
             match preface {
                 Ok(io) => {
                     // Extended CONNECT carries WebSockets over HTTP/2 (RFC 8441).
-                    let conn = http2::Builder::new(StreamExec)
-                        .timer(TokioTimer::new())
-                        .enable_connect_protocol()
-                        .max_send_buf_size(H2_SEND_BUF_BYTES)
-                        .keep_alive_interval(Some(limits.h2_ping_interval))
-                        .keep_alive_timeout(limits.h2_ping_timeout)
-                        .serve_connection(TokioIo::new(io), service);
+                    let conn = h2_builder(&limits).serve_connection(TokioIo::new(io), service);
                     let idle = idle_for(live.watch_streams(), limits.h2_idle);
                     drive(
                         conn,
@@ -936,5 +989,7 @@ fn spawn_connection<I: ServeIo>(
     });
 }
 
+#[cfg(test)]
+mod stream_table_tests;
 #[cfg(test)]
 mod tests;

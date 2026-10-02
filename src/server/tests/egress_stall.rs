@@ -106,7 +106,8 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
         drain.stall_cuts,
         StallCuts {
             stream: 0,
-            connection: 1
+            connection: 1,
+            tracker_overflow: 0,
         },
         "{drain:?}"
     );

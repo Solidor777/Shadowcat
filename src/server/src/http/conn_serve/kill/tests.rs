@@ -77,7 +77,10 @@ fn both_consumers_see_the_reason_that_fired_the_switch() {
             KillReason::Drain,
             "connection ended: server shutdown deadline",
         ),
-        (KillReason::Stall, "connection ended: peer stopped reading"),
+        (
+            KillReason::Stall,
+            "connection ended: response made no progress",
+        ),
     ] {
         let kill = ConnKill::new();
         kill.fire(reason);

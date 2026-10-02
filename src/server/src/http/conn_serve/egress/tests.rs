@@ -1,5 +1,5 @@
-//! The cut counters, the write-side counting rules, the frame parser's cost and splits, and the
-//! sliding sampler.
+//! The cut counters, the write-side counting rules, the stream table kept in step with the wire
+//! from both directions, and the sliding sampler.
 
 use std::io::IoSlice;
 
@@ -16,17 +16,25 @@ fn a_fresh_counter_set_reports_no_cuts() {
 
 #[test]
 fn recording_a_cut_moves_exactly_its_own_counter_by_one() {
-    for unit in [StallUnit::Stream, StallUnit::Connection] {
+    for unit in [
+        StallUnit::Stream,
+        StallUnit::Connection,
+        StallUnit::TrackerOverflow,
+    ] {
         let counters = StallCounters::default();
         counters.record_stall(unit);
         let expected = match unit {
             StallUnit::Stream => StallCuts {
                 stream: 1,
-                connection: 0,
+                ..StallCuts::default()
             },
             StallUnit::Connection => StallCuts {
-                stream: 0,
                 connection: 1,
+                ..StallCuts::default()
+            },
+            StallUnit::TrackerOverflow => StallCuts {
+                tracker_overflow: 1,
+                ..StallCuts::default()
             },
         };
         assert_eq!(counters.snapshot(), expected, "{unit:?}");
@@ -34,92 +42,26 @@ fn recording_a_cut_moves_exactly_its_own_counter_by_one() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The frame parser
+// Frame builders
 // ---------------------------------------------------------------------------------------------
 
-/// One HTTP/2 frame of `kind` with `payload`.
-fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
+/// One HTTP/2 frame of `kind` with `flags` on `sid` and `payload`.
+fn frame_on(kind: u8, flags: u8, sid: u32, payload: &[u8]) -> Vec<u8> {
     let n = payload.len() as u32;
-    let mut out = vec![
-        (n >> 16) as u8,
-        (n >> 8) as u8,
-        n as u8,
-        kind,
-        0,
-        0,
-        0,
-        0,
-        1,
-    ];
+    let mut out = vec![(n >> 16) as u8, (n >> 8) as u8, n as u8, kind, flags];
+    out.extend_from_slice(&sid.to_be_bytes());
     out.extend_from_slice(payload);
     out
 }
 
-/// A DATA frame with `n` payload bytes.
+/// One frame of `kind` with no flags on stream 1.
+fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
+    frame_on(kind, 0, 1, payload)
+}
+
+/// A DATA frame with `n` payload bytes on stream 1.
 fn data_frame(n: usize) -> Vec<u8> {
-    frame(0, &vec![0xAB; n])
-}
-
-#[test]
-fn a_data_frame_counts_its_payload_split_at_every_header_offset() {
-    let bytes = data_frame(100);
-    for split in 0..=bytes.len() {
-        let mut parser = FrameParser::default();
-        let counted =
-            parser.data_payload_in(&bytes[..split]) + parser.data_payload_in(&bytes[split..]);
-        assert_eq!(counted, 100, "split at {split}");
-    }
-}
-
-#[test]
-fn frames_that_are_not_data_count_nothing() {
-    for kind in [1u8, 3, 4, 6, 7, 8, 9] {
-        let mut parser = FrameParser::default();
-        assert_eq!(
-            parser.data_payload_in(&frame(kind, &[1; 50])),
-            0,
-            "type {kind}"
-        );
-    }
-}
-
-#[test]
-fn zero_length_data_and_back_to_back_frames_are_walked_by_their_headers() {
-    let mut bytes = data_frame(0);
-    bytes.extend(frame(4, &[0; 6]));
-    bytes.extend(data_frame(7));
-    bytes.extend(data_frame(0));
-    bytes.extend(data_frame(1));
-    let mut parser = FrameParser::default();
-    assert_eq!(parser.data_payload_in(&bytes), 8);
-}
-
-#[test]
-fn frames_over_the_default_size_count_their_whole_length_field() {
-    for n in [16 * 1024, 20_000, 1 << 20] {
-        let mut parser = FrameParser::default();
-        assert_eq!(parser.data_payload_in(&data_frame(n)), n as u64, "{n}");
-    }
-}
-
-#[test]
-fn a_padded_data_frame_counts_its_length_field() {
-    // The pad length byte and the padding are part of the length field: at most 255 + 1 bytes over.
-    let mut padded = vec![0, 0, 12, 0, 0x8, 0, 0, 0, 1, 5];
-    padded.extend_from_slice(&[0xCD; 11]);
-    let mut parser = FrameParser::default();
-    assert_eq!(parser.data_payload_in(&padded), 12);
-}
-
-#[test]
-fn the_parser_takes_a_step_per_frame_part_and_not_per_byte() {
-    let mut parser = FrameParser::default();
-    assert_eq!(parser.data_payload_in(&data_frame(1 << 20)), 1 << 20);
-    assert!(
-        parser.steps <= 2,
-        "a one-mebibyte frame took {} steps",
-        parser.steps
-    );
+    frame(FRAME_TYPE_DATA, &vec![0xAB; n])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -328,4 +270,247 @@ fn a_window_shorter_than_the_tick_still_keeps_a_ring_with_a_span() {
     assert!(s
         .observe(base + Duration::from_millis(1), 0, true)
         .is_some());
+}
+
+// ---------------------------------------------------------------------------------------------
+// The stream table kept in step with the wire
+// ---------------------------------------------------------------------------------------------
+
+/// The client connection preface.
+const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// One HTTP/2 connection's IO bookkeeping over a table of `cap` entries.
+struct Wire {
+    /// The connection's record.
+    egress: Arc<Egress>,
+    /// The serve loop's cut counters.
+    counters: Arc<StallCounters>,
+    /// The connection's kill switch.
+    kill: Arc<ConnKill>,
+    /// What the writer accepted.
+    writes: WriteCounter,
+    /// What the codec read.
+    reads: ReadObserver,
+}
+
+impl Wire {
+    /// A connection whose table holds at most `cap` entries.
+    fn new(cap: usize) -> Self {
+        let counters = Arc::new(StallCounters::default());
+        let egress = Arc::new(Egress::new(counters.clone(), cap));
+        let writes = WriteCounter::new(egress.clone(), true);
+        let reads = writes.read_observer();
+        Self {
+            egress,
+            counters,
+            kill: ConnKill::new(),
+            writes,
+            reads,
+        }
+    }
+
+    /// The codec reads `bytes`.
+    fn read(&mut self, bytes: &[u8]) {
+        self.reads.after_read(bytes, &self.kill);
+    }
+
+    /// The writer accepts all of `bytes`.
+    fn write(&mut self, bytes: &[u8]) {
+        self.writes
+            .after_write(&Poll::Ready(Ok(bytes.len())), &[IoSlice::new(bytes)]);
+    }
+
+    /// The stream ids with an entry.
+    fn ids(&self) -> Vec<u32> {
+        self.egress.stream_ids()
+    }
+
+    /// Whether the kill switch has fired.
+    fn killed(&self) -> bool {
+        use futures_util::FutureExt;
+        self.kill.fired().now_or_never().is_some()
+    }
+}
+
+/// A request HEADERS frame (END_STREAM | END_HEADERS) on `sid`.
+fn request(sid: u32) -> Vec<u8> {
+    frame_on(
+        FRAME_TYPE_HEADERS,
+        FLAG_END_STREAM | FLAG_END_HEADERS,
+        sid,
+        &[0x82, 0x87, 0x84],
+    )
+}
+
+/// A peer RST_STREAM on `sid`.
+fn peer_reset(sid: u32) -> Vec<u8> {
+    frame_on(FRAME_TYPE_RST_STREAM, 0, sid, &[0, 0, 0, 8])
+}
+
+/// A server GOAWAY with `last` as its last stream id.
+fn goaway(last: u32) -> Vec<u8> {
+    let mut payload = last.to_be_bytes().to_vec();
+    payload.extend_from_slice(&[0, 0, 0, 0]);
+    frame_on(7, 0, 0, &payload)
+}
+
+#[test]
+fn requests_read_after_the_preface_create_entries_whatever_the_read_boundaries() {
+    let mut bytes = PREFACE.to_vec();
+    bytes.extend(request(1));
+    bytes.extend(request(3));
+    for split in 0..=bytes.len() {
+        let mut wire = Wire::new(100);
+        wire.read(&bytes[..split]);
+        wire.read(&bytes[split..]);
+        assert_eq!(wire.ids(), [1, 3], "split at {split}");
+    }
+}
+
+#[test]
+fn a_peer_reset_removes_the_entry_and_a_data_frame_without_end_stream_does_not() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    wire.read(&request(3));
+    wire.write(&data_frame(10));
+    assert_eq!(wire.ids(), [1, 3], "DATA without END_STREAM ends nothing");
+    wire.read(&peer_reset(1));
+    assert_eq!(wire.ids(), [3]);
+}
+
+#[test]
+fn a_response_ends_its_entry_only_when_the_last_byte_of_its_end_stream_frame_is_accepted() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    let end = frame_on(FRAME_TYPE_DATA, FLAG_END_STREAM, 1, &[7; 20]);
+    wire.write(&end[..end.len() - 1]);
+    assert_eq!(wire.ids(), [1], "one byte short of the frame's end");
+    wire.write(&end[end.len() - 1..]);
+    assert!(wire.ids().is_empty());
+}
+
+#[test]
+fn a_header_block_with_end_stream_ends_the_entry_at_the_continuation_that_ends_the_block() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    wire.write(&frame_on(FRAME_TYPE_HEADERS, FLAG_END_STREAM, 1, &[0x88]));
+    assert_eq!(wire.ids(), [1], "the block continues");
+    wire.write(&frame_on(
+        FRAME_TYPE_CONTINUATION,
+        FLAG_END_HEADERS,
+        1,
+        &[0x88],
+    ));
+    assert!(wire.ids().is_empty());
+}
+
+#[test]
+fn a_reset_the_server_writes_ends_the_entry() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    wire.write(&frame_on(FRAME_TYPE_RST_STREAM, 0, 1, &[0, 0, 0, 8]));
+    assert!(wire.ids().is_empty());
+}
+
+#[test]
+fn a_goaway_the_server_writes_drops_the_entries_above_its_last_stream_id() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    for sid in [1, 3, 5] {
+        wire.read(&request(sid));
+    }
+    wire.write(&goaway(1));
+    assert_eq!(wire.ids(), [1]);
+}
+
+#[test]
+fn a_request_read_before_a_goaway_is_written_is_purged_and_one_read_after_it_is_never_created() {
+    // h2 lowers its own last stream id when the PONG arrives while the GOAWAY is still buffered, so
+    // a client write [PONG, HEADERS(3)] is parsed off the wire before the GOAWAY is written.
+    let mut before = Wire::new(100);
+    before.read(PREFACE);
+    before.read(&request(1));
+    before.read(&request(3));
+    assert_eq!(before.ids(), [1, 3]);
+    before.write(&goaway(1));
+    assert_eq!(
+        before.ids(),
+        [1],
+        "the purge removes what the read side created"
+    );
+
+    let mut after = Wire::new(100);
+    after.read(PREFACE);
+    after.read(&request(1));
+    after.write(&goaway(1));
+    after.read(&request(3));
+    assert_eq!(
+        after.ids(),
+        [1],
+        "the filter refuses what the purge cannot reach"
+    );
+}
+
+#[test]
+fn an_http1_connection_has_no_table_and_reads_nothing_as_frames() {
+    let egress = Arc::new(Egress::default());
+    let writes = WriteCounter::new(egress.clone(), false);
+    let mut reads = writes.read_observer();
+    let kill = ConnKill::new();
+    reads.after_read(&request(1), &kill);
+    reads.after_read(&request(3), &kill);
+    assert!(egress.stream_ids().is_empty());
+}
+
+#[test]
+fn a_table_that_outgrows_its_cap_cuts_the_connection_once_and_stops_inserting() {
+    let mut wire = Wire::new(3);
+    wire.read(PREFACE);
+    let mut burst = Vec::new();
+    for sid in [1, 3, 5, 7, 9] {
+        burst.extend(request(sid));
+    }
+    wire.read(&burst);
+    assert!(wire.killed(), "the overflow did not cut the connection");
+    assert_eq!(
+        wire.counters.snapshot(),
+        StallCuts {
+            tracker_overflow: 1,
+            ..StallCuts::default()
+        }
+    );
+    assert_eq!(wire.ids(), [1, 3, 5], "nothing past the cap is inserted");
+    wire.read(&request(11));
+    assert_eq!(wire.counters.snapshot().tracker_overflow, 1, "counted once");
+    assert_eq!(wire.counters.table_peak(), 3);
+}
+
+#[test]
+fn an_overflow_on_a_connection_the_drain_already_ended_is_not_counted_as_a_cut() {
+    let mut wire = Wire::new(1);
+    assert!(wire.kill.fire(KillReason::Drain));
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    wire.read(&request(3));
+    assert_eq!(wire.counters.snapshot(), StallCuts::default());
+    assert_eq!(wire.ids(), [1], "the table still fails closed");
+}
+
+#[test]
+fn the_peak_is_the_longest_the_table_ever_was() {
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    for sid in [1, 3, 5] {
+        wire.read(&request(sid));
+    }
+    for sid in [1, 3, 5] {
+        wire.read(&peer_reset(sid));
+    }
+    wire.read(&request(7));
+    assert_eq!(wire.ids(), [7]);
+    assert_eq!(wire.counters.table_peak(), 3);
 }

@@ -1680,7 +1680,8 @@ async fn a_writer_parked_with_nothing_accepted_is_cut_between_the_window_and_one
         live.stall_counts(),
         StallCuts {
             stream: 0,
-            connection: 1
+            connection: 1,
+            tracker_overflow: 0,
         }
     );
     assert_eq!(
@@ -1751,7 +1752,8 @@ async fn a_stream_waiting_behind_a_parked_writer_is_cut_as_a_connection_and_not_
         live.stall_counts(),
         StallCuts {
             stream: 0,
-            connection: 1
+            connection: 1,
+            tracker_overflow: 0,
         }
     );
 }
@@ -1811,4 +1813,176 @@ async fn the_http2_write_counter_equals_the_data_bytes_a_real_client_receives() 
     assert_eq!(egress.accepted(), received);
     drop(sender);
     let _ = timeout(Duration::from_secs(5), server).await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The stream table against the real HTTP/2 codec
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_stream_table_follows_a_real_client_codec_through_responses_and_cancels() {
+    // A real h2 client over a duplex pipe to the real server codec, reading and writing through
+    // `Replay`: the read parser creates an entry for every request, and the entry is gone once the
+    // client has seen the response end (the writer accepted its END_STREAM frame before the client
+    // could read it) or once the server has read the client's cancel.
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let egress = Arc::new(Egress::default());
+    let io = Replay::new(
+        Vec::new(),
+        server_io,
+        ConnKill::new(),
+        WriteCounter::new(egress.clone(), true),
+    );
+    let service = hyper::service::service_fn(|req: axum::http::Request<Incoming>| async move {
+        if req.uri().path() == "/hang" {
+            std::future::pending::<()>().await;
+        }
+        Ok::<_, std::convert::Infallible>(axum::http::Response::new(axum::body::Body::from(
+            vec![7u8; 5000],
+        )))
+    });
+    let server = tokio::spawn(async move {
+        let _ = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(TokioIo::new(io), service)
+            .await;
+    });
+    let (mut sender, conn) = h2::client::handshake(client_io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    for _ in 0..3 {
+        let request = axum::http::Request::get("http://test/ok").body(()).unwrap();
+        sender = sender.ready().await.unwrap();
+        let (response, _) = sender.send_request(request, true).unwrap();
+        let mut body = response.await.unwrap().into_body();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            let _ = body.flow_control().release_capacity(chunk.len());
+        }
+        assert_eq!(
+            egress.stream_ids(),
+            Vec::<u32>::new(),
+            "a finished response left an entry"
+        );
+    }
+
+    // A request the server never answers holds an entry until the client cancels it.
+    let request = axum::http::Request::get("http://test/hang")
+        .body(())
+        .unwrap();
+    sender = sender.ready().await.unwrap();
+    let (response, mut send_stream) = sender.send_request(request, true).unwrap();
+    timeout(Duration::from_secs(5), async {
+        while egress.stream_ids() != [7] {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the pending request never gained an entry");
+    send_stream.send_reset(h2::Reason::CANCEL);
+    drop(response);
+    timeout(Duration::from_secs(5), async {
+        while !egress.stream_ids().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a cancelled request kept its entry");
+    assert!(egress.counters().table_peak() >= 1);
+    drop(sender);
+    let _ = timeout(Duration::from_secs(5), server).await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The HTTP/2 limits the stream table's cap is derived from
+// ---------------------------------------------------------------------------------------------
+
+/// What the peer of a connection served with [`h2_builder`] saw after provoking `streams` library
+/// resets.
+struct Provoked {
+    /// RST_STREAM frames the server wrote for the provoked streams.
+    resets: usize,
+    /// The error code of the GOAWAY that ended the connection, when one arrived.
+    goaway: Option<u32>,
+}
+
+/// Serves one connection with the production [`h2_builder`] over a duplex pipe and has a raw client
+/// provoke `streams` library resets: each stream opens with a request HEADERS block that does not
+/// end the stream, then sends a second HEADERS block that does not end it either, a protocol error
+/// h2 answers with an RST_STREAM it generates itself, which counts against
+/// [`H2_MAX_LOCAL_ERROR_RESETS`].
+async fn provoke_library_resets(streams: u32) -> Provoked {
+    let (mut peer, server_io) = tokio::io::duplex(1 << 20);
+    let service = hyper::service::service_fn(|_req: axum::http::Request<Incoming>| async move {
+        std::future::pending::<Result<axum::http::Response<axum::body::Body>, io::Error>>().await
+    });
+    let limits = ConnLimits::default();
+    let server = tokio::spawn(async move {
+        let _ = h2_builder(&limits)
+            .serve_connection(TokioIo::new(server_io), service)
+            .await;
+    });
+    peer.write_all(&H2_OPEN[..H2_PREFACE_LEN]).await.unwrap();
+    peer.write_all(&h2_frame(0x4, 0, 0, &[])).await.unwrap();
+    // GET https, path "/" by static-table index.
+    let block = [0x82, 0x87, 0x84];
+    let mut provoked = Provoked {
+        resets: 0,
+        goaway: None,
+    };
+    let mut inbound = Vec::new();
+    let mut scratch = [0u8; 16 * 1024];
+    let mut sent = 0u32;
+    while provoked.goaway.is_none() {
+        if sent < streams {
+            let sid = 1 + 2 * sent;
+            let mut out = h2_frame(0x1, 0x4, sid, &block);
+            out.extend(h2_frame(0x1, 0x4, sid, &[]));
+            if peer.write_all(&out).await.is_err() {
+                break;
+            }
+            sent += 1;
+        }
+        let wait = Duration::from_millis(if sent < streams { 1 } else { 500 });
+        match timeout(wait, peer.read(&mut scratch)).await {
+            Ok(Ok(0) | Err(_)) => break,
+            Ok(Ok(n)) => inbound.extend_from_slice(&scratch[..n]),
+            Err(_) if sent >= streams => break,
+            Err(_) => {}
+        }
+        while inbound.len() >= 9 {
+            let len = u32::from_be_bytes([0, inbound[0], inbound[1], inbound[2]]) as usize;
+            if inbound.len() < 9 + len {
+                break;
+            }
+            let kind = inbound[3];
+            let payload = inbound[9..9 + len].to_vec();
+            inbound.drain(..9 + len);
+            if kind == 0x3 {
+                provoked.resets += 1;
+            }
+            if kind == 0x7 && payload.len() >= 8 {
+                provoked.goaway = Some(u32::from_be_bytes([
+                    payload[4], payload[5], payload[6], payload[7],
+                ]));
+            }
+        }
+    }
+    server.abort();
+    provoked
+}
+
+#[tokio::test]
+async fn the_connection_builder_pins_the_library_reset_budget_to_the_constant() {
+    let provoked = provoke_library_resets(H2_MAX_LOCAL_ERROR_RESETS as u32 + 60).await;
+    assert_eq!(
+        provoked.goaway,
+        Some(11),
+        "the connection did not end with ENHANCE_YOUR_CALM"
+    );
+    assert_eq!(
+        provoked.resets, H2_MAX_LOCAL_ERROR_RESETS,
+        "the GOAWAY did not come at exactly the budget"
+    );
 }

@@ -1,6 +1,6 @@
-//! Egress no-progress accounting: what a cut is counted as, the counters the serve loop owns, and
-//! the connection unit's evidence (how many response bytes the socket accepted, and whether its
-//! writer is parked).
+//! Egress no-progress accounting: what a cut is counted as, the counters the serve loop owns, the
+//! connection unit's evidence (how many response bytes the socket accepted, and whether its writer
+//! is parked), and the wire-fed table of live HTTP/2 streams.
 //!
 //! One definition of "no progress" is shared by every unit that cuts a response: a peer that
 //! returns no flow-control credit for a pending chunk (the stream unit), or a socket that accepts
@@ -15,17 +15,47 @@
 //! `egress_floor` bytes accepted, for the whole window. On HTTP/2 only DATA frame payload counts: a
 //! peer that keeps acknowledging PINGs and SETTINGS advertises liveness without draining, and raw
 //! bytes would let those acknowledgements move the counter.
+//!
+//! On HTTP/2 the connection's IO also walks the frames of both directions with the `parser` module
+//! ([`WriteCounter`] for what the writer accepts, [`ReadObserver`] for what the codec reads) and
+//! keeps the `table` module's per-stream table in step with the wire. The table fails closed: a
+//! connection whose table outgrows its cap is cut and counted as [`StallUnit::TrackerOverflow`].
 
 use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
-use super::StallCuts;
+use self::parser::{
+    FrameEvent, FrameParser, FLAG_END_HEADERS, FLAG_END_STREAM, FRAME_TYPE_CONTINUATION,
+    FRAME_TYPE_DATA, FRAME_TYPE_HEADERS, FRAME_TYPE_RST_STREAM,
+};
+use self::table::{ParseOutcome, StreamTable};
+use super::kill::{ConnKill, KillReason};
+use super::{StallCuts, H2_MAX_CONCURRENT_STREAMS};
+
+mod parser;
+mod table;
+
+/// How many entries the table may hold above `max_concurrent_streams` because the read parser sees
+/// bytes the codec has read but h2 has not processed, and h2's refusal RST_STREAM frames are queued
+/// but not yet written.
+///
+/// Derivation: the `tokio_util` framed reader under the h2 codec reads at most 8 KiB at a time, and
+/// the smallest parseable HEADERS frame is 9 bytes (a frame header with an empty block), so one read
+/// can add `8192 / 9` entries. At most two reads are in flight at once (the one being processed and
+/// the one buffered), and the refusals still queued add at most about as many again; five reads'
+/// worth carries a margin over that. The minimum-frame integration test asserts the premises (read
+/// size, frame size) before it asserts the peak against this derivation.
+pub(super) const PARSE_LAG_SLACK: usize = 5 * (8192 / 9);
+
+/// The most entries a connection's stream table may hold: the streams h2 admits plus the parse lag
+/// the table tolerates ([`PARSE_LAG_SLACK`]).
+pub(super) const STREAM_TABLE_CAP: usize = H2_MAX_CONCURRENT_STREAMS as usize + PARSE_LAG_SLACK;
 
 /// Which bound cut a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +64,8 @@ pub(super) enum StallUnit {
     Stream,
     /// A whole connection whose socket accepted almost nothing for the window.
     Connection,
+    /// A connection whose stream table outgrew its cap.
+    TrackerOverflow,
 }
 
 /// The serve loop's cut counters, shared by every connection it serves.
@@ -43,6 +75,10 @@ pub(super) struct StallCounters {
     stream: AtomicUsize,
     /// Connections cut by the connection unit.
     connection: AtomicUsize,
+    /// Connections cut because their stream table outgrew its cap.
+    tracker_overflow: AtomicUsize,
+    /// The most entries any connection's stream table held.
+    table_peak: AtomicUsize,
 }
 
 impl StallCounters {
@@ -51,8 +87,19 @@ impl StallCounters {
         let counter = match unit {
             StallUnit::Stream => &self.stream,
             StallUnit::Connection => &self.connection,
+            StallUnit::TrackerOverflow => &self.tracker_overflow,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Raises the table-length peak to `len` when it is higher.
+    fn note_table_len(&self, len: usize) {
+        self.table_peak.fetch_max(len, Ordering::Relaxed);
+    }
+
+    /// The most entries any connection's stream table held.
+    pub(super) fn table_peak(&self) -> usize {
+        self.table_peak.load(Ordering::Relaxed)
     }
 
     /// The counts so far.
@@ -60,12 +107,18 @@ impl StallCounters {
         StallCuts {
             stream: self.stream.load(Ordering::Relaxed),
             connection: self.connection.load(Ordering::Relaxed),
+            tracker_overflow: self.tracker_overflow.load(Ordering::Relaxed),
         }
     }
 }
 
-/// What the connection's writer has done, as the connection unit reads it.
-#[derive(Default)]
+/// Locks `m`, ignoring poison: the state it guards is always consistent between statements.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a connection's writer and its streams have done, as the egress units read it: the
+/// connection unit's evidence and the table of live HTTP/2 streams.
 pub(super) struct Egress {
     /// Response bytes the socket accepted. The TLS writer buffers up to 64 KiB (rustls's
     /// `DEFAULT_BUFFER_LIMIT`), so this runs ahead of what the peer has read. HTTP/2: DATA frame
@@ -75,9 +128,50 @@ pub(super) struct Egress {
     /// not polled again until its socket is writable, so an edge flag read once per tick would be
     /// true once and then false for as long as the writer stays parked; the level stays true.
     write_parked: AtomicBool,
+    /// The wire-fed table of live HTTP/2 client streams (never filled on HTTP/1).
+    streams: Mutex<StreamTable>,
+    /// The serve loop's cut counters, which every cut site reaches through
+    /// [`Egress::record_stall`].
+    stalls: Arc<StallCounters>,
+}
+
+#[cfg(test)]
+impl Default for Egress {
+    /// A record with its own counters and the production table cap.
+    fn default() -> Self {
+        Self::new(Arc::new(StallCounters::default()), STREAM_TABLE_CAP)
+    }
 }
 
 impl Egress {
+    /// An empty record whose stream table holds at most `table_cap` entries and whose cuts count in
+    /// `stalls`.
+    pub(super) fn new(stalls: Arc<StallCounters>, table_cap: usize) -> Self {
+        Self {
+            data_accepted: AtomicU64::new(0),
+            write_parked: AtomicBool::new(false),
+            streams: Mutex::new(StreamTable::new(table_cap)),
+            stalls,
+        }
+    }
+
+    /// Counts one cut under `unit` in the serve loop's counters.
+    pub(super) fn record_stall(&self, unit: StallUnit) {
+        self.stalls.record_stall(unit);
+    }
+
+    /// The serve loop's counters, for tests.
+    #[cfg(test)]
+    pub(super) fn counters(&self) -> &StallCounters {
+        &self.stalls
+    }
+
+    /// The stream ids with a table entry, in order, for tests.
+    #[cfg(test)]
+    pub(super) fn stream_ids(&self) -> Vec<u32> {
+        lock(&self.streams).ids()
+    }
+
     /// Response bytes the socket has accepted so far.
     pub(super) fn accepted(&self) -> u64 {
         self.data_accepted.load(Ordering::Relaxed)
@@ -86,6 +180,60 @@ impl Egress {
     /// Whether the writer is parked.
     pub(super) fn parked(&self) -> bool {
         self.write_parked.load(Ordering::Relaxed)
+    }
+
+    /// The read parser parsed a request HEADERS frame header for `sid`. Creates the stream's entry
+    /// and records the table's length; when the table would outgrow its cap the connection is cut
+    /// through `kill` and counted as one [`StallUnit::TrackerOverflow`] cut (only when this call
+    /// ended the connection, so a drain that fired first is not double-counted).
+    fn request_started(&self, sid: u32, kill: &ConnKill) {
+        let outcome = lock(&self.streams).read_headers(sid);
+        match outcome {
+            ParseOutcome::Ignored => {}
+            ParseOutcome::Inserted { len, past_half } => {
+                self.stalls.note_table_len(len);
+                if past_half {
+                    tracing::warn!(
+                        entries = len,
+                        cap = STREAM_TABLE_CAP,
+                        "a connection's stream table is past half its cap"
+                    );
+                }
+            }
+            ParseOutcome::Overflow => {
+                if kill.fire(KillReason::Stall) {
+                    tracing::warn!(
+                        unit = "tracker_overflow",
+                        cap = STREAM_TABLE_CAP,
+                        "connection cut: its stream table outgrew its cap"
+                    );
+                    self.record_stall(StallUnit::TrackerOverflow);
+                }
+            }
+        }
+    }
+
+    /// The writer accepted the last byte of a frame of `kind` with `flags` on `sid`.
+    fn frame_written(&self, kind: u8, flags: u8, sid: u32) {
+        let ends_stream = flags & FLAG_END_STREAM != 0;
+        let ends_headers = flags & FLAG_END_HEADERS != 0;
+        match kind {
+            FRAME_TYPE_HEADERS if ends_stream && ends_headers => {
+                lock(&self.streams).write_ended(sid);
+            }
+            FRAME_TYPE_HEADERS if ends_stream => lock(&self.streams).write_headers_continue(sid),
+            FRAME_TYPE_CONTINUATION if ends_headers => {
+                lock(&self.streams).write_continuation_end(sid);
+            }
+            FRAME_TYPE_DATA if ends_stream => lock(&self.streams).write_ended(sid),
+            FRAME_TYPE_RST_STREAM => lock(&self.streams).write_ended(sid),
+            _ => {}
+        }
+    }
+
+    /// The writer accepted a whole GOAWAY frame with last stream id `last`.
+    fn goaway_written(&self, last: u32) {
+        lock(&self.streams).goaway(last);
     }
 }
 
@@ -97,8 +245,9 @@ enum Rule {
     H2(FrameParser),
 }
 
-/// The connection's write side bookkeeping: counts what each write accepted into [`Egress`] and
-/// keeps its parked level. Owned by the connection's IO, whose write methods call it.
+/// The connection's write side bookkeeping: counts what each write accepted into [`Egress`], keeps
+/// its parked level, and on HTTP/2 keeps the stream table in step with the frames written. Owned by
+/// the connection's IO, whose write methods call it.
 pub(super) struct WriteCounter {
     /// Where the counts go.
     egress: Arc<Egress>,
@@ -112,10 +261,18 @@ impl WriteCounter {
         Self {
             egress,
             rule: if is_h2 {
-                Rule::H2(FrameParser::default())
+                Rule::H2(FrameParser::new())
             } else {
                 Rule::Raw
             },
+        }
+    }
+
+    /// The read-side observer of the same connection: it parses requests only on HTTP/2.
+    pub(super) fn read_observer(&self) -> ReadObserver {
+        ReadObserver {
+            egress: self.egress.clone(),
+            parser: matches!(self.rule, Rule::H2(_)).then(FrameParser::with_preface),
         }
     }
 
@@ -150,19 +307,27 @@ impl WriteCounter {
         }
     }
 
-    /// How many of the first `n` bytes of `bufs` count under this connection's rule.
+    /// How many of the first `n` bytes of `bufs` count under this connection's rule. On HTTP/2 it
+    /// also reports each frame the bytes completed to the stream table.
     fn counted(&mut self, bufs: &[io::IoSlice<'_>], n: usize) -> u64 {
         match &mut self.rule {
             Rule::Raw => n as u64,
             Rule::H2(parser) => {
-                let mut left = n;
+                let egress = &self.egress;
                 let mut data = 0;
+                let mut on = |event: FrameEvent| match event {
+                    FrameEvent::Data(bytes) => data += bytes,
+                    FrameEvent::End { kind, flags, sid } => egress.frame_written(kind, flags, sid),
+                    FrameEvent::GoAway(last) => egress.goaway_written(last),
+                    FrameEvent::Start { .. } => {}
+                };
+                let mut left = n;
                 for buf in bufs {
                     if left == 0 {
                         break;
                     }
                     let take = left.min(buf.len());
-                    data += parser.data_payload_in(&buf[..take]);
+                    parser.feed(&buf[..take], &mut on);
                     left -= take;
                 }
                 data
@@ -171,65 +336,36 @@ impl WriteCounter {
     }
 }
 
-/// The length of an HTTP/2 frame header (RFC 9113 section 4.1).
-const FRAME_HEADER_LEN: usize = 9;
-
-/// The type code of a DATA frame (RFC 9113 section 6.1).
-const FRAME_TYPE_DATA: u8 = 0;
-
-/// Walks the HTTP/2 frames a connection writes, in whatever pieces the writer accepts them, and
-/// counts DATA payload bytes. O(frames): a payload is skipped by arithmetic, never inspected.
-///
-/// INVARIANT: the first byte fed is the first byte of a frame. The server's first write is its
-/// SETTINGS frame, and the parser sits after the TLS layer, so it sees plaintext frames.
-///
-/// Counts a PADDED DATA frame's whole length field: the server writes no padding, and a padded
-/// frame would be overcounted by at most 255 bytes.
-#[derive(Default)]
-pub(super) struct FrameParser {
-    /// The frame header bytes collected so far.
-    header: [u8; FRAME_HEADER_LEN],
-    /// How many `header` bytes are filled, `0..FRAME_HEADER_LEN`.
-    filled: usize,
-    /// Payload bytes of the current frame still to skip.
-    left: u32,
-    /// Whether the current frame is DATA.
-    is_data: bool,
-    /// Loop passes taken, so a test can assert the cost is per frame and not per byte.
-    #[cfg(test)]
-    steps: usize,
+/// The connection's read side bookkeeping: on HTTP/2, walks the bytes the codec is handed and
+/// reports each request HEADERS frame and each peer RST_STREAM to the stream table. Owned by the
+/// connection's IO, whose read method calls it.
+pub(super) struct ReadObserver {
+    /// The connection's record, whose table the events feed.
+    egress: Arc<Egress>,
+    /// The frame walker, starting in the client preface; `None` on HTTP/1.
+    parser: Option<FrameParser>,
 }
 
-impl FrameParser {
-    /// Consumes `bytes`, the next bytes the writer accepted, and returns how many were DATA
-    /// payload.
-    pub(super) fn data_payload_in(&mut self, mut bytes: &[u8]) -> u64 {
-        let mut data = 0u64;
-        while !bytes.is_empty() {
-            #[cfg(test)]
-            {
-                self.steps += 1;
-            }
-            if self.left > 0 {
-                let skip = bytes.len().min(self.left as usize);
-                if self.is_data {
-                    data += skip as u64;
-                }
-                self.left -= skip as u32;
-                bytes = &bytes[skip..];
-                continue;
-            }
-            let take = (FRAME_HEADER_LEN - self.filled).min(bytes.len());
-            self.header[self.filled..self.filled + take].copy_from_slice(&bytes[..take]);
-            self.filled += take;
-            bytes = &bytes[take..];
-            if self.filled == FRAME_HEADER_LEN {
-                self.left = u32::from_be_bytes([0, self.header[0], self.header[1], self.header[2]]);
-                self.is_data = self.header[3] == FRAME_TYPE_DATA;
-                self.filled = 0;
-            }
-        }
-        data
+impl ReadObserver {
+    /// Walks `bytes`, which the codec is about to read. A table overflow cuts the connection
+    /// through `kill`.
+    pub(super) fn after_read(&mut self, bytes: &[u8], kill: &ConnKill) {
+        let Some(parser) = &mut self.parser else {
+            return;
+        };
+        let egress = &self.egress;
+        parser.feed(bytes, &mut |event| match event {
+            FrameEvent::Start {
+                kind: FRAME_TYPE_HEADERS,
+                sid,
+            } => egress.request_started(sid, kill),
+            FrameEvent::End {
+                kind: FRAME_TYPE_RST_STREAM,
+                sid,
+                ..
+            } => lock(&egress.streams).read_reset(sid),
+            _ => {}
+        });
     }
 }
 

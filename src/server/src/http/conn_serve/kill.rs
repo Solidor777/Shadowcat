@@ -44,8 +44,8 @@ use super::pruned::Pruned;
 pub(super) enum KillReason {
     /// The shutdown drain deadline passed.
     Drain,
-    /// The connection's socket accepted almost nothing for the egress window, so the connection
-    /// unit cut it.
+    /// An egress bound cut the connection: its socket accepted almost nothing for the window, or its
+    /// stream table outgrew its cap.
     Stall,
 }
 
@@ -54,7 +54,7 @@ impl KillReason {
     fn message(self) -> &'static str {
         match self {
             Self::Drain => "connection ended: server shutdown deadline",
-            Self::Stall => "connection ended: peer stopped reading",
+            Self::Stall => "connection ended: response made no progress",
         }
     }
 }
