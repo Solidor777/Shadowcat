@@ -91,10 +91,6 @@ struct Actions {
     /// Task that calls `poll_complete`.
     task: Option<Waker>,
 
-    /// Task parked by `Streams::pause_for_accepts`; woken when `Streams::next_incoming` accepts
-    /// a remotely-reset stream and so lowers the count that parked it.
-    accept_waker: Option<Waker>,
-
     /// If the connection errors, a copy is kept for any StreamRefs.
     conn_error: Option<proto::Error>,
 }
@@ -132,18 +128,13 @@ where
     }
 
     /// Whether the connection must stop reading frames until accepts drain the count of
-    /// remotely-reset streams that are still pending accept (server peers only). When it returns
-    /// true, `cx`'s task is parked and `next_incoming` wakes it once the count falls below the
-    /// bound.
-    pub fn pause_for_accepts(&mut self, cx: &Context) -> bool {
-        let mut me = self.inner.lock().unwrap();
-        let me = &mut *me;
-        if me.counts.remote_resets_at_bound() {
-            me.actions.accept_waker = Some(cx.waker().clone());
-            true
-        } else {
-            false
-        }
+    /// remotely-reset streams that are still pending accept (server peers only). No waker is
+    /// stored: the count only falls in `next_incoming`, and a count at the bound means the accept
+    /// queue holds at least that many reset streams, so the accept loop that polled the connection
+    /// pops one in the same poll and polls the connection again.
+    pub fn pause_for_accepts(&self) -> bool {
+        let me = self.inner.lock().unwrap();
+        me.counts.remote_resets_at_bound()
     }
 
     pub fn next_incoming(&mut self) -> Option<StreamRef<B>> {
@@ -163,9 +154,6 @@ where
             // Pending-accepted remotely-reset streams are counted.
             if stream.state.is_remote_reset() {
                 me.counts.dec_num_remote_reset_streams();
-                if let Some(waker) = me.actions.accept_waker.take() {
-                    waker.wake();
-                }
             }
 
             StreamRef {
@@ -477,7 +465,6 @@ impl Inner {
                 recv: Recv::new(peer, &config),
                 send: Send::new(&config),
                 task: None,
-                accept_waker: None,
                 conn_error: None,
             },
             store: Store::new(),

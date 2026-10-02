@@ -369,8 +369,9 @@ where
             ready!(self.poll_ready(cx))?;
 
             // Backpressure: no frame is read while the remotely-reset streams awaiting accept
-            // are at their bound; `Streams::next_incoming` wakes this task as they drain.
-            if self.inner.streams.pause_for_accepts(cx) {
+            // are at their bound. The accept loop that polled this connection pops a stream in the
+            // same poll and polls again, so no waker is stored.
+            if self.inner.streams.pause_for_accepts() {
                 return Poll::Pending;
             }
 

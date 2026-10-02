@@ -58,13 +58,15 @@ once) has all of them pending at once, so no finite limit is both safe and suffi
 For a server connection:
 
 - `Connection::poll2` stops reading frames (`Streams::pause_for_accepts`, `Counts::remote_resets_at_bound`)
-  while the count equals the limit, and `Streams::next_incoming` wakes it when an accept lowers
-  the count. The count therefore never exceeds the limit (a limit of 0 is treated as 1), no reset is
-  refused for queueing, and the memory pending reset streams pin stays bounded by the limit. Accepting
-  reads only the accept queue (`Recv::next_incoming`), never a frame or a handler, so a stopped
-  connection resumes on the next accept; hyper's `poll_accept` loop pops a stream right after the
-  connection reports pending. Client connections are unchanged (a client that never accepts a pushed
-  stream would otherwise stop reading).
+  while the count equals the limit. The count therefore never exceeds the limit (a limit of 0 is
+  treated as 1), no reset is refused for queueing, and the memory pending reset streams pin stays
+  bounded by the limit. The count falls only in `Streams::next_incoming`, and a count at the limit
+  means the accept queue holds at least that many reset streams, so `server::Connection::poll_accept`
+  (which polls the connection, then pops a stream in the same call) always reaches one; hyper's
+  accept loop then polls the connection again and reading resumes. No waker is stored: a caller
+  that polls the connection with `poll_closed` alone and accepts nowhere never resumes it. hyper's
+  server path accepts in the task that polls. Client connections are unchanged (a client that never
+  accepts a pushed stream would otherwise stop reading).
 - `Counts::record_remote_reset`, called from `Recv::recv_reset` for every RST_STREAM that reaches a
   stream, charges a generic cell rate limit (`ResetRate`): a burst of up to 16 times the limit is
   admitted at once, and the sustained rate is that many resets per 10 s window

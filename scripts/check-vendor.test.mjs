@@ -67,7 +67,7 @@ const CONN_UP = `impl Connection {
 `;
 const CONN_PATCHED = CONN_UP.replace(
   "        self.poll_ready(cx);\n",
-  "        self.poll_ready(cx);\n        if self.inner.streams.pause_for_accepts(cx) {\n            return Pending;\n        }\n",
+  "        self.poll_ready(cx);\n        if self.inner.streams.pause_for_accepts() {\n            return Pending;\n        }\n",
 );
 const COUNTS_UP = `use super::*;
 
@@ -108,32 +108,17 @@ const RECV_PATCHED = RECV_UP.replace(
   "        self.notify();\n",
   "        if counts.record_remote_reset().is_err() {\n            return;\n        }\n        self.notify();\n",
 );
-const STREAMS_UP = `struct Actions {
-    task: Option<Waker>,
-}
-
-impl Inner {
-    fn new() -> Self {
-        Actions {
-            task: None,
-        }
-    }
-}
-
-impl Streams {
+const STREAMS_UP = `impl Streams {
     pub fn next_incoming(&mut self) {
         let key = pop();
         key
     }
 }
 `;
-const STREAMS_PATCHED = STREAMS_UP.replace("    task: Option<Waker>,\n", "    task: Option<Waker>,\n    accept_waker: Option<Waker>,\n")
-  .replace("            task: None,\n", "            task: None,\n            accept_waker: None,\n")
-  .replace(
-    "    pub fn next_incoming(&mut self) {",
-    "    pub fn pause_for_accepts(&mut self, cx: &Context) -> bool {\n        me.counts.remote_resets_at_bound()\n    }\n\n    pub fn next_incoming(&mut self) {",
-  )
-  .replace("        let key = pop();\n", "        let key = pop();\n        me.actions.accept_waker.take();\n");
+const STREAMS_PATCHED = STREAMS_UP.replace(
+  "    pub fn next_incoming(&mut self) {",
+  "    pub fn pause_for_accepts(&self) -> bool {\n        me.counts.remote_resets_at_bound()\n    }\n\n    pub fn next_incoming(&mut self) {",
+);
 const LICENSE = "Permission is hereby granted, free of charge, to any person obtaining a copy\n";
 const CARGO = '[package]\nname = "h2"\nversion = "0.4.19"\n';
 
@@ -390,7 +375,6 @@ test("reverting any pending-accept reset change fails its assertion even when it
     ["src/proto/streams/counts.rs", COUNTS_UP, "does not compare the count with the bound"],
     ["src/proto/streams/counts.rs", COUNTS_UP, "does not charge the reset-rate limit"],
     ["src/proto/streams/streams.rs", STREAMS_UP, "does not test the pending-accept reset bound"],
-    ["src/proto/streams/streams.rs", STREAMS_UP, "does not wake a connection parked on the reset bound"],
   ];
   for (const [file, upstream, message] of cases) {
     const { vendored } = fixture();
@@ -401,14 +385,14 @@ test("reverting any pending-accept reset change fails its assertion even when it
 
 test("a tampered backpressure hunk in the vendored file fails its record hash", () => {
   const { vendored } = fixture();
-  vendored.set("src/proto/connection.rs", CONN_PATCHED.replace("pause_for_accepts(cx)", "pause_for_accept(cx)"));
+  vendored.set("src/proto/connection.rs", CONN_PATCHED.replace("pause_for_accepts()", "pause_for_accept()"));
   expect(checkVendor(inputs(vendored)).some((e) => e.includes("src/proto/connection.rs: hash"))).toBe(true);
 });
 
 test("a tampered backpressure hunk in the committed diff fails the upstream replay", async () => {
   const f = await networkedFixture();
   const key = "vendor/h2/SHADOWCAT-PATCH.diff";
-  f.files.set(key, Buffer.from(f.files.get(key).toString("latin1").replace("pause_for_accepts(cx)", "pause_for_accept(cx)"), "latin1"));
+  f.files.set(key, Buffer.from(f.files.get(key).toString("latin1").replace("pause_for_accepts()", "pause_for_accept()"), "latin1"));
   expect(checkUpstream(f).some((e) => e.includes("src/proto/connection.rs: upstream plus"))).toBe(true);
 });
 

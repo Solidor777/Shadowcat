@@ -75,7 +75,7 @@ export const EXPECTED_HUNKS_BY_FILE = {
   "src/proto/streams/counts.rs": 5,
   "src/proto/streams/recv.rs": 1,
   "src/proto/streams/state.rs": 2,
-  "src/proto/streams/streams.rs": 4,
+  "src/proto/streams/streams.rs": 1,
   "src/server.rs": 1,
 };
 
@@ -90,9 +90,8 @@ export const BEHAVIOUR_CHECKS = [
   { file: "src/proto/streams/state.rs", fn: "recv_eof", needle: "Closed(Cause::ScheduledLibraryReset(_)) =>", message: "State::recv_eof has no ScheduledLibraryReset conversion arm" },
   { file: "src/proto/streams/state.rs", fn: "handle_error", needle: "Closed(Cause::ScheduledLibraryReset(_)) =>", message: "State::handle_error has no ScheduledLibraryReset conversion arm" },
   { file: "src/server.rs", fn: "convert_poll_message", needle: "crate::StreamId::from_internal(stream_id)", message: "Peer::convert_poll_message does not add the StreamId extension" },
-  { file: "src/proto/connection.rs", fn: "poll2", needle: "pause_for_accepts(cx)", message: "Connection::poll2 does not stop reading while pending-accept resets are at their bound" },
+  { file: "src/proto/connection.rs", fn: "poll2", needle: "pause_for_accepts()", message: "Connection::poll2 does not stop reading while pending-accept resets are at their bound" },
   { file: "src/proto/streams/streams.rs", fn: "pause_for_accepts", needle: "remote_resets_at_bound()", message: "Streams::pause_for_accepts does not test the pending-accept reset bound" },
-  { file: "src/proto/streams/streams.rs", fn: "next_incoming", needle: "accept_waker", message: "Streams::next_incoming does not wake a connection parked on the reset bound" },
   { file: "src/proto/streams/counts.rs", fn: "remote_resets_at_bound", needle: "self.num_remote_reset_streams >= self.max_remote_reset_streams", message: "Counts::remote_resets_at_bound does not compare the count with the bound" },
   { file: "src/proto/streams/counts.rs", fn: "record_remote_reset", needle: "self.remote_reset_rate.record(", message: "Counts::record_remote_reset does not charge the reset-rate limit" },
   { file: "src/proto/streams/recv.rs", fn: "recv_reset", needle: "counts.record_remote_reset()", message: "Recv::recv_reset does not enforce the sustained reset-rate limit" },
