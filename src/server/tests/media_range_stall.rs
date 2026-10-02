@@ -848,6 +848,65 @@ per_protocol!(
     }
 );
 
+per_protocol!(
+    a_client_that_goes_away_returns_the_permit_long_before_the_stall_window,
+    protocol,
+    async move {
+        let mut media = Media::start(protocol, 1).await;
+        let (id, path) = media.seed_media().await;
+        let reply = media
+            .get(&format!("/api/assets/{id}?variant=opus"), &[])
+            .await;
+        assert_eq!(reply.status(), 200, "{protocol:?}");
+        assert!(
+            wait_for(Duration::from_secs(5), || media.permits().held() == 1).await,
+            "{protocol:?}"
+        );
+        // The peer resets (HTTP/2) or closes (HTTP/1) with the body unread.
+        let gone = Instant::now();
+        drop(reply);
+        assert!(
+            wait_for(WINDOW / 2, || media.permits().held() == 0).await,
+            "{protocol:?}: the permit was still held {:?} after the client went away",
+            gone.elapsed()
+        );
+        assert!(
+            wait_for(Duration::from_secs(5), || !file_is_open(&path)).await,
+            "{protocol:?}: the file stayed open after the client went away"
+        );
+        let drain = media.finish().await;
+        assert_eq!(drain.stall_cuts, StallCuts::default(), "{protocol:?}");
+    }
+);
+
+/// A response whose file has been read to its end holds no permit even though its client has read
+/// nothing and HTTP/2 still buffers the tail: a second request is served with a one-permit pool.
+/// This pins the observable only; the body is polled to its end at once either way, so the
+/// release at the last file byte (before that final poll) is pinned by
+/// `http::assets::file_response`'s unit test, not here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http2_returns_the_permit_at_the_last_file_byte_while_the_client_has_read_nothing() {
+    let mut media = Media::start(Protocol::H2, 1).await;
+    // Small enough for the stream's initial window and the send buffer to take whole.
+    let small = media
+        .seed("audio/wav", &[(".opus.ogg", &pattern(20 * 1024))])
+        .await;
+    let url = format!("/api/assets/{small}?variant=opus");
+    let first = media.get(&url, &[]).await;
+    assert_eq!(first.status(), 200);
+    assert!(
+        wait_for(Duration::from_secs(5), || media.permits().held() == 0).await,
+        "the permit was still held with every file byte already read"
+    );
+    // The first body is still unread; the pool of one serves another request.
+    let mut second = media.get(&url, &[("range", "bytes=0-9".into())]).await;
+    assert_eq!(second.status(), 206);
+    assert_eq!(second.read_all().await.unwrap(), pattern(10));
+    let mut first = first;
+    assert_eq!(first.read_all().await.unwrap(), pattern(20 * 1024));
+    media.finish().await;
+}
+
 /// A world with three large asset rows, so its export is far larger than the buffers between the
 /// server and the client, and an administrator who can request it.
 async fn export_fixture(permits: usize) -> (Media, String) {
