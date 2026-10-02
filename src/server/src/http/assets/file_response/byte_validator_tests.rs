@@ -122,6 +122,30 @@ async fn a_get_and_a_head_agree_and_a_same_length_rewrite_changes_the_validator(
     assert_ne!(etag_of(&path).await, get, "same length, different bytes");
 }
 
+/// A rewrite that keeps the length AND the modification time (a coarse-clock tick, or a restored
+/// timestamp) still changes the validator, because the head bytes are hashed: only the head hash
+/// distinguishes the two files.
+#[tokio::test]
+async fn a_rewrite_with_the_same_length_and_mtime_changes_the_validator_through_the_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("derivative");
+    std::fs::write(&path, bytes(10_000, 0)).unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let before = etag_of(&path).await;
+    std::fs::write(&path, bytes(10_000, 1)).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_ne!(etag_of(&path).await, before);
+}
+
 /// A hit answers 304 with the validator and no range headers, after the open: a hit with a `Range`
 /// header is still a 304.
 #[tokio::test]
