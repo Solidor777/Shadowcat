@@ -28,6 +28,20 @@ use crate::tls::{H2Client, H2Pipe};
 /// The size of one chunk the `/endless` route produces.
 pub const ENDLESS_CHUNK: usize = 16 * 1024;
 
+/// A response body of `total` bytes in [`ENDLESS_CHUNK`]-byte chunks that all share one allocation,
+/// so producing it costs no per-request allocation or fill: the throughput comparison between two
+/// servers measures the connection, not the body source.
+pub fn bulk_body(total: usize) -> Body {
+    let chunk = Bytes::from(vec![1u8; ENDLESS_CHUNK]);
+    let full = total / ENDLESS_CHUNK;
+    let tail = chunk.slice(0..total % ENDLESS_CHUNK);
+    Body::from_stream(futures_util::stream::iter(
+        std::iter::repeat_n(chunk, full)
+            .chain((!tail.is_empty()).then_some(tail))
+            .map(Ok::<_, Infallible>),
+    ))
+}
+
 /// Which HTTP version an [`EgressServer`]'s connections speak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -41,7 +55,7 @@ pub enum Protocol {
 /// knowledge.
 ///
 /// Routes beyond the application's: `/endless` produces [`ENDLESS_CHUNK`]-byte chunks forever
-/// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/sparse` produces
+/// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/bulk` answers with `bytes` bytes from [`bulk_body`]; `/sparse` produces
 /// `chunks` chunks of 100 bytes, `gap_ms` milliseconds apart (query parameters); `/scripted`
 /// (any method) answers with chunks of the `sizes` query parameter's comma-separated lengths,
 /// ended as `end` says (`final`, `empty` or `trailers`: see [`BodyEnd`]), and logs the instant its
@@ -100,6 +114,12 @@ impl EgressServer {
                 }),
             )
             .route("/empty", get(|| async { Body::empty() }))
+            .route(
+                "/bulk",
+                get(|Query(q): Query<HashMap<String, usize>>| async move {
+                    bulk_body(q.get("bytes").copied().unwrap_or(0))
+                }),
+            )
             .route(
                 "/scripted",
                 any(move |Query(q): Query<HashMap<String, String>>| {

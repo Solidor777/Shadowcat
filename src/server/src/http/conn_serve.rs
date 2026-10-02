@@ -243,7 +243,19 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// behind a stalled window when a body has ended. Chosen over hyper's 400 KiB default for that
 /// bound (about a fifth of the memory a stalled peer can pin per stream), and kept above
 /// [`EGRESS_FLOOR_BYTES`] so a stream always has room to queue one whole chunk.
-const H2_SEND_BUF_BYTES: usize = 64 * 1024;
+///
+/// The cost is download throughput on a fast link. Measured on Windows loopback with the `h2`
+/// client (24 MiB bodies, 6 MiB stream window, a bare hyper server, 100 downloads per setting, 3
+/// runs): 64 KiB reaches 0.94 to 0.97 of the 400 KiB default's median in an optimised build and
+/// 0.66 to 0.79 in an unoptimised one, where per-wake-up cost is not hidden. Public so the throughput gate (`h2_send_buf_gate`) serves a
+/// bare HTTP/2 connection with this very value.
+///
+/// # Examples
+///
+/// ```
+/// assert!(shadowcat::http::conn_serve::H2_SEND_BUF_BYTES >= 16 * 1024);
+/// ```
+pub const H2_SEND_BUF_BYTES: usize = 64 * 1024;
 
 // A buffer smaller than one chunk would make every chunk wait for credit it cannot be granted.
 const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_FLOOR_BYTES);
