@@ -3,7 +3,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import {
     buildPlaylistDoc,
-    listAssets,
+    getAssetMeta,
     AUDIO_STATE_DOC_TYPE,
     PLAYLIST_DOC_TYPE,
     type AudioChannelId,
@@ -38,24 +38,28 @@
    * spec can assert (it cannot inspect Web Audio internals). */
   const liveCount = $derived((audioState?.playing ?? []).filter((p) => p.pausedAt == null).length);
 
-  // Asset durations for the seek slider's max (the asset listing is the only client surface
-  // carrying durationMs).
+  // Asset durations in seconds for the seek slider's max, each read from its asset's own metadata
+  // the first time an entry for it plays. (A listing fetched once at mount misses an asset created
+  // after the panel opened, and a failed read is retried on the next state change.)
   let durations = $state(new Map<string, number>());
+  const requested = new Set<string>();
+  let mounted = true;
+  $effect(() => () => {
+    mounted = false;
+  });
   $effect(() => {
-    let cancelled = false;
-    void listAssets(ctx.world)
-      .then((assets) => {
-        if (cancelled) return;
-        durations = new Map(
-          assets
-            .filter((a) => a.duration_ms != null)
-            .map((a) => [a.id, Number(a.duration_ms)]),
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+    for (const p of audioState?.playing ?? []) {
+      if (requested.has(p.asset)) continue;
+      requested.add(p.asset);
+      void getAssetMeta(p.asset)
+        .then((asset) => {
+          if (!mounted || asset.duration_ms == null) return;
+          durations = new Map(durations).set(p.asset, Number(asset.duration_ms) / 1000);
+        })
+        .catch(() => {
+          requested.delete(p.asset);
+        });
+    }
   });
 
   // Playlists live search — the ActorsPanel $effect shape (cancel guard, handle capture,

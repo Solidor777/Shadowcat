@@ -126,6 +126,24 @@ describe("AudioPanel", () => {
     expect(audio.setChannel).toHaveBeenCalledWith("sfx", { muted: true });
   });
 
+  it("the seek slider spans the stored track length in seconds, so the control reaches the last seconds of a long track", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: "asset-1", duration_ms: 1_200_000 }) });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      render(AudioPanel, {
+        context: setAppContextForTest({
+          role: "gm",
+          documents: storeWith(audioStateDoc([track("e1")])),
+          audio: audioFixture(),
+        }),
+      });
+      await waitFor(() => expect(screen.getByTestId("playing-seek").getAttribute("max")).toBe("1200"));
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/asset-1/meta");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("transport buttons send the expected ops; seek reports position_ms", async () => {
     const audio = audioFixture();
     render(AudioPanel, {

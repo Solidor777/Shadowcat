@@ -3,6 +3,16 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Audio panel — the seek slider's range was the stored length in milliseconds, or only 60 seconds past the position
+
+- [Medium, FIXED] `AudioPanel`'s now-playing seek slider took its `max` from the asset listing it
+  fetched once at mount, as `Math.max(duration_ms, position + 60)`: the unit was milliseconds against
+  a slider in seconds, and an asset created after the panel mounted was absent from the listing, so
+  the slider stopped 60 seconds past the current position and the GM could not seek a long track to
+  its last seconds. The duration is now read per playing asset from its own metadata
+  (`getAssetMeta`) the first time an entry for it plays, in seconds. Test:
+  `AudioPanel.test.ts`'s seek-slider case.
+
 ## Server / realtime — replay redaction resolved a document's permission set against current policy instead of the policy in force at the historical seq being replayed
 
 - [Critical, FIXED] `filter_command`'s `Update` arm and `collect_hidden` derived the hidden-pointer
