@@ -203,6 +203,11 @@ fn pause_for(kind: io::ErrorKind) -> Option<Duration> {
 /// The pause after a non-connection-level accept error.
 pub const ACCEPT_ERROR_PAUSE: Duration = Duration::from_secs(1);
 
+/// The largest data frame a response body hands to hyper, and so the smallest unit whose
+/// completion the egress bounds can observe. Equals HTTP/2's default maximum frame size (16 KiB),
+/// so a slice is one frame.
+const EGRESS_FLOOR_BYTES: usize = 16 * 1024;
+
 /// Time bounds applied to every served connection.
 ///
 /// # Examples

@@ -25,6 +25,7 @@ use http_body::{Frame, SizeHint};
 use tokio::sync::watch;
 use tower::Service;
 
+use super::EGRESS_FLOOR_BYTES;
 use crate::http::peer_slots::Slot;
 
 /// What a connection holds for its whole life: its cap slot and the in-flight stream count.
@@ -97,12 +98,38 @@ impl std::fmt::Debug for ConnLease {
     }
 }
 
-/// A response body that keeps its request's lease until the body is dropped.
+/// A response body that keeps its request's lease until the body is dropped, and yields data in
+/// frames of at most [`EGRESS_FLOOR_BYTES`].
+///
+/// WHY the bound: hyper hands each data frame to HTTP/2 whole and waits for send capacity for all
+/// of it, so a multi-megabyte frame would be one indivisible wait and a stall inside it could not
+/// be told from a slow flush. At the floor, a stalled peer is visible at a frame boundary, and the
+/// floor is also the size of the smallest progress the egress bounds demand.
 struct LeasedBody {
     /// The real body.
     inner: Body,
+    /// The rest of the last inner data frame, yielded in slices before the inner body is polled
+    /// again. A zero-copy view of the inner frame's allocation.
+    pending: Bytes,
     /// Dropped with the body.
     _lease: ConnLease,
+}
+
+impl LeasedBody {
+    /// Wraps `inner`, holding `lease` until the body drops.
+    fn new(inner: Body, lease: ConnLease) -> Self {
+        Self {
+            inner,
+            pending: Bytes::new(),
+            _lease: lease,
+        }
+    }
+
+    /// The next slice of `pending`, at most [`EGRESS_FLOOR_BYTES`] long.
+    fn next_slice(&mut self) -> Bytes {
+        let n = self.pending.len().min(EGRESS_FLOOR_BYTES);
+        self.pending.split_to(n)
+    }
 }
 
 impl http_body::Body for LeasedBody {
@@ -113,15 +140,35 @@ impl http_body::Body for LeasedBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
+        let this = &mut *self;
+        if !this.pending.is_empty() {
+            return Poll::Ready(Some(Ok(Frame::data(this.next_slice()))));
+        }
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                Ok(data) => {
+                    this.pending = data;
+                    Poll::Ready(Some(Ok(Frame::data(this.next_slice()))))
+                }
+                Err(frame) => Poll::Ready(Some(Ok(frame))),
+            },
+            other => other,
+        }
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        self.inner.is_end_stream() && self.pending.is_empty()
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
+        let inner = self.inner.size_hint();
+        let pending = self.pending.len() as u64;
+        let mut hint = SizeHint::new();
+        hint.set_lower(inner.lower().saturating_add(pending));
+        if let Some(upper) = inner.upper() {
+            hint.set_upper(upper.saturating_add(pending));
+        }
+        hint
     }
 }
 
@@ -162,12 +209,7 @@ where
         let fut = self.inner.call(req);
         Box::pin(async move {
             let res = fut.await?;
-            Ok(res.map(|inner| {
-                Body::new(LeasedBody {
-                    inner,
-                    _lease: lease,
-                })
-            }))
+            Ok(res.map(|inner| Body::new(LeasedBody::new(inner, lease))))
         })
     }
 }
@@ -190,3 +232,6 @@ pub(super) async fn idle_for(mut streams: watch::Receiver<usize>, idle: Duration
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
