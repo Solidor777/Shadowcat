@@ -20,6 +20,7 @@ use std::path::Path;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use uuid::Uuid;
@@ -190,17 +191,19 @@ fn stream_body(file: File, permit: FilePermit, segments: VecDeque<Segment>) -> B
         remaining: 0,
     };
     state.release_when_read();
-    Body::from_stream(futures_util::stream::unfold(
-        Some(state),
-        |state| async move {
+    // Fused: a consumer may poll past the end (tower-http's compression adapter reads its source
+    // through a reader that is not fused), and `unfold` panics when polled after it ended.
+    Body::from_stream(
+        futures_util::stream::unfold(Some(state), |state| async move {
             let mut state = state?;
             match state.next_chunk().await {
                 Ok(Some(chunk)) => Some((Ok(chunk), Some(state))),
                 Ok(None) => None,
                 Err(e) => Some((Err(e), None)),
             }
-        },
-    ))
+        })
+        .fuse(),
+    )
 }
 
 /// Builds the response for `decision` over a representation of `len` bytes. `open` is the open

@@ -273,6 +273,42 @@ impl Harness {
             .unwrap()
     }
 
+    /// Inserts an asset row of `content_type` with `meta` in this world (version 3, no file) and
+    /// writes `files` (suffix, bytes) beside its canonical path, bypassing the upload pipeline so
+    /// a test can serve any bytes under any type. Returns the asset id.
+    pub async fn seed_asset(
+        &self,
+        content_type: &str,
+        meta: shadowcat::data::asset::AssetMeta,
+        files: &[(&str, &[u8])],
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        self.repo
+            .insert_asset(&shadowcat::data::asset::Asset {
+                id,
+                world_id: self.world,
+                storage_key: format!("{}/{}", self.world, id),
+                original_name: "seeded.bin".into(),
+                content_type: content_type.into(),
+                byte_size: 0,
+                created_by: Some(self.user),
+                created_at: 0,
+                version: 3,
+                folder_id: None,
+                tags: vec![],
+                derived_tags: vec![],
+                meta,
+            })
+            .await
+            .unwrap();
+        let dir = self.assets_dir.join(self.world.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        for (suffix, bytes) in files {
+            std::fs::write(dir.join(format!("{id}{suffix}")), bytes).unwrap();
+        }
+        id
+    }
+
     /// Replace asset `id`'s bytes with `bytes` as `name`; returns the raw response.
     pub async fn replace(
         &self,

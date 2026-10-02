@@ -485,3 +485,37 @@ async fn an_exhausted_pool_refuses_before_the_file_is_opened() {
         "{error:?}"
     );
 }
+
+/// A consumer that polls past the end of the body (tower-http's compression adapter reads its
+/// source through a reader that is not fused) gets the end again rather than a panic.
+#[tokio::test]
+async fn polling_the_body_after_its_end_yields_the_end_again() {
+    use futures_util::StreamExt;
+    let (_dir, path) = stored(&file_bytes(1000));
+    let response = get(&path, "audio/ogg", Route::Embed, &request(None, None)).await;
+    let mut stream = response.into_body().into_data_stream();
+    while stream.next().await.is_some() {}
+    assert!(stream.next().await.is_none());
+    assert!(stream.next().await.is_none());
+}
+
+/// An aborted body (the file shrank under it) is polled to its error and then past it.
+#[tokio::test]
+async fn polling_an_aborted_body_again_yields_the_end() {
+    use futures_util::StreamExt;
+    let (_dir, path) = stored(&file_bytes(1_000_000));
+    let response = get(&path, "audio/ogg", Route::Embed, &request(None, None)).await;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(10)
+        .unwrap();
+    let mut stream = response.into_body().into_data_stream();
+    let mut failed = false;
+    while let Some(chunk) = stream.next().await {
+        failed |= chunk.is_err();
+    }
+    assert!(failed, "the shrunk file aborts the body");
+    assert!(stream.next().await.is_none());
+}

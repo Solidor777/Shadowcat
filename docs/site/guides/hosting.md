@@ -513,6 +513,32 @@ scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 a
 with a debug-build gauge), so 256 is far above ordinary use; a table whose members stall many
 downloads at once can exhaust it for up to the slow-reader window below.
 
+### Asset downloads, seeking and compression
+
+Assets are served from disk without being read into memory, with `ETag` revalidation
+(`Cache-Control: no-cache`) and byte-range support. Whether a response is ranged or compressed is
+decided by its type, once:
+
+- **Audio, video, raster images, PDFs, archives and WOFF fonts** (the types a client seeks in, loads
+  lazily or resumes, or that are already compressed) are served uncompressed with
+  `Accept-Ranges: bytes`. Inline media (the Opus and WebM audio derivatives, raster images) is
+  answered in slices of at most 2 MiB, so an open-ended `Range: bytes=N-` returns 2 MiB and the
+  player asks for the next slice; an attachment download of the same types (the canonical file of
+  an audio, PDF or archive asset) is resumable to the end of the file. `multipart/byteranges` is
+  supported for up to 16 ranges; overlapping and adjacent ranges are merged first, so a request can
+  never cost more than the file itself.
+- **Text, SVG, JSON and every other type** stay compressed (gzip or brotli when the client accepts
+  it), advertise no ranges, ignore `Range` and answer in full.
+- **`audio/wav` and `audio/aiff` assets are no longer compressed.** Raw PCM compresses well; the
+  trade buys seeking within the file.
+- **A retained-original download** (GM only) is a download of whatever type the original was: it is
+  never compressed and is resumable to the end of the file.
+- `HEAD` answers the status and headers of the matching `GET` with no body.
+
+A reverse proxy or tunnel in front of the server must pass `Range`, `If-Range`, `Content-Range` and
+`Accept-Ranges` through unmodified and must not buffer whole responses; a proxy that strips `Range`
+degrades seeking and resume, not correctness.
+
 ### Slow readers
 
 A response whose receiver makes no progress for `egress_window_secs` seconds is cut, at most a

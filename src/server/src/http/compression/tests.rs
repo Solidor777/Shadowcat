@@ -27,13 +27,33 @@ fn excludes_webp_images_via_the_inherited_default_predicate() {
     assert!(!predicate.should_compress(&response("image/png", StatusCode::OK)));
 }
 
+/// A response with `Accept-Ranges: bytes`, as `serve_file` writes for every ranged class.
+fn ranged(content_type: &str, status: StatusCode) -> Response<Body> {
+    let mut response = response(content_type, status);
+    response.headers_mut().insert(
+        axum::http::header::ACCEPT_RANGES,
+        axum::http::HeaderValue::from_static("bytes"),
+    );
+    response
+}
+
 #[test]
-fn excludes_opus_and_webm_audio_derivatives() {
+fn a_response_that_advertises_ranges_is_never_compressed() {
     let predicate = AssetAndWsSafePredicate::new();
-    // The real content-type strings `crate::data::asset::process::audio` serves, including
-    // their `codecs=` suffix.
-    assert!(!predicate.should_compress(&response("audio/ogg; codecs=opus", StatusCode::OK)));
-    assert!(!predicate.should_compress(&response("audio/webm; codecs=opus", StatusCode::OK)));
+    // A type the tower-http default would compress, a partial response, and the two Opus
+    // derivative types: the header alone decides.
+    assert!(predicate.should_compress(&response("audio/mpeg", StatusCode::OK)));
+    assert!(!predicate.should_compress(&ranged("audio/mpeg", StatusCode::OK)));
+    assert!(!predicate.should_compress(&ranged("audio/mpeg", StatusCode::PARTIAL_CONTENT)));
+    assert!(!predicate.should_compress(&ranged("audio/ogg; codecs=opus", StatusCode::OK)));
+    assert!(!predicate.should_compress(&ranged("audio/webm; codecs=opus", StatusCode::OK)));
+}
+
+#[test]
+fn a_compressible_asset_type_without_ranges_is_compressed() {
+    let predicate = AssetAndWsSafePredicate::new();
+    assert!(predicate.should_compress(&response("image/svg+xml", StatusCode::OK)));
+    assert!(predicate.should_compress(&response("text/plain", StatusCode::OK)));
 }
 
 #[test]

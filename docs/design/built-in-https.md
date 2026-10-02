@@ -481,14 +481,62 @@ task paces its own accept errors.
 `axum` is built with its `http2` feature (without it `axum::serve` speaks HTTP/1 only, and advertising
 `h2` would break every h2-negotiating browser). axum enables the extended-CONNECT protocol and
 `WebSocketUpgrade` accepts HTTP/2 only for `CONNECT`, so `/ws` is routed
-`get(ws_handler).connect(ws_handler)`. The compression layer covers every route and excludes only
-status `101`; axum's HTTP/2 WebSocket reply is `200` with an empty body, which the layer's default
-predicate does not compress. Evidence: an integration test opens an h2 connection, sends extended
+`get(ws_handler).connect(ws_handler)`. The compression layer covers every route and excludes status `101`
+and any response carrying `Accept-Ranges` (8.2); axum's HTTP/2 WebSocket reply is `200` with an
+empty body, which the layer's default predicate does not compress. Evidence: an integration test opens an h2 connection, sends extended
 CONNECT with `Accept-Encoding: gzip, br` and completes an intent round trip (fails if the CONNECT
 route is removed or the compression layer mangles the reply); a predicate test pins the empty-body
 case; a browser spec on each engine reads `TlsStatus.alpn` from `GET /api/config`, asserts the page's
 resources negotiated a protocol contained in it (`nextHopProtocol`), asserts `h2` when it is offered,
 and asserts the WebSocket welcome arrives. No copy of the ALPN list exists in TypeScript.
+
+### 8.2 Asset responses: validators, ranges and compression
+
+Every stored-file response (`http::assets::serve`'s canonical, `thumb`/`preview`, `opus`,
+`opus-webm` and `sheet` arms, and `http::assets::mutate::original`) goes through one function,
+`file_response::serve_file`, so the validator order, the range decision and the framing cannot
+differ between sites. The file is read in 64 KiB pieces as the connection pulls them; no response
+holds a file in memory, and `LeasedBody` re-chunks to the egress frame size.
+
+- Order, every arm: authorisation (`permission_context`; `gm_asset` for the original), then a
+  matching `If-None-Match` is answered 304 with `ETag` and `Cache-Control` and no range headers
+  before any file access and holding no permit, then (canonical, `thumb`, `preview`)
+  `ensure_derivative`, then the streamed-file permit (8, Descriptors), then the file is opened and
+  its length read from that same handle, then `decide`. A GET streams from the handle it opened:
+  an asset replaced or deleted mid-response is not waited on and the open response keeps the old
+  bytes. A HEAD calls `fs::metadata`, takes no permit and answers the GET's status and headers
+  with an empty body. Validators: `"{id}-{version}"` (canonical, `thumb`, `preview`, `sheet`),
+  `"{id}-{version}-opus"` and `"{id}-{version}-opus-webm"` (derivatives), `"{id}-{version}-orig"`
+  (original).
+- One classification, `range::classify(content_type, disposition, route)`: `Route::Original` is
+  `DownloadFull` for every type. On `Route::Embed` a type in the ranged list is `MediaSliced` when
+  served inline and `DownloadFull` as an attachment; any other type is `Ignore`. The list is
+  `range::is_media_or_archive`: prefixes `audio/`, `video/`; `image/` except `image/svg+xml` (the
+  exclusion tower-http's own image predicate encodes; a parity test pins them); exact
+  `application/ogg`, `application/pdf`, the archive types (zip, gzip, bzip2, xz, zstd, 7z, rar) and
+  `font/woff`, `font/woff2`. `serve`'s attachment disposition for non-raster types is a
+  rendering-safety header and does not make a compressible type a download; only the original
+  route does.
+- Decision (`range::decide`, RFC 9110 semantics, pure): `Ignore`, no `Range`, a unit other than
+  `bytes` or any syntax error answer `Full`. `If-Range` honours `Range` only on an exact strong
+  `ETag` match. More than 16 range-specs answer `Full`; unsatisfiable specs are dropped, none left
+  is 416 with `Content-Range: bytes */len`; satisfiable ranges are sorted and coalesced (overlapping
+  and adjacent) so the total never exceeds the file. One part is a 206; several are
+  `multipart/byteranges` with an exact `Content-Length` and a `shadowcat-` plus v4 UUID boundary.
+  `MediaSliced` shortens a single part to 2 MiB (`MAX_RANGE_SLICE`) and answers `Full` when a
+  multi-part total exceeds it, never truncating a part among several. `DownloadFull` has no byte
+  cap.
+- Compression follows the same decision through one header: `serve_file` writes
+  `Accept-Ranges: bytes` exactly when the class is not `Ignore`, and
+  `compression::AssetAndWsSafePredicate` refuses any response that carries it, so no second list of
+  types exists. `tests/assets_compression.rs` pins every (type, disposition, route) row through the
+  real router with `Accept-Encoding: gzip`. A ranged response cannot be compressed (a range
+  addresses bytes of the selected representation, and gzip output is not reproducible, so
+  `If-Range` and a strong `ETag` would stop meaning anything); compressing only unranged types keeps
+  SVG and text compressed, and the cost is that `audio/wav` and `audio/aiff` assets and the
+  attachment route lose compression.
+- The body stream is fused: tower-http's compression adapter reads its source through a reader that
+  is not, and a stream polled after its end must answer the end.
 
 ## 9. Configuration surface
 

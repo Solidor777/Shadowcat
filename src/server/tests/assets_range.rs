@@ -23,40 +23,6 @@ fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| ((i * 7 + i / 251) % 256) as u8).collect()
 }
 
-/// Inserts an asset row of `content_type` with `meta` in the harness world, at version 3, and
-/// returns its id. No file is written.
-async fn insert_row(h: &Harness, content_type: &str, meta: AssetMeta) -> Uuid {
-    let id = Uuid::new_v4();
-    h.repo
-        .insert_asset(&Asset {
-            id,
-            world_id: h.world,
-            storage_key: format!("{}/{}", h.world, id),
-            original_name: "seeded.bin".into(),
-            content_type: content_type.into(),
-            byte_size: 0,
-            created_by: Some(h.user),
-            created_at: 0,
-            version: 3,
-            folder_id: None,
-            tags: vec![],
-            derived_tags: vec![],
-            meta,
-        })
-        .await
-        .unwrap();
-    id
-}
-
-/// Writes `files` (suffix, bytes) beside the canonical path of asset `id`.
-fn write_files(h: &Harness, id: Uuid, files: &[(&str, &[u8])]) {
-    let dir = h.assets_dir.join(h.world.to_string());
-    std::fs::create_dir_all(&dir).unwrap();
-    for (suffix, bytes) in files {
-        std::fs::write(dir.join(format!("{id}{suffix}")), bytes).unwrap();
-    }
-}
-
 /// Inserts an asset row of `content_type` in the harness world and writes `files` (suffix,
 /// bytes) beside its canonical path. `with_sheet` records grid-sheet metadata on the row.
 async fn seed(h: &Harness, content_type: &str, files: &[(&str, &[u8])], with_sheet: bool) -> Uuid {
@@ -71,9 +37,7 @@ async fn seed(h: &Harness, content_type: &str, files: &[(&str, &[u8])], with_she
             height: 4,
         });
     }
-    let id = insert_row(h, content_type, meta).await;
-    write_files(h, id, files);
-    id
+    h.seed_asset(content_type, meta, files).await
 }
 
 /// Seeds an asset whose retained original (`<id>.orig`) is `bytes`, arrived as
@@ -83,9 +47,8 @@ async fn seed_original(h: &Harness, original_type: &str, bytes: &[u8]) -> Uuid {
     meta.original_retained = true;
     meta.original_content_type = original_type.into();
     meta.original_byte_size = bytes.len() as i64;
-    let id = insert_row(h, "image/webp", meta).await;
-    write_files(h, id, &[("", b"x"), (".orig", bytes)]);
-    id
+    h.seed_asset("image/webp", meta, &[("", b"x"), (".orig", bytes)])
+        .await
 }
 
 /// One stored-file read site.
@@ -744,7 +707,7 @@ async fn the_retained_original_keeps_its_gm_gate_and_its_missing_statuses() {
 
     let mut meta = AssetMeta::unprocessed("image/webp", 1);
     meta.original_retained = true;
-    let absent = insert_row(&h, "image/webp", meta).await;
+    let absent = h.seed_asset("image/webp", meta, &[]).await;
     let res = fetch(
         &h,
         &format!("http://{}/api/assets/{absent}/original", h.addr),
