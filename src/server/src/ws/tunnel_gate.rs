@@ -13,8 +13,10 @@
 //! session's own stream ([`TunnelProbe`]); a session more than
 //! [`H2_SEND_BUF_BYTES`] ahead of the wire is not
 //! ready for its next frame, so the sink wrapped around the gate times the wait out with the same
-//! window as every other send, and any progress of the wire releases it. The same bound, one send
-//! buffer plus the frame being written, limits what a response body may be ahead of its peer.
+//! window as every other send. The wait ends when the backlog (bytes written minus bytes on the
+//! wire) is back within [`H2_SEND_BUF_BYTES`], or when the stream ends; wire progress that leaves
+//! the backlog above that bound does not release it. The same bound, one send buffer plus the
+//! frame being written, limits what a response body may be ahead of its peer.
 //!
 //! INVARIANT: the gate sits INSIDE the stall bound
 //! (`BoundedSink<TunnelGate<_>>`, built by `WsState::bounded_sink`), never outside it, or a gated
