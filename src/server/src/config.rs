@@ -307,7 +307,10 @@ pub struct Config {
     /// worlds under one seeded identity across a long-running session needs to raise
     /// this — never lower it below a value that still bounds a scripted flood.
     pub world_create_per_min_per_account: Option<usize>,
-    /// Exact peer IP addresses trusted to set `X-Forwarded-For` (reverse-proxy deployments only).
+    /// Exact peer IP addresses trusted to set `X-Forwarded-For` and `X-Forwarded-Proto`
+    /// (reverse-proxy deployments only). Listing a proxy ALSO exempts it from the per-peer
+    /// connection caps, and so does a loopback peer without being listed
+    /// ([`Config::is_cap_exempt`]); only a listed proxy has its forwarded headers believed.
     /// Parsed as IP literals when the configuration is extracted, so an entry that is not an IP
     /// address is a boot error naming the key and the value. Default empty — `ClientIp` never
     /// consults the header and resolves solely from the TCP peer
@@ -1089,8 +1092,10 @@ impl Config {
     /// Whether `ip` is a configured trusted proxy (`trusted_proxies`), matched by exact address
     /// after both sides are reduced to their canonical form ([`std::net::IpAddr::to_canonical`]),
     /// so a dual-stack socket's `::ffff:192.0.2.1` peer matches a configured `192.0.2.1` and the
-    /// reverse. Every trust decision (the scheme decider, `ClientIp`, the listener's per-IP cap
-    /// exemption) goes through this one function.
+    /// reverse. This is the forwarded-header trust decision: the scheme decider and `ClientIp`
+    /// believe `X-Forwarded-Proto` and `X-Forwarded-For` only from a peer for which it is true.
+    /// It is NOT the connection-cap exemption ([`Config::is_cap_exempt`]), and it has no loopback
+    /// arm: widening it would let any local process assert the client address and scheme.
     ///
     /// # Examples
     ///
@@ -1109,6 +1114,34 @@ impl Config {
         self.trusted_proxies
             .iter()
             .any(|configured| configured.to_canonical() == ip)
+    }
+
+    /// Whether `ip` is exempt from the PER-PEER connection caps, both the pre-hand-off admission
+    /// cap and the live-connection cap (the global caps still bind it): a configured trusted proxy
+    /// ([`Config::is_trusted_proxy`]) or a loopback peer. Every player behind a proxy shares its
+    /// address, and a tunnel or proxy on the same host (cloudflared, tailscale, ngrok, nginx)
+    /// connects from loopback, so the per-address count says nothing about how many players a
+    /// connection from it carries. A shared host with untrusted local users is bounded by the
+    /// global caps; there is no per-host switch. `to_canonical` reduces an IPv4-mapped IPv6
+    /// address, so `::ffff:127.0.0.1` is loopback too.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::IpAddr;
+    /// let cfg = shadowcat::config::Config {
+    ///     trusted_proxies: vec!["192.0.2.50".parse().unwrap()],
+    ///     ..Default::default()
+    /// };
+    /// assert!(cfg.is_cap_exempt("127.0.0.2".parse::<IpAddr>().unwrap()));
+    /// assert!(cfg.is_cap_exempt("::1".parse::<IpAddr>().unwrap()));
+    /// assert!(cfg.is_cap_exempt("192.0.2.50".parse::<IpAddr>().unwrap()));
+    /// assert!(!cfg.is_cap_exempt("192.0.2.1".parse::<IpAddr>().unwrap()));
+    /// // Exemption from the caps never makes a loopback peer a forwarded-header authority.
+    /// assert!(!cfg.is_trusted_proxy("127.0.0.1".parse::<IpAddr>().unwrap()));
+    /// ```
+    pub fn is_cap_exempt(&self, ip: std::net::IpAddr) -> bool {
+        self.is_trusted_proxy(ip) || ip.to_canonical().is_loopback()
     }
 }
 

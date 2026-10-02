@@ -1,5 +1,6 @@
 //! Per-peer and global connection slots: the ONE definition of how a peer is keyed, how a cap is
-//! counted and how a trusted proxy is exempted. The pre-hand-off admission caps
+//! counted and how a cap-exempt peer (`Config::is_cap_exempt`: a trusted proxy or a loopback peer)
+//! is exempted. The pre-hand-off admission caps
 //! (`crate::tls::listener::SniffListener`) and the post-hand-off live-connection caps
 //! (`crate::http::conn_serve::serve_router`) each own a [`PeerSlots`] with their own limits and
 //! share everything else, so the two phases cannot disagree on who counts as one peer.
@@ -222,8 +223,8 @@ impl PeerSlots {
     }
 
     /// Reserves a slot for `ip`, or `None` when a cap is reached. An `exempt` peer (a trusted
-    /// proxy, behind which many players share one address) skips the per-peer cap and stays
-    /// bound by the global cap.
+    /// proxy or a loopback peer, behind which many players share one address) skips the per-peer
+    /// cap and stays bound by the global cap.
     ///
     /// # Examples
     ///

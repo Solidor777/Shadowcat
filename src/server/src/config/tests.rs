@@ -1012,3 +1012,34 @@ fn retain_originals_defaults_true_and_cli_overrides() {
     let cfg = Config::load(cli).unwrap();
     assert!(!cfg.retain_originals);
 }
+
+#[test]
+fn cap_exemption_covers_loopback_and_configured_proxies_and_nothing_else() {
+    let cfg = Config {
+        trusted_proxies: vec!["192.0.2.50".parse().unwrap()],
+        ..Config::default()
+    };
+    for exempt in [
+        "127.0.0.1",
+        "127.0.0.2",
+        "::1",
+        "::ffff:127.0.0.1",
+        "192.0.2.50",
+    ] {
+        assert!(cfg.is_cap_exempt(exempt.parse().unwrap()), "{exempt}");
+    }
+    for capped in ["192.0.2.1", "8.8.8.8", "2001:db8::1", "::ffff:192.0.2.1"] {
+        assert!(!cfg.is_cap_exempt(capped.parse().unwrap()), "{capped}");
+    }
+}
+
+#[test]
+fn loopback_is_cap_exempt_without_becoming_a_forwarded_header_authority() {
+    let cfg = Config::default();
+    assert!(cfg.trusted_proxies.is_empty());
+    for loopback in ["127.0.0.1", "127.0.0.2", "::1", "::ffff:127.0.0.1"] {
+        let ip = loopback.parse().unwrap();
+        assert!(cfg.is_cap_exempt(ip), "{loopback}");
+        assert!(!cfg.is_trusted_proxy(ip), "{loopback}");
+    }
+}

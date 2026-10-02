@@ -133,3 +133,34 @@ fn resolve_client_ip_empty_or_whitespace_header_falls_back_to_peer() {
     assert_eq!(resolve_client_ip(peer, Some(""), &cfg), peer);
     assert_eq!(resolve_client_ip(peer, Some("  "), &cfg), peer);
 }
+
+#[tokio::test]
+async fn a_loopback_peer_with_no_trusted_proxies_keeps_its_own_address_whatever_x_forwarded_for_says(
+) {
+    use axum::extract::FromRequestParts;
+    // Loopback peers are exempt from the per-peer connection caps, which is not trust.
+    let state = crate::http::tests::initialized_state().await;
+    assert!(state.config.trusted_proxies.is_empty());
+    for loopback in ["127.0.0.1", "::1"] {
+        let host = if loopback.contains(':') {
+            format!("[{loopback}]")
+        } else {
+            loopback.to_string()
+        };
+        let peer: std::net::SocketAddr = format!("{host}:5000").parse().unwrap();
+        let mut request = axum::http::Request::new(());
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(crate::tls::ConnMeta::plain(
+                peer,
+            )));
+        let (mut parts, ()) = request.into_parts();
+        let ClientIp(resolved) = ClientIp::from_request_parts(&mut parts, &state)
+            .await
+            .unwrap();
+        assert_eq!(resolved, Some(peer.ip()), "{loopback}");
+    }
+}

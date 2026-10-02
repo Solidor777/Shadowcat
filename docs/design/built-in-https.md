@@ -298,11 +298,14 @@ which ends the serve loop with an error log.
 - Admission (`Limits`): a global cap of 1024 in-flight pre-hand-off connections and a per-peer cap
   of 32 for ordinary peers, keyed by `peer_key` (canonical IPv4, or the /64 prefix of an IPv6
   address, RFC 4291: one IPv6 subscriber holds a whole /64, so a per-address key would give one host
-  2^64 budgets); a peer listed in `trusted_proxies` (`Config::is_trusted_proxy`, canonicalised on both
-  sides) is exempt from the per-peer cap (every player behind that proxy shares its address) and
-  bounded by the global cap only; over-cap sockets are closed immediately. A permit lives from
-  accept until the finished `ConnStream` is handed to `accept()`. The cap uses the peer address
-  because it runs before any header exists, which is why trusted-proxy peers are exempt.
+  2^64 budgets); a peer for which `Config::is_cap_exempt` holds (a peer listed in `trusted_proxies`,
+  per `Config::is_trusted_proxy` canonicalised on both sides, or a loopback peer) is exempt from the
+  per-peer cap (every player behind that peer shares its address) and bounded by the global cap
+  only; over-cap sockets are closed immediately. `is_trusted_proxy` stays the forwarded-header trust
+  decision and has no loopback arm: a loopback peer is cap-exempt but its `X-Forwarded-*` headers
+  are still ignored unless it is listed. A permit lives from accept until the finished
+  `ConnStream` is handed to `accept()`. The cap uses the peer address because it runs before any
+  header exists, which is why proxy and loopback peers are exempt.
 - Post-hand-off bounds (`http::conn_serve`): the caps bound the unauthenticated, cheap-to-create
   phase; afterwards time bounds apply. `axum::serve` installs no timer, so hyper's header-read
   timeout and HTTP/2 keep-alive would be inert; the serve loop is therefore owned by
@@ -331,8 +334,8 @@ which ends the serve loop with an error log.
   - Live-connection caps: `ConnLimits::max_live` (2048) and `max_live_per_peer` (256) bound
     connections from hand-off until the connection task AND every `ConnLease` have ended, so an HTTP/1.1
     WebSocket session (detached from its connection) keeps its slot. Keying and exemption are the
-    accept-time caps': both use `http::peer_slots::PeerSlots` and `peer_key`, and the trusted-proxy
-    exemption is decided once by `SniffListener` and carried as `ConnMeta::cap_exempt`. A connection
+    accept-time caps': both use `http::peer_slots::PeerSlots` and `peer_key`, and the cap
+    exemption (`Config::is_cap_exempt`) is decided once by `SniffListener` and carried as `ConnMeta::cap_exempt`. A connection
     over a cap is closed unread. The limits are chosen, not measured: a table needs tens of
     connections (one HTTP/2 connection, or up to about six HTTP/1.1 ones plus a WebSocket, per
     player), so 256 admits a large shared NAT while stopping one host from holding the server;
@@ -373,7 +376,8 @@ which ends the serve loop with an error log.
     restore refuses a directory without it; export only reads). The residue is stray `*.tmp` files.
   - Refusals: `PeerSlots::admit` counts a refusal and logs one summary warning per
     `REFUSAL_WARN_INTERVAL` (10 s) with the count and one refused key (an IPv4 address or an IPv6
-    /64); the state is a counter, never a map keyed by the attacker-chosen peer.
+    /64); the state is a counter, never a map keyed by the attacker-chosen peer. A per-peer refusal
+    also tells the operator to list a reverse proxy in front of the server in `trusted_proxies`.
   - Descriptors: `fd_budget` raises the soft `RLIMIT_NOFILE` at startup to exactly
     `descriptors_needed` (the two caps plus `descriptors_reserved`; never above the hard limit, on
     macOS bounded by `kern.maxfilesperproc`, queried at runtime; a limit that already covers the

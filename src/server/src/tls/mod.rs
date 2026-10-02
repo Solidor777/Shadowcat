@@ -146,9 +146,9 @@ pub struct ConnMeta {
     pub tls: bool,
     /// The selection outcome for a TLS connection; `None` for plain HTTP.
     pub cert: Option<Selected>,
-    /// Whether the peer is a trusted proxy and therefore exempt from the per-peer connection
-    /// caps (every player behind such a proxy shares its address). Set by the listener that
-    /// admitted the connection; `false` from the constructors.
+    /// Whether the peer is exempt from the per-peer connection caps (`Config::is_cap_exempt`: a
+    /// trusted proxy or a loopback peer; every player behind one shares its address). Set by the
+    /// listener that admitted the connection; `false` from the constructors.
     pub cap_exempt: bool,
 }
 

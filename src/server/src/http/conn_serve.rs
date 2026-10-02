@@ -34,7 +34,8 @@
 //! 4. Every live connection is bounded, not only the half-open ones. [`ConnLimits::max_live`] and
 //!    [`ConnLimits::max_live_per_peer`] cap connections from hand-off until the connection task
 //!    AND every [`ConnLease`] taken from its requests have ended, keyed and exempted exactly like
-//!    the accept-time caps ([`crate::http::peer_slots::PeerSlots`], `ConnMeta::cap_exempt`); a
+//!    the accept-time caps ([`crate::http::peer_slots::PeerSlots`], `ConnMeta::cap_exempt`, decided
+//!    once by `Config::is_cap_exempt`); a
 //!    connection over a cap is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection
 //!    that has had no request in flight for that long. A lease held by a WebSocket session is
 //!    released when the session ends, and a session whose peer has stopped reading ends at the
@@ -234,7 +235,8 @@ pub struct ConnLimits {
     /// Maximum live connections from one [`crate::http::peer_slots::peer_key`]. A table of
     /// players behind one address holds a handful of connections each (one HTTP/2 connection, or
     /// up to about six HTTP/1.1 ones plus a WebSocket), so 256 admits a large shared NAT while
-    /// stopping one host from holding the server. Trusted proxies are exempt.
+    /// stopping one host from holding the server. Trusted proxies and loopback peers are exempt
+    /// (`Config::is_cap_exempt`) and stay bound by [`ConnLimits::max_live`].
     pub max_live_per_peer: u32,
 }
 

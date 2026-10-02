@@ -167,6 +167,36 @@ fn request_scheme_decision_table() {
 }
 
 #[test]
+fn a_loopback_peer_is_not_believed_about_the_scheme_unless_it_is_listed() {
+    // Loopback peers are exempt from the per-peer connection caps, which is not trust.
+    let cfg = Config {
+        hsts_max_age_secs: Some(600),
+        ..Config::default()
+    };
+    for loopback in ["127.0.0.1", "::1"] {
+        let host = if loopback.contains(':') {
+            format!("[{loopback}]")
+        } else {
+            loopback.to_string()
+        };
+        let row = Row {
+            name: "loopback peer asserting https",
+            meta: Some(ConnMeta::plain(peer(&host))),
+            xfp: &["https"],
+            expected: RequestScheme::Http,
+            hsts: false,
+        };
+        let (ext, headers) = parts_for(&row);
+        assert_eq!(
+            request_scheme(&ext, &headers, &cfg),
+            row.expected,
+            "{loopback}"
+        );
+        assert!(hsts_max_age(&ext, &headers, &cfg).is_none(), "{loopback}");
+    }
+}
+
+#[test]
 fn hsts_gate_agrees_with_the_decider_over_the_same_table() {
     let cfg = config();
     for row in rows() {

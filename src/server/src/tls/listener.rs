@@ -17,9 +17,9 @@
 //! - admission caps: a global in-flight cap and a per-peer cap keyed by [`peer_key`](crate::http::peer_slots::peer_key) (an IPv4
 //!   address, or the /64 prefix of an IPv6 address: a single IPv6 subscriber holds a whole /64, so
 //!   a per-address key would let one host mint 2^64 keys; IPv4-mapped IPv6 peers count as their
-//!   IPv4 address). Peers listed in `Config::trusted_proxies` are exempt from the per-peer cap
-//!   because every player behind such a proxy shares its address; they remain bound by the global
-//!   cap. The caps bound the pre-hand-off phase, where a connection is unauthenticated and costs
+//!   IPv4 address). Peers for which `Config::is_cap_exempt` holds (a listed trusted proxy or a
+//!   loopback peer) are exempt from the per-peer cap because every player behind such a peer shares
+//!   its address; they remain bound by the global cap. The caps bound the pre-hand-off phase, where a connection is unauthenticated and costs
 //!   the peer nothing; afterwards `crate::http::conn_serve::ConnLimits` bounds header-read, HTTP/2
 //!   idle time and the live-connection count (global and per peer, the same keying and
 //!   exemption, carried to it in `ConnMeta::cap_exempt`), and request-level throttles bound
@@ -275,7 +275,7 @@ pub struct SniffListener {
 
 impl SniffListener {
     /// Starts accepting from `source`. `runtime` supplies the swap cell (`None` resolver = TLS off,
-    /// TLS-looking peers are dropped); `config` supplies the trusted-proxy exemption.
+    /// TLS-looking peers are dropped); `config` supplies the per-peer cap exemption (`Config::is_cap_exempt`).
     ///
     /// # Examples
     ///
@@ -314,7 +314,7 @@ impl SniffListener {
                 };
                 match accepted {
                     Ok((sock, peer)) => {
-                        let exempt = config.is_trusted_proxy(peer.ip());
+                        let exempt = config.is_cap_exempt(peer.ip());
                         let Some(permit) = adm.admit(peer.ip(), exempt) else {
                             continue;
                         };

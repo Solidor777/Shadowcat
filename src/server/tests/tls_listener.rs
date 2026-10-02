@@ -211,15 +211,39 @@ async fn global_cap_refuses_extra_connections_and_the_permit_releases_at_hand_of
     drop((held, b));
 }
 
+/// A listener over a source reporting `peers` as the peer of each accepted connection, in order.
+async fn listener_with_peers(
+    config: Config,
+    limits: Limits,
+    peers: Vec<SocketAddr>,
+) -> (SniffListener, SocketAddr) {
+    shadowcat::tls::install_default_provider();
+    let (tcp, addr) = bind().await;
+    let config = Arc::new(config);
+    let rt = TlsRuntime::start(&config);
+    let source = SyntheticPeers { inner: tcp, peers };
+    (SniffListener::new(source, rt, config, limits), addr)
+}
+
+/// A peer address for a scripted source.
+fn peer_at(ip: &str) -> SocketAddr {
+    format!("{ip}:4000").parse().unwrap()
+}
+
 #[tokio::test]
-async fn per_ip_cap_applies_to_ordinary_peers_and_not_to_trusted_proxies() {
+async fn per_ip_cap_applies_to_ordinary_peers_and_not_to_trusted_proxies_or_loopback() {
     let limits = Limits {
         global_cap: 100,
         per_ip_cap: 1,
         deadline: Duration::from_secs(30),
     };
     // Ordinary peer: the second idle connection from the same IP is refused.
-    let (l, addr) = listener_with(memory_config(), limits).await;
+    let (l, addr) = listener_with_peers(
+        memory_config(),
+        limits,
+        vec![peer_at("192.0.2.1"), peer_at("192.0.2.1")],
+    )
+    .await;
     let _first = TcpStream::connect(addr).await.unwrap();
     wait_until(|| l.in_flight() == 1).await;
     let mut second = TcpStream::connect(addr).await.unwrap();
@@ -227,35 +251,55 @@ async fn per_ip_cap_applies_to_ordinary_peers_and_not_to_trusted_proxies() {
 
     // The same peer listed in trusted_proxies is exempt from the per-IP cap.
     let trusted = Config {
-        trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
+        trusted_proxies: vec!["192.0.2.1".parse().unwrap()],
         ..memory_config()
     };
-    let (l2, addr2) = listener_with(trusted, limits).await;
+    let (l2, addr2) = listener_with_peers(trusted, limits, vec![peer_at("192.0.2.1"); 3]).await;
     let _a = TcpStream::connect(addr2).await.unwrap();
     let _b = TcpStream::connect(addr2).await.unwrap();
     let _c = TcpStream::connect(addr2).await.unwrap();
     wait_until(|| l2.in_flight() == 3).await;
+
+    // A loopback peer is exempt without being listed.
+    let (l3, addr3) = listener_with(memory_config(), limits).await;
+    let _x = TcpStream::connect(addr3).await.unwrap();
+    let _y = TcpStream::connect(addr3).await.unwrap();
+    let _z = TcpStream::connect(addr3).await.unwrap();
+    wait_until(|| l3.in_flight() == 3).await;
 }
 
 /// The exemption decided at accept time travels with the connection, for plain and TLS peers, so
 /// the serve loop's live-connection caps apply the same rule as the admission caps.
 #[tokio::test]
-async fn a_trusted_proxy_connection_carries_the_cap_exemption_and_an_ordinary_one_does_not() {
-    for (trusted, expected) in [(vec!["127.0.0.1".parse().unwrap()], true), (vec![], false)] {
+async fn the_cap_exemption_travels_with_the_connection_for_proxies_and_loopback_but_not_ordinary_peers(
+) {
+    let cases = [
+        ("a listed proxy", "192.0.2.50", vec!["192.0.2.50"], true),
+        ("an ordinary peer", "192.0.2.1", vec![], false),
+        ("loopback", "127.0.0.1", vec![], true),
+        ("a mapped loopback", "::ffff:127.0.0.1", vec![], true),
+    ];
+    for (name, ip, listed, expected) in cases {
+        let ip = if ip.contains(':') {
+            format!("[{ip}]")
+        } else {
+            ip.to_string()
+        };
         let config = Config {
-            trusted_proxies: trusted,
+            trusted_proxies: listed.iter().map(|p: &&str| p.parse().unwrap()).collect(),
             ..memory_config()
         };
-        let (mut l, addr) = listener_with(config, Limits::default()).await;
+        let (mut l, addr) =
+            listener_with_peers(config, Limits::default(), vec![peer_at(&ip); 2]).await;
         let mut plain = TcpStream::connect(addr).await.unwrap();
         plain.write_all(b"G").await.unwrap();
         let (_s, meta) = accept(&mut l).await;
-        assert_eq!(meta.cap_exempt, expected, "plain connection");
+        assert_eq!(meta.cap_exempt, expected, "{name}: plain connection");
 
         let client = tokio::spawn(async move { handshake_any(addr, None, &["http/1.1"]).await });
         let (_s, meta) = accept(&mut l).await;
         assert!(meta.tls);
-        assert_eq!(meta.cap_exempt, expected, "TLS connection");
+        assert_eq!(meta.cap_exempt, expected, "{name}: TLS connection");
         let _ = client.await;
     }
 }

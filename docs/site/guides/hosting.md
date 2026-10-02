@@ -246,8 +246,13 @@ be learned.
 `trusted_proxies` is a list, so the env-var form needs bracket syntax even for one entry:
 `SHADOWCAT_TRUSTED_PROXIES=[127.0.0.1]` (a bare `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` fails to
 parse). In `shadowcat.toml`, use ordinary TOML array syntax: `trusted_proxies = ["127.0.0.1"]`.
-Peers listed in `trusted_proxies` are exempt from the per-address connection cap that protects the
-listener (every player behind the proxy shares that address).
+Loopback peers (`127.0.0.0/8`, `::1`) and peers listed in `trusted_proxies` are exempt from the
+per-address connection cap that protects the listener (every player behind the proxy shares that
+address); the global cap still applies to them. The exemption is not trust: a proxy or tunnel on the
+same host (cloudflared, tailscale, ngrok, nginx) is exempt from the caps because it connects from
+loopback, but it still has to be listed in `trusted_proxies` for the server to believe the
+`X-Forwarded-For` and `X-Forwarded-Proto` headers it sends, which carry the real client address and
+scheme.
 
 ### Automatic certificates (ACME)
 
@@ -447,8 +452,10 @@ a proxy must use HTTP/1.1 to reach a plain upstream; over TLS it speaks what the
 Shadowcat closes an HTTP/1.1 connection that sends no request for 30 seconds, an HTTP/2
 connection that has had no request in flight for 60 seconds (a live WebSocket counts as a request
 in flight), and an HTTP/2 connection that stops answering pings. It also caps live connections at
-2048 in total and 256 per client address; addresses listed in `trusted_proxies` are exempt from
-the per-address cap, which is why a reverse proxy in front of Shadowcat must be listed there. A
+2048 in total and 256 per client address; loopback peers and addresses listed in `trusted_proxies`
+are exempt from the per-address cap (the 2048 total still applies to them), so a reverse proxy or
+tunnel on the same host is never refused by it, and one on another host is exempt once listed in
+`trusted_proxies`, which it needs anyway for the real client address and scheme. A
 proxy that pools idle upstream connections must drop them sooner than that, or it will try to
 reuse a connection Shadowcat has already closed. For
 nginx, an `upstream` block that uses `keepalive` holds an idle upstream connection for
