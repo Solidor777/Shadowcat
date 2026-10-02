@@ -4,8 +4,13 @@ on:
   push:
   pull_request:
 
+# Job timeouts bound a hang, not a regression: each is twice the longest successful run among the
+# last 100 completed runs of this workflow (per job, and per OS leg for `rust`), rounded up to five
+# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 28.9, rust ubuntu 23.3,
+# web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. Without one a hung job runs to the platform's six hours.
 jobs:
   rust:
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 60 || 50 }}
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +32,10 @@ jobs:
         run: pnpm build
       # The vendored h2 is hashed on every OS (a Windows checkout must hash like the stored LF) and
       # compared with the real upstream archive, which needs the network.
+      # The script ends its own download after 60 s (DOWNLOAD_DEADLINE_MS); the step bound is five
+      # times that, so only a hang outside the download reaches it.
       - name: Vendored h2 equals upstream plus the committed patch (all OSes)
+        timeout-minutes: 5
         run: pnpm lint:vendor:upstream
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -97,6 +105,7 @@ jobs:
           path: target/package/
 
   web:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -124,6 +133,7 @@ jobs:
   # real Rust test_server. Needs both toolchains, so it is its own single-OS job
   # (the rust matrix already proves cross-OS build; this proves the boundary).
   e2e:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -153,6 +163,7 @@ jobs:
   # invoking Playwright, because Playwright starts its `webServer` ahead of any
   # setup hook, so the binary must already exist. Hence its own single-OS job.
   ui-e2e:
+    timeout-minutes: 35
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -251,6 +262,7 @@ jobs:
   # exemptions it names are themselves gated: an entry that stops matching becomes
   # an unused-exemption warning, and warnings here are fatal.
   docs:
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

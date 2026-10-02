@@ -21,6 +21,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { get } from "node:https";
+import { clearTimeout, setTimeout } from "node:timers";
 import { URL } from "node:url";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
@@ -408,28 +409,58 @@ function listVendorPaths() {
 }
 
 /**
- * Downloads `url` over HTTPS, following up to five redirects.
+ * The longest the whole download may take, redirects included. The archive is a few hundred
+ * kilobytes and the download measures well under a second; the bound exists so an unreachable
+ * registry ends the gate with a message instead of holding a CI step until its own timeout.
+ */
+export const DOWNLOAD_DEADLINE_MS = 60_000;
+
+/**
+ * Downloads `url` over HTTPS, following up to five redirects, within `deadlineMs` in total. A
+ * redirect to anything but HTTPS is refused.
  * @param {string} url The archive URL.
- * @param {number} [redirects] Redirects still allowed.
+ * @param {object} [options] Injected effects.
+ * @param {number} [options.deadlineMs] The deadline for the whole download.
+ * @param {typeof get} [options.request] The transport; the tests inject a plain-HTTP one.
  * @returns {Promise<Buffer>} The response body.
  */
-function download(url, redirects = 5) {
+export function download(url, { deadlineMs = DOWNLOAD_DEADLINE_MS, request = get } = {}) {
   return new Promise((resolvePromise, reject) => {
-    get(url, (response) => {
-      const { statusCode, headers } = response;
-      if (statusCode >= 300 && statusCode < 400 && headers.location && redirects > 0) {
-        response.resume();
-        resolvePromise(download(new URL(headers.location, url).href, redirects - 1));
-      } else if (statusCode !== 200) {
-        response.resume();
-        reject(new Error(`lint:vendor: downloading ${url} failed with HTTP ${statusCode}`));
-      } else {
-        const chunks = [];
-        response.on("data", (c) => chunks.push(c));
-        response.on("end", () => resolvePromise(Buffer.concat(chunks)));
-        response.on("error", reject);
-      }
-    }).on("error", reject);
+    let current = null;
+    const timer = setTimeout(() => {
+      reject(new Error(`${url} did not finish within ${deadlineMs} ms`));
+      current?.destroy();
+    }, deadlineMs);
+    const settle = (finish) => (value) => {
+      clearTimeout(timer);
+      finish(value);
+    };
+    const done = settle(resolvePromise);
+    const fail = settle(reject);
+    const fetchFrom = (from, redirects) => {
+      current = request(from, (response) => {
+        const { statusCode, headers } = response;
+        if (statusCode >= 300 && statusCode < 400 && headers.location && redirects > 0) {
+          response.resume();
+          const next = new URL(headers.location, from);
+          if (next.protocol !== "https:") {
+            fail(new Error(`${from} redirected to ${next.href}, which is not HTTPS`));
+            return;
+          }
+          fetchFrom(next.href, redirects - 1);
+        } else if (statusCode !== 200) {
+          response.resume();
+          fail(new Error(`${from} answered HTTP ${statusCode}`));
+        } else {
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("end", () => done(Buffer.concat(chunks)));
+          response.on("error", fail);
+        }
+      });
+      current.on("error", fail);
+    };
+    fetchFrom(url, 5);
   });
 }
 
@@ -457,7 +488,14 @@ export async function runGate({ listFiles, readFile, upstream, fetchCrate, log, 
     cargoLock: readFile("Cargo.lock").toString("utf8"),
   });
   if (upstream) {
-    errors.push(...checkUpstream({ crateBytes: await fetchCrate(), readFile }));
+    let crateBytes;
+    try {
+      crateBytes = await fetchCrate();
+    } catch (cause) {
+      error(`lint:vendor: could not download the upstream archive: ${cause instanceof Error ? cause.message : cause}`);
+      return 1;
+    }
+    errors.push(...checkUpstream({ crateBytes, readFile }));
   }
   if (errors.length > 0) {
     for (const e of errors) error(`lint:vendor: ${e}`);

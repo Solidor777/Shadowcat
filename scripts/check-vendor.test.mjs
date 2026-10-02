@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { createServer, get as httpGet } from "node:http";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -13,6 +14,7 @@ import {
   applyPatch,
   checkUpstream,
   checkVendor,
+  download,
   functionBody,
   hashFile,
   hunkCounts,
@@ -467,6 +469,97 @@ test("runGate reports a git failure instead of throwing", async () => {
   });
   expect(code).toBe(1);
   expect(errors).toEqual(["lint:vendor: could not determine the vendored file list (boom)"]);
+});
+
+test("a failed download is reported as a lint:vendor line and exit code 1, not thrown", async () => {
+  const errors = [];
+  const code = await runGate({
+    listFiles: () => ({ ok: true, paths: [] }),
+    readFile: () => Buffer.from(""),
+    upstream: true,
+    fetchCrate: () => Promise.reject(new Error("getaddrinfo ENOTFOUND static.crates.io")),
+    log: () => {},
+    error: (m) => errors.push(m),
+  });
+  expect(code).toBe(1);
+  expect(errors.some((m) => m === "lint:vendor: could not download the upstream archive: getaddrinfo ENOTFOUND static.crates.io")).toBe(true);
+});
+
+test("a server that never answers ends the download at its deadline", async () => {
+  const server = createServer(() => {});
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    const started = Date.now();
+    await expect(download(`http://127.0.0.1:${port}/h2.crate`, { deadlineMs: 150, request: httpGet })).rejects.toThrow(
+      /did not finish within 150 ms/,
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a server that stops sending mid-body ends the download at its deadline", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-length": "1000" });
+    res.write("partial");
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    await expect(download(`http://127.0.0.1:${port}/h2.crate`, { deadlineMs: 150, request: httpGet })).rejects.toThrow();
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a redirect to a plain-HTTP location is refused", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(302, { location: "http://127.0.0.1:1/h2.crate" });
+    res.end();
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    await expect(download(`http://127.0.0.1:${port}/h2.crate`, { request: httpGet })).rejects.toThrow(/not HTTPS/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a non-200 answer rejects with its status", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(503);
+    res.end();
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    await expect(download(`http://127.0.0.1:${port}/h2.crate`, { request: httpGet })).rejects.toThrow(/HTTP 503/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("a body that arrives whole resolves with its bytes", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200);
+    res.end("archive-bytes");
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    const got = await download(`http://127.0.0.1:${port}/h2.crate`, { request: httpGet });
+    expect(got.toString()).toBe("archive-bytes");
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });
 
 test("the real tree passes the offline mode", () => {
