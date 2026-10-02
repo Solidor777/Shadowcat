@@ -3,11 +3,13 @@
 //! is parked), and the wire-fed table of live HTTP/2 streams.
 //!
 //! One definition of "no progress" is shared by every unit that cuts a response: a peer that
-//! returns no flow-control credit for a pending chunk (the stream unit), or a socket that accepts
-//! nothing (the connection unit), for [`ConnLimits::egress_window`](super::ConnLimits). Each cut
-//! is counted under exactly one [`StallUnit`], through [`StallCounters::record_stall`] and nothing
-//! else, so the serve loop's closing report ([`DrainReport::stall_cuts`](super::DrainReport)) says
-//! which bound fired.
+//! returns no flow-control credit for a pending chunk (the stream unit), a socket that accepts
+//! nothing (the connection unit), or an ended response whose own stream's queued tail makes less
+//! than `min(egress_floor, remaining)` bytes of progress (the ended-unflushed unit, tracked by the
+//! `table` module), for [`ConnLimits::egress_window`](super::ConnLimits). Each cut is counted under
+//! exactly one [`StallUnit`], through [`StallCounters::record_stall`] and nothing else, so the
+//! serve loop's closing report ([`DrainReport::stall_cuts`](super::DrainReport)) says which bound
+//! fired.
 //!
 //! The connection unit measures the socket, not the application: [`WriteCounter`] sits in the
 //! connection's IO and adds the response bytes the socket accepted to [`Egress`]; [`Sampler`], run
@@ -20,6 +22,9 @@
 //! ([`WriteCounter`] for what the writer accepts, [`ReadObserver`] for what the codec reads) and
 //! keeps the `table` module's per-stream table in step with the wire. The table fails closed: a
 //! connection whose table outgrows its cap is cut and counted as [`StallUnit::TrackerOverflow`].
+//! Response bodies add the other half of each stream's life (the frame that carries END_STREAM, and
+//! the body's drop), and [`Egress::cut_ended_unflushed`], run by `drive` on every tick, cuts a
+//! connection whose finished response's own queued tail made no progress for the window.
 
 use std::collections::VecDeque;
 use std::io;
@@ -34,6 +39,8 @@ use self::parser::{
     FrameEvent, FrameParser, FLAG_END_HEADERS, FLAG_END_STREAM, FRAME_TYPE_CONTINUATION,
     FRAME_TYPE_DATA, FRAME_TYPE_HEADERS, FRAME_TYPE_RST_STREAM,
 };
+#[cfg(test)]
+use self::table::StreamState;
 use self::table::{ParseOutcome, StreamTable};
 use super::kill::{ConnKill, KillReason};
 use super::{StallCuts, H2_MAX_CONCURRENT_STREAMS};
@@ -64,6 +71,8 @@ pub(super) enum StallUnit {
     Stream,
     /// A whole connection whose socket accepted almost nothing for the window.
     Connection,
+    /// A connection whose ended response's own queued tail made no progress for the window.
+    EndedUnflushed,
     /// A connection whose stream table outgrew its cap.
     TrackerOverflow,
 }
@@ -75,6 +84,8 @@ pub(super) struct StallCounters {
     stream: AtomicUsize,
     /// Connections cut by the connection unit.
     connection: AtomicUsize,
+    /// Connections cut for an ended response whose tail made no progress.
+    ended_unflushed: AtomicUsize,
     /// Connections cut because their stream table outgrew its cap.
     tracker_overflow: AtomicUsize,
     /// The most entries any connection's stream table held.
@@ -87,6 +98,7 @@ impl StallCounters {
         let counter = match unit {
             StallUnit::Stream => &self.stream,
             StallUnit::Connection => &self.connection,
+            StallUnit::EndedUnflushed => &self.ended_unflushed,
             StallUnit::TrackerOverflow => &self.tracker_overflow,
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -107,6 +119,7 @@ impl StallCounters {
         StallCuts {
             stream: self.stream.load(Ordering::Relaxed),
             connection: self.connection.load(Ordering::Relaxed),
+            ended_unflushed: self.ended_unflushed.load(Ordering::Relaxed),
             tracker_overflow: self.tracker_overflow.load(Ordering::Relaxed),
         }
     }
@@ -172,6 +185,29 @@ impl Egress {
         lock(&self.streams).ids()
     }
 
+    /// The DATA payload bytes the writer accepted for stream `sid`, for tests.
+    #[cfg(test)]
+    pub(super) fn stream_written(&self, sid: u32) -> Option<u64> {
+        lock(&self.streams).written(sid)
+    }
+
+    /// Each table entry's id and phase (`open`, `final` or `queued`), in id order, for tests.
+    #[cfg(test)]
+    pub(super) fn stream_phases(&self) -> Vec<(u32, &'static str)> {
+        lock(&self.streams)
+            .snapshot()
+            .into_iter()
+            .map(|(sid, state)| {
+                let phase = match state {
+                    StreamState::Open => "open",
+                    StreamState::Final => "final",
+                    StreamState::Queued { .. } => "queued",
+                };
+                (sid, phase)
+            })
+            .collect()
+    }
+
     /// Response bytes the socket has accepted so far.
     pub(super) fn accepted(&self) -> u64 {
         self.data_accepted.load(Ordering::Relaxed)
@@ -180,6 +216,45 @@ impl Egress {
     /// Whether the writer is parked.
     pub(super) fn parked(&self) -> bool {
         self.write_parked.load(Ordering::Relaxed)
+    }
+
+    /// The response body of stream `sid` returned the frame carrying END_STREAM.
+    pub(super) fn register_final(&self, sid: u32) {
+        lock(&self.streams).register_final(sid);
+    }
+
+    /// The response body of stream `sid` was dropped after handing `handed` DATA payload bytes to
+    /// h2.
+    pub(super) fn hand_over(&self, sid: u32, handed: u64) {
+        lock(&self.streams).hand_over(sid, handed, Instant::now());
+    }
+
+    /// Cuts the connection when an ended response's own queued tail made no progress for `window`
+    /// (progress is judged against `floor` bytes), counting it as one
+    /// [`StallUnit::EndedUnflushed`] cut. Returns whether it cut: counted only when this call
+    /// ended the connection, so a drain deadline or another unit that fired first is not
+    /// double-counted.
+    pub(super) fn cut_ended_unflushed(
+        &self,
+        kill: &ConnKill,
+        now: Instant,
+        window: Duration,
+        floor: u64,
+    ) -> bool {
+        let Some(stall) = lock(&self.streams).scan(now, window, floor) else {
+            return false;
+        };
+        if !kill.fire(KillReason::Stall) {
+            return false;
+        }
+        tracing::warn!(
+            unit = "ended_unflushed",
+            age_ms = u64::try_from(stall.age.as_millis()).unwrap_or(u64::MAX),
+            entries = stall.entries,
+            "connection cut: a finished response's queued tail made no progress"
+        );
+        self.record_stall(StallUnit::EndedUnflushed);
+        true
     }
 
     /// The read parser parsed a request HEADERS frame header for `sid`. Creates the stream's entry
@@ -229,6 +304,11 @@ impl Egress {
             FRAME_TYPE_RST_STREAM => lock(&self.streams).write_ended(sid),
             _ => {}
         }
+    }
+
+    /// The writer accepted `bytes` DATA payload bytes of stream `sid`.
+    fn data_written(&self, sid: u32, bytes: u64) {
+        lock(&self.streams).data_written(sid, bytes);
     }
 
     /// The writer accepted a whole GOAWAY frame with last stream id `last`.
@@ -316,7 +396,10 @@ impl WriteCounter {
                 let egress = &self.egress;
                 let mut data = 0;
                 let mut on = |event: FrameEvent| match event {
-                    FrameEvent::Data(bytes) => data += bytes,
+                    FrameEvent::Data { sid, bytes } => {
+                        data += bytes;
+                        egress.data_written(sid, bytes);
+                    }
                     FrameEvent::End { kind, flags, sid } => egress.frame_written(kind, flags, sid),
                     FrameEvent::GoAway(last) => egress.goaway_written(last),
                     FrameEvent::Start { .. } => {}

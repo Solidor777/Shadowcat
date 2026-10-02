@@ -1,5 +1,5 @@
-//! The stream table's wire-fed transitions: creation at parse time, removal only on wire evidence,
-//! the GOAWAY filter and purge, and the fail-closed cap.
+//! The stream table: creation at parse time, removal only on wire evidence, the GOAWAY filter and
+//! purge, the fail-closed cap, and the Final and Queued states with the stream's own progress.
 
 use super::*;
 
@@ -123,11 +123,200 @@ fn the_half_cap_warning_is_due_once() {
     assert_eq!(due, [6], "first past half of 10 is the sixth entry");
 }
 
-/// One wire event of the ordering test, all on stream 1.
+// ---------------------------------------------------------------------------------------------
+// Final and Queued: registration, hand-over and the stream's own progress
+// ---------------------------------------------------------------------------------------------
+
+/// The window the progress tests run at.
+const WINDOW: Duration = Duration::from_secs(10);
+
+/// The connection unit's floor the progress tests run at.
+const FLOOR: u64 = 100;
+
+/// A table with `sid` parsed, registered final and handed over `handed` bytes at `now`.
+fn queued(sid: u32, handed: u64, now: Instant) -> StreamTable {
+    let mut t = table(100);
+    t.read_headers(sid);
+    t.register_final(sid);
+    t.hand_over(sid, handed, now);
+    t
+}
+
+/// The second `n` of a test's timeline.
+fn at(base: Instant, n: u64) -> Instant {
+    base + Duration::from_secs(n)
+}
+
+#[test]
+fn registration_only_upgrades_an_open_entry_and_never_creates_one() {
+    let mut t = table(100);
+    t.register_final(1);
+    assert!(t.ids().is_empty(), "registration created an entry");
+    t.read_headers(1);
+    t.register_final(1);
+    assert_eq!(t.snapshot(), [(1, StreamState::Final)]);
+    t.register_final(1);
+    assert_eq!(t.snapshot(), [(1, StreamState::Final)]);
+}
+
+#[test]
+fn a_hand_over_queues_a_final_entry_and_leaves_open_and_absent_ones_alone() {
+    let base = Instant::now();
+    let mut t = table(100);
+    t.read_headers(1);
+    t.read_headers(3);
+    t.register_final(3);
+    t.hand_over(1, 500, base);
+    t.hand_over(3, 500, base);
+    t.hand_over(5, 500, base);
+    let states = t.snapshot();
+    assert_eq!(
+        states[0],
+        (1, StreamState::Open),
+        "an open entry stays open"
+    );
+    assert!(
+        matches!(states[1], (3, StreamState::Queued { since, .. }) if since == base),
+        "{states:?}"
+    );
+    assert_eq!(states.len(), 2, "a hand-over created an entry");
+}
+
+#[test]
+fn a_final_entry_is_never_aged() {
+    let base = Instant::now();
+    let mut t = table(100);
+    t.read_headers(1);
+    t.register_final(1);
+    for n in [0, 10, 100, 10_000] {
+        assert_eq!(t.scan(at(base, n), WINDOW, FLOOR), None, "at {n} s");
+    }
+}
+
+#[test]
+fn a_reader_that_drains_at_least_the_floor_per_window_is_never_cut_until_its_tail_is_gone() {
+    let base = Instant::now();
+    let mut t = queued(1, 1000, base);
+    for window in 1..=9u64 {
+        t.data_written(1, FLOOR);
+        assert_eq!(
+            t.scan(at(base, window * 10), WINDOW, FLOOR),
+            None,
+            "window {window}"
+        );
+    }
+    // 900 bytes written; the last 100 go out with the END_STREAM frame, which removes the entry.
+    t.data_written(1, FLOOR);
+    t.write_ended(1);
+    assert_eq!(t.scan(at(base, 200), WINDOW, FLOOR), None);
+    assert!(t.ids().is_empty());
+}
+
+#[test]
+fn a_reader_that_drains_one_byte_per_window_is_cut_at_the_end_of_the_first_window() {
+    let base = Instant::now();
+    let mut t = queued(1, 1000, base);
+    t.data_written(1, 1);
+    assert_eq!(
+        t.scan(at(base, 9), WINDOW, FLOOR),
+        None,
+        "inside the window"
+    );
+    let stall = t
+        .scan(at(base, 10), WINDOW, FLOOR)
+        .expect("a one byte per window reader was not cut");
+    assert_eq!(stall.age, WINDOW);
+    assert_eq!(stall.entries, 1);
+}
+
+#[test]
+fn a_tail_smaller_than_the_floor_drained_completely_inside_the_window_is_not_cut() {
+    let base = Instant::now();
+    let mut t = queued(1, 60, base);
+    t.data_written(1, 60);
+    // The whole tail is written (60 = min(100, 60)); only its END_STREAM frame is outstanding.
+    assert_eq!(t.scan(at(base, 10), WINDOW, FLOOR), None);
+    assert_eq!(t.scan(at(base, 100), WINDOW, FLOOR), None);
+}
+
+#[test]
+fn a_tail_smaller_than_the_floor_drained_only_in_part_is_cut_when_the_window_ends() {
+    let base = Instant::now();
+    let mut t = queued(1, 60, base);
+    t.data_written(1, 30);
+    assert_eq!(t.scan(at(base, 9), WINDOW, FLOOR), None);
+    assert!(t.scan(at(base, 10), WINDOW, FLOOR).is_some());
+}
+
+#[test]
+fn another_streams_data_never_refreshes_an_entry() {
+    let base = Instant::now();
+    let mut t = queued(1, 1000, base);
+    t.read_headers(3);
+    for n in 1..=9 {
+        t.data_written(3, 10_000);
+        assert_eq!(t.scan(at(base, n), WINDOW, FLOOR), None);
+    }
+    t.data_written(3, 10_000);
+    assert!(
+        t.scan(at(base, 10), WINDOW, FLOOR).is_some(),
+        "a sibling's DATA kept a stalled entry alive"
+    );
+}
+
+#[test]
+fn the_threshold_is_the_floor_the_caller_passes() {
+    // 100 bytes written over a window: progress against a floor of 50, a stall against 200.
+    for (floor, stalls) in [(50u64, false), (200, true)] {
+        let base = Instant::now();
+        let mut t = queued(1, 1000, base);
+        t.data_written(1, 100);
+        assert_eq!(
+            t.scan(at(base, 10), WINDOW, floor).is_some(),
+            stalls,
+            "floor {floor}"
+        );
+    }
+}
+
+#[test]
+fn a_new_window_starts_when_the_threshold_is_reached_and_its_target_follows_what_remains() {
+    let base = Instant::now();
+    let mut t = queued(1, 150, base);
+    // 100 of 150 written: the threshold min(100, 150) is reached, a new window begins at 5 s with
+    // 50 bytes remaining, so its target is min(100, 50) = 50.
+    t.data_written(1, 100);
+    assert_eq!(t.scan(at(base, 5), WINDOW, FLOOR), None);
+    t.data_written(1, 49);
+    assert!(
+        t.scan(at(base, 15), WINDOW, FLOOR).is_some(),
+        "49 of the 50 remaining bytes made the window's target"
+    );
+    let mut ok = queued(1, 150, base);
+    ok.data_written(1, 100);
+    assert_eq!(ok.scan(at(base, 5), WINDOW, FLOOR), None);
+    ok.data_written(1, 50);
+    assert_eq!(ok.scan(at(base, 15), WINDOW, FLOOR), None);
+}
+
+#[test]
+fn an_entry_with_nothing_left_to_write_is_always_at_its_threshold() {
+    // Only its END_STREAM frame is outstanding: it waits on the socket, which the connection unit
+    // bounds, not on the peer's credit.
+    let base = Instant::now();
+    let mut t = queued(1, 0, base);
+    assert_eq!(t.scan(at(base, 1000), WINDOW, FLOOR), None);
+}
+
+/// One wire or body event of the ordering test, all on stream 1.
 #[derive(Debug, Clone, Copy)]
-enum Wire {
+enum Event {
     /// The request HEADERS frame header is parsed.
     Parse,
+    /// The response body returns its END_STREAM-bearing frame.
+    Final,
+    /// The response body is dropped.
+    Drop,
     /// The writer accepts the last byte of the response's END_STREAM frame.
     WriteEnd,
     /// The peer's RST_STREAM is parsed.
@@ -135,9 +324,16 @@ enum Wire {
 }
 
 #[test]
-fn after_any_terminal_event_no_order_of_wire_events_gives_the_stream_an_entry() {
-    let events = [Wire::Parse, Wire::WriteEnd, Wire::ReadReset];
-    let mut sequences: Vec<Vec<Wire>> = vec![Vec::new()];
+fn no_order_of_wire_and_body_events_gives_an_entry_to_a_stream_after_a_terminal_event() {
+    let events = [
+        Event::Parse,
+        Event::Final,
+        Event::Drop,
+        Event::WriteEnd,
+        Event::ReadReset,
+    ];
+    let base = Instant::now();
+    let mut sequences: Vec<Vec<Event>> = vec![Vec::new()];
     let mut checked = 0usize;
     for _ in 0..6 {
         let mut next = Vec::new();
@@ -149,31 +345,32 @@ fn after_any_terminal_event_no_order_of_wire_events_gives_the_stream_an_entry() 
             }
         }
         for seq in &next {
-            // The wire cannot end a stream it never carried.
-            let first_parse = seq.iter().position(|e| matches!(e, Wire::Parse));
+            // The wire cannot end a stream before it carried its request. A terminal event with no
+            // request parsed at all is kept: only a table that creates entries outside a parse
+            // could answer it with one.
+            let first_parse = seq.iter().position(|e| matches!(e, Event::Parse));
             let first_terminal = seq
                 .iter()
-                .position(|e| matches!(e, Wire::WriteEnd | Wire::ReadReset));
-            if let (Some(t), Some(p)) = (first_terminal, first_parse) {
-                if t < p {
+                .position(|e| matches!(e, Event::WriteEnd | Event::ReadReset));
+            if let (Some(terminal), Some(parse)) = (first_terminal, first_parse) {
+                if terminal < parse {
                     continue;
                 }
-            }
-            if first_terminal.is_some() && first_parse.is_none() {
-                continue;
             }
             let mut t = table(100);
             let mut terminal = false;
             for event in seq {
                 match event {
-                    Wire::Parse => {
+                    Event::Parse => {
                         t.read_headers(1);
                     }
-                    Wire::WriteEnd => {
+                    Event::Final => t.register_final(1),
+                    Event::Drop => t.hand_over(1, 100, base),
+                    Event::WriteEnd => {
                         t.write_ended(1);
                         terminal = true;
                     }
-                    Wire::ReadReset => {
+                    Event::ReadReset => {
                         t.read_reset(1);
                         terminal = true;
                     }
@@ -187,5 +384,15 @@ fn after_any_terminal_event_no_order_of_wire_events_gives_the_stream_an_entry() 
         }
         sequences = next;
     }
-    assert!(checked > 100, "only {checked} admissible sequences ran");
+    assert_eq!(checked, 11_928, "the admissible sequences changed");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "a GOAWAY purge removed a stream past Open")]
+fn a_goaway_purge_that_reaches_a_stream_past_open_trips_its_assertion() {
+    let mut t = table(100);
+    t.read_headers(3);
+    t.register_final(3);
+    t.goaway(1);
 }

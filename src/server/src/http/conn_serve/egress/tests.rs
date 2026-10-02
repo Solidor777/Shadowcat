@@ -19,6 +19,7 @@ fn recording_a_cut_moves_exactly_its_own_counter_by_one() {
     for unit in [
         StallUnit::Stream,
         StallUnit::Connection,
+        StallUnit::EndedUnflushed,
         StallUnit::TrackerOverflow,
     ] {
         let counters = StallCounters::default();
@@ -30,6 +31,10 @@ fn recording_a_cut_moves_exactly_its_own_counter_by_one() {
             },
             StallUnit::Connection => StallCuts {
                 connection: 1,
+                ..StallCuts::default()
+            },
+            StallUnit::EndedUnflushed => StallCuts {
+                ended_unflushed: 1,
                 ..StallCuts::default()
             },
             StallUnit::TrackerOverflow => StallCuts {
@@ -513,4 +518,42 @@ fn the_peak_is_the_longest_the_table_ever_was() {
     wire.read(&request(7));
     assert_eq!(wire.ids(), [7]);
     assert_eq!(wire.counters.table_peak(), 3);
+}
+
+#[test]
+fn data_payload_is_attributed_to_its_own_stream_and_a_partial_accept_counts_only_what_was_accepted()
+{
+    let mut wire = Wire::new(100);
+    wire.read(PREFACE);
+    wire.read(&request(1));
+    wire.read(&request(3));
+    // DATA for stream 1 (30 bytes), then DATA for stream 3 (30 bytes), offered in two slices; the
+    // writer accepts all of the first and 20 bytes of the second: its 9-byte header and 11 payload
+    // bytes.
+    let mut first = frame_on(FRAME_TYPE_DATA, 0, 1, &[1; 30]);
+    first.extend(frame_on(FRAME_TYPE_DATA, 0, 3, &[3; 30]));
+    let accepted = frame_on(FRAME_TYPE_DATA, 0, 1, &[1; 30]).len() + 20;
+    wire.writes.after_write(
+        &Poll::Ready(Ok(accepted)),
+        &[
+            IoSlice::new(&first[..30 + 9]),
+            IoSlice::new(&first[30 + 9..]),
+        ],
+    );
+    assert_eq!(wire.egress.stream_written(1), Some(30));
+    assert_eq!(wire.egress.stream_written(3), Some(11));
+    assert_eq!(
+        wire.egress.accepted(),
+        41,
+        "the connection unit counts the same bytes"
+    );
+    // The rest of stream 3's frame.
+    let rest = &first[accepted..];
+    wire.write(rest);
+    assert_eq!(wire.egress.stream_written(3), Some(30));
+    assert_eq!(
+        wire.egress.stream_written(7),
+        None,
+        "no entry for an id never parsed"
+    );
 }

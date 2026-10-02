@@ -109,6 +109,25 @@ fn app() -> Router {
     Router::new()
         .route("/", get(|| async { "ok" }))
         .route("/hang", get(std::future::pending::<&'static str>))
+        .route("/small", get(|| async { vec![0u8; 500] }))
+        .route("/big", get(|| async { vec![0u8; 20_000] }))
+        .route(
+            "/chunks",
+            get(|| async {
+                axum::body::Body::from_stream(futures_util::stream::iter([
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![1u8; 3000])),
+                    Ok(axum::body::Bytes::from(vec![2u8; 3000])),
+                ]))
+            }),
+        )
+        .route(
+            "/endless",
+            get(|| async {
+                axum::body::Body::from_stream(futures_util::stream::repeat_with(|| {
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![0u8; 16 * 1024]))
+                }))
+            }),
+        )
 }
 
 /// Serves one HTTP/2 connection whose stream table holds at most `cap` entries.
@@ -458,5 +477,185 @@ async fn the_server_advertises_the_stream_limit_the_table_cap_is_derived_from() 
         .find(|(id, _)| *id == 3)
         .map(|(_, value)| *value);
     assert_eq!(limit, Some(H2_MAX_CONCURRENT_STREAMS));
+    served.finish().await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Soak: browser-style request churn never cuts anything and leaves no entry behind
+// ---------------------------------------------------------------------------------------------
+
+/// A xorshift64 step: deterministic, so a failing seed reproduces.
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// The paths the soak requests and what each answers with.
+const SOAK_PATHS: [&str; 5] = ["/", "/small", "/big", "/chunks", "/endless"];
+
+/// Runs `requests` requests over one HTTP/2 connection with `workers` concurrent workers, each
+/// picking a path and then either reading the response to its end (not `/endless`), reading a
+/// little, or cancelling: before the response head after at most `max_delay` (zero: after a few
+/// scheduler yields) when `early_cancels`, otherwise once the head has arrived. Returns the served
+/// connection after every stream has ended.
+///
+/// Early cancels are kept to a low rate by the caller: h2 itself ends a connection with
+/// GOAWAY(ENHANCE_YOUR_CALM) when more than its pending-accept reset limit of streams are reset
+/// before the service accepted them, a rapid-reset guard that a cancel-heavy loop trips on its own.
+async fn soak(
+    requests: usize,
+    workers: usize,
+    seed: u64,
+    max_delay: Duration,
+    early_cancels: bool,
+) -> Served {
+    let mut served = serve(egress::STREAM_TABLE_CAP);
+    let peer = std::mem::replace(&mut served.peer, tokio::io::duplex(1).0);
+    // The CLIENT's own budget of library-generated resets is lifted: a cancel racing the server's
+    // response HEADERS makes the client answer STREAM_CLOSED, and a cancel-heavy soak would exhaust
+    // that budget and end the connection from the client side. The server under test keeps the
+    // production builder.
+    let (sender, conn) = h2::client::Builder::new()
+        .max_local_error_reset_streams(None)
+        .initial_window_size(64 * 1024)
+        .handshake::<_, axum::body::Bytes>(peer)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let per_worker = requests / workers;
+    let failure = Arc::new(std::sync::Mutex::new(None::<String>));
+    let mut tasks = Vec::new();
+    for worker in 0..workers {
+        let mut sender = sender.clone();
+        let failure = failure.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut rng = seed ^ (worker as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            for _ in 0..per_worker {
+                let path = SOAK_PATHS[(xorshift(&mut rng) % SOAK_PATHS.len() as u64) as usize];
+                let action = xorshift(&mut rng) % 3;
+                let request = axum::http::Request::get(format!("http://test{path}"))
+                    .body(())
+                    .unwrap();
+                sender = match sender.ready().await {
+                    Ok(ready) => ready,
+                    Err(e) => {
+                        failure
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| format!("the connection ended: {e}"));
+                        return;
+                    }
+                };
+                let Ok((response, _)) = sender.send_request(request, true) else {
+                    continue;
+                };
+                if action == 0 && early_cancels {
+                    // Cancel before the response head: the request may not even have been parsed.
+                    let delay = if max_delay.is_zero() {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_micros(xorshift(&mut rng) % max_delay.as_micros() as u64)
+                    };
+                    if delay.is_zero() {
+                        for _ in 0..(xorshift(&mut rng) % 4) {
+                            tokio::task::yield_now().await;
+                        }
+                    } else {
+                        tokio::time::sleep(delay).await;
+                    }
+                    drop(response);
+                    continue;
+                }
+                let Ok(response) = response.await else {
+                    continue;
+                };
+                let mut body = response.into_body();
+                if action == 0 {
+                    drop(body);
+                    continue;
+                }
+                let mut reads = if action == 1 {
+                    u32::MAX
+                } else {
+                    1 + (xorshift(&mut rng) % 3) as u32
+                };
+                if path == "/endless" {
+                    reads = reads.min(3);
+                }
+                while reads > 0 {
+                    match body.data().await {
+                        Some(Ok(chunk)) => {
+                            let _ = body.flow_control().release_capacity(chunk.len());
+                        }
+                        _ => break,
+                    }
+                    reads -= 1;
+                }
+                drop(body);
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+    drop(sender);
+    assert_eq!(
+        *failure.lock().unwrap(),
+        None,
+        "counters {:?}, dropped {}, peak {}",
+        served.counters.snapshot(),
+        served.dropped.load(Ordering::SeqCst),
+        served.counters.table_peak()
+    );
+    // Quiescence: every stream has ended on the wire, so the table is empty.
+    timeout(Duration::from_secs(20), async {
+        while !served.live.egress().stream_ids().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the table still holds {:?} at quiescence",
+            served.live.egress().stream_ids()
+        )
+    });
+    served
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_browser_style_cancel_and_read_soak_never_cuts_and_leaves_the_table_empty() {
+    for seed in [0x5EED_0001u64, 0x5EED_0002, 0x5EED_0003] {
+        let served = soak(300, 6, seed, Duration::from_millis(40), true).await;
+        assert_eq!(
+            served.counters.snapshot(),
+            StallCuts::default(),
+            "seed {seed:#x}"
+        );
+        assert!(served.counters.table_peak() <= egress::STREAM_TABLE_CAP);
+        assert_eq!(served.dropped.load(Ordering::SeqCst), 0);
+        served.finish().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hundred_thousand_request_soak_never_cuts_and_its_table_peak_stays_below_the_cap() {
+    let served = soak(100_000, 32, 0x5EED_1E55, Duration::ZERO, false).await;
+    assert_eq!(served.counters.snapshot(), StallCuts::default());
+    println!(
+        "RECORD soak requests=100000 table_peak={} streams_limit={H2_MAX_CONCURRENT_STREAMS} cap={}",
+        served.counters.table_peak(),
+        egress::STREAM_TABLE_CAP
+    );
+    assert!(
+        served.counters.table_peak() <= egress::STREAM_TABLE_CAP,
+        "peak {}",
+        served.counters.table_peak()
+    );
+    assert_eq!(served.dropped.load(Ordering::SeqCst), 0);
     served.finish().await;
 }

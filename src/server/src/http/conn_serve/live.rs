@@ -234,7 +234,8 @@ impl std::fmt::Debug for ConnLease {
 
 /// A response body that keeps its request's lease until the body is dropped, yields data in
 /// frames of at most [`EGRESS_FLOOR_BYTES`], and, on an HTTP/2 stream, tells the stream unit when
-/// it is waiting on the peer.
+/// it is waiting on the peer and the stream table when it has returned the frame that carries
+/// END_STREAM and when it is gone.
 ///
 /// WHY the bound: hyper hands each data frame to HTTP/2 whole and waits for send capacity for all
 /// of it, so a multi-megabyte frame would be one indivisible wait and a stall inside it could not
@@ -252,6 +253,11 @@ struct LeasedBody {
     pending: Bytes,
     /// The connection the response belongs to, which holds the marker registry.
     live: Arc<LiveState>,
+    /// The HTTP/2 stream id of the request, `None` on HTTP/1: the key of the stream's table entry.
+    sid: Option<u32>,
+    /// DATA payload bytes this body has handed to hyper: the tail the stream table tracks once
+    /// the body is gone.
+    handed: u64,
     /// Whether the first poll has looked for a stream cut.
     registered: bool,
     /// The stream-unit marker; `None` on HTTP/1 and on any task outside a stream executor.
@@ -261,12 +267,15 @@ struct LeasedBody {
 }
 
 impl LeasedBody {
-    /// Wraps `inner`, holding `lease` until the body drops.
-    fn new(inner: Body, lease: ConnLease, live: Arc<LiveState>) -> Self {
+    /// Wraps `inner`, holding `lease` until the body drops. `sid` is the request's HTTP/2 stream
+    /// id.
+    fn new(inner: Body, lease: ConnLease, live: Arc<LiveState>, sid: Option<u32>) -> Self {
         Self {
             inner,
             pending: Bytes::new(),
             live,
+            sid,
+            handed: 0,
             registered: false,
             marker: None,
             _lease: lease,
@@ -278,10 +287,21 @@ impl LeasedBody {
     fn deliver(&mut self) -> Frame<Bytes> {
         let n = self.pending.len().min(EGRESS_FLOOR_BYTES);
         let slice = self.pending.split_to(n);
+        self.handed += slice.len() as u64;
         if let (Some(marker), false) = (&self.marker, slice.is_empty()) {
             marker.delivered();
         }
+        if http_body::Body::is_end_stream(&*self) {
+            self.register_final();
+        }
         Frame::data(slice)
+    }
+
+    /// Tells the stream table the body has returned the frame that carries END_STREAM.
+    fn register_final(&self) {
+        if let Some(sid) = self.sid {
+            self.live.egress.register_final(sid);
+        }
     }
 
     /// Clears the marker: the body is being polled, ended, failed or dropped.
@@ -315,8 +335,17 @@ impl http_body::Body for LeasedBody {
                     this.pending = data;
                     Poll::Ready(Some(Ok(this.deliver())))
                 }
-                Err(frame) => Poll::Ready(Some(Ok(frame))),
+                Err(frame) => {
+                    if frame.is_trailers() {
+                        this.register_final();
+                    }
+                    Poll::Ready(Some(Ok(frame)))
+                }
             },
+            Poll::Ready(None) => {
+                this.register_final();
+                Poll::Ready(None)
+            }
             other => other,
         }
     }
@@ -340,6 +369,9 @@ impl http_body::Body for LeasedBody {
 impl Drop for LeasedBody {
     fn drop(&mut self) {
         self.clear_marker();
+        if let Some(sid) = self.sid {
+            self.live.egress.hand_over(sid, self.handed);
+        }
     }
 }
 
@@ -351,9 +383,35 @@ pub(super) async fn stalled_body(live: &Arc<LiveState>) -> impl Send {
         Body::from(Bytes::from(vec![1u8; 2 * EGRESS_FLOOR_BYTES])),
         live.lease(),
         live.clone(),
+        None,
     );
     std::future::poll_fn(|cx| http_body::Body::poll_frame(Pin::new(&mut body), cx)).await;
     body
+}
+
+/// A response body in `live` for stream `sid` that has delivered its single, final chunk of `bytes`
+/// bytes (at most [`EGRESS_FLOOR_BYTES`]) and has not been polled since, as a stream waiting on its
+/// peer's credit is. The body is returned so the caller decides when it drops.
+#[cfg(test)]
+pub(super) async fn stalled_final_body_of(
+    live: &Arc<LiveState>,
+    sid: u32,
+    bytes: usize,
+) -> impl Send {
+    let mut body = LeasedBody::new(
+        Body::from(Bytes::from(vec![1u8; bytes])),
+        live.lease(),
+        live.clone(),
+        Some(sid),
+    );
+    std::future::poll_fn(|cx| http_body::Body::poll_frame(Pin::new(&mut body), cx)).await;
+    body
+}
+
+/// [`stalled_final_body_of`] with a 100-byte chunk.
+#[cfg(test)]
+pub(super) async fn stalled_final_body(live: &Arc<LiveState>, sid: u32) -> impl Send {
+    stalled_final_body_of(live, sid, 100).await
 }
 
 /// Wraps the application service so every request carries a [`ConnLease`] and every response
@@ -390,11 +448,15 @@ where
     fn call(&mut self, mut req: Request) -> Self::Future {
         let live = self.live.clone();
         let lease = live.lease();
+        let sid = req
+            .extensions()
+            .get::<h2::StreamId>()
+            .map(|id| u32::from(*id));
         req.extensions_mut().insert(lease.clone());
         let fut = self.inner.call(req);
         Box::pin(async move {
             let res = fut.await?;
-            Ok(res.map(|inner| Body::new(LeasedBody::new(inner, lease, live))))
+            Ok(res.map(|inner| Body::new(LeasedBody::new(inner, lease, live, sid))))
         })
     }
 }

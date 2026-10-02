@@ -1,6 +1,9 @@
 //! The HTTP/2 stream unit of the egress bounds over real sockets: a response whose peer returns no
 //! flow-control credit for a pending chunk is reset (`RST_STREAM(CANCEL)`) after
-//! `ConnLimits::egress_window`, and nothing else on the connection is touched.
+//! `ConnLimits::egress_window`, and nothing else on the connection is touched. And the
+//! ended-unflushed unit: a response whose body has ended but whose tail is still queued behind a
+//! stalled stream window has no handle left to reset, so its connection is cut when that stream's
+//! own DATA stops progressing for the window.
 //!
 //! Every window-sized wait asserts the cut did NOT happen before the window, from what the client
 //! observes (the time its stream was reset). How long after the window plus one sampler tick it
@@ -13,8 +16,8 @@ use std::time::Duration;
 use h2::Reason;
 use shadowcat::http::conn_serve::{ConnLimits, StallCuts};
 use shadowcat_test_support::egress::{
-    first_close, get_path, paced_read, ping_frame, raw_h2_request, read_unreleased,
-    wait_until_flat, EgressServer, PacedEnd,
+    first_close, get_path, paced_read, ping_frame, raw_h2_request, read_unreleased, send_scripted,
+    wait_until_flat, BodyEnd, EgressServer, PacedEnd, RawPeer,
 };
 use shadowcat_test_support::measure::record_cut_overshoot;
 use tokio::time::Instant;
@@ -81,6 +84,7 @@ async fn a_stream_with_no_credit_is_cut_alone_and_the_connection_keeps_serving()
         StallCuts {
             stream: 1,
             connection: 0,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         },
         "{drain:?}"
@@ -194,6 +198,7 @@ async fn steady_data_on_a_sibling_and_a_live_tunnel_do_not_postpone_a_stalled_st
         StallCuts {
             stream: 1,
             connection: 0,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         },
         "{drain:?}"
@@ -233,6 +238,7 @@ async fn a_live_tunnel_with_no_response_is_never_cut_and_survives_a_siblings_cut
         StallCuts {
             stream: 1,
             connection: 0,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         },
         "{drain:?}"
@@ -271,6 +277,7 @@ async fn a_sparse_producer_with_a_healthy_reader_is_not_cut_across_five_windows(
             StallCuts {
                 stream: 0,
                 connection: 0,
+                ended_unflushed: 0,
                 tracker_overflow: 0,
             },
             "gap {gap_factor}: {drain:?}"
@@ -313,6 +320,7 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
         StallCuts {
             stream: 0,
             connection: 1,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         },
         "{drain:?}"
@@ -369,8 +377,519 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
         StallCuts {
             stream: 0,
             connection: 1,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         },
         "{drain:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ended-but-unflushed responses: the stream table's cut
+// ---------------------------------------------------------------------------------------------
+
+/// The stream window of the clients that never (or barely) return credit: one KiB, so every
+/// response larger than that parks its tail behind a zero window.
+const SMALL_WINDOW: u32 = 1024;
+
+/// The connection unit's floor, bytes per window: also what an ended response's own stream must
+/// write per window (or what remains of its tail, if less).
+fn floor() -> u64 {
+    ConnLimits::default().egress_floor as u64
+}
+
+/// The instant the first scripted body was dropped, waiting up to five seconds for it. A drop is
+/// hyper's hand-over of the body's last byte to h2 (or a cut stream), so it starts the tail's clock.
+async fn first_body_drop(server: &EgressServer) -> Instant {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(at) = server.drops.lock().unwrap().first().copied() {
+            return at;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the route's body was never dropped"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The first connection close logged after the first `already` entries, waiting up to `limit`.
+async fn close_after(server: &EgressServer, already: usize, limit: Duration) -> Option<Instant> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(at) = server.closed.lock().unwrap().get(already).copied() {
+            return Some(at);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Waits until the server has logged `count` connection closes (the login connection a tunnel
+/// opens on the side), so a later close is attributable to the connection under test.
+async fn wait_for_closes(server: &EgressServer, count: usize) {
+    assert!(
+        close_after(server, count - 1, Duration::from_secs(5))
+            .await
+            .is_some(),
+        "the server never logged {count} closes"
+    );
+}
+
+/// How many connection closes the server has logged.
+fn closes(server: &EgressServer) -> usize {
+    server.closed.lock().unwrap().len()
+}
+
+/// Reads everything that arrives on `body` without returning credit, until nothing has arrived
+/// for 300 ms, and returns the bytes read.
+async fn drain_without_credit(body: &mut h2::RecvStream) -> u64 {
+    let mut got = 0u64;
+    while let Ok(Some(Ok(chunk))) =
+        tokio::time::timeout(Duration::from_millis(300), body.data()).await
+    {
+        got += chunk.len() as u64;
+    }
+    got
+}
+
+/// Asserts a cut observed `cut_at` is not before `since + WINDOW`, and not as late as a second
+/// window, and records how far past the window plus one tick it landed.
+///
+/// The upper bound is a discrimination and not a latency bound: an entry whose own stream made no
+/// progress is cut at the first tick at or after its window (a tick is a quarter of it), while an
+/// entry that was refreshed by progress starts a new window and is cut a whole window later, so a
+/// cut at two windows or more means something refreshed it. The margin between the two outcomes is
+/// the window less one tick.
+fn assert_tail_cut_timing(cut_at: Instant, since: Instant, what: &str) {
+    let elapsed = cut_at.duration_since(since);
+    assert!(
+        elapsed >= WINDOW,
+        "{what}: cut {elapsed:?} after the body dropped, before the {WINDOW:?} window"
+    );
+    assert!(
+        elapsed < WINDOW * 2,
+        "{what}: cut {elapsed:?} after the body dropped, a second window later: the entry was refreshed"
+    );
+    record_cut_overshoot(what, elapsed, WINDOW + TICK);
+}
+
+/// The drain report's cut counts for `ended_unflushed` only.
+fn only_ended_unflushed(count: usize) -> StallCuts {
+    StallCuts {
+        ended_unflushed: count,
+        ..StallCuts::default()
+    }
+}
+
+/// A response whose body ended (8 KiB, so one chunk) behind a client that never returns credit is
+/// a zombie: its stream has no handle left to reset, so the connection is cut. `post` leaves the
+/// request side of the stream open; `tunnel` keeps a WebSocket tunnel on the connection.
+async fn zombie_is_cut_as_a_connection(post: bool, tunnel: bool, end: BodyEnd) {
+    let server = serve().await;
+    let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+    let _tunnel = if tunnel {
+        let tunnel = server.open_tunnel(&mut client).await;
+        wait_for_closes(&server, 1).await;
+        Some(tunnel)
+    } else {
+        None
+    };
+    let already = closes(&server);
+    let (response, _request_side) =
+        send_scripted(&mut client, server.addr, &[8192], end, post).await;
+    let mut body = response.await.unwrap().into_body();
+    let dropped_at = first_body_drop(&server).await;
+    let got = drain_without_credit(&mut body).await;
+    assert!(got < 8192, "the client received the whole body ({got} B)");
+    let cut_at = close_after(&server, already, Duration::from_secs(20))
+        .await
+        .expect("a zombie response never had its connection cut");
+    assert_tail_cut_timing(
+        cut_at,
+        dropped_at,
+        &format!("the zombie (post {post}, tunnel {tunnel}, {end:?})"),
+    );
+    drop(client);
+    let drain = server.finish().await;
+    assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
+    assert_eq!(drain.dropped, 0, "{drain:?}");
+    assert_eq!(drain.aborted, 0, "{drain:?}");
+    assert_eq!(drain.panicked, 0, "{drain:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_get_zombie_is_cut_as_a_connection() {
+    zombie_is_cut_as_a_connection(false, false, BodyEnd::Final).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_get_zombie_is_cut_as_a_connection_with_a_tunnel_on_it() {
+    zombie_is_cut_as_a_connection(false, true, BodyEnd::Final).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_post_zombie_whose_request_side_is_open_is_cut_and_ends_on_the_io_failure() {
+    zombie_is_cut_as_a_connection(true, false, BodyEnd::Final).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_post_zombie_with_a_tunnel_is_cut_and_ends_on_the_io_failure() {
+    zombie_is_cut_as_a_connection(true, true, BodyEnd::Final).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_that_ends_with_an_empty_data_frame_is_cut_as_a_connection() {
+    zombie_is_cut_as_a_connection(false, false, BodyEnd::Empty).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_that_ends_with_trailers_is_cut_as_a_connection() {
+    zombie_is_cut_as_a_connection(false, false, BodyEnd::Trailers).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_final_chunk_waiting_at_zero_credit_is_cut_as_a_stream_and_the_tunnel_survives() {
+    let server = serve().await;
+    let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+    let _tunnel = server.open_tunnel(&mut client).await;
+    wait_for_closes(&server, 1).await;
+    let already = closes(&server);
+    let t0 = Instant::now();
+    // Two 1 KiB chunks behind a 1 KiB window: the first is accepted, the FINAL one waits for
+    // credit the client never returns, so the body has not ended and the marker acts, not the
+    // table.
+    let (response, _) = send_scripted(
+        &mut client,
+        server.addr,
+        &[1024, 1024],
+        BodyEnd::Final,
+        false,
+    )
+    .await;
+    let mut body = response.await.unwrap().into_body();
+    let (end, _) = read_unreleased(&mut body, Duration::from_secs(10)).await;
+    assert_eq!(end, PacedEnd::Reset(Reason::CANCEL));
+    assert_cut_timing(t0.elapsed(), "the stalled final chunk");
+    // The connection stays up for at least three more windows and the tunnel still lives.
+    tokio::time::sleep(WINDOW * 3).await;
+    assert_eq!(closes(&server), already, "the connection was cut");
+    assert_eq!(server.ws.live_connection_count(), 1, "the tunnel was cut");
+    assert!(!client.driver.is_finished());
+    drop(client);
+    let drain = server.finish().await;
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 1,
+            ..StallCuts::default()
+        },
+        "{drain:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_body_with_more_than_one_chunk_past_the_window_is_cut_as_a_stream_and_not_a_connection() {
+    // h2 lets hyper hand over a chunk only while the stream's send buffer holds less than the
+    // client's window, so behind a 1 KiB window the second chunk waits at zero capacity: the body
+    // has not ended, the stream marker acts, and nothing is left queued for the table to track. The
+    // 80 KiB body is one frame slice per 16 KiB chunk, so only its first slice is ever handed over.
+    for sizes in [&[16 * 1024, 1024][..], &[80 * 1024][..]] {
+        let server = serve().await;
+        let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+        let (response, _) =
+            send_scripted(&mut client, server.addr, sizes, BodyEnd::Final, false).await;
+        let mut body = response.await.unwrap().into_body();
+        let (end, _) = read_unreleased(&mut body, Duration::from_secs(10)).await;
+        assert_eq!(end, PacedEnd::Reset(Reason::CANCEL), "{sizes:?}");
+        drop(client);
+        let drain = server.finish().await;
+        assert_eq!(
+            drain.stall_cuts,
+            StallCuts {
+                stream: 1,
+                ..StallCuts::default()
+            },
+            "{sizes:?}: {drain:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_the_reader_drains_inside_the_window_is_not_cut() {
+    // The unwritten tail of an ended response is at most one chunk past the client's window: h2
+    // lets hyper hand over a chunk only while the send buffer holds less than the window. So the
+    // tail is at most one floor, and `min(floor, remaining)` is what remains. 8 KiB is a tail
+    // below the floor; 16 KiB is a single full chunk, whose tail after the window's first KiB is
+    // just below the floor.
+    for size in [8192usize, 16 * 1024] {
+        let server = serve().await;
+        let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+        let already = closes(&server);
+        let (response, _) =
+            send_scripted(&mut client, server.addr, &[size], BodyEnd::Final, false).await;
+        let mut body = response.await.unwrap().into_body();
+        first_body_drop(&server).await;
+        tokio::time::sleep(WINDOW.mul_f64(0.3)).await;
+        let paced = paced_read(&mut body, 10_000_000, Duration::from_secs(10)).await;
+        assert_eq!(paced.end, PacedEnd::Ended, "{size}: {paced:?}");
+        assert_eq!(paced.got, size as u64);
+        tokio::time::sleep(WINDOW * 3).await;
+        assert_eq!(
+            closes(&server),
+            already,
+            "a drained {size} B tail cost the connection"
+        );
+        drop(client);
+        let drain = server.finish().await;
+        assert_eq!(drain.stall_cuts, StallCuts::default(), "{drain:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window() {
+    for size in [8192usize, 16 * 1024] {
+        let server = serve().await;
+        let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+        let already = closes(&server);
+        let (response, _) =
+            send_scripted(&mut client, server.addr, &[size], BodyEnd::Final, false).await;
+        let mut body = response.await.unwrap().into_body();
+        let dropped_at = first_body_drop(&server).await;
+        // One KiB arrives with the window; release it so a second KiB flows, then stop: 2 KiB of
+        // the tail are written, below what remained, and that progress must not refresh the entry
+        // because the threshold is the whole remaining tail (a tail is at most one chunk).
+        let first = tokio::time::timeout(Duration::from_secs(5), body.data())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        body.flow_control().release_capacity(first.len()).unwrap();
+        let got = drain_without_credit(&mut body).await;
+        assert!(
+            got < size as u64 - first.len() as u64,
+            "the tail was drained"
+        );
+        let cut_at = close_after(&server, already, Duration::from_secs(20))
+            .await
+            .expect("a partly drained tail was never cut");
+        assert_tail_cut_timing(
+            cut_at,
+            dropped_at,
+            &format!("a partly drained {size} B tail"),
+        );
+        drop(client);
+        let drain = server.finish().await;
+        assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_that_cancels_a_queued_tail_costs_the_connection_nothing() {
+    let server = serve().await;
+    let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
+    let already = closes(&server);
+    let (response, _) =
+        send_scripted(&mut client, server.addr, &[8192], BodyEnd::Final, false).await;
+    let body = response.await.unwrap().into_body();
+    first_body_drop(&server).await;
+    tokio::time::sleep(WINDOW.mul_f64(0.3)).await;
+    drop(body);
+    tokio::time::sleep(WINDOW * 3).await;
+    assert_eq!(
+        closes(&server),
+        already,
+        "a peer cancel cost the connection"
+    );
+    // The connection still serves.
+    let mut second = get_path(&mut client, server.addr, "/empty")
+        .await
+        .into_body();
+    assert!(second.data().await.is_none());
+    drop(client);
+    let drain = server.finish().await;
+    assert_eq!(drain.stall_cuts, StallCuts::default(), "{drain:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zombie_is_cut_while_a_sibling_stream_carries_steady_data_and_a_tunnel_echoes() {
+    let server = serve().await;
+    let mut client = server.connect(SMALL_WINDOW, 16 << 20).await;
+    let _tunnel = server.open_tunnel(&mut client).await;
+    wait_for_closes(&server, 1).await;
+    let already = closes(&server);
+    let (response, _) =
+        send_scripted(&mut client, server.addr, &[8192], BodyEnd::Final, false).await;
+    let mut zombie = response.await.unwrap().into_body();
+    let dropped_at = first_body_drop(&server).await;
+    drain_without_credit(&mut zombie).await;
+    let mut steady = get_path(&mut client, server.addr, "/endless")
+        .await
+        .into_body();
+    let sibling =
+        tokio::spawn(
+            async move { paced_read(&mut steady, 2_000_000, Duration::from_secs(8)).await },
+        );
+    let cut_at = close_after(&server, already, Duration::from_secs(20))
+        .await
+        .expect("a zombie was never cut while its sibling kept the connection busy");
+    assert_tail_cut_timing(cut_at, dropped_at, "a zombie beside a busy sibling");
+    let steady = sibling.await.unwrap();
+    assert!(
+        steady.got >= 2 * floor(),
+        "the sibling moved too little DATA ({} B) for the control to mean anything",
+        steady.got
+    );
+    drop(client);
+    let drain = server.finish().await;
+    assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
+}
+
+/// A raw peer that requests `path` behind a `SMALL_WINDOW` stream window, never returns credit and
+/// floods PINGs about every 10 ms: the server answers each with an acknowledgement, which is
+/// liveness the peer can advertise without draining anything.
+async fn ping_flooded_peer(
+    server: &EgressServer,
+    path: &str,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
+    std::sync::Arc<shadowcat_test_support::egress::RawSeen>,
+) {
+    RawPeer::get(server.addr, path, SMALL_WINDOW)
+        .await
+        .flood_pings(Duration::from_millis(10))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ping_flood_does_not_postpone_the_cut_of_a_zombie_connection() {
+    use std::sync::atomic::Ordering;
+
+    let server = serve().await;
+    let (flood, sent, seen) = ping_flooded_peer(&server, "/scripted?sizes=8192&end=final").await;
+    let dropped_at = first_body_drop(&server).await;
+    let cut_at = close_after(&server, 0, Duration::from_secs(20))
+        .await
+        .expect("a ping flood kept a zombie connection alive");
+    assert_tail_cut_timing(cut_at, dropped_at, "a zombie under a ping flood");
+    assert!(
+        seen.pongs.load(Ordering::SeqCst) >= 50 && sent.load(Ordering::SeqCst) >= 50,
+        "{} pings sent, {} acknowledged: too few for the control to mean anything",
+        sent.load(Ordering::SeqCst),
+        seen.pongs.load(Ordering::SeqCst)
+    );
+    flood.abort();
+    let drain = server.finish().await;
+    assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ping_flood_does_not_postpone_the_cut_of_a_stream_waiting_at_zero_credit() {
+    use std::sync::atomic::Ordering;
+
+    let server = serve().await;
+    let started = Instant::now();
+    let (flood, sent, seen) =
+        ping_flooded_peer(&server, "/scripted?sizes=1024,1024&end=final").await;
+    // The stream is cut alone: the connection stays open and keeps acknowledging PINGs.
+    tokio::time::sleep(WINDOW * 4).await;
+    assert!(
+        !seen.closed.load(Ordering::SeqCst),
+        "the connection was cut"
+    );
+    assert!(
+        seen.pongs.load(Ordering::SeqCst) >= 50 && sent.load(Ordering::SeqCst) >= 50,
+        "too few pings for the control to mean anything"
+    );
+    flood.abort();
+    let drain = server.finish().await;
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 1,
+            ..StallCuts::default()
+        },
+        "{drain:?}"
+    );
+    assert!(started.elapsed() >= WINDOW);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_style_cancel_and_read_soak_with_a_tunnel_on_the_connection_cuts_nothing() {
+    let server = serve().await;
+    let mut client = server.connect(64 * 1024, 16 << 20).await;
+    let _tunnel = server.open_tunnel(&mut client).await;
+    wait_for_closes(&server, 1).await;
+    let already = closes(&server);
+    let paths = [
+        "/empty",
+        "/scripted?sizes=500&end=final",
+        "/scripted?sizes=20000&end=final",
+        "/scripted?sizes=3000,3000&end=empty",
+        "/scripted?sizes=2000&end=trailers",
+        "/endless",
+    ];
+    let mut workers = Vec::new();
+    for worker in 0..6u64 {
+        let mut sender = client.sender.clone();
+        let addr = server.addr;
+        workers.push(tokio::spawn(async move {
+            let mut rng = 0x5EED_0000u64 ^ (worker + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut next = move || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng
+            };
+            for _ in 0..50 {
+                let path = paths[(next() % paths.len() as u64) as usize];
+                let action = next() % 3;
+                let request = axum::http::Request::get(format!("http://{addr}{path}"))
+                    .body(())
+                    .unwrap();
+                sender = sender.ready().await.unwrap();
+                let (response, _) = sender.send_request(request, true).unwrap();
+                if action == 0 {
+                    tokio::time::sleep(Duration::from_micros(next() % 40_000)).await;
+                    drop(response);
+                    continue;
+                }
+                let Ok(response) = response.await else {
+                    continue;
+                };
+                let mut body = response.into_body();
+                let mut reads = if action == 1 {
+                    u32::MAX
+                } else {
+                    1 + (next() % 3) as u32
+                };
+                if path == "/endless" {
+                    reads = reads.min(3);
+                }
+                while reads > 0 {
+                    match body.data().await {
+                        Some(Ok(chunk)) => {
+                            let _ = body.flow_control().release_capacity(chunk.len());
+                        }
+                        _ => break,
+                    }
+                    reads -= 1;
+                }
+            }
+        }));
+    }
+    for worker in workers {
+        worker.await.unwrap();
+    }
+    // Quiescence, then a window and more: nothing is left that could still be cut.
+    tokio::time::sleep(WINDOW * 2).await;
+    assert_eq!(closes(&server), already, "the churn cost the connection");
+    assert_eq!(server.ws.live_connection_count(), 1, "the tunnel was cut");
+    drop(client);
+    let drain = server.finish().await;
+    assert_eq!(drain.stall_cuts, StallCuts::default(), "{drain:?}");
+    assert_eq!(drain.dropped, 0, "{drain:?}");
 }

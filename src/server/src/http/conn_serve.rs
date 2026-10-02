@@ -47,11 +47,15 @@
 //!    [`accept_error_pause`] is the one policy every caller (this loop and `SniffListener`'s
 //!    acceptor task) consults.
 //! 6. A response that makes no progress for [`ConnLimits::egress_window`] is cut, by exactly one of
-//!    two units that share one definition of no progress. The stream unit resets one HTTP/2 stream
-//!    whose pending chunk the peer returns no flow-control credit for; the connection unit closes a
-//!    connection whose writer stays parked on a socket that accepts fewer than
-//!    [`ConnLimits::egress_floor`] bytes. Both run on `drive`'s sampler tick, the connection unit
-//!    first; a parked writer is the connection unit's case alone. Every cut is counted in
+//!    three units that share one definition of no progress. The stream unit resets one HTTP/2
+//!    stream whose pending chunk the peer returns no flow-control credit for; the connection unit
+//!    closes a connection whose writer stays parked on a socket that accepts fewer than
+//!    [`ConnLimits::egress_floor`] bytes; the ended-unflushed unit closes a connection whose
+//!    finished response has DATA still queued in h2 that its own stream writes less than
+//!    `min(egress_floor, bytes still queued)` of per window (the stream has no handle left to reset
+//!    it, and only a stream's own DATA counts as its progress: not another stream's, a tunnel's,
+//!    a PING's or any other write). All three run on `drive`'s sampler tick in that order; a parked
+//!    writer is the connection unit's case alone. Every cut is counted in
 //!    [`DrainReport::stall_cuts`].
 //! 7. An HTTP/2 connection's IO walks the frames of both directions (the `egress` module's frame
 //!    parser) and keeps a table of the connection's live client streams in step with the wire: an
@@ -313,15 +317,19 @@ pub struct ConnLimits {
     /// How long a response may make no progress before it is cut. An HTTP/2 stream whose pending
     /// chunk the peer returns no flow-control credit for is reset (its connection, other streams
     /// and tunnels are untouched); a connection whose socket accepts less than
-    /// [`ConnLimits::egress_floor`] response bytes while its writer is parked is closed. Checked
-    /// four times per window (never less often than every
-    /// millisecond), so a cut lands between the window and the window plus one tick after the last
-    /// progress.
+    /// [`ConnLimits::egress_floor`] response bytes while its writer is parked is closed; a
+    /// connection whose finished response still has DATA queued that its own stream does not write
+    /// at the rate [`ConnLimits::egress_floor`] states is closed. Checked four times per window
+    /// (never less often than every millisecond), so a cut lands between the window and the window
+    /// plus one tick after the last progress.
     pub egress_window: Duration,
     /// How many response bytes a socket must accept per [`ConnLimits::egress_window`] to count as
     /// making progress while its writer is parked. A connection whose writer has been parked for a
     /// whole window with fewer bytes accepted than this is cut: its peer has stopped reading the
-    /// socket. Exactly this many is progress. On HTTP/2 only DATA frame payload counts.
+    /// socket. Exactly this many is progress. On HTTP/2 only DATA frame payload counts. The same
+    /// number bounds a finished response's queued tail: its own stream must write this many DATA
+    /// bytes per window, or all that remains when that is less, and nothing else on the connection
+    /// counts as that stream's progress.
     pub egress_floor: usize,
 }
 
@@ -414,6 +422,10 @@ pub struct StallCuts {
     /// Connections closed because their socket accepted fewer than [`ConnLimits::egress_floor`]
     /// response bytes over [`ConnLimits::egress_window`] while their writer was parked.
     pub connection: usize,
+    /// Connections closed because a finished response's own stream wrote fewer than
+    /// `min(`[`ConnLimits::egress_floor`]`, bytes still queued)` DATA bytes over
+    /// [`ConnLimits::egress_window`]. The stream had no handle left to reset it.
+    pub ended_unflushed: usize,
     /// Connections closed because their table of HTTP/2 streams outgrew its cap, which only a
     /// parser defect or a peer outside the protocol can cause.
     pub tracker_overflow: usize,
@@ -682,10 +694,10 @@ struct Watch {
 ///
 /// The egress sampler is an arm of this one `select!`: every [`egress_tick`] it observes the
 /// connection's writer and, when the connection unit finds no progress, fires the kill switch with
-/// [`KillReason::Stall`]; otherwise it scans the stream markers, unless the writer is parked. A
-/// parked writer means the socket, not the peer's credit, is what the response is waiting on, and
-/// that case belongs to the connection unit: a stream cut could not even deliver its
-/// `RST_STREAM`. The loop then re-polls `conn`, which retries a
+/// [`KillReason::Stall`]; otherwise, unless the writer is parked, it scans the table of ended
+/// responses (a connection cut) and then the stream markers (a stream cut). A parked writer means
+/// the socket, not the peer's credit, is what the response is waiting on, and that case belongs to
+/// the connection unit: a stream cut could not even deliver its `RST_STREAM`. The loop then re-polls `conn`, which retries a
 /// parked write (hyper's HTTP/1 and HTTP/2 flush paths both retry on a poll), so a parked writer
 /// is re-observed each tick with no other wake source.
 async fn drive<C>(
@@ -751,7 +763,17 @@ async fn drive<C>(
                         }
                     }
                     None if !egress.parked() => {
-                        watch.live.cut_stalled_streams(now, watch.egress_window);
+                        // The table first: an ended response's tail can only be cut as the whole
+                        // connection, and a connection already cut has no streams left to scan.
+                        let ended = egress.cut_ended_unflushed(
+                            &watch.kill,
+                            now,
+                            watch.egress_window,
+                            watch.egress_floor as u64,
+                        );
+                        if !ended {
+                            watch.live.cut_stalled_streams(now, watch.egress_window);
+                        }
                     }
                     None => {}
                 }

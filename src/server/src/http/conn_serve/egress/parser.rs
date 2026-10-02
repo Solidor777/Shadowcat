@@ -40,9 +40,15 @@ const STREAM_ID_MASK: u32 = 0x7fff_ffff;
 /// What walking the bytes found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameEvent {
-    /// `n` DATA payload bytes were consumed. A PADDED DATA frame counts its whole length field:
-    /// the server writes no padding, so a padded frame is overcounted by at most 256 bytes.
-    Data(u64),
+    /// `bytes` DATA payload bytes of stream `sid` were consumed. A PADDED DATA frame counts its
+    /// whole length field: the server writes no padding, so a padded frame is overcounted by at
+    /// most 256 bytes.
+    Data {
+        /// The stream the DATA frame belongs to.
+        sid: u32,
+        /// The payload bytes consumed.
+        bytes: u64,
+    },
     /// A frame's 9-byte header was completed.
     Start {
         /// The frame type.
@@ -165,7 +171,10 @@ impl FrameParser {
     /// Handles a run of payload bytes of the current frame.
     fn consume_payload(&mut self, payload: &[u8], on: &mut impl FnMut(FrameEvent)) {
         if self.kind == FRAME_TYPE_DATA {
-            on(FrameEvent::Data(payload.len() as u64));
+            on(FrameEvent::Data {
+                sid: self.sid,
+                bytes: payload.len() as u64,
+            });
         } else if self.kind == FRAME_TYPE_GOAWAY {
             let offset = (self.total - self.left) as usize;
             for (i, byte) in payload

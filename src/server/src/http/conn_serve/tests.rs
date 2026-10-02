@@ -14,7 +14,7 @@ use tokio::time::timeout;
 
 use super::egress::Egress;
 use super::kill::KillReason;
-use super::live::stalled_body;
+use super::live::{stalled_body, stalled_final_body, stalled_final_body_of};
 use super::stream_exec::{scoped, StreamExec};
 use super::*;
 
@@ -1681,6 +1681,7 @@ async fn a_writer_parked_with_nothing_accepted_is_cut_between_the_window_and_one
         StallCuts {
             stream: 0,
             connection: 1,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         }
     );
@@ -1753,6 +1754,7 @@ async fn a_stream_waiting_behind_a_parked_writer_is_cut_as_a_connection_and_not_
         StallCuts {
             stream: 0,
             connection: 1,
+            ended_unflushed: 0,
             tracker_overflow: 0,
         }
     );
@@ -1985,4 +1987,236 @@ async fn the_connection_builder_pins_the_library_reset_budget_to_the_constant() 
         provoked.resets, H2_MAX_LOCAL_ERROR_RESETS,
         "the GOAWAY did not come at exactly the budget"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ended-unflushed unit inside `drive`'s tick
+// ---------------------------------------------------------------------------------------------
+
+/// The client connection preface.
+const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// A request HEADERS frame (END_STREAM | END_HEADERS) on `sid`.
+fn request_headers(sid: u32) -> Vec<u8> {
+    h2_frame(0x1, 0x5, sid, &[0x82, 0x87, 0x84])
+}
+
+/// Gives `live`'s table an `Open` entry for stream `sid`, as the read parser would.
+fn open_stream(live: &Arc<LiveState>, sid: u32) {
+    let mut reads = WriteCounter::new(live.egress(), true).read_observer();
+    let kill = ConnKill::new();
+    reads.after_read(PREFACE, &kill);
+    reads.after_read(&request_headers(sid), &kill);
+}
+
+/// The writer accepts a DATA frame of `bytes` payload bytes for stream `sid` on `live`'s connection.
+fn write_data(live: &Arc<LiveState>, sid: u32, bytes: usize) {
+    let mut writes = WriteCounter::new(live.egress(), true);
+    let frame = h2_frame(0x0, 0, sid, &vec![0u8; bytes]);
+    writes.after_write(&Poll::Ready(Ok(frame.len())), &[io::IoSlice::new(&frame)]);
+}
+
+/// Runs `drive` over a connection with no work and no IO (it never ends by itself) on its own
+/// task, and returns the task, the kill switch and the count of connections `drive` dropped.
+fn drive_idle(
+    watch: Watch,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<ConnKill>,
+    Arc<AtomicUsize>,
+    watch::Receiver<()>,
+) {
+    let kill = watch.kill.clone();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let counted = dropped.clone();
+    let (signal_tx, signal_rx) = watch::channel(());
+    let task = tokio::spawn(async move {
+        drive(
+            std::future::pending::<Result<(), hyper::Error>>(),
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &counted,
+        )
+        .await;
+    });
+    (task, kill, dropped, signal_rx)
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_final_chunk_waiting_at_zero_credit_is_cut_as_a_stream_and_never_as_a_connection() {
+    let window = Duration::from_secs(8);
+    let kill = ConnKill::new();
+    let watch = watch_for(kill.clone(), window);
+    let live = watch.live.clone();
+    open_stream(&live, 1);
+    let stream_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = DropFlag(stream_dropped.clone());
+    let l = live.clone();
+    StreamExec.execute_test(async move {
+        let _flag = flag;
+        // The body's last chunk is handed to hyper and hyper never polls again: zero credit.
+        let _body = stalled_final_body(&l, 1).await;
+        std::future::pending::<()>().await;
+    });
+    let (task, kill, dropped, _signal) = drive_idle(watch);
+    // Long enough for the marker's window to pass, short enough that the entry the cut leaves
+    // `Queued` (until the RST_STREAM the real codec would write) has not aged a window itself.
+    settle(window + egress_tick(window) * 2).await;
+    assert!(
+        stream_dropped.load(Ordering::SeqCst),
+        "the stalled stream was never cut"
+    );
+    assert_eq!(
+        live.stall_counts(),
+        StallCuts {
+            stream: 1,
+            ..StallCuts::default()
+        }
+    );
+    assert!(
+        kill.fired().now_or_never().is_none(),
+        "a final chunk at zero credit cut the connection"
+    );
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    task.abort();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_queued_tail_with_no_progress_cuts_the_connection_between_the_window_and_one_tick_after_it(
+) {
+    let window = Duration::from_secs(8);
+    let tick = egress_tick(window);
+    let kill = ConnKill::new();
+    let watch = watch_for(kill.clone(), window);
+    let live = watch.live.clone();
+    open_stream(&live, 1);
+    // The body ends and is dropped with its tail still queued: the entry is `Queued` from now.
+    drop(stalled_final_body(&live, 1).await);
+    let started = Instant::now();
+    let (task, kill, dropped, _signal) = drive_idle(watch);
+    let reason = timeout(window * 4, kill.fired())
+        .await
+        .expect("a queued tail with no progress never cut the connection");
+    let elapsed = started.elapsed();
+    assert_eq!(reason, KillReason::Stall);
+    assert!(
+        elapsed >= window && elapsed <= window + tick,
+        "cut after {elapsed:?}, not within [{window:?}, {:?}]",
+        window + tick
+    );
+    assert_eq!(
+        live.stall_counts(),
+        StallCuts {
+            ended_unflushed: 1,
+            ..StallCuts::default()
+        }
+    );
+    // The idle connection ignores its failed IO, so `drive` ends it at the grace.
+    settle(KILL_GRACE * 2).await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    task.abort();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn the_tail_rule_and_the_connection_sampler_read_the_one_configured_floor() {
+    // 30 bytes of a 64-byte tail are written late in the first window: progress against a floor of
+    // 20, a stall against 5,000 (the threshold is min(floor, remaining) = 64). The same
+    // `Watch::egress_floor` feeds the sampler, so a private constant in the tail rule would not move
+    // with it. Ticks fall every `window / 4`; the write lands between the third and fourth.
+    for (floor, cut) in [(20usize, false), (5_000, true)] {
+        let window = Duration::from_secs(8);
+        let tick = egress_tick(window);
+        let kill = ConnKill::new();
+        let mut watch = watch_for(kill.clone(), window);
+        watch.egress_floor = floor;
+        let live = watch.live.clone();
+        open_stream(&live, 1);
+        drop(stalled_final_body_of(&live, 1, 64).await);
+        let (task, kill, _dropped, _signal) = drive_idle(watch);
+        settle(window - tick - tick / 2).await;
+        write_data(&live, 1, 30);
+        // The window ends at the fourth tick; the new window a threshold-reaching write starts at
+        // the next tick would not end before the fifth.
+        settle(window).await;
+        assert_eq!(kill.fired().now_or_never().is_some(), cut, "floor {floor}");
+        task.abort();
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn each_cut_site_moves_exactly_its_own_counter_by_one() {
+    // Unit by unit through the real firing sites: the marker scan, the byte sampler, the ended
+    // scan and the table overflow.
+    let window = Duration::from_secs(8);
+
+    // Stream unit: a stalled marker.
+    {
+        let kill = ConnKill::new();
+        let watch = watch_for(kill.clone(), window);
+        let live = watch.live.clone();
+        let l = live.clone();
+        StreamExec.execute_test(async move {
+            let _body = stalled_body(&l).await;
+            std::future::pending::<()>().await;
+        });
+        let (task, _kill, _dropped, _signal) = drive_idle(watch);
+        settle(window * 3).await;
+        assert_eq!(
+            live.stall_counts(),
+            StallCuts {
+                stream: 1,
+                ..StallCuts::default()
+            }
+        );
+        task.abort();
+    }
+    // Connection unit: a parked writer.
+    {
+        let (task, live, _dropped, _started) = drive_parked_writer(window);
+        timeout(window * 2, task).await.unwrap().unwrap();
+        assert_eq!(
+            live.stall_counts(),
+            StallCuts {
+                connection: 1,
+                ..StallCuts::default()
+            }
+        );
+    }
+    // Ended-unflushed unit: a queued tail.
+    {
+        let kill = ConnKill::new();
+        let watch = watch_for(kill.clone(), window);
+        let live = watch.live.clone();
+        open_stream(&live, 1);
+        drop(stalled_final_body(&live, 1).await);
+        let (task, _kill, _dropped, _signal) = drive_idle(watch);
+        settle(window * 2).await;
+        assert_eq!(
+            live.stall_counts(),
+            StallCuts {
+                ended_unflushed: 1,
+                ..StallCuts::default()
+            }
+        );
+        task.abort();
+    }
+    // Table overflow: the read parser past a one-entry cap.
+    {
+        let counters = Arc::new(StallCounters::default());
+        let egress = Arc::new(Egress::new(counters.clone(), 1));
+        let mut reads = WriteCounter::new(egress, true).read_observer();
+        let kill = ConnKill::new();
+        reads.after_read(PREFACE, &kill);
+        reads.after_read(&request_headers(1), &kill);
+        reads.after_read(&request_headers(3), &kill);
+        assert_eq!(
+            counters.snapshot(),
+            StallCuts {
+                tracker_overflow: 1,
+                ..StallCuts::default()
+            }
+        );
+    }
 }

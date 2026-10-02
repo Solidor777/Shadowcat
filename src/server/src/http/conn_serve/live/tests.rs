@@ -65,6 +65,7 @@ fn leased_results_in(
         }),
         live.lease(),
         live.clone(),
+        None,
     )
 }
 
@@ -441,4 +442,192 @@ async fn the_marker_registry_stays_bounded_over_many_short_streams_and_keeps_lon
         drop(held);
     })
     .await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The stream table: registration at the END_STREAM-bearing frame and hand-over at the drop
+// ---------------------------------------------------------------------------------------------
+
+/// The client connection preface.
+const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// A request HEADERS frame (END_STREAM | END_HEADERS) on `sid`.
+fn request_frame(sid: u32) -> Vec<u8> {
+    let payload = [0x82u8, 0x87, 0x84];
+    let mut out = vec![0, 0, payload.len() as u8, 0x1, 0x5];
+    out.extend_from_slice(&sid.to_be_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// A connection state whose stream table holds an `Open` entry for each of `sids`, as the read
+/// parser creates them.
+fn live_with_streams(sids: &[u32]) -> Arc<LiveState> {
+    let live = live();
+    let mut reads =
+        crate::http::conn_serve::egress::WriteCounter::new(live.egress(), true).read_observer();
+    let kill = crate::http::conn_serve::kill::ConnKill::new();
+    reads.after_read(PREFACE, &kill);
+    for sid in sids {
+        reads.after_read(&request_frame(*sid), &kill);
+    }
+    live
+}
+
+/// A leased body over `frames` for stream `sid` in `live`.
+fn leased_for(live: &Arc<LiveState>, sid: Option<u32>, frames: Vec<Frame<Bytes>>) -> LeasedBody {
+    LeasedBody::new(
+        Body::new(Script {
+            frames: frames.into_iter().map(Ok).collect(),
+        }),
+        live.lease(),
+        live.clone(),
+        sid,
+    )
+}
+
+/// The phase of stream `sid` in `live`'s table.
+fn phase(live: &Arc<LiveState>, sid: u32) -> Option<&'static str> {
+    live.egress()
+        .stream_phases()
+        .into_iter()
+        .find(|(id, _)| *id == sid)
+        .map(|(_, phase)| phase)
+}
+
+/// A body whose inner reports no end of stream until it has returned `None`, as a streamed body
+/// does.
+struct EndsWithNone(Script);
+
+impl http_body::Body for EndsWithNone {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        Pin::new(&mut self.0).poll_frame(cx)
+    }
+}
+
+#[tokio::test]
+async fn the_body_registers_final_exactly_when_it_returns_the_frame_that_carries_end_of_stream() {
+    let live = live_with_streams(&[1]);
+    let mut body = leased_for(
+        &live,
+        Some(1),
+        vec![
+            Frame::data(Bytes::from_static(b"one")),
+            Frame::data(Bytes::from_static(b"two")),
+            Frame::data(Bytes::from_static(b"last")),
+        ],
+    );
+    assert_eq!(phase(&live, 1), Some("open"));
+    next(&mut body).await.unwrap().unwrap();
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(
+        phase(&live, 1),
+        Some("open"),
+        "registered before the last frame"
+    );
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(phase(&live, 1), Some("final"));
+}
+
+#[tokio::test]
+async fn a_chunk_that_is_not_the_last_slice_of_its_frame_does_not_register() {
+    let live = live_with_streams(&[1]);
+    let mut body = leased_for(
+        &live,
+        Some(1),
+        vec![Frame::data(Bytes::from(vec![0u8; EGRESS_FLOOR_BYTES + 1]))],
+    );
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(
+        phase(&live, 1),
+        Some("open"),
+        "a slice with more pending is not final"
+    );
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(phase(&live, 1), Some("final"));
+}
+
+#[tokio::test]
+async fn a_body_that_ends_with_none_registers_final_at_the_none_and_not_at_its_last_data() {
+    let live = live_with_streams(&[1]);
+    let mut body = LeasedBody::new(
+        Body::new(EndsWithNone(Script {
+            frames: [Ok(Frame::data(Bytes::from_static(b"data")))].into(),
+        })),
+        live.lease(),
+        live.clone(),
+        Some(1),
+    );
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(phase(&live, 1), Some("open"));
+    assert!(next(&mut body).await.is_none());
+    assert_eq!(phase(&live, 1), Some("final"));
+}
+
+#[tokio::test]
+async fn a_body_that_ends_with_trailers_registers_final_at_the_trailers() {
+    let live = live_with_streams(&[1]);
+    let mut trailers = axum::http::HeaderMap::new();
+    trailers.insert("x-end", axum::http::HeaderValue::from_static("1"));
+    let mut body = leased_for(
+        &live,
+        Some(1),
+        vec![
+            Frame::data(Bytes::from_static(b"data")),
+            Frame::trailers(trailers),
+        ],
+    );
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(phase(&live, 1), Some("open"));
+    next(&mut body).await.unwrap().unwrap();
+    assert_eq!(phase(&live, 1), Some("final"));
+}
+
+#[tokio::test]
+async fn dropping_a_final_body_queues_its_entry_and_a_body_dropped_earlier_leaves_it_open() {
+    let live = live_with_streams(&[1, 3]);
+    let mut finished = leased_for(
+        &live,
+        Some(1),
+        vec![Frame::data(Bytes::from_static(b"abc"))],
+    );
+    next(&mut finished).await.unwrap().unwrap();
+    assert_eq!(finished.handed, 3);
+    let early = leased_for(
+        &live,
+        Some(3),
+        vec![Frame::data(Bytes::from_static(b"abc"))],
+    );
+    drop(finished);
+    drop(early);
+    assert_eq!(phase(&live, 1), Some("queued"));
+    assert_eq!(phase(&live, 3), Some("open"));
+}
+
+#[tokio::test]
+async fn a_body_with_no_stream_id_never_touches_the_table() {
+    let live = live_with_streams(&[1]);
+    let mut body = leased_for(&live, None, vec![Frame::data(Bytes::from_static(b"abc"))]);
+    next(&mut body).await.unwrap().unwrap();
+    drop(body);
+    assert_eq!(phase(&live, 1), Some("open"));
+}
+
+#[tokio::test]
+async fn a_body_for_a_stream_the_wire_already_ended_creates_no_entry() {
+    let live = live_with_streams(&[]);
+    let mut body = leased_for(
+        &live,
+        Some(1),
+        vec![Frame::data(Bytes::from_static(b"abc"))],
+    );
+    next(&mut body).await.unwrap().unwrap();
+    drop(body);
+    assert_eq!(phase(&live, 1), None);
 }

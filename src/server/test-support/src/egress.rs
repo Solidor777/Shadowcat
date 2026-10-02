@@ -2,7 +2,7 @@
 //! stall in controlled ways, and an HTTP/2 client whose receive windows and read pace the test
 //! sets, so a stall is driven by the credit the client returns rather than by a sleep.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::Query;
-use axum::routing::get;
+use axum::routing::{any, get};
 use shadowcat::http::conn_serve::{serve_router, ConnLimits, DrainReport, ServeEnd, ServeOutcome};
 use shadowcat::http::router;
 use shadowcat::ws::WsState;
@@ -42,7 +42,10 @@ pub enum Protocol {
 ///
 /// Routes beyond the application's: `/endless` produces [`ENDLESS_CHUNK`]-byte chunks forever
 /// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/sparse` produces
-/// `chunks` chunks of 100 bytes, `gap_ms` milliseconds apart (query parameters).
+/// `chunks` chunks of 100 bytes, `gap_ms` milliseconds apart (query parameters); `/scripted`
+/// (any method) answers with chunks of the `sizes` query parameter's comma-separated lengths,
+/// ended as `end` says (`final`, `empty` or `trailers`: see [`BodyEnd`]), and logs the instant its
+/// body is dropped in [`EgressServer::drops`].
 pub struct EgressServer {
     /// The bound address.
     pub addr: SocketAddr,
@@ -56,6 +59,9 @@ pub struct EgressServer {
     pub closed: ClosedLog,
     /// What the server's socket writes did.
     pub writes: Arc<WriteStats>,
+    /// The instants the `/scripted` route's bodies were dropped, in drop order. A drop is hyper's
+    /// hand-over of the body's last byte to h2, or a cut stream.
+    pub drops: ClosedLog,
     /// Keeps the source open: dropping it ends the source.
     _end: EndHandle,
     /// Resolves the shutdown future.
@@ -77,6 +83,8 @@ impl EgressServer {
         let hook_ws = ws.clone();
         let produced = Arc::new(AtomicUsize::new(0));
         let counter = produced.clone();
+        let drops = ClosedLog::default();
+        let scripted_drops = drops.clone();
         let app = router(state)
             .await
             .route(
@@ -92,6 +100,31 @@ impl EgressServer {
                 }),
             )
             .route("/empty", get(|| async { Body::empty() }))
+            .route(
+                "/scripted",
+                any(move |Query(q): Query<HashMap<String, String>>| {
+                    let drops = scripted_drops.clone();
+                    async move {
+                        let frames = q
+                            .get("sizes")
+                            .map(|sizes| {
+                                sizes
+                                    .split(',')
+                                    .filter_map(|n| n.parse::<usize>().ok())
+                                    .map(|n| Bytes::from(vec![5u8; n]))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let end = q.get("end").map_or(BodyEnd::Final, |v| BodyEnd::parse(v));
+                        Body::new(ScriptedBody {
+                            frames,
+                            end,
+                            trailers_sent: false,
+                            drops,
+                        })
+                    }
+                }),
+            )
             .route(
                 "/sparse",
                 get(|Query(q): Query<HashMap<String, u64>>| async move {
@@ -127,6 +160,7 @@ impl EgressServer {
             produced,
             closed,
             writes,
+            drops,
             _end: end,
             shutdown,
             task,
@@ -429,4 +463,222 @@ pub async fn raw_h2_request(addr: SocketAddr, path: &str) -> tokio::net::TcpStre
     out.extend(raw_frame(0x1, 0x5, 1, &block));
     stream.write_all(&out).await.unwrap();
     stream
+}
+
+/// How a [`ScriptedBody`] ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyEnd {
+    /// END_STREAM rides the last data frame (the body reports `is_end_stream` after it).
+    Final,
+    /// The last data frame is followed by `Ready(None)`: END_STREAM is an empty DATA frame.
+    Empty,
+    /// The last data frame is followed by a trailers frame: END_STREAM rides the trailers.
+    Trailers,
+}
+
+impl BodyEnd {
+    /// The `end` query value of the `/scripted` route for this ending.
+    pub fn query(self) -> &'static str {
+        match self {
+            Self::Final => "final",
+            Self::Empty => "empty",
+            Self::Trailers => "trailers",
+        }
+    }
+
+    /// The ending named by the `end` query value of the `/scripted` route.
+    fn parse(value: &str) -> Self {
+        match value {
+            "empty" => Self::Empty,
+            "trailers" => Self::Trailers,
+            _ => Self::Final,
+        }
+    }
+}
+
+/// A response body that yields chunks of the given sizes in order, then ends as `end` says, and
+/// logs the instant it is dropped. The drop instant is when hyper has handed the last byte to h2
+/// (or the stream was cut), so it is the start of an ended response's tail clock.
+struct ScriptedBody {
+    /// The chunks still to yield.
+    frames: VecDeque<Bytes>,
+    /// How the body ends after its chunks.
+    end: BodyEnd,
+    /// Whether the trailers frame has been yielded.
+    trailers_sent: bool,
+    /// Where the drop instant goes.
+    drops: ClosedLog,
+}
+
+impl hyper::body::Body for ScriptedBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+        use std::task::Poll;
+
+        if let Some(chunk) = self.frames.pop_front() {
+            return Poll::Ready(Some(Ok(hyper::body::Frame::data(chunk))));
+        }
+        if self.end == BodyEnd::Trailers && !self.trailers_sent {
+            self.trailers_sent = true;
+            let mut trailers = http::HeaderMap::new();
+            trailers.insert("x-end", http::HeaderValue::from_static("1"));
+            return Poll::Ready(Some(Ok(hyper::body::Frame::trailers(trailers))));
+        }
+        Poll::Ready(None)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.frames.is_empty()
+            && match self.end {
+                BodyEnd::Final => true,
+                BodyEnd::Empty => false,
+                BodyEnd::Trailers => self.trailers_sent,
+            }
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        let total: u64 = self.frames.iter().map(|c| c.len() as u64).sum();
+        if self.end == BodyEnd::Final {
+            hyper::body::SizeHint::with_exact(total)
+        } else {
+            let mut hint = hyper::body::SizeHint::new();
+            hint.set_lower(total);
+            hint
+        }
+    }
+}
+
+impl Drop for ScriptedBody {
+    fn drop(&mut self) {
+        self.drops.lock().unwrap().push(Instant::now());
+    }
+}
+
+/// Sends `GET` (or, with `open_request`, `POST` with the request side left open) for the
+/// `/scripted` route, whose body is the given chunk sizes in order ended as `end` says, and returns
+/// the response future and the request's send stream (keep it alive to keep the request side open).
+pub async fn send_scripted(
+    client: &mut H2Client,
+    addr: SocketAddr,
+    sizes: &[usize],
+    end: BodyEnd,
+    open_request: bool,
+) -> (h2::client::ResponseFuture, h2::SendStream<Bytes>) {
+    let sizes = sizes
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let method = if open_request { "POST" } else { "GET" };
+    client.sender = client.sender.clone().ready().await.unwrap();
+    let req = http::Request::builder()
+        .method(method)
+        .uri(format!(
+            "http://{addr}/scripted?sizes={sizes}&end={}",
+            end.query()
+        ))
+        .body(())
+        .unwrap();
+    client.sender.send_request(req, !open_request).unwrap()
+}
+
+/// What a raw HTTP/2 peer's reader has seen of the server's output.
+#[derive(Debug, Default)]
+pub struct RawSeen {
+    /// PING acknowledgements received.
+    pub pongs: std::sync::atomic::AtomicU64,
+    /// DATA payload bytes received.
+    pub data: std::sync::atomic::AtomicU64,
+    /// Set when the server closed the connection.
+    pub closed: std::sync::atomic::AtomicBool,
+}
+
+/// A raw HTTP/2 client that sent one request and reads whatever the server sends.
+pub struct RawPeer {
+    /// What the reader has seen.
+    pub seen: Arc<RawSeen>,
+    /// The write half, for frames the test sends after the request.
+    pub write: tokio::net::tcp::OwnedWriteHalf,
+}
+
+impl RawPeer {
+    /// Connects, sends the client preface, a SETTINGS frame that sets the initial stream window to
+    /// `stream_window`, and `GET path` (END_STREAM | END_HEADERS), and starts a reader that counts
+    /// the server's PING acknowledgements and DATA.
+    pub async fn get(addr: SocketAddr, path: &str, stream_window: u32) -> Self {
+        use std::sync::atomic::Ordering;
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut read, mut write) = stream.into_split();
+        let mut out = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec();
+        let mut setting = vec![0, 4];
+        setting.extend_from_slice(&stream_window.to_be_bytes());
+        out.extend(raw_frame(0x4, 0, 0, &setting));
+        let mut block = vec![0x82, 0x86, 0x04, path.len() as u8];
+        block.extend_from_slice(path.as_bytes());
+        out.extend(raw_frame(0x1, 0x5, 1, &block));
+        write.write_all(&out).await.unwrap();
+        let seen = Arc::new(RawSeen::default());
+        let counts = seen.clone();
+        tokio::spawn(async move {
+            let mut head = [0u8; 9];
+            let mut skip = vec![0u8; 16 * 1024];
+            loop {
+                if read.read_exact(&mut head).await.is_err() {
+                    break;
+                }
+                let mut left = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+                if head[3] == 0x6 && head[4] & 1 == 1 {
+                    counts.pongs.fetch_add(1, Ordering::SeqCst);
+                }
+                if head[3] == 0x0 {
+                    counts.data.fetch_add(left as u64, Ordering::SeqCst);
+                }
+                while left > 0 {
+                    let take = left.min(skip.len());
+                    if read.read_exact(&mut skip[..take]).await.is_err() {
+                        counts.closed.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    left -= take;
+                }
+            }
+            counts.closed.store(true, Ordering::SeqCst);
+        });
+        Self { seen, write }
+    }
+
+    /// Sends a PING about every `every` until the connection fails, returning the task and the
+    /// count of PINGs sent.
+    pub fn flood_pings(
+        mut self,
+        every: Duration,
+    ) -> (
+        JoinHandle<()>,
+        Arc<std::sync::atomic::AtomicU64>,
+        Arc<RawSeen>,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        use tokio::io::AsyncWriteExt;
+
+        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = sent.clone();
+        let seen = self.seen.clone();
+        let task = tokio::spawn(async move {
+            let ping = ping_frame();
+            while self.write.write_all(&ping).await.is_ok() {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(every).await;
+            }
+        });
+        (task, sent, seen)
+    }
 }

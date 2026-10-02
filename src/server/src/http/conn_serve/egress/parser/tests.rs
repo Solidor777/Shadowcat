@@ -34,7 +34,7 @@ fn data_bytes(events: &[FrameEvent]) -> u64 {
     events
         .iter()
         .map(|e| match e {
-            FrameEvent::Data(n) => *n,
+            FrameEvent::Data { bytes, .. } => *bytes,
             _ => 0,
         })
         .sum()
@@ -92,7 +92,7 @@ fn a_frame_ends_only_when_its_last_byte_is_consumed() {
     assert_eq!(
         last,
         [
-            FrameEvent::Data(1),
+            FrameEvent::Data { sid: 1, bytes: 1 },
             FrameEvent::End {
                 kind: FRAME_TYPE_DATA,
                 flags: 0,
@@ -195,7 +195,7 @@ fn feeding_one_byte_at_a_time_reports_the_same_events_as_feeding_it_whole() {
     let others = |all: &[FrameEvent]| -> Vec<FrameEvent> {
         all.iter()
             .copied()
-            .filter(|e| !matches!(e, FrameEvent::Data(_)))
+            .filter(|e| !matches!(e, FrameEvent::Data { .. }))
             .collect()
     };
     assert_eq!(others(&piecewise), others(&whole));
