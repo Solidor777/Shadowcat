@@ -1,6 +1,6 @@
 //! The stall bound and its shutdown shortening, over a sink whose readiness a test controls.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::SinkExt;
@@ -138,4 +138,81 @@ async fn a_send_pending_when_the_signal_is_already_set_gets_only_the_close_bound
     let mut sink = BoundedSink::new(inner, rx, Duration::from_secs(600));
     let r = tokio::time::timeout(CLOSE_SEND_TIMEOUT * 3, sink.send(1)).await;
     assert!(matches!(r, Ok(Err(BoundedSendError::Stalled))), "{r:?}");
+}
+
+/// A gauge-counting sink over a closed valve, and the gauge it counts into.
+fn counted(window: Duration) -> (BoundedSink<Valve>, Handle, Arc<AtomicUsize>) {
+    let (inner, handle) = valve(false);
+    let (_tx, rx) = watch::channel(false);
+    let gauge = Arc::new(AtomicUsize::new(0));
+    let sink = BoundedSink::new(inner, rx, window).with_pending_gauge(gauge.clone());
+    (sink, handle, gauge)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pending_send_counts_into_the_gauge_until_it_completes() {
+    let (mut sink, handle, gauge) = counted(Duration::from_secs(60));
+    {
+        let mut send = std::pin::pin!(sink.send(1));
+        assert!(futures_util::poll!(send.as_mut()).is_pending());
+        assert_eq!(gauge.load(Ordering::SeqCst), 1);
+        // Polling again while still pending does not count the same send twice.
+        assert!(futures_util::poll!(send.as_mut()).is_pending());
+        assert_eq!(gauge.load(Ordering::SeqCst), 1);
+        handle.set(true);
+        assert!(matches!(
+            futures_util::poll!(send.as_mut()),
+            Poll::Ready(Ok(()))
+        ));
+    }
+    assert_eq!(gauge.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_that_stalls_leaves_the_gauge_at_zero() {
+    let window = Duration::from_secs(60);
+    let (mut sink, _handle, gauge) = counted(window);
+    let mut send = std::pin::pin!(sink.send(1));
+    assert!(futures_util::poll!(send.as_mut()).is_pending());
+    assert_eq!(gauge.load(Ordering::SeqCst), 1);
+    tokio::time::advance(window).await;
+    assert!(matches!(
+        futures_util::poll!(send.as_mut()),
+        Poll::Ready(Err(BoundedSendError::Stalled))
+    ));
+    assert_eq!(gauge.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_a_sink_with_a_pending_send_leaves_the_gauge_at_zero() {
+    let (mut sink, _handle, gauge) = counted(Duration::from_secs(60));
+    {
+        let mut send = std::pin::pin!(sink.send(1));
+        assert!(futures_util::poll!(send.as_mut()).is_pending());
+        assert_eq!(gauge.load(Ordering::SeqCst), 1);
+    }
+    assert_eq!(
+        gauge.load(Ordering::SeqCst),
+        1,
+        "the stall outlives the dropped send future"
+    );
+    drop(sink);
+    assert_eq!(gauge.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn sinks_sharing_a_gauge_are_summed() {
+    let gauge = Arc::new(AtomicUsize::new(0));
+    let (a_inner, _a) = valve(false);
+    let (b_inner, _b) = valve(false);
+    let (_tx, rx) = watch::channel(false);
+    let mut a = BoundedSink::new(a_inner, rx.clone(), Duration::from_secs(60))
+        .with_pending_gauge(gauge.clone());
+    let mut b =
+        BoundedSink::new(b_inner, rx, Duration::from_secs(60)).with_pending_gauge(gauge.clone());
+    let mut send_a = std::pin::pin!(a.send(1));
+    let mut send_b = std::pin::pin!(b.send(1));
+    assert!(futures_util::poll!(send_a.as_mut()).is_pending());
+    assert!(futures_util::poll!(send_b.as_mut()).is_pending());
+    assert_eq!(gauge.load(Ordering::SeqCst), 2);
 }

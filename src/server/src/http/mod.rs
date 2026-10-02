@@ -543,6 +543,7 @@ where
     if !ws_state.wait_for_drain(wait).await {
         tracing::warn!(
             live = ws_state.live_connection_count(),
+            blocked_sends = ws_state.pending_sends(),
             "graceful shutdown timed out waiting for websocket connections to close"
         );
     }

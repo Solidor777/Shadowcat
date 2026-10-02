@@ -126,4 +126,9 @@ async fn a_session_that_never_releases_ends_the_wait_at_the_drain_bound_plus_the
         "a session that never released was not reported:\n{}",
         log.text()
     );
+    assert!(
+        log.text().contains("blocked_sends=0"),
+        "the timeout warning does not report the pending-sends gauge:\n{}",
+        log.text()
+    );
 }

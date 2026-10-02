@@ -4,8 +4,15 @@
 //! `poll_ready` / `poll_flush` of the WebSocket sink pending forever, and a session blocked inside
 //! a send never reaches its heartbeat or shutdown arms, so `PING_TIMEOUT` never fires and the
 //! session task, its `ConnectionGuard` and its `ConnLease` (the connection's cap slot) live until
-//! the process exits. Wrapping the sink once, at its one construction site, bounds every send
-//! (Welcome, broadcast frames, pre-join errors, Close) with one rule.
+//! the process exits. Wrapping the sink once, through `WsState::bounded_sink` (the one production
+//! constructor), bounds every send (Welcome, broadcast frames, pre-join errors, Close) with one
+//! rule.
+//!
+//! The bound is on the TIME of one pending flush, not on progress: a frame of F bytes needs at
+//! least 8F / `stall_timeout` bits per second to complete (the largest frame,
+//! `WS_MAX_MESSAGE_BYTES`, about 1.7 Mbps at the 60 s default; ordinary frames under 10 kbps). A
+//! progress-aware bound is not possible through `axum::extract::ws::WebSocket`, which exposes no
+//! byte counter; a WebSocket tunnelled inside an HTTP/2 connection has no other bound.
 //!
 //! INVARIANTS:
 //! 1. A send that has been pending for `stall_timeout` fails with [`BoundedSendError::Stalled`];
@@ -20,6 +27,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -49,8 +58,32 @@ pub enum BoundedSendError<E> {
     Inner(E),
 }
 
+/// One send counted into a pending-sends gauge: increments on creation, decrements on drop, so
+/// every way a `Stall` ends (the send completing, failing, or the sink dropping) leaves the gauge
+/// right.
+struct PendingSend {
+    /// The gauge this send is counted in.
+    gauge: Arc<AtomicUsize>,
+}
+
+impl PendingSend {
+    /// Counts one more pending send into `gauge`.
+    fn new(gauge: Arc<AtomicUsize>) -> Self {
+        gauge.fetch_add(1, Ordering::AcqRel);
+        Self { gauge }
+    }
+}
+
+impl Drop for PendingSend {
+    fn drop(&mut self) {
+        self.gauge.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// An armed stall timer.
 struct Stall {
+    /// The send's slot in the pending-sends gauge, when the sink has one.
+    _pending: Option<PendingSend>,
     /// Fires when the pending send has outlived its bound.
     timer: Pin<Box<Sleep>>,
     /// Resolves once the shutdown signal is set.
@@ -80,6 +113,8 @@ pub struct BoundedSink<S> {
     stall_timeout: Duration,
     /// Armed while a poll is pending.
     stall: Option<Stall>,
+    /// Counts this sink's pending send, when set.
+    pending_gauge: Option<Arc<AtomicUsize>>,
 }
 
 impl<S> BoundedSink<S> {
@@ -100,6 +135,7 @@ impl<S> BoundedSink<S> {
             shutdown,
             stall_timeout,
             stall: None,
+            pending_gauge: None,
         }
     }
 
@@ -127,6 +163,27 @@ impl<S> BoundedSink<S> {
         Self::new(inner, shutdown, config.egress_window())
     }
 
+    /// Counts this sink's pending send into `gauge` for as long as it is pending.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::atomic::AtomicUsize;
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    /// use shadowcat::ws::bounded_sink::BoundedSink;
+    ///
+    /// let (_tx, rx) = tokio::sync::watch::channel(false);
+    /// let gauge = Arc::new(AtomicUsize::new(0));
+    /// let _sink = BoundedSink::new(futures_util::sink::drain::<u8>(), rx, Duration::from_secs(1))
+    ///     .with_pending_gauge(gauge.clone());
+    /// assert_eq!(gauge.load(std::sync::atomic::Ordering::Acquire), 0);
+    /// ```
+    pub fn with_pending_gauge(mut self, gauge: Arc<AtomicUsize>) -> Self {
+        self.pending_gauge = Some(gauge);
+        self
+    }
+
     /// The bound on one pending send.
     #[cfg(test)]
     pub(crate) fn stall_timeout(&self) -> Duration {
@@ -147,7 +204,9 @@ impl<S> BoundedSink<S> {
             Poll::Pending => {
                 let stall_timeout = self.stall_timeout;
                 let mut watcher = self.shutdown.clone();
+                let pending = self.pending_gauge.clone();
                 let stall = self.stall.get_or_insert_with(|| Stall {
+                    _pending: pending.map(PendingSend::new),
                     timer: Box::pin(tokio::time::sleep(stall_timeout)),
                     shutdown: Box::pin(async move {
                         loop {

@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use crate::ws::bounded_sink::BoundedSink;
+
 use super::*;
 
 /// `send_close` returns once `CLOSE_SEND_TIMEOUT` elapses, however long the sink stays unready.

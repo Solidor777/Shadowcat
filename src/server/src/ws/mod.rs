@@ -220,6 +220,10 @@ pub struct WsState {
     /// Woken by a `ConnectionGuard::drop` whenever `live_connections` reaches zero (see
     /// `wait_for_drain`).
     drain_notify: Arc<tokio::sync::Notify>,
+    /// Count of WebSocket sends currently pending across every live session: incremented when a
+    /// `BoundedSink` built by `bounded_sink` first returns `Pending` for a send, decremented when
+    /// that send completes, fails or its sink drops. Read by `pending_sends`.
+    pending_sends: Arc<AtomicUsize>,
 }
 
 /// RAII handle held for the lifetime of one WebSocket connection task
@@ -288,6 +292,7 @@ impl WsState {
             shutdown,
             live_connections: Arc::new(AtomicUsize::new(0)),
             drain_notify: Arc::new(tokio::sync::Notify::new()),
+            pending_sends: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -323,6 +328,7 @@ impl WsState {
             shutdown,
             live_connections: Arc::new(AtomicUsize::new(0)),
             drain_notify: Arc::new(tokio::sync::Notify::new()),
+            pending_sends: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -383,6 +389,47 @@ impl WsState {
     /// ```
     pub fn live_connection_count(&self) -> usize {
         self.live_connections.load(Ordering::Acquire)
+    }
+
+    /// The one constructor of the stall-bounded sink every session's socket is wrapped in: the
+    /// window is `Config::egress_window` (the value `ConnLimits::for_config` gives the response
+    /// bounds), the shutdown signal is this state's, and the sink counts its pending sends into
+    /// `pending_sends`. The bound is on the time of one pending flush, not on progress: a frame of
+    /// F bytes needs at least 8F / window bits per second to complete, and the socket the sink
+    /// wraps (`axum::extract::ws::WebSocket`) exposes no byte counter to measure progress with.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::Config;
+    /// use shadowcat::ws::WsState;
+    ///
+    /// let state = WsState::new();
+    /// let _sink = state.bounded_sink(futures_util::sink::drain::<u8>(), &Config::default());
+    /// assert_eq!(state.pending_sends(), 0);
+    /// ```
+    pub fn bounded_sink<S>(
+        &self,
+        socket: S,
+        config: &crate::config::Config,
+    ) -> bounded_sink::BoundedSink<S> {
+        bounded_sink::BoundedSink::for_config(socket, self.shutdown.clone(), config)
+            .with_pending_gauge(self.pending_sends.clone())
+    }
+
+    /// The number of WebSocket sends pending right now across every live session: a nonzero
+    /// value is a peer that is not taking a frame. `http::serve_with`'s drain warning reports it
+    /// beside `live_connection_count`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::WsState;
+    ///
+    /// assert_eq!(WsState::new().pending_sends(), 0);
+    /// ```
+    pub fn pending_sends(&self) -> usize {
+        self.pending_sends.load(Ordering::Acquire)
     }
 
     /// Block until every live WebSocket connection task has exited (its `ConnectionGuard`
