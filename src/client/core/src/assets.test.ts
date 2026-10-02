@@ -53,7 +53,7 @@ describe("AssetResolver", () => {
   it("after replace, the URL changes (cache-bust) so the new bytes load", () => {
     const r = new AssetResolver();
     const before = r.url("abc");
-    r.onAssetChanged({ uuid: "abc", op: "replaced", version: 1 });
+    r.onAssetChanged({ uuid: "abc", op: "replaced", version: 2 });
     expect(r.url("abc")).not.toBe(before);
   });
 
@@ -95,6 +95,19 @@ describe("AssetResolver", () => {
     expect(r.url("abc")).toBe("/api/assets/abc?v=9");
   });
 
+  it("reconcile of the initial version leaves every URL unchanged, so a listing that lands after a token rendered does not re-request its image", () => {
+    const r = new AssetResolver();
+    const bare = r.url("abc");
+    const thumb = r.url("abc", "thumb");
+    r.reconcile([asset("abc", 1)]);
+    expect(r.url("abc")).toBe(bare);
+    expect(r.url("abc", "thumb")).toBe(thumb);
+    r.onAssetChanged({ uuid: "abc", op: "created", version: 1 });
+    expect(r.url("abc")).toBe(bare);
+    r.reconcile([asset("abc", 2)]);
+    expect(r.url("abc")).toBe("/api/assets/abc?v=2");
+  });
+
   it("reconcile clears a deleted marker when the listing carries a genuinely newer version", () => {
     const r = new AssetResolver();
     r.onAssetChanged({ uuid: "abc", op: "deleted", version: 1 });
@@ -121,7 +134,7 @@ describe("AssetResolver", () => {
     // is the authoritative delete signal, not a stale write, and must be honored.
     const r = new AssetResolver();
     r.reconcile([asset("abc", 1)]);
-    expect(r.url("abc")).toBe("/api/assets/abc?v=1");
+    expect(r.url("abc")).toBe("/api/assets/abc");
     r.onAssetChanged({ uuid: "abc", op: "deleted", version: 1 });
     expect(r.url("abc")).toBe(r.placeholder());
   });
