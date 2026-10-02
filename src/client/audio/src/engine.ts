@@ -14,6 +14,7 @@ import { DEFAULT_DUCK_DEPTH, DuckControllerImpl } from "./duck-controller";
 import { EmitterPlayer } from "./emitter-player";
 import { FallbackTrackPlayer } from "./fallback-player";
 import { OneShotPlayer } from "./one-shot-player";
+import { PlaybackGate } from "./playback-gate";
 import { createMediaElement, pickStreamSrc, TrackPlayer } from "./track-player";
 import { createOggOpusDecoder } from "./wasm";
 
@@ -152,6 +153,11 @@ export class AudioEngine implements AudioApi {
    * `unlock()` replay (Web Audio node creation before a context exists is impossible), the
    * synchronisation tick and the visibility trigger all re-apply. */
   #latestState: AudioStateEngine | null = null;
+  /** Whether the device needs a user gesture before it will play: set when the browser refuses
+   * a `play()` for want of one, read through `needsGesture`. */
+  #needsGesture = false;
+  /** The one place every media element this engine owns is started (`PlaybackGate.play`). */
+  #playGate = new PlaybackGate(() => this.#setNeedsGesture(true));
   /** The synchronisation tick's timer handle, or `null` before it starts / after `dispose()`. */
   #tickHandle: number | null = null;
   /** Unsubscribes the visibility observer, or `null` before it is installed / after `dispose()`. */
@@ -185,6 +191,25 @@ export class AudioEngine implements AudioApi {
     this.#channelState = Object.fromEntries(
       ALL_CHANNELS.map((c) => [c, { gain: 1, muted: false }]),
     ) as Record<AudioChannelId, AudioChannelState>;
+  }
+
+  /** Whether the device needs a user gesture before audio can play (a refused `play()`).
+   * @returns `true` while a gesture is required. */
+  get needsGesture(): boolean {
+    return this.#needsGesture;
+  }
+
+  /** Record a `needsGesture` change and notify subscribers when it changed.
+   * @param value The new state.
+   * @example
+   * ```
+   * // private; exercised through `engine-gesture.test.ts`
+   * ```
+   */
+  #setNeedsGesture(value: boolean): void {
+    if (this.#needsGesture === value) return;
+    this.#needsGesture = value;
+    this.notifyAudioChanged();
   }
 
   /** Per-channel device gain + mute state, keyed by `AudioChannelId` (all five buses).
@@ -443,7 +468,7 @@ export class AudioEngine implements AudioApi {
       const el = createMediaElement();
       el.src = pickStreamSrc(el, this.#opts.resolver.audioUrl(asset));
       el.volume = this.#degradedVolume(opts?.channel ?? "sfx", opts?.gain ?? 1);
-      void el.play();
+      this.#playGate.play(el);
       return;
     }
     if (!this.#oneShot) return; // not yet unlocked: one-shots are never queued
@@ -485,6 +510,7 @@ export class AudioEngine implements AudioApi {
           entry,
           dest,
           (id) => this.#opts.onTrackEnded?.(id),
+          this.#playGate,
         );
         player.sync(entry, serverNow);
         // Crossfade IN when this fresh entry replaces an outgoing one from the same playlist
@@ -540,6 +566,7 @@ export class AudioEngine implements AudioApi {
           (id) => this.#channelState[id],
           entry,
           (id) => this.#opts.onTrackEnded?.(id),
+          this.#playGate,
         );
         player.sync(entry, serverNow);
         this.#fallbackPlayers.set(entry.id, player);
@@ -625,7 +652,7 @@ export class AudioEngine implements AudioApi {
       }
       entry.gain = emitter.gain;
       entry.el.volume = this.#degradedVolume("sfx", emitter.gain);
-      void entry.el.play();
+      this.#playGate.play(entry.el);
     }
     for (const [token, entry] of this.#fallbackEmitters) {
       if (!seen.has(token)) {

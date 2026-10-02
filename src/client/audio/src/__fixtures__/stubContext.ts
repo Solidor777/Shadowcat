@@ -9,6 +9,7 @@ import type {
   PannerNodeLike,
   WasmOpusDecoderLike,
 } from "../context";
+import { PlaybackGate } from "../playback-gate";
 
 /** A no-op `GainNodeLike` (unit `setTargetAtTime` writes through to `value` so a test can
  * read the last target back).
@@ -173,6 +174,12 @@ export function stubAudioContext(): StubAudioContext {
   };
 }
 
+/** `stubMediaElement`'s return shape: the element with a writable `paused` flag. */
+export interface StubMediaElement extends MediaElementLike {
+  /** Whether the stub is paused; `play()` clears it and `pause()` sets it. */
+  paused: boolean;
+}
+
 /** A minimal `MediaElementLike` stub for `TrackPlayer` tests.
  * @returns The stub element (`canPlayType` answers `"probably"` to everything).
  * @example
@@ -181,19 +188,37 @@ export function stubAudioContext(): StubAudioContext {
  * stubMediaElement().canPlayType("audio/ogg"); // "probably"
  * ```
  */
-export function stubMediaElement(): MediaElementLike {
-  return {
+export function stubMediaElement(): StubMediaElement {
+  const el: StubMediaElement = {
     src: "",
     currentTime: 0,
     playbackRate: 1,
     volume: 1,
     loop: false,
-    play: async () => {},
-    pause: () => {},
+    paused: true,
+    play: async () => {
+      el.paused = false;
+    },
+    pause: () => {
+      el.paused = true;
+    },
     load: () => {},
     onended: null,
     canPlayType: () => "probably",
   };
+  return el;
+}
+
+/** A `PlaybackGate` that reports nothing, for tests of a player in isolation.
+ * @returns The gate.
+ * @example
+ * ```ts
+ * import { quietGate } from "../__fixtures__/stubContext";
+ * quietGate().release();
+ * ```
+ */
+export function quietGate(): PlaybackGate {
+  return new PlaybackGate(() => {});
 }
 
 /** A minimal `WasmOpusDecoderLike` stub: reports one second of stereo PCM at 48 kHz.

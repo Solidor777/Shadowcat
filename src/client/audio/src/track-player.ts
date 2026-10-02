@@ -8,6 +8,7 @@ import type {
   MediaElementSourceNodeLike,
 } from "./context";
 import type { OneShotPlayer } from "./one-shot-player";
+import type { PlaybackGate } from "./playback-gate";
 
 /** Position drift beyond which `TrackPlayer.sync` performs a hard seek rather than a rate
  * nudge, seconds. */
@@ -137,6 +138,8 @@ export class TrackPlayer {
   #playlist: string | null;
   /** The client-observed track-end reporter (`AudioEngineOpts.onTrackEnded`). */
   #onTrackEnded: (id: string) => void;
+  /** The one place the streaming element is started (`play()` only while paused). */
+  #gate: PlaybackGate;
   /** Set on `dispose()`; async continuations (decode) check it before touching the graph. */
   #disposed = false;
   /** The buffered decode is started at most once, however many syncs arrive meanwhile. */
@@ -166,6 +169,8 @@ export class TrackPlayer {
    * @param dest The channel gain node to route through.
    * @param onTrackEnded The client-observed track-end reporter (streaming mode's natural
    * element end; the server decides the advance).
+   * @param gate The engine's playback gate: starts the streaming element and reports an
+   * autoplay refusal.
    * @example
    * ```
    * // constructed by `AudioEngine.applyState` — exercised through this package's tests
@@ -178,7 +183,9 @@ export class TrackPlayer {
     entry: PlayingTrack,
     dest: GainNodeLike,
     onTrackEnded: (id: string) => void,
+    gate: PlaybackGate,
   ) {
+    this.#gate = gate;
     this.#context = context;
     this.#oneShot = oneShot;
     this.#asset = entry.asset;
@@ -344,9 +351,7 @@ export class TrackPlayer {
       el.pause();
     }
     syncElementPosition(el, targetSecs);
-    if (entry.pausedAt == null) {
-      void el.play();
-    }
+    if (entry.pausedAt == null) this.#gate.play(el);
   }
 
   /** The source playlist id this entry plays from (drives replace-pairing in

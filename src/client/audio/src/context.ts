@@ -111,6 +111,10 @@ export interface MediaElementLike {
   currentTime: number;
   /** Playback-rate multiplier (the small-drift nudge). */
   playbackRate: number;
+  /** Whether playback is paused (the DOM's own `HTMLMediaElement.paused`: `true` before the
+   * first `play()` and after a `pause()` or a refused `play()`). `PlaybackGate` starts an
+   * element only while this is `true`. */
+  readonly paused: boolean;
   /** Output volume, 0..=1 — only meaningful to `FallbackTrackPlayer`, whose bare element has
    * no mixer graph to route through (the channel/master buses land on this one knob). */
   volume: number;

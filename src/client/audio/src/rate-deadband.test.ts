@@ -13,7 +13,7 @@ import {
   SYNC_SEEK_THRESHOLD_SECS,
   TrackPlayer,
 } from "./track-player";
-import { stubAudioContext, stubBuffer, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
+import { quietGate, stubAudioContext, stubBuffer, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
 
 const JITTER_SECS = 0.005;
 const TICKS = 60;
@@ -85,7 +85,7 @@ describe("rate deadband per arm", () => {
     const ctx = stubAudioContext();
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), new OneShotPlayer(ctx, new AssetResolver(), { master: dest(), music: dest(), ambience: dest(), sfx: dest(), ui: dest() }, async () => stubWasmDecoder()), entry(), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), new OneShotPlayer(ctx, new AssetResolver(), { master: dest(), music: dest(), ambience: dest(), sfx: dest(), ui: dest() }, async () => stubWasmDecoder()), entry(), dest(), () => {}, quietGate());
     const writes = recordRateWrites(el);
     for (let i = 1; i <= TICKS; i++) {
       el.currentTime = i + (i % 2 === 0 ? JITTER_SECS : -JITTER_SECS);
@@ -110,6 +110,7 @@ describe("rate deadband per arm", () => {
       () => ({ gain: 1, muted: false }),
       entry(),
       () => {},
+      quietGate(),
     );
     const writes = recordRateWrites(el);
     for (let i = 1; i <= TICKS; i++) {
@@ -128,7 +129,7 @@ describe("rate deadband per arm", () => {
     ctx.decodeAudioData = async () => stubBuffer(1000);
     const oneShot = new OneShotPlayer(ctx, new AssetResolver(), { master: dest(), music: dest(), ambience: dest(), sfx: dest(), ui: dest() }, async () => stubWasmDecoder());
     const e = entry({ loop: true });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShot, e, dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShot, e, dest(), () => {}, quietGate());
     player.sync(e, 0);
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
     expect(ctx.sources).toHaveLength(1);

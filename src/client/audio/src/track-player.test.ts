@@ -4,7 +4,7 @@ import { AssetResolver, type PlayingTrack } from "@shadowcat/core";
 import type { AudioParamLike, GainNodeLike } from "./context";
 import { OneShotPlayer } from "./one-shot-player";
 import { setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS, TrackPlayer } from "./track-player";
-import { stubAudioContext, stubBuffer, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
+import { quietGate, stubAudioContext, stubBuffer, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
 
 function entry(over: Partial<PlayingTrack> = {}): PlayingTrack {
   return {
@@ -49,19 +49,19 @@ describe("TrackPlayer — streaming mode", () => {
     const el = stubMediaElement();
     el.canPlayType = () => "probably";
     setMediaElementFactory(() => el);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     expect(el.src).toBe("/api/assets/a1?variant=opus");
 
     const el2 = stubMediaElement();
     el2.canPlayType = (t) => (t.includes("ogg") ? "" : "probably");
     setMediaElementFactory(() => el2);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     expect(el2.src).toBe("/api/assets/a1?variant=opus-webm");
 
     const el3 = stubMediaElement();
     el3.canPlayType = () => "";
     setMediaElementFactory(() => el3);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     expect(el3.src).toBe("/api/assets/a1");
   });
 
@@ -69,7 +69,7 @@ describe("TrackPlayer — streaming mode", () => {
     const ctx = stubAudioContext();
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
 
     el.currentTime = 0;
     player.sync(entry(), (SYNC_SEEK_THRESHOLD_SECS + 1) * 1000);
@@ -88,10 +88,10 @@ describe("TrackPlayer — streaming mode", () => {
   it("clamps a negative server-sent gain to 0, both at construction and on sync", () => {
     const ctx = stubAudioContext();
     setMediaElementFactory(() => stubMediaElement());
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ gain: -0.3 }), dest(), () => {});
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ gain: -0.3 }), dest(), () => {}, quietGate());
     expect(ctx.gains[0].gain.value).toBe(0);
 
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     player.sync(entry({ gain: -1.5 }), 0);
     expect(ctx.gains[1].gain.value).toBeGreaterThanOrEqual(0);
     expect(ctx.gains[1].gain.value).toBe(0);
@@ -111,6 +111,7 @@ describe("TrackPlayer — track-end report", () => {
       entry({ id: "e-end" }),
       dest(),
       (id) => reports.push(id),
+      quietGate(),
     );
     expect(el.onended).not.toBeNull();
     el.onended!(new Event("ended"));
@@ -124,7 +125,7 @@ describe("TrackPlayer — buffered loop mode", () => {
   it("decodes the buffer, then starts a full-buffer loop at the position offset", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ loop: true }), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ loop: true }), dest(), () => {}, quietGate());
     player.sync(entry({ loop: true }), 1_500);
     await flush();
     const source = ctx.sources[0];
@@ -140,7 +141,7 @@ describe("TrackPlayer — buffered loop mode", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
     const e = entry({ loop: true });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {}, quietGate());
     player.sync(e, 1_000);
     await flush();
     const first = ctx.sources[0];
@@ -161,7 +162,7 @@ describe("TrackPlayer — buffered loop mode", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
     const e = entry({ loop: true, startedAt: 200 });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {}, quietGate());
     player.sync(e, 1_000);
     await flush();
     const first = ctx.sources[0];
@@ -177,7 +178,7 @@ describe("TrackPlayer — buffered loop mode", () => {
   it("a mid-fade sync re-targets the fade's automation rather than snapping the gain directly", () => {
     const ctx = stubAudioContext();
     const e = entry({ id: "e-fade", gain: 0.8 });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {}, quietGate());
     // Swap the player's gain param for a recording one: a direct `.value` write during a fade
     // is exactly the defect under test; an automation call is the correct re-target.
     const directWrites: number[] = [];
@@ -219,7 +220,7 @@ describe("TrackPlayer — audio-clock position", () => {
     const ctx = stubAudioContext();
     ctx.decodeAudioData = async () => stubBuffer(100);
     const e = entry({ loop: true });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {}, quietGate());
     player.sync(e, 0);
     await flush();
     return { ctx, e, player };
@@ -262,7 +263,7 @@ describe("TrackPlayer — streaming element under a suspended context", () => {
     const ctx = stubAudioContext();
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     el.currentTime = 4; // froze here while the server clock ran on to 10 s
     player.sync(entry(), 10_000);
     expect(el.currentTime).toBeCloseTo(10, 5);
@@ -272,7 +273,7 @@ describe("TrackPlayer — streaming element under a suspended context", () => {
     const ctx = stubAudioContext();
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
     el.currentTime = 10;
     player.sync(entry(), 10_000);
     expect(el.currentTime).toBe(10);

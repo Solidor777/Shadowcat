@@ -5,6 +5,7 @@ import type {
   PlayingTrack,
 } from "@shadowcat/core";
 import type { MediaElementLike } from "./context";
+import type { PlaybackGate } from "./playback-gate";
 import { createMediaElement, pickStreamSrc, syncElementPosition } from "./track-player";
 
 /** The no-Web-Audio degraded player: when `AudioEngine.unlock` finds no `AudioContext` at
@@ -29,6 +30,8 @@ export class FallbackTrackPlayer {
   #channelState: (id: AudioChannelId) => AudioChannelState;
   /** The client-observed track-end reporter (`AudioEngineOpts.onTrackEnded`). */
   #onTrackEnded: (id: string) => void;
+  /** The one place the element is started (`play()` only while paused). */
+  #gate: PlaybackGate;
   /** Set on `dispose()`; the end handler checks it before reporting. */
   #disposed = false;
 
@@ -39,6 +42,7 @@ export class FallbackTrackPlayer {
    * @param channelState Live read of the engine's per-channel gain/mute record.
    * @param entry The server-authoritative entry to play.
    * @param onTrackEnded The client-observed track-end reporter.
+   * @param gate The engine's playback gate: starts the element and reports an autoplay refusal.
    * @example
    * ```
    * // constructed by `AudioEngine.applyState`'s degraded arm — exercised through
@@ -50,7 +54,9 @@ export class FallbackTrackPlayer {
     channelState: (id: AudioChannelId) => AudioChannelState,
     entry: PlayingTrack,
     onTrackEnded: (id: string) => void,
+    gate: PlaybackGate,
   ) {
+    this.#gate = gate;
     this.#channelState = channelState;
     this.#channel = entry.channel;
     this.#entryId = entry.id;
@@ -110,9 +116,7 @@ export class FallbackTrackPlayer {
       el.pause();
     }
     syncElementPosition(el, targetSecs);
-    if (entry.pausedAt == null) {
-      void el.play();
-    }
+    if (entry.pausedAt == null) this.#gate.play(el);
   }
 
   /** Stop playback and drop the end callback. Idempotent-ish: marks the player dead first, so
