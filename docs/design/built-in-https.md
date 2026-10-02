@@ -271,13 +271,16 @@ unreadable `acme_ca_root` degrades the same way with its own reason.
 `SniffListener` implements `http::conn_serve::ConnSource`: `Io = ConnStream` (`Plain(TcpStream)` or
 `Tls(Box<TlsStream<TcpStream>>)`), yielding `(ConnStream, ConnMeta { peer, tls, cert })` (`cert` is
 the single `Selected` recorded for a TLS connection, `None` for plain; `peer` is canonicalised, an
-IPv4-mapped IPv6 address reduced to IPv4). `accept` returns `None` only if the acceptor task died,
-which ends the serve loop with an error log.
+IPv4-mapped IPv6 address reduced to IPv4). `accept` returns `Ok(None)` only if the acceptor task
+died, which ends the serve loop with an error log; it never returns an `Err`, because the acceptor
+task paces its own accept errors.
 
 - A background acceptor task owns the `TcpListener`; its loop selects between `accept()` and the
   receiver closing, so shutdown releases the port immediately, and `Drop` aborts the task. Accept
-  errors follow axum's own policy: connection-level errors ignored, others logged then a 1 s sleep;
-  the loop never breaks on error.
+  errors follow axum's own policy (`http::conn_serve::accept_error_pause`): connection-level errors
+  ignored, others logged then a 1 s sleep; the loop never breaks on error. `serve_router` consults
+  the same function for a `ConnSource` that returns an `Err` and holds the pause itself, because it
+  drops the `accept` future on every reaped connection task.
 - Each accepted socket runs, under ONE 10 s deadline, `peek` and — when the byte is `0x16` — the
   two-phase handshake of 3.3. `TcpStream::peek` consumes nothing, so the plain path needs no prefix
   buffering. A client that connects and sends nothing is dropped after 10 s. The snapshot is taken
