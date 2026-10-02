@@ -33,20 +33,14 @@
 //! downloads per server. The production side includes the router and the egress layers, which the
 //! bare side does not: the ratio is the cost of the whole production path against a bare server.
 
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use h2::client::Builder;
-use hyper::service::service_fn;
-use hyper_util::rt::{TokioExecutor, TokioIo};
 use shadowcat::http::conn_serve::{ConnLimits, H2_SEND_BUF_BYTES};
-use shadowcat_test_support::egress::{bulk_body, get_path, EgressServer};
-use shadowcat_test_support::h2c::h2c_connect;
+use shadowcat_test_support::egress::EgressServer;
 use shadowcat_test_support::measure::record;
-use tokio::net::TcpListener;
-
-/// Bytes one download fetches.
-const BODY_BYTES: usize = 24 << 20;
+use shadowcat_test_support::throughput::{
+    bare_server, bulk_path, download, median, BareApp, BODY_BYTES,
+};
 
 /// Downloads per server in one run. The release profile's count is the one the keep criterion is
 /// read from (a median over 100 per server); a debug run records the profile artifact only, so it
@@ -63,73 +57,15 @@ const PROFILE: &str = if cfg!(debug_assertions) {
     "release"
 };
 
-/// A bare hyper HTTP/2 server serving [`bulk_body`] on every request, with `send_buf` as its send
-/// buffer or the library's default when `None`.
-async fn bare_server(send_buf: Option<usize>) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((socket, _)) = listener.accept().await else {
-                return;
-            };
-            socket.set_nodelay(true).unwrap();
-            let service = service_fn(|_req: axum::http::Request<hyper::body::Incoming>| async {
-                Ok::<_, std::convert::Infallible>(axum::http::Response::new(bulk_body(BODY_BYTES)))
-            });
-            tokio::spawn(async move {
-                let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
-                if let Some(bytes) = send_buf {
-                    builder.max_send_buf_size(bytes);
-                }
-                let _ = builder
-                    .serve_connection(TokioIo::new(socket), service)
-                    .await;
-            });
-        }
-    });
-    addr
-}
-
-/// One download of [`BODY_BYTES`] from `addr` on a fresh connection; returns its duration.
-async fn download(addr: SocketAddr, path: &str) -> Duration {
-    let mut builder = Builder::new();
-    builder
-        .initial_window_size(6 << 20)
-        .initial_connection_window_size(15 << 20)
-        .enable_push(false);
-    let mut client = h2c_connect(addr, builder).await.unwrap();
-    let started = Instant::now();
-    let response = get_path(&mut client, addr, path).await;
-    let mut body = response.into_body();
-    let mut got = 0usize;
-    while let Some(chunk) = body.data().await {
-        let chunk = chunk.unwrap();
-        got += chunk.len();
-        let _ = body.flow_control().release_capacity(chunk.len());
-    }
-    assert_eq!(got, BODY_BYTES, "a download ended short");
-    started.elapsed()
-}
-
-/// The median of `samples`.
-fn median(samples: &mut [Duration]) -> Duration {
-    samples.sort();
-    let n = samples.len();
-    if n % 2 == 1 {
-        samples[n / 2]
-    } else {
-        (samples[n / 2 - 1] + samples[n / 2]) / 2
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_production_send_buffer_keeps_loopback_throughput_against_the_library_default() {
     let production = EgressServer::start(ConnLimits::default()).await;
     let production_addr = production.addr;
-    let default_addr = bare_server(None).await;
-    let buffer_addr = bare_server(Some(H2_SEND_BUF_BYTES)).await;
-    let path = format!("/bulk?bytes={BODY_BYTES}");
+    // Both bare servers set TCP_NODELAY, as the production listener does on every accepted socket
+    // and the harness's source does on its.
+    let default_addr = bare_server(None, true, BareApp::Chunks).await;
+    let buffer_addr = bare_server(Some(H2_SEND_BUF_BYTES), true, BareApp::Chunks).await;
+    let path = bulk_path();
     // Warm every path: first-use costs (allocator, connection setup) belong to no median.
     download(production_addr, &path).await;
     download(default_addr, "/").await;

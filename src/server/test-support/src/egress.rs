@@ -92,6 +92,12 @@ impl EgressServer {
 
     /// Serves `protocol` with `limits`.
     pub async fn start_with(limits: ConnLimits, protocol: Protocol) -> Self {
+        Self::start_tuned(limits, protocol, true).await
+    }
+
+    /// Serves `protocol` with `limits`, setting `TCP_NODELAY` on accepted sockets when `nodelay`
+    /// (what the production listener does; the throughput ladder serves without it as a control).
+    pub async fn start_tuned(limits: ConnLimits, protocol: Protocol, nodelay: bool) -> Self {
         let (state, world) = seeded_state().await;
         let ws = state.ws.clone();
         let hook_ws = ws.clone();
@@ -162,6 +168,7 @@ impl EgressServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (source, end, closed) = ObservedSource::new(listener, protocol == Protocol::H2);
+        let source = source.with_nodelay(nodelay);
         let writes = source.write_stats();
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let task = tokio::spawn(serve_router(

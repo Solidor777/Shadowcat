@@ -38,6 +38,18 @@ impl AsyncWrite for H2cStream {
         Pin::new(&mut self.0).poll_write(cx, buf)
     }
 
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0.is_write_vectored()
+    }
+
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.0).poll_flush(cx)
     }
@@ -60,6 +72,9 @@ pub struct H2cSource {
     listener: TcpListener,
     /// Fires when the source should report that it has ended.
     end: oneshot::Receiver<()>,
+    /// Whether accepted sockets get `TCP_NODELAY`, as `SniffListener` sets it on every socket the
+    /// production path accepts.
+    nodelay: bool,
 }
 
 /// Ends its [`H2cSource`] when [`EndHandle::end`] is called.
@@ -76,7 +91,21 @@ impl H2cSource {
     /// A source over `listener` and the handle that ends it.
     pub fn new(listener: TcpListener) -> (Self, EndHandle) {
         let (tx, end) = oneshot::channel();
-        (Self { listener, end }, EndHandle(tx))
+        (
+            Self {
+                listener,
+                end,
+                nodelay: true,
+            },
+            EndHandle(tx),
+        )
+    }
+
+    /// Sets whether accepted sockets get `TCP_NODELAY` (on by default, as in production); the
+    /// throughput ladder turns it off for its control.
+    pub fn with_nodelay(mut self, nodelay: bool) -> Self {
+        self.nodelay = nodelay;
+        self
     }
 }
 
@@ -87,6 +116,9 @@ impl ConnSource for H2cSource {
         tokio::select! {
             accepted = self.listener.accept() => {
                 let (sock, peer) = accepted?;
+                if self.nodelay {
+                    sock.set_nodelay(true)?;
+                }
                 Ok(Some((H2cStream(sock), ConnMeta::plain(peer))))
             }
             _ = &mut self.end => Ok(None),

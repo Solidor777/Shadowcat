@@ -130,6 +130,9 @@ pub struct ObservedSource {
     closed: ClosedLog,
     /// Shared with every connection the source hands out.
     stats: Arc<WriteStats>,
+    /// Whether accepted sockets get `TCP_NODELAY`, as `SniffListener` sets it on every socket the
+    /// production path accepts.
+    nodelay: bool,
 }
 
 impl ObservedSource {
@@ -145,6 +148,7 @@ impl ObservedSource {
                 h2,
                 closed: closed.clone(),
                 stats: Arc::default(),
+                nodelay: true,
             },
             EndHandle(tx),
             closed,
@@ -153,6 +157,13 @@ impl ObservedSource {
 }
 
 impl ObservedSource {
+    /// Sets whether accepted sockets get `TCP_NODELAY` (on by default, as in production); the
+    /// throughput ladder turns it off for its control.
+    pub fn with_nodelay(mut self, nodelay: bool) -> Self {
+        self.nodelay = nodelay;
+        self
+    }
+
     /// The write counts of every connection the source hands out.
     pub fn write_stats(&self) -> Arc<WriteStats> {
         self.stats.clone()
@@ -166,6 +177,9 @@ impl ConnSource for ObservedSource {
         tokio::select! {
             accepted = self.listener.accept() => {
                 let (sock, peer): (TcpStream, SocketAddr) = accepted?;
+                if self.nodelay {
+                    sock.set_nodelay(true)?;
+                }
                 Ok(Some((
                     ObservedStream {
                         inner: sock,

@@ -7,6 +7,20 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Blocked on release-profile records of the send-buffer gate on Linux and macOS
+- TODO: Make the send-buffer gate's `buffer_ratio >= 0.90` assertion blocking in release builds.
+  The gate (`h2_send_buf_gate`) records `buffer_ratio` (bare hyper at `H2_SEND_BUF_BYTES` against
+  bare hyper at the library default) and `production_ratio` per run, to stdout and the CI step
+  summary, and asserts only that every download delivers every byte. The 0.90 figure is empirical
+  (a throughput ratio on shared hardware has no derivation), so the numeric-assertion rule keeps
+  it record-only until every operating system's value is recorded. Trigger: one CI run in which the
+  "Send-buffer throughput gate (release, record-only)" step has printed `profile=release` records
+  on ubuntu, macos and windows (Windows loopback has read 0.944, 0.969 and 0.961). Then, in the
+  same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
+  set below the worst of the three legs by a stated headroom and the three recorded values written
+  beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
+  to 0.79 measured) and `production_ratio` stays recorded.
+
 ## Blocked on verifying `--no-experimental-webstorage` against CI's pinned Node version
 - TODO: `pnpm -r test` fails locally on Node 25.3.0+ with `TypeError: localStorage.clear is not
   a function` in any package whose tests call `localStorage` directly (e.g.

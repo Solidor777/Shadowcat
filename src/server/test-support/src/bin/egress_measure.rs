@@ -18,6 +18,12 @@
 //!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
 //!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
 //!
+//! - `layers [downloads [runs]]`: loopback download throughput of a ladder of servers, each adding
+//!   one layer of the production path to a bare hyper server (the router, the application's
+//!   middleware, the serve loop, the harness's observed source), with a body-producer control and
+//!   TCP_NODELAY off as a control. Run it in a release build. Prints one `RECORD layers` line per run and per rung and a
+//!   `RESULT layers` summary of the median over runs with each rung's cost against the one before it.
+//!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
 
@@ -51,6 +57,14 @@ fn main() {
             let recv_buffer = rest.get(3).and_then(|v| v.parse().ok()).unwrap_or(0u32);
             runtime.block_on(h1_progress(&windows, &multiples, per_run, recv_buffer));
         }
+        "layers" => {
+            let downloads = rest
+                .first()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200usize);
+            let runs = rest.get(1).and_then(|v| v.parse().ok()).unwrap_or(5usize);
+            runtime.block_on(layers(downloads, runs));
+        }
         "socket-grants" => {
             let nums: Vec<u32> = rest.iter().filter_map(|v| v.parse().ok()).collect();
             let at = |i: usize| nums.get(i).copied().unwrap_or(0);
@@ -63,7 +77,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "unknown subcommand {other:?}: grid | mixed-serial | h1-progress | socket-grants"
+                "unknown subcommand {other:?}: grid | mixed-serial | h1-progress | socket-grants | layers"
             );
             std::process::exit(2);
         }
@@ -137,6 +151,109 @@ async fn grid() {
             run.paced.end,
             run.paced.elapsed.as_secs_f64(),
             run.paced.got
+        ));
+    }
+}
+
+/// The `layers` subcommand: `downloads` per rung per run, `runs` runs, the rungs' order rotating
+/// within a run so no rung always follows the same neighbour.
+async fn layers(downloads: usize, runs: usize) {
+    use shadowcat_test_support::throughput::{
+        bare_server, bulk_path, download, full_app, median, minimal_app, served, BareApp, Rung,
+        PRODUCTION_SEND_BUF,
+    };
+    let path = bulk_path();
+    let default_buf = None;
+    let sixty_four = Some(PRODUCTION_SEND_BUF);
+    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY, as the production listener
+    // does, so each step between neighbours adds one layer. The no-nodelay rungs repeat a bare
+    // rung and the production rungs without the option.
+    let rungs: Vec<Rung> = vec![
+        Rung::bare(
+            "bare-default-buf",
+            bare_server(default_buf, true, BareApp::Chunks).await,
+        ),
+        Rung::bare(
+            "bare-64k",
+            bare_server(sixty_four, true, BareApp::Chunks).await,
+        ),
+        Rung::bare(
+            "bare-64k-onebuffer-producer",
+            bare_server(sixty_four, true, BareApp::OneBuffer).await,
+        ),
+        Rung::bare(
+            "bare-64k+minimal-router",
+            bare_server(sixty_four, true, BareApp::Router(minimal_app())).await,
+        ),
+        Rung::bare(
+            "bare-64k+full-router",
+            bare_server(sixty_four, true, BareApp::Router(full_app().await)).await,
+        ),
+        Rung::served(
+            "serve_router+minimal-router",
+            served(minimal_app(), true).await,
+        ),
+        Rung::served(
+            "serve_router+full-router",
+            served(full_app().await, true).await,
+        ),
+        Rung::harness(
+            "serve_router+full-router+observed-source",
+            EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, true).await,
+        ),
+        Rung::bare(
+            "bare-64k-no-nodelay",
+            bare_server(sixty_four, false, BareApp::Chunks).await,
+        ),
+        Rung::served(
+            "serve_router+full-router-no-nodelay",
+            served(full_app().await, false).await,
+        ),
+        Rung::harness(
+            "serve_router+full-router+observed-source-no-nodelay",
+            EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, false).await,
+        ),
+    ];
+    for rung in &rungs {
+        download(rung.addr, &path).await;
+    }
+    let mut medians: Vec<Vec<Duration>> = vec![Vec::new(); rungs.len()];
+    for run in 1..=runs {
+        let mut samples: Vec<Vec<Duration>> = vec![Vec::new(); rungs.len()];
+        for i in 0..downloads {
+            let mut order: Vec<usize> = (0..rungs.len()).collect();
+            order.rotate_left((i + run) % rungs.len());
+            if i % 2 == 1 {
+                order.reverse();
+            }
+            for rung in order {
+                samples[rung].push(download(rungs[rung].addr, &path).await);
+            }
+        }
+        for (rung, s) in samples.iter_mut().enumerate() {
+            let m = median(s);
+            record(&format!(
+                "RECORD layers os={} profile={} run={run} downloads={downloads} rung=\"{}\" median_ms={:.2}",
+                std::env::consts::OS,
+                if cfg!(debug_assertions) { "debug" } else { "release" },
+                rungs[rung].name,
+                m.as_secs_f64() * 1e3
+            ));
+            medians[rung].push(m);
+        }
+    }
+    let bare = median(&mut medians[0].clone()).as_secs_f64();
+    for (rung, m) in medians.iter_mut().enumerate() {
+        let min = m.iter().min().copied().unwrap_or_default().as_secs_f64();
+        let max = m.iter().max().copied().unwrap_or_default().as_secs_f64();
+        let med = median(m).as_secs_f64();
+        record(&format!(
+            "RESULT layers rung=\"{}\" median_of_run_medians_ms={:.2} run_min_ms={:.2} run_max_ms={:.2} throughput_vs_bare_default={:.3}",
+            rungs[rung].name,
+            med * 1e3,
+            min * 1e3,
+            max * 1e3,
+            bare / med,
         ));
     }
 }

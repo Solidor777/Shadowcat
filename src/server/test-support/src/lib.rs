@@ -24,6 +24,8 @@ pub mod logs;
 pub mod measure;
 /// A serve-loop source that records when the server drops each connection.
 pub mod observed;
+/// Loopback download throughput, and the ladder of servers that separates the production path's layers.
+pub mod throughput;
 /// TLS client helpers.
 pub mod tls;
 
