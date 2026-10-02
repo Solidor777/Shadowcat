@@ -480,7 +480,7 @@ where
             io,
             meta,
             app.clone(),
-            LiveState::new(Some(slot)),
+            LiveState::new(slot),
             Ending {
                 signal_tx: &signal_tx,
                 kill: &kill,

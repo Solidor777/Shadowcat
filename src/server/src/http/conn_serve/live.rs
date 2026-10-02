@@ -29,15 +29,16 @@ use crate::http::peer_slots::Slot;
 
 /// What a connection holds for its whole life: its cap slot and the in-flight stream count.
 pub(super) struct LiveState {
-    /// The connection's live-cap slot; `None` only for a connection admitted without one.
-    _slot: Option<Slot>,
+    /// The connection's live-cap slot, released when the state (the connection task and every
+    /// lease) is dropped.
+    _slot: Slot,
     /// Number of leases currently held; the HTTP/2 idle bound watches it.
     streams: watch::Sender<usize>,
 }
 
 impl LiveState {
     /// State for a connection that holds `slot`, with no stream in flight.
-    pub(super) fn new(slot: Option<Slot>) -> Arc<Self> {
+    pub(super) fn new(slot: Slot) -> Arc<Self> {
         Arc::new(Self {
             _slot: slot,
             streams: watch::channel(0).0,
