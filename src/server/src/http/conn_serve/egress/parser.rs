@@ -11,7 +11,7 @@
 use super::super::H2_PREFACE_LEN;
 
 /// The length of an HTTP/2 frame header (RFC 9113 section 4.1).
-const FRAME_HEADER_LEN: usize = 9;
+pub(super) const FRAME_HEADER_LEN: usize = 9;
 
 /// The type code of a DATA frame (RFC 9113 section 6.1).
 pub(super) const FRAME_TYPE_DATA: u8 = 0;

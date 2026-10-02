@@ -19,10 +19,6 @@ use crate::http::peer_slots::PeerSlots;
 /// The client connection preface.
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// The size of the codec's read buffer the lag derivation assumes: one read can carry at most this
-/// many bytes of frames.
-const READ_BUFFER_BYTES: usize = 8 * 1024;
-
 /// The server end of a duplex pipe that reports ALPN `h2`, records the largest single read and can
 /// park its writer.
 struct Probed {
@@ -262,7 +258,13 @@ impl Served {
 
 /// Floods `n` request frames of the given kind in one write on the connection and returns the
 /// served connection after the flood has been read and processed.
-async fn flood(blocked: bool, minimum: bool, n: u32) -> Served {
+///
+/// With `big_frame_head` of `Some(payload_bytes)`, a request whose body DATA frame carries a
+/// full-size payload comes first: its header and `payload_bytes` of the payload are written and
+/// read before the rest of the payload and the flood follow. The framed reader reserves room for
+/// the whole frame as soon as it has read the frame's header, so the read that follows is the
+/// largest the reader makes.
+async fn flood(blocked: bool, minimum: bool, n: u32, big_frame_head: Option<usize>) -> Served {
     let mut served = serve(STREAM_TABLE_CAP_FOR_TESTS);
     served.open().await;
     let mut write = served.drain_reads();
@@ -270,7 +272,25 @@ async fn flood(blocked: bool, minimum: bool, n: u32) -> Served {
         served.block_write.store(true, Ordering::SeqCst);
     }
     let mut burst = Vec::new();
-    for i in 0..n {
+    let first_flooded = if let Some(head) = big_frame_head {
+        let big = frame(0x0, 0, 1, &vec![0u8; H2_MAX_FRAME_BYTES as usize]);
+        // GET /hang (literal `:path`) with the request side left open: the handler never answers,
+        // so the stream stays in the table while the body frame is read.
+        let mut opening = frame(
+            0x1,
+            0x4,
+            1,
+            &[0x82, 0x87, 0x44, 0x05, b'/', b'h', b'a', b'n', b'g'],
+        );
+        opening.extend_from_slice(&big[..egress::FRAME_HEADER_BYTES + head]);
+        write.write_all(&opening).await.unwrap();
+        served.wait_for_ids(&[1]).await;
+        burst.extend_from_slice(&big[egress::FRAME_HEADER_BYTES + head..]);
+        1
+    } else {
+        0
+    };
+    for i in first_flooded..n {
         burst.extend(request(1 + 2 * i, minimum));
     }
     let writer = tokio::spawn(async move {
@@ -296,40 +316,65 @@ const STREAM_TABLE_CAP_FOR_TESTS: usize = egress::STREAM_TABLE_CAP;
 
 #[tokio::test]
 async fn the_parse_lag_over_a_minimum_frame_flood_stays_inside_its_derived_slack() {
-    for minimum in [false, true] {
-        for blocked in [true, false] {
-            let served = flood(blocked, minimum, 20_000).await;
-            let frame_bytes = if minimum { 9 } else { 12 };
-            let max_read = served.max_read.load(Ordering::SeqCst);
-            let peak = served.counters.table_peak();
-            // Premises of the derivation, named so a change in the codec's read or frame sizes
-            // fails here and not on a magnitude: one read carries at most the read buffer, and the
-            // flooded frame is no smaller than the minimum the derivation assumes.
-            assert!(
-                max_read <= READ_BUFFER_BYTES,
-                "a single read of {max_read} B exceeds the {READ_BUFFER_BYTES} B read buffer the slack assumes"
-            );
-            assert!(frame_bytes >= 9, "the flooded frame is below the minimum");
-            // The lag is the entries the table holds above the streams h2 admits: bounded by the
-            // slack, which is five reads' worth of minimum frames.
-            let lag = peak.saturating_sub(H2_MAX_CONCURRENT_STREAMS as usize);
-            assert!(
-                lag <= egress::PARSE_LAG_SLACK,
-                "minimum {minimum}, writer blocked {blocked}: lag {lag} above the slack {}",
-                egress::PARSE_LAG_SLACK
-            );
-            assert_eq!(
-                served.counters.snapshot(),
-                StallCuts::default(),
-                "minimum {minimum}, blocked {blocked}: a flood within the lag cut the connection"
-            );
-            println!(
-                "RECORD parse_lag frame_bytes={frame_bytes} writer_blocked={blocked} max_read_bytes={max_read} table_peak={peak} lag={lag} slack={}",
-                egress::PARSE_LAG_SLACK
-            );
-            served.finish().await;
+    // `None`: the reader's own 8 KiB reads. `Some(head)`: a full-size DATA frame's header and
+    // `head` payload bytes are read first, so the reader has reserved room for the rest of that
+    // frame and its next read is the largest it makes.
+    for big_frame_head in [None, Some(0), Some(100)] {
+        for minimum in [false, true] {
+            for blocked in [true, false] {
+                let served = flood(blocked, minimum, 20_000, big_frame_head).await;
+                let flooded = request(3, minimum).len();
+                let max_read = served.max_read.load(Ordering::SeqCst);
+                let peak = served.counters.table_peak();
+                // Premises of the derivation, named so a change in the codec's read or frame sizes
+                // fails here and not on a magnitude: no read carries more than the reader's
+                // largest, and the flooded frame (measured from its encoding) is no smaller than
+                // the minimum the derivation assumes.
+                assert!(
+                    max_read <= egress::CODEC_READ_MAX_BYTES,
+                    "frame head {big_frame_head:?}: a single read of {max_read} B exceeds the {} B the slack assumes",
+                    egress::CODEC_READ_MAX_BYTES
+                );
+                assert!(
+                    flooded >= egress::FRAME_HEADER_BYTES,
+                    "the flooded frame of {flooded} B is below the {} B minimum",
+                    egress::FRAME_HEADER_BYTES
+                );
+                // The lag is the entries the table holds above the streams h2 admits: bounded by the
+                // slack, which is five reads' worth of minimum frames.
+                let lag = peak.saturating_sub(H2_MAX_CONCURRENT_STREAMS as usize);
+                assert!(
+                    lag <= egress::PARSE_LAG_SLACK,
+                    "frame head {big_frame_head:?}, minimum {minimum}, writer blocked {blocked}: lag {lag} above the slack {}",
+                    egress::PARSE_LAG_SLACK
+                );
+                assert_eq!(
+                    served.counters.snapshot(),
+                    StallCuts::default(),
+                    "frame head {big_frame_head:?}, minimum {minimum}, blocked {blocked}: a flood within the lag cut the connection"
+                );
+                println!(
+                    "RECORD parse_lag frame_head={big_frame_head:?} frame_bytes={flooded} writer_blocked={blocked} max_read_bytes={max_read} table_peak={peak} lag={lag} slack={}",
+                    egress::PARSE_LAG_SLACK
+                );
+                served.finish().await;
+            }
         }
     }
+}
+
+/// A read after a full-size frame's header is larger than the reader's own 8 KiB, which is why the
+/// derivation uses `egress::CODEC_READ_MAX_BYTES` and not the initial capacity.
+#[tokio::test]
+async fn a_read_after_a_full_size_frame_header_exceeds_the_readers_initial_capacity() {
+    let served = flood(false, true, 20_000, Some(0)).await;
+    let max_read = served.max_read.load(Ordering::SeqCst);
+    assert!(
+        max_read > egress::CODEC_INITIAL_READ_BYTES,
+        "the read after the frame header was {max_read} B, not above {} B",
+        egress::CODEC_INITIAL_READ_BYTES
+    );
+    served.finish().await;
 }
 
 #[tokio::test]
@@ -477,6 +522,19 @@ async fn the_server_advertises_the_stream_limit_the_table_cap_is_derived_from() 
         .find(|(id, _)| *id == 3)
         .map(|(_, value)| *value);
     assert_eq!(limit, Some(H2_MAX_CONCURRENT_STREAMS));
+    served.finish().await;
+}
+
+#[tokio::test]
+async fn the_server_advertises_the_frame_limit_the_read_bound_is_derived_from() {
+    // SETTINGS_MAX_FRAME_SIZE is identifier 5 (RFC 9113 section 6.5.2).
+    let mut served = serve(egress::STREAM_TABLE_CAP);
+    let settings = served.open().await;
+    let limit = settings
+        .iter()
+        .find(|(id, _)| *id == 5)
+        .map(|(_, value)| *value);
+    assert_eq!(limit, Some(H2_MAX_FRAME_BYTES));
     served.finish().await;
 }
 

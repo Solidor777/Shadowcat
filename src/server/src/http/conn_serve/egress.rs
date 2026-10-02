@@ -43,22 +43,44 @@ use self::parser::{
 use self::table::StreamState;
 use self::table::{Backlog, ParseOutcome, StreamTable};
 use super::kill::{ConnKill, KillReason};
-use super::{StallCuts, H2_MAX_CONCURRENT_STREAMS};
+use super::{StallCuts, H2_MAX_CONCURRENT_STREAMS, H2_MAX_FRAME_BYTES};
 
 mod parser;
 mod table;
+
+/// The length of an HTTP/2 frame header, the smallest frame (RFC 9113 section 4.1).
+pub(super) const FRAME_HEADER_BYTES: usize = parser::FRAME_HEADER_LEN;
+
+/// The capacity of the codec's framed reader buffer before it has read a frame header: the number
+/// of bytes its ordinary reads can return. `tokio_util::codec::FramedRead` allocates 8 KiB and
+/// reserves one byte per read, so it does not grow on its own.
+pub(super) const CODEC_INITIAL_READ_BYTES: usize = 8 * 1024;
+
+/// The most bytes one read of the codec's framed reader can return. Once the reader has read a
+/// frame's header it reserves room for the rest of that frame, so the read that follows can be as
+/// large as the frame's remaining payload, at most [`H2_MAX_FRAME_BYTES`] (the receive limit the
+/// connection advertises); otherwise a read is at most [`CODEC_INITIAL_READ_BYTES`]. The stream
+/// table's lag test measures this bound: a read of the full frame length follows a frame header
+/// read alone.
+pub(super) const CODEC_READ_MAX_BYTES: usize =
+    if H2_MAX_FRAME_BYTES as usize > CODEC_INITIAL_READ_BYTES {
+        H2_MAX_FRAME_BYTES as usize
+    } else {
+        CODEC_INITIAL_READ_BYTES
+    };
 
 /// How many entries the table may hold above `max_concurrent_streams` because the read parser sees
 /// bytes the codec has read but h2 has not processed, and h2's refusal RST_STREAM frames are queued
 /// but not yet written.
 ///
-/// Derivation: the `tokio_util` framed reader under the h2 codec reads at most 8 KiB at a time, and
-/// the smallest parseable HEADERS frame is 9 bytes (a frame header with an empty block), so one read
-/// can add `8192 / 9` entries. At most two reads are in flight at once (the one being processed and
-/// the one buffered), and the refusals still queued add at most about as many again; five reads'
-/// worth carries a margin over that. The minimum-frame integration test asserts the premises (read
-/// size, frame size) before it asserts the peak against this derivation.
-pub(super) const PARSE_LAG_SLACK: usize = 5 * (8192 / 9);
+/// Derivation: one read of the codec's reader carries at most [`CODEC_READ_MAX_BYTES`], and the
+/// smallest parseable HEADERS frame is [`FRAME_HEADER_BYTES`] (a frame header with an empty block),
+/// so one read can add `CODEC_READ_MAX_BYTES / FRAME_HEADER_BYTES` entries. At most two reads are in
+/// flight at once (the one being processed and the one buffered), and the refusals still queued add
+/// at most about as many again; five reads' worth carries a margin over that. The minimum-frame
+/// integration test asserts the premises (read size, frame size) before it asserts the peak against
+/// this derivation, after a full-size frame as well as after ordinary reads.
+pub(super) const PARSE_LAG_SLACK: usize = 5 * (CODEC_READ_MAX_BYTES / FRAME_HEADER_BYTES);
 
 /// The most entries a connection's stream table may hold: the streams h2 admits plus the parse lag
 /// the table tolerates ([`PARSE_LAG_SLACK`]).

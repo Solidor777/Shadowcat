@@ -281,6 +281,12 @@ const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_FLOOR_BYTES);
 /// the slots a stalled stream holds against hyper's default of 200.
 const H2_MAX_CONCURRENT_STREAMS: u32 = 100;
 
+/// The largest frame payload h2 accepts from a client (`http2::Builder::max_frame_size`, the
+/// SETTINGS_MAX_FRAME_SIZE the connection advertises). Equals h2's own default and the minimum RFC
+/// 9113 section 6.5.2 allows, and is set explicitly so the egress parser's read bound
+/// (`CODEC_READ_MAX_BYTES`) does not depend on a library default.
+const H2_MAX_FRAME_BYTES: u32 = 16 * 1024;
+
 /// How many RST_STREAM frames h2 itself generates, over a connection's life, for protocol errors in
 /// frames the peer sent before it ends the connection with GOAWAY(ENHANCE_YOUR_CALM)
 /// (`http2::Builder::max_local_error_reset_streams`). Equals h2's own default and is set
@@ -314,7 +320,7 @@ const H2_MAX_LOCAL_ERROR_RESETS: usize = 1024;
 const H2_MAX_PENDING_ACCEPT_RESETS: usize = 1024;
 
 /// The HTTP/2 connection builder every h2 connection is served with: one place sets the stream
-/// executor, timer, extended CONNECT, the send buffer, the stream and error-reset limits and the
+/// executor, timer, extended CONNECT, the send buffer, the stream, frame and error-reset limits and the
 /// keep-alive pings.
 fn h2_builder(limits: &ConnLimits) -> http2::Builder<StreamExec> {
     let mut builder = http2::Builder::new(StreamExec);
@@ -323,6 +329,7 @@ fn h2_builder(limits: &ConnLimits) -> http2::Builder<StreamExec> {
         .enable_connect_protocol()
         .max_send_buf_size(H2_SEND_BUF_BYTES)
         .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
+        .max_frame_size(H2_MAX_FRAME_BYTES)
         .max_local_error_reset_streams(Some(H2_MAX_LOCAL_ERROR_RESETS))
         .max_pending_accept_reset_streams(Some(H2_MAX_PENDING_ACCEPT_RESETS))
         .keep_alive_interval(Some(limits.h2_ping_interval))
