@@ -5,12 +5,7 @@ import type {
   PlayingTrack,
 } from "@shadowcat/core";
 import type { MediaElementLike } from "./context";
-import {
-  createMediaElement,
-  pickStreamSrc,
-  SYNC_RATE_NUDGE,
-  SYNC_SEEK_THRESHOLD_SECS,
-} from "./track-player";
+import { createMediaElement, pickStreamSrc, syncElementPosition } from "./track-player";
 
 /** The no-Web-Audio degraded player: when `AudioEngine.unlock` finds no `AudioContext` at
  * all, every entry — loops included — plays through a BARE `<audio>` element (no mixer graph,
@@ -114,15 +109,7 @@ export class FallbackTrackPlayer {
     if (entry.pausedAt != null) {
       el.pause();
     }
-    const drift = Math.abs(el.currentTime - targetSecs);
-    if (drift > SYNC_SEEK_THRESHOLD_SECS) {
-      el.currentTime = targetSecs;
-      el.playbackRate = 1;
-    } else if (drift > 0) {
-      el.playbackRate = el.currentTime < targetSecs ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-    } else {
-      el.playbackRate = 1;
-    }
+    syncElementPosition(el, targetSecs);
     if (entry.pausedAt == null) {
       void el.play();
     }

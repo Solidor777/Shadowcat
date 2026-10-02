@@ -139,3 +139,31 @@ describe("AudioEngine synchronisation tick", () => {
     expect(elements[0].currentTime).toBeCloseTo(12, 5);
   });
 });
+
+describe("AudioEngine synchronisation tick keeps a streaming element in step over a long run", () => {
+  /** Plays 300 simulated seconds: the element's clock advances at its own `playbackRate` each
+   * second; `ticks` decides whether the engine's tick runs. The server position starts 80 ms
+   * ahead of the element (a not-yet-playing element at its first sync).
+   * @returns The final signed drift, element minus server, seconds. */
+  async function run(ticks: boolean): Promise<number> {
+    const { engine, clock, timer, elements } = rig();
+    await engine.unlock();
+    clock.ms = 80;
+    engine.applyState(state(entry("e1")));
+    const el = elements[0];
+    for (let second = 1; second <= 300; second++) {
+      clock.ms += 1000;
+      el.currentTime += el.playbackRate;
+      if (ticks) timer.fire();
+    }
+    return el.currentTime - clock.ms / 1000;
+  }
+
+  it("without a tick the nudge never returns to 1 and the drift grows past a second", async () => {
+    expect(Math.abs(await run(false))).toBeGreaterThan(1);
+  });
+
+  it("with the tick the drift stays inside the engage bound plus one tick's nudge", async () => {
+    expect(Math.abs(await run(true))).toBeLessThan(0.05);
+  });
+});

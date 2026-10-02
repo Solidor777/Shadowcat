@@ -14,10 +14,61 @@ import type { OneShotPlayer } from "./one-shot-player";
 export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
 /** Playback-rate nudge applied inside the seek threshold to close small drift inaudibly. */
 export const SYNC_RATE_NUDGE = 0.02;
+/** Drift magnitude above which an idle (rate 1) player engages the `SYNC_RATE_NUDGE`
+ * correction, seconds. A once-per-second tick at a 2 percent nudge moves the position 20 ms
+ * per tick, so the engage bound sits above ordinary measurement jitter and the release bound
+ * below it. */
+export const SYNC_RATE_ENGAGE_SECS = 0.025;
+/** Drift magnitude below which an engaged player returns to rate 1, seconds. Strictly below
+ * `SYNC_RATE_ENGAGE_SECS`: the gap is the hysteresis band inside which a player keeps its
+ * current rate instead of toggling it every tick. */
+export const SYNC_RATE_RELEASE_SECS = 0.01;
 /** `AudioParam.setTargetAtTime`'s time constant for a `sync`-driven gain update outside an
  * active crossfade, seconds — a gain change (transport SetGain) arrives step-free without a
  * direct `.value` write that would click (or cancel an in-flight fade's automation). */
 export const GAIN_RAMP_TAU_SECS = 0.05;
+
+/** The one rate-hysteresis decision for every playback arm (buffered source, graph-routed
+ * element, bare element): engage the `SYNC_RATE_NUDGE` correction above
+ * `SYNC_RATE_ENGAGE_SECS` of drift, hold it until the drift falls below
+ * `SYNC_RATE_RELEASE_SECS`, then return to rate 1. A drift beyond `SYNC_SEEK_THRESHOLD_SECS`
+ * is the caller's hard seek, not a rate. A rate returned equal to `rate` means "no write".
+ * @param drift Target position minus audible position, seconds (positive = behind).
+ * @param rate The playback rate currently applied.
+ * @returns The rate to apply.
+ * @example
+ * ```ts
+ * rateForDrift(0.005, 1); // 1: inside the deadband, no write
+ * ```
+ */
+export function rateForDrift(drift: number, rate: number): number {
+  const magnitude = Math.abs(drift);
+  const engaged = rate !== 1;
+  if (engaged ? magnitude < SYNC_RATE_RELEASE_SECS : magnitude <= SYNC_RATE_ENGAGE_SECS) return 1;
+  return drift > 0 ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
+}
+
+/** Reconcile one element's position and rate against the server target: a hard seek beyond
+ * `SYNC_SEEK_THRESHOLD_SECS`, otherwise `rateForDrift`'s hysteresis. Writes `playbackRate`
+ * only when the rate changes. Shared by `TrackPlayer`'s streaming arm and
+ * `FallbackTrackPlayer` so the two cannot disagree on the decision.
+ * @param el The element to reconcile.
+ * @param targetSecs The server-derived target position, seconds.
+ * @example
+ * ```ts
+ * // package-internal seam — exercised through both element arms' `sync`
+ * ```
+ */
+export function syncElementPosition(el: MediaElementLike, targetSecs: number): void {
+  const drift = targetSecs - el.currentTime;
+  if (Math.abs(drift) > SYNC_SEEK_THRESHOLD_SECS) {
+    el.currentTime = targetSecs;
+    if (el.playbackRate !== 1) el.playbackRate = 1;
+    return;
+  }
+  const rate = rateForDrift(drift, el.playbackRate);
+  if (rate !== el.playbackRate) el.playbackRate = rate;
+}
 
 /** Pick the `<audio>`-element source for a streaming track: the first candidate the element
  * reports playable (Ogg derivative, then WebM, then the native original). Shared by
@@ -272,17 +323,16 @@ export class TrackPlayer {
         return;
       }
       const position = this.#positionAt();
-      const drift = Math.abs(position - targetSecs);
-      if (drift > SYNC_SEEK_THRESHOLD_SECS) {
+      const drift = targetSecs - position;
+      if (Math.abs(drift) > SYNC_SEEK_THRESHOLD_SECS) {
         this.#startBufferedAt(targetSecs, 1);
-      } else if (drift > 0) {
-        const behind = position < targetSecs;
-        const rate = behind ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-        if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
-        this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate };
-      } else if (this.#anchor?.rate !== 1) {
-        if (this.#bufferSource) this.#bufferSource.playbackRate.value = 1;
-        this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate: 1 };
+      } else {
+        const current = this.#anchor?.rate ?? 1;
+        const rate = rateForDrift(drift, current);
+        if (rate !== current) {
+          if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
+          this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate };
+        }
       }
       return;
     }
@@ -293,15 +343,7 @@ export class TrackPlayer {
     if (entry.pausedAt != null) {
       el.pause();
     }
-    const drift = Math.abs(el.currentTime - targetSecs);
-    if (drift > SYNC_SEEK_THRESHOLD_SECS) {
-      el.currentTime = targetSecs;
-      el.playbackRate = 1;
-    } else if (drift > 0) {
-      el.playbackRate = el.currentTime < targetSecs ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-    } else {
-      el.playbackRate = 1;
-    }
+    syncElementPosition(el, targetSecs);
     if (entry.pausedAt == null) {
       void el.play();
     }
