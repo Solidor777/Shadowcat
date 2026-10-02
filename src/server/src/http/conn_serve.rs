@@ -53,9 +53,11 @@
 //! closes a connection whose peer stops acknowledging pings, and hyper has no idle timeout, so
 //! [`ConnLimits::h2_idle`] is enforced here from the in-flight count (see the `live` module).
 
+mod egress;
 mod kill;
 mod live;
 mod pruned;
+mod stream_exec;
 
 use std::future::Future;
 use std::io;
@@ -72,7 +74,7 @@ use axum::{Extension, Router};
 use futures_util::FutureExt;
 use hyper::body::Incoming;
 use hyper::server::conn::{http1, http2};
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
@@ -81,9 +83,11 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use tower::{Layer, ServiceExt};
 
+use self::egress::StallCounters;
 use self::kill::{ConnKill, KillSignal};
 pub use self::live::ConnLease;
 use self::live::{idle_for, LeaseService, LiveState};
+use self::stream_exec::StreamExec;
 use crate::http::peer_slots::PeerSlots;
 use crate::tls::ConnMeta;
 
@@ -208,6 +212,24 @@ pub const ACCEPT_ERROR_PAUSE: Duration = Duration::from_secs(1);
 /// so a slice is one frame.
 const EGRESS_FLOOR_BYTES: usize = 16 * 1024;
 
+/// How long a peer may return no flow-control credit, or a socket accept nothing, before a response
+/// is cut, and how long one WebSocket send may stay pending ([`crate::ws::bounded_sink`]). Not below
+/// `h2_ping_interval + h2_ping_timeout` (50 s), so a peer that is merely slow to acknowledge pings
+/// is ended by keep-alive rather than by a stall cut; it equals the default `h2_idle`. Those two
+/// constraints bind the default only: an operator who sets the window is not bound by them.
+pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The HTTP/2 send buffer per stream, in bytes (`http2::Builder::max_send_buf_size`): how much
+/// response data h2 queues for one stream beyond what the peer's window has let out. Bounds the
+/// body bytes polled ahead of an unread peer to this plus one chunk, and the DATA still queued
+/// behind a stalled window when a body has ended. Chosen over hyper's 400 KiB default for that
+/// bound (about a fifth of the memory a stalled peer can pin per stream), and kept above
+/// [`EGRESS_FLOOR_BYTES`] so a stream always has room to queue one whole chunk.
+const H2_SEND_BUF_BYTES: usize = 64 * 1024;
+
+// A buffer smaller than one chunk would make every chunk wait for credit it cannot be granted.
+const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_FLOOR_BYTES);
+
 /// Time bounds applied to every served connection.
 ///
 /// # Examples
@@ -243,6 +265,12 @@ pub struct ConnLimits {
     /// stopping one host from holding the server. Trusted proxies and loopback peers are exempt
     /// (`Config::is_cap_exempt`) and stay bound by [`ConnLimits::max_live`].
     pub max_live_per_peer: u32,
+    /// How long a response may make no progress before it is cut: an HTTP/2 stream whose pending
+    /// chunk the peer returns no flow-control credit for is reset (its connection, other streams
+    /// and tunnels are untouched). Checked four times per window (never less often than every
+    /// millisecond), so a cut lands between the window and the window plus one tick after the last
+    /// progress.
+    pub egress_window: Duration,
 }
 
 impl Default for ConnLimits {
@@ -255,6 +283,7 @@ impl Default for ConnLimits {
             drain_timeout: crate::http::SHUTDOWN_DRAIN_TIMEOUT,
             max_live: 2048,
             max_live_per_peer: 256,
+            egress_window: PEER_STALL_TIMEOUT,
         }
     }
 }
@@ -286,6 +315,7 @@ pub enum ServeEnd {
 ///
 /// let clean = DrainReport::default();
 /// assert_eq!((clean.killed, clean.aborted, clean.panicked, clean.dropped), (0, 0, 0, 0));
+/// assert_eq!(clean.stall_cuts.stream, 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DrainReport {
@@ -303,6 +333,25 @@ pub struct DrainReport {
     /// their IO was failed, for any reason. A connection ends by itself when its IO errors, so a
     /// nonzero count is a defect.
     pub dropped: usize,
+    /// Responses cut for making no progress, by the bound that cut them, over the serve loop's
+    /// life.
+    pub stall_cuts: StallCuts,
+}
+
+/// How many responses each egress bound cut. One field per bound; a cut increments exactly one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::conn_serve::StallCuts;
+///
+/// assert_eq!(StallCuts::default().stream, 0);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StallCuts {
+    /// HTTP/2 streams reset because the peer returned no flow-control credit for their pending
+    /// chunk for [`ConnLimits::egress_window`]. The connection stayed open.
+    pub stream: usize,
 }
 
 /// What [`serve_router`] returns.
@@ -344,6 +393,17 @@ pub const KILL_GRACE: Duration = Duration::from_secs(2);
 /// Covers the scheduling delay between the end of [`KILL_GRACE`] and the connection task's
 /// completion being observed by the serve loop's join. Chosen, not measured.
 const ABORT_MARGIN: Duration = Duration::from_secs(1);
+
+/// The shortest interval of the egress sampler: a one-millisecond floor keeps a tiny window from
+/// building a zero-period timer, which `tokio::time::interval` rejects with a panic.
+const MIN_TICK: Duration = Duration::from_millis(1);
+
+/// The egress sampler's period for `window`: a quarter of it, never below [`MIN_TICK`]. Four ticks
+/// per window bound how late a cut can land past the window to one tick. The one place the period
+/// is derived, so the floor holds for any caller-built [`ConnLimits`].
+fn egress_tick(window: Duration) -> Duration {
+    (window / 4).max(MIN_TICK)
+}
 
 /// Records the result of reaping one connection task: a panic is an error-level event, and a
 /// cancelled join is an abort (only `drain_tasks`' `abort_all` cancels a connection task).
@@ -445,6 +505,7 @@ where
     );
     let kill = KillSignal::new();
     let dropped = Arc::new(AtomicUsize::new(0));
+    let stalls = Arc::new(StallCounters::default());
     let mut tasks = JoinSet::new();
     let mut drain = DrainReport::default();
     // When accepting resumes after an accept error. Held here, not in the accept future, because
@@ -487,7 +548,7 @@ where
             io,
             meta,
             app.clone(),
-            LiveState::new(slot),
+            LiveState::new(slot, stalls.clone()),
             Ending {
                 signal_tx: &signal_tx,
                 kill: &kill,
@@ -512,6 +573,8 @@ where
     )
     .await;
     drain.dropped = dropped.load(Ordering::Relaxed);
+    drain.stall_cuts = stalls.snapshot();
+    tracing::info!(?end, ?drain, "connection serve loop ended");
     ServeOutcome {
         end,
         drain_deadline,
@@ -529,19 +592,36 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// What `drive` watches besides the connection itself: the kill switch it answers, and the state
+/// its sampler scans.
+struct Watch {
+    /// Fired by the drain deadline or a per-connection cut; every IO method of the connection
+    /// answers it with an error.
+    kill: Arc<ConnKill>,
+    /// The connection's liveness state, whose stream markers the sampler scans.
+    live: Arc<LiveState>,
+    /// [`ConnLimits::egress_window`].
+    egress_window: Duration,
+}
+
 /// Drives one hyper connection to completion, calling `graceful` once when `signal_tx` closes or
 /// `idle` resolves.
 ///
-/// The one force-end path: when `kill` fires the connection's IO already fails (the `kill`
+/// The one force-end path: when the kill switch fires the connection's IO already fails (the `kill`
 /// module), so the connection normally ends by itself; if it has not ended [`KILL_GRACE`] later it
 /// is dropped and counted in `dropped`. Every reason takes this path, so the drain deadline and a
 /// per-connection cut end a connection identically.
+///
+/// The egress sampler is an arm of this one `select!`: every [`egress_tick`] it scans the stream
+/// markers, and the loop then re-polls `conn`, which retries a parked write (hyper's HTTP/1 and
+/// HTTP/2 flush paths both retry on a poll), so a parked writer is re-observed each tick with no
+/// other wake source.
 async fn drive<C>(
     conn: C,
     signal_tx: watch::Sender<()>,
     idle: impl Future<Output = ()>,
     graceful: impl Fn(Pin<&mut C>),
-    kill: Arc<ConnKill>,
+    watch: Watch,
     dropped: &AtomicUsize,
 ) where
     C: Future<Output = Result<(), hyper::Error>>,
@@ -549,7 +629,9 @@ async fn drive<C>(
     let mut conn = pin!(conn);
     let mut signal_closed = pin!(signal_tx.closed().fuse());
     let mut idle = pin!(idle.fuse());
-    let mut killed = pin!(kill.fired());
+    let mut killed = pin!(watch.kill.fired());
+    let mut ticker = tokio::time::interval(egress_tick(watch.egress_window));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             result = conn.as_mut() => {
@@ -577,6 +659,9 @@ async fn drive<C>(
             }
             _ = &mut signal_closed => graceful(conn.as_mut()),
             _ = &mut idle => graceful(conn.as_mut()),
+            _ = ticker.tick() => {
+                watch.live.cut_stalled_streams(Instant::now(), watch.egress_window);
+            }
         }
     }
 }
@@ -721,7 +806,11 @@ fn spawn_connection<I: ServeIo>(
 ) {
     let h2 = io.is_h2();
     let kill = ending.kill.connection();
-    let drive_kill = kill.clone();
+    let watch = Watch {
+        kill: kill.clone(),
+        live: live.clone(),
+        egress_window: limits.egress_window,
+    };
     let dropped = ending.dropped.clone();
     let service = TowerToHyperService::new(
         LeaseService::new(Extension(ConnectInfo(meta)).layer(app), live.clone())
@@ -734,9 +823,10 @@ fn spawn_connection<I: ServeIo>(
             match preface {
                 Ok(io) => {
                     // Extended CONNECT carries WebSockets over HTTP/2 (RFC 8441).
-                    let conn = http2::Builder::new(TokioExecutor::new())
+                    let conn = http2::Builder::new(StreamExec)
                         .timer(TokioTimer::new())
                         .enable_connect_protocol()
+                        .max_send_buf_size(H2_SEND_BUF_BYTES)
                         .keep_alive_interval(Some(limits.h2_ping_interval))
                         .keep_alive_timeout(limits.h2_ping_timeout)
                         .serve_connection(TokioIo::new(io), service);
@@ -746,7 +836,7 @@ fn spawn_connection<I: ServeIo>(
                         signal_tx,
                         idle,
                         |c| c.graceful_shutdown(),
-                        drive_kill,
+                        watch,
                         &dropped,
                     )
                     .await;
@@ -770,7 +860,7 @@ fn spawn_connection<I: ServeIo>(
                 signal_tx,
                 std::future::pending(),
                 |c| c.graceful_shutdown(),
-                drive_kill,
+                watch,
                 &dropped,
             )
             .await;

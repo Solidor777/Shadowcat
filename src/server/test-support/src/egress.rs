@@ -1,0 +1,251 @@
+//! Fixtures for the egress no-progress tests: a serve loop over the real router plus routes that
+//! stall in controlled ways, and an HTTP/2 client whose receive windows and read pace the test
+//! sets, so a stall is driven by the credit the client returns rather than by a sleep.
+
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::{Body, Bytes};
+use axum::extract::Query;
+use axum::routing::get;
+use shadowcat::http::conn_serve::{serve_router, ConnLimits, DrainReport, ServeEnd, ServeOutcome};
+use shadowcat::http::router;
+use shadowcat::ws::WsState;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
+
+use crate::h2_session::{login, seeded_state};
+use crate::h2c::{h2c_connect, EndHandle, H2cSource};
+use crate::tls::{H2Client, H2Pipe};
+
+/// The size of one chunk the `/endless` route produces.
+pub const ENDLESS_CHUNK: usize = 16 * 1024;
+
+/// A serve loop over the real router plus the egress routes, over HTTP/2 with prior knowledge.
+///
+/// Routes beyond the application's: `/endless` produces [`ENDLESS_CHUNK`]-byte chunks forever
+/// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/sparse` produces
+/// `chunks` chunks of 100 bytes, `gap_ms` milliseconds apart (query parameters).
+pub struct EgressServer {
+    /// The bound address.
+    pub addr: SocketAddr,
+    /// The session registry.
+    pub ws: WsState,
+    /// The seeded world a tunnel joins.
+    pub world: uuid::Uuid,
+    /// Bytes `/endless` has produced.
+    pub produced: Arc<AtomicUsize>,
+    /// Keeps the source open: dropping it ends the source.
+    _end: EndHandle,
+    /// Resolves the shutdown future.
+    shutdown: oneshot::Sender<()>,
+    /// The serve loop.
+    task: JoinHandle<ServeOutcome>,
+}
+
+impl EgressServer {
+    /// Serves with `limits`. The drain bound is whatever `limits` carries.
+    pub async fn start(limits: ConnLimits) -> Self {
+        let (state, world) = seeded_state().await;
+        let ws = state.ws.clone();
+        let hook_ws = ws.clone();
+        let produced = Arc::new(AtomicUsize::new(0));
+        let counter = produced.clone();
+        let app = router(state)
+            .await
+            .route(
+                "/endless",
+                get(move || {
+                    let counter = counter.clone();
+                    async move {
+                        Body::from_stream(futures_util::stream::repeat_with(move || {
+                            counter.fetch_add(ENDLESS_CHUNK, Ordering::SeqCst);
+                            Ok::<_, Infallible>(Bytes::from(vec![0u8; ENDLESS_CHUNK]))
+                        }))
+                    }
+                }),
+            )
+            .route("/empty", get(|| async { Body::empty() }))
+            .route(
+                "/sparse",
+                get(|Query(q): Query<HashMap<String, u64>>| async move {
+                    let chunks = q.get("chunks").copied().unwrap_or(1);
+                    let gap = Duration::from_millis(q.get("gap_ms").copied().unwrap_or(0));
+                    Body::from_stream(futures_util::stream::unfold(0u64, move |sent| async move {
+                        if sent == chunks {
+                            return None;
+                        }
+                        tokio::time::sleep(gap).await;
+                        Some((Ok::<_, Infallible>(Bytes::from(vec![1u8; 100])), sent + 1))
+                    }))
+                }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (source, end) = H2cSource::new(listener);
+        let (shutdown, shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(serve_router(
+            source,
+            app,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            limits,
+            move || hook_ws.trigger_shutdown(),
+        ));
+        Self {
+            addr,
+            ws,
+            world,
+            produced,
+            _end: end,
+            shutdown,
+            task,
+        }
+    }
+
+    /// Shuts the loop down, waits for it to return, and returns its drain report. Asserts the loop
+    /// ended by shutdown, not by its source ending.
+    pub async fn finish(self) -> DrainReport {
+        self.shutdown.send(()).unwrap();
+        let out = tokio::time::timeout(Duration::from_secs(30), self.task)
+            .await
+            .expect("the serve loop never returned")
+            .unwrap();
+        assert_eq!(out.end, ServeEnd::Shutdown);
+        out.drain
+    }
+
+    /// Opens a WebSocket tunnel on `client`'s connection (logging in over a separate connection)
+    /// and waits until the session is registered.
+    pub async fn open_tunnel(&self, client: &mut H2Client) -> H2Pipe {
+        let mut login_client = h2c_connect(self.addr, h2::client::Builder::new())
+            .await
+            .unwrap();
+        let cookie = login(&mut login_client).await;
+        let (status, tunnel) = client
+            .websocket(
+                &self.addr.to_string(),
+                &format!("/ws?world={}", self.world),
+                &cookie,
+            )
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        let ws = self.ws.clone();
+        tokio::time::timeout(Duration::from_secs(5), async move {
+            while ws.live_connection_count() == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the session never registered");
+        tunnel
+    }
+
+    /// Connects an HTTP/2 client with the given receive windows.
+    pub async fn connect(&self, stream_window: u32, connection_window: u32) -> H2Client {
+        let mut builder = h2::client::Builder::new();
+        builder
+            .initial_window_size(stream_window)
+            .initial_connection_window_size(connection_window)
+            .enable_push(false);
+        h2c_connect(self.addr, builder).await.unwrap()
+    }
+}
+
+/// Sends `GET path` on `client` and waits for the response head.
+pub async fn get_path(
+    client: &mut H2Client,
+    addr: SocketAddr,
+    path: &str,
+) -> http::Response<h2::RecvStream> {
+    client.sender = client.sender.clone().ready().await.unwrap();
+    let req = http::Request::get(format!("http://{addr}{path}"))
+        .body(())
+        .unwrap();
+    let (response, _) = client.sender.send_request(req, true).unwrap();
+    response.await.unwrap()
+}
+
+/// How a paced read ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PacedEnd {
+    /// The server reset the stream with this reason (a stall cut is `CANCEL`).
+    Reset(h2::Reason),
+    /// The response body ended.
+    Ended,
+    /// The stream was still open at the deadline.
+    Deadline,
+}
+
+/// What a paced read observed.
+#[derive(Debug, Clone)]
+pub struct Paced {
+    /// How the read ended.
+    pub end: PacedEnd,
+    /// Body bytes read.
+    pub got: u64,
+    /// Time from the start of the read to its end.
+    pub elapsed: Duration,
+}
+
+/// Reads `body` at about `bytes_per_sec`, returning each chunk's capacity to the sender as it is
+/// read and sleeping `len / bytes_per_sec` per chunk, until the body ends, the server resets the
+/// stream, or `limit` elapses.
+pub async fn paced_read(body: &mut h2::RecvStream, bytes_per_sec: u64, limit: Duration) -> Paced {
+    let start = Instant::now();
+    let mut got = 0u64;
+    let end = loop {
+        if start.elapsed() >= limit {
+            break PacedEnd::Deadline;
+        }
+        match tokio::time::timeout(Duration::from_millis(200), body.data()).await {
+            Ok(Some(Ok(chunk))) => {
+                got += chunk.len() as u64;
+                let _ = body.flow_control().release_capacity(chunk.len());
+                tokio::time::sleep(Duration::from_secs_f64(
+                    chunk.len() as f64 / bytes_per_sec as f64,
+                ))
+                .await;
+            }
+            Ok(Some(Err(e))) => {
+                break PacedEnd::Reset(e.reason().unwrap_or(h2::Reason::INTERNAL_ERROR))
+            }
+            Ok(None) => break PacedEnd::Ended,
+            Err(_) => {}
+        }
+    };
+    Paced {
+        end,
+        got,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// Reads `body` without returning any capacity, until the stream ends or is reset, or `limit`
+/// elapses. Returns how it ended and how long it took.
+pub async fn read_unreleased(body: &mut h2::RecvStream, limit: Duration) -> (PacedEnd, Duration) {
+    let start = Instant::now();
+    let end = loop {
+        let left = limit.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            break PacedEnd::Deadline;
+        }
+        match tokio::time::timeout(left, body.data()).await {
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => {
+                break PacedEnd::Reset(e.reason().unwrap_or(h2::Reason::INTERNAL_ERROR))
+            }
+            Ok(None) => break PacedEnd::Ended,
+            Err(_) => break PacedEnd::Deadline,
+        }
+    };
+    (end, start.elapsed())
+}

@@ -13,6 +13,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
 use super::kill::KillReason;
+use super::live::stalled_body;
+use super::stream_exec::{scoped, StreamExec};
 use super::*;
 
 /// Short bounds so a stall is observable in well under a second.
@@ -1048,6 +1050,17 @@ impl Drop for DropFlag {
     }
 }
 
+/// A connection's watch state: `kill`, fresh liveness state over a fresh slot, and `window`.
+fn watch_for(kill: Arc<ConnKill>, window: Duration) -> Watch {
+    let slots = Arc::new(PeerSlots::new(4, 4));
+    let slot = slots.admit("192.0.2.1".parse().unwrap(), false).unwrap();
+    Watch {
+        kill,
+        live: LiveState::new(slot, Arc::new(StallCounters::default())),
+        egress_window: window,
+    }
+}
+
 /// Runs `drive` over `conn` on its own task and returns the handle, with the `signal_tx` receiver
 /// that keeps the graceful signal from closing.
 fn start_drive(
@@ -1056,13 +1069,14 @@ fn start_drive(
     dropped: Arc<AtomicUsize>,
 ) -> (tokio::task::JoinHandle<()>, watch::Receiver<()>) {
     let (signal_tx, signal_rx) = watch::channel(());
+    let watch = watch_for(kill, ConnLimits::default().egress_window);
     let task = tokio::spawn(async move {
         drive(
             conn,
             signal_tx,
             std::future::pending(),
             |_| {},
-            kill,
+            watch,
             &dropped,
         )
         .await;
@@ -1308,4 +1322,298 @@ fn the_pause_decision_table_ignores_only_the_connection_level_kinds() {
     for kind in [io::ErrorKind::Other, io::ErrorKind::OutOfMemory] {
         assert_eq!(pause_for(kind), Some(ACCEPT_ERROR_PAUSE), "{kind:?}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The egress sampler tick and the stream unit it drives
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_sampler_period_is_a_quarter_of_the_window_and_never_below_the_floor() {
+    assert_eq!(
+        egress_tick(Duration::from_secs(1)),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        egress_tick(Duration::from_secs(60)),
+        Duration::from_secs(15)
+    );
+    assert_eq!(egress_tick(Duration::from_millis(4)), MIN_TICK);
+    assert_eq!(egress_tick(Duration::from_nanos(1)), MIN_TICK);
+    assert_eq!(egress_tick(Duration::ZERO), MIN_TICK);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_zero_window_does_not_build_a_zero_period_timer() {
+    // `tokio::time::interval` panics on a zero period; the floor in `egress_tick` is what keeps a
+    // caller-built `ConnLimits { egress_window: ZERO, .. }` from reaching it.
+    let kill = ConnKill::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let (signal_tx, _keep) = watch::channel(());
+    let watch = watch_for(kill.clone(), Duration::ZERO);
+    let task = tokio::spawn(async move {
+        drive(
+            std::future::pending::<Result<(), hyper::Error>>(),
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &dropped,
+        )
+        .await;
+    });
+    settle(Duration::from_millis(10)).await;
+    assert!(!task.is_finished());
+    kill.fire(KillReason::Drain);
+    timeout(KILL_GRACE * 2, task).await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn the_sampler_cuts_a_stalled_stream_between_the_window_and_one_tick_after_it() {
+    let window = Duration::from_secs(8);
+    let tick = egress_tick(window);
+    let kill = ConnKill::new();
+    let watch = watch_for(kill, window);
+    let live = watch.live.clone();
+    let (signal_tx, _keep) = watch::channel(());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn(async move {
+        drive(
+            std::future::pending::<Result<(), hyper::Error>>(),
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &dropped,
+        )
+        .await;
+    });
+
+    // A response stream delivers one chunk and then waits on the peer.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (cut_tx, cut_rx) = tokio::sync::oneshot::channel();
+    let l = live.clone();
+    let (cut, run) = scoped(async move {
+        let _body = stalled_body(&l).await;
+        let _ = ready_tx.send(());
+        std::future::pending::<()>().await;
+    });
+    let spawned_cut = cut.clone();
+    tokio::spawn(async move {
+        run.await;
+        let _ = cut_tx.send(());
+    });
+    ready_rx.await.unwrap();
+    let delivered = Instant::now();
+
+    let cut_at = timeout(window + tick * 2, async {
+        cut_rx.await.unwrap();
+        Instant::now()
+    })
+    .await
+    .expect("the sampler never cut the stalled stream");
+    let age = cut_at - delivered;
+    assert!(
+        age >= window,
+        "cut after {age:?}, before the window {window:?}"
+    );
+    assert!(
+        age <= window + tick,
+        "cut after {age:?}, later than the window plus one tick {:?}",
+        window + tick
+    );
+    assert!(spawned_cut.has_fired());
+    assert_eq!(live.stall_counts().stream, 1);
+    task.abort();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_stream_through_the_executor_is_dropped_by_the_samplers_cut() {
+    let window = Duration::from_secs(8);
+    let kill = ConnKill::new();
+    let watch = watch_for(kill, window);
+    let live = watch.live.clone();
+    let (signal_tx, _keep) = watch::channel(());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let task = tokio::spawn(async move {
+        drive(
+            std::future::pending::<Result<(), hyper::Error>>(),
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &dropped,
+        )
+        .await;
+    });
+    let was_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = DropFlag(was_dropped.clone());
+    let l = live.clone();
+    StreamExec.execute_test(async move {
+        let _flag = flag;
+        let _body = stalled_body(&l).await;
+        std::future::pending::<()>().await;
+    });
+    settle(window + egress_tick(window) * 2).await;
+    assert!(
+        was_dropped.load(Ordering::SeqCst),
+        "the sampler did not cut the stalled stream's task"
+    );
+    assert_eq!(live.stall_counts().stream, 1);
+    task.abort();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The HTTP/2 send buffer
+// ---------------------------------------------------------------------------------------------
+
+/// A duplex stream that reports ALPN `h2`.
+struct H2Duplex(tokio::io::DuplexStream);
+
+impl AsyncRead for H2Duplex {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for H2Duplex {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+impl ServeIo for H2Duplex {
+    fn is_h2(&self) -> bool {
+        true
+    }
+}
+
+/// A source that hands out one connection and then parks.
+struct OneConnection(Option<(H2Duplex, ConnMeta)>);
+
+impl ConnSource for OneConnection {
+    type Io = H2Duplex;
+
+    async fn accept(&mut self) -> io::Result<Option<(H2Duplex, ConnMeta)>> {
+        match self.0.take() {
+            Some(conn) => Ok(Some(conn)),
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// One HTTP/2 frame header and payload.
+fn h2_frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+    let len = payload.len() as u32;
+    let mut out = len.to_be_bytes()[1..].to_vec();
+    out.push(kind);
+    out.push(flags);
+    out.extend_from_slice(&stream.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+#[tokio::test]
+async fn the_send_buffer_bounds_what_hyper_queues_behind_a_socket_that_accepts_nothing() {
+    use std::sync::atomic::AtomicU64;
+
+    // The socket is a duplex pipe of DUPLEX bytes that its peer never reads, so the server's
+    // writer parks once the pipe is full. The peer's windows are far larger than anything the
+    // route produces, so credit never limits: what limits hyper is h2's send buffer, which holds
+    // the unsent backlog. Derived bounds on the bytes the route was polled for:
+    //   at least the send buffer (it must fill), and
+    //   at most the send buffer, the one chunk hyper holds waiting for capacity, the one frame the
+    //   codec holds being written, and what the pipe took (with its frame headers).
+    const DUPLEX: usize = 8 * 1024;
+    const FRAME_HEADER: usize = 9;
+    let lower = H2_SEND_BUF_BYTES;
+    let upper = H2_SEND_BUF_BYTES + 2 * (EGRESS_FLOOR_BYTES + FRAME_HEADER) + DUPLEX;
+    assert!(
+        upper < 256 * 1024,
+        "the derivation must sit far below hyper's 400 KiB default"
+    );
+
+    let polled = Arc::new(AtomicU64::new(0));
+    let counter = polled.clone();
+    let app = Router::new().route(
+        "/endless",
+        get(move || {
+            let counter = counter.clone();
+            async move {
+                axum::body::Body::from_stream(futures_util::stream::repeat_with(move || {
+                    counter.fetch_add(EGRESS_FLOOR_BYTES as u64, Ordering::SeqCst);
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![
+                        0u8;
+                        EGRESS_FLOOR_BYTES
+                    ]))
+                }))
+            }
+        }),
+    );
+    let (server_end, mut peer) = tokio::io::duplex(DUPLEX);
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(serve_router(
+        OneConnection(Some((
+            H2Duplex(server_end),
+            ConnMeta::plain("192.0.2.1:4000".parse().unwrap()),
+        ))),
+        app,
+        async move {
+            let _ = rx.await;
+        },
+        ConnLimits {
+            drain_timeout: Duration::from_millis(300),
+            ..ConnLimits::default()
+        },
+        || {},
+    ));
+
+    // Preface; SETTINGS with INITIAL_WINDOW_SIZE (id 4) = 2^31 - 1; a connection WINDOW_UPDATE;
+    // HEADERS (END_STREAM | END_HEADERS) for GET /endless. Then the peer never reads.
+    let mut open = H2_OPEN[..H2_PREFACE_LEN].to_vec();
+    open.extend(h2_frame(0x4, 0, 0, &[0, 4, 0x7f, 0xff, 0xff, 0xff]));
+    open.extend(h2_frame(0x8, 0, 0, &0x7fff_0000u32.to_be_bytes()));
+    let mut block = vec![0x82, 0x86, 0x04, 0x08];
+    block.extend_from_slice(b"/endless");
+    open.extend(h2_frame(0x1, 0x5, 1, &block));
+    peer.write_all(&open).await.unwrap();
+
+    // Quiescent once the count has not moved for several settle intervals.
+    let mut last = u64::MAX;
+    let mut steady = 0;
+    while steady < 6 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let now = polled.load(Ordering::SeqCst);
+        steady = if now == last { steady + 1 } else { 0 };
+        last = now;
+    }
+    assert!(
+        last >= lower as u64,
+        "hyper polled {last} bytes, fewer than the send buffer {lower}"
+    );
+    assert!(
+        last <= upper as u64,
+        "hyper polled {last} bytes, more than the send buffer allows ({upper})"
+    );
+    tx.send(()).unwrap();
+    timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap();
 }

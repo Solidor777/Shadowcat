@@ -33,8 +33,10 @@ pub const CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Longest one send may stay pending before the session is ended. Chosen, not measured: above any
 /// single frame's transfer time on a slow mobile link (a frame is at most the wire message cap),
-/// below `PING_TIMEOUT` (90 s) so a stalled peer is dropped before the heartbeat would be.
-pub const SEND_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// below `PING_TIMEOUT` (90 s) so a stalled peer is dropped before the heartbeat would be. The same
+/// value as the response bound ([`crate::http::conn_serve::PEER_STALL_TIMEOUT`]), defined once
+/// there so the two cannot be tuned apart.
+pub const SEND_STALL_TIMEOUT: Duration = crate::http::conn_serve::PEER_STALL_TIMEOUT;
 
 /// Why a bounded send failed.
 ///
