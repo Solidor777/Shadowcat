@@ -5,6 +5,12 @@
 /** The test file that runs only under the `lan-plain-http` project. */
 export const LAN_SPEC = /lan-plain-http\.spec\.ts$/;
 
+/** The media-range spec. It runs only under `media-range-loopback`, against its own server started
+ * with a short `egress_window_secs`, so a response the media element leaves idle between its reads
+ * is cut within seconds; the shared loopback server never runs with that window, so no other spec
+ * can see a spurious cut. */
+export const MEDIA_RANGE_SPEC = /media-range\.spec\.ts$/;
+
 /** Specs that run under the three `https-*` browser projects (not the upgrade matrix). */
 export const HTTPS_SPECS = /https-(?!upgrade)[a-z0-9-]+\.spec\.ts$/;
 

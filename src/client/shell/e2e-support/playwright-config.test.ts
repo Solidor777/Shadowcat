@@ -4,7 +4,7 @@ import type { NetworkInterfaceInfo } from "node:os";
 import type { PlaywrightTestConfig } from "@playwright/test";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ANY_HTTPS_SPEC, HTTPS_SPECS, LAN_SPEC, UPGRADE_CHROMIUM_SPEC, UPGRADE_SPEC } from "./spec-matchers";
+import { ANY_HTTPS_SPEC, HTTPS_SPECS, LAN_SPEC, MEDIA_RANGE_SPEC, UPGRADE_CHROMIUM_SPEC, UPGRADE_SPEC } from "./spec-matchers";
 
 // Addresses are from the RFC 5737 documentation range 192.0.2.0/24.
 
@@ -45,11 +45,11 @@ afterEach(() => {
 });
 
 describe("playwright.config LAN address handling", () => {
-  it("keeps the loopback and lan-plain-http projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
+  it("keeps the loopback, media-range-loopback and lan-plain-http projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const config = await loadConfig(LOOPBACK_ONLY, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
-    expect(names(config)).toEqual(["loopback", "lan-plain-http"]);
-    expect(config.webServer).toHaveLength(2);
+    expect(names(config)).toEqual(["loopback", "media-range-loopback", "lan-plain-http"]);
+    expect(config.webServer).toHaveLength(3);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain("HTTPS e2e projects OMITTED");
   });
@@ -62,10 +62,26 @@ describe("playwright.config LAN address handling", () => {
   it("adds the HTTPS projects and their server when the host has a LAN address", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const all = names(config);
-    expect(all.slice(0, 2)).toEqual(["loopback", "lan-plain-http"]);
+    expect(all.slice(0, 3)).toEqual(["loopback", "media-range-loopback", "lan-plain-http"]);
     expect(all).toContain("https-chromium");
     expect(all.some((n) => n.startsWith("https-upgrade"))).toBe(true);
-    expect(config.webServer).toHaveLength(3);
+    expect(config.webServer).toHaveLength(4);
+  });
+
+  it("gives the media-range project its own server with the short egress window, and no other server has one", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const project = (config.projects ?? []).find((p) => p.name === "media-range-loopback");
+    const baseURL = String(project?.use?.baseURL);
+    const servers = [config.webServer ?? []].flat();
+    const windowed = servers.filter((s) => s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
+    expect(windowed).toHaveLength(1);
+    expect(windowed[0].env?.SHADOWCAT_EGRESS_WINDOW_SECS).toBe("3");
+    // The project targets exactly that server's bind address and nothing else's.
+    const bind = String(windowed[0].env?.SHADOWCAT_BIND);
+    expect(baseURL).toBe(`http://${bind}`);
+    for (const other of (config.projects ?? []).filter((p) => p.name !== "media-range-loopback")) {
+      expect(String(other.use?.baseURL ?? "")).not.toBe(baseURL);
+    }
   });
 });
 
@@ -167,6 +183,7 @@ describe("spec-to-project assignment", () => {
     for (const spec of specs) {
       let expected: string[];
       if (LAN_SPEC.test(spec)) expected = ["lan-plain-http"];
+      else if (MEDIA_RANGE_SPEC.test(spec)) expected = ["media-range-loopback"];
       else if (HTTPS_SPECS.test(spec)) expected = projectsMatching(config, HTTPS_SPECS);
       else if (UPGRADE_CHROMIUM_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_CHROMIUM_SPEC);
       else if (UPGRADE_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_SPEC);

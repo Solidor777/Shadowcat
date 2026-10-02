@@ -1,35 +1,11 @@
 import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { buildSilentWav } from "../e2e-support/wav";
 
-/** A minimal valid WAV (PCM16, mono, 8kHz, ~0.2s of silence) — small enough to keep the upload
- * fast, long enough for `symphonia`'s WAV decoder to report a non-zero `duration_ms` and for the
- * transport handler's elapsed-duration gate (`audio::transport::handle_transport`) to have
- * something to compare against. Mirrors the synthetic-WAV builder `process::audio`'s own
- * Rust-side tests use (`sample_rate`, `data`/`fmt ` chunk layout), reimplemented in JS since this
- * runs in the Playwright/Node process, not the server.
- * @param seconds Duration of silence to encode.
- * @returns The WAV file bytes.
- */
-function buildSilentWav(seconds: number): Buffer {
-  const sampleRate = 8000;
-  const numSamples = Math.round(sampleRate * seconds);
-  const dataSize = numSamples * 2; // 16-bit mono
-  const buf = Buffer.alloc(44 + dataSize);
-  buf.write("RIFF", 0, "ascii");
-  buf.writeUInt32LE(36 + dataSize, 4);
-  buf.write("WAVE", 8, "ascii");
-  buf.write("fmt ", 12, "ascii");
-  buf.writeUInt32LE(16, 16); // fmt chunk size
-  buf.writeUInt16LE(1, 20); // PCM
-  buf.writeUInt16LE(1, 22); // mono
-  buf.writeUInt32LE(sampleRate, 24);
-  buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
-  buf.writeUInt16LE(2, 32); // block align
-  buf.writeUInt16LE(16, 34); // bits per sample
-  buf.write("data", 36, "ascii");
-  buf.writeUInt32LE(dataSize, 40);
-  // Remaining bytes are already zero (`Buffer.alloc` zero-fills) — silence.
-  return buf;
-}
+/** The short silent WAV the upload tests use: PCM16, mono, 8kHz, about 0.2s — small enough to keep
+ * the upload fast, long enough for `symphonia`'s WAV decoder to report a non-zero `duration_ms` and
+ * for the transport handler's elapsed-duration gate (`audio::transport::handle_transport`) to have
+ * something to compare against. */
+const SHORT_WAV = buildSilentWav({ seconds: 0.2, sampleRate: 8000, channels: 1 });
 
 // Dual-session (GM + player), same rationale `combat-tracker.spec.ts`/`tables.spec.ts` state for
 // their own dual-session assertions: the server is the sole authority for what each recipient's
@@ -75,7 +51,7 @@ test("audio: GM uploads a track, creates a playlist, plays it, and a player sees
     await openPanel(gm, "asset-browser:panel");
     await gm
       .getByTestId("asset-upload-input")
-      .setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: buildSilentWav(0.2) });
+      .setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: SHORT_WAV });
     const tile = gm.getByTestId("asset-tile");
     await expect(tile).toHaveCount(1);
 

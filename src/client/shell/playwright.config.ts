@@ -8,6 +8,7 @@ import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
   LAN_SPEC,
+  MEDIA_RANGE_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
 } from "./e2e-support/spec-matchers";
@@ -36,6 +37,15 @@ const LAN_PORT = 32000;
 /** Port of the test server the built-in-HTTPS projects target: bound beyond loopback with TLS on
  * its default (`auto`), so one port answers both `https://` and plain `http://`. */
 const HTTPS_PORT = 32001;
+
+/** Port of the loopback test server the `media-range-loopback` project targets: a server of its own
+ * because it runs with a short egress window, which no other spec may share. */
+const MEDIA_RANGE_PORT = 32002;
+
+/** The `egress_window_secs` the media-range server runs with (the real configuration key, set in
+ * the server's environment). Long enough for one browser read-ahead burst to finish, short enough
+ * that a response left idle across a real pause between bursts is cut inside the test's budget. */
+const MEDIA_RANGE_EGRESS_WINDOW_SECS = "3";
 
 /** The machine's real non-loopback IPv4 address. The HTTPS specs browse to it rather than to
  * loopback or a resolver-rule alias, because browsers treat loopback as potentially trustworthy
@@ -242,7 +252,14 @@ function httpsServer(ip: string) {
 export default defineConfig({
   testDir: "./e2e",
   projects: [
-    { name: "loopback", testIgnore: [LAN_SPEC, ...ANY_HTTPS_SPEC] },
+    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, ...ANY_HTTPS_SPEC] },
+    {
+      // Seeking and playing a long WAV through byte-range responses. Its own server runs the short
+      // egress window, so a response left idle across a media element's pause is really cut.
+      name: "media-range-loopback",
+      testMatch: MEDIA_RANGE_SPEC,
+      use: { baseURL: `http://127.0.0.1:${MEDIA_RANGE_PORT}` },
+    },
     {
       // Plain-HTTP LAN play: the served origin is not a secure context, so every
       // `[SecureContext]` browser API is absent and the browser itself decides which.
@@ -300,6 +317,18 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
       env: { ...SERVER_ENV, SHADOWCAT_BIND: `0.0.0.0:${LAN_PORT}` },
+    },
+    {
+      command: `"${bin}"`,
+      cwd: repoRoot,
+      url: `http://127.0.0.1:${MEDIA_RANGE_PORT}/health`,
+      timeout: 120_000,
+      reuseExistingServer: !process.env.CI,
+      env: {
+        ...SERVER_ENV,
+        SHADOWCAT_BIND: `127.0.0.1:${MEDIA_RANGE_PORT}`,
+        SHADOWCAT_EGRESS_WINDOW_SECS: MEDIA_RANGE_EGRESS_WINDOW_SECS,
+      },
     },
     ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP)]),
   ],

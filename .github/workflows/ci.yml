@@ -182,7 +182,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
       - run: pnpm --filter @shadowcat/shell e2e:build
-      - run: pnpm --filter @shadowcat/shell exec playwright test --project=loopback
+      - run: pnpm --filter @shadowcat/shell exec playwright test --project=loopback --project=media-range-loopback
       # The traces this uploads are the only forensic channel for a failure that
       # reproduces on the runner but not locally; `playwright.config.ts` retains
       # them on failure solely because this step collects them. `if: failure()`
