@@ -25,8 +25,12 @@ fn a_terminal_wire_event_removes_the_entry_and_nothing_re_creates_it() {
         let mut t = table(100);
         t.read_headers(1);
         match end {
-            0 => t.read_reset(1),
-            1 => t.write_ended(1),
+            0 => {
+                t.read_reset(1);
+            }
+            1 => {
+                t.write_ended(1);
+            }
             2 => {
                 t.write_headers_continue(1);
                 t.write_continuation_end(1);
@@ -395,4 +399,130 @@ fn a_goaway_purge_that_reaches_a_stream_past_open_trips_its_assertion() {
     t.read_headers(3);
     t.register_final(3);
     t.goaway(1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A tunnel's backlog against the wire
+// ---------------------------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::task::Wake;
+
+/// A waker that counts its wakes.
+struct Count(AtomicUsize);
+
+impl Wake for Count {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A counting waker and its count.
+fn counting() -> (Arc<Count>, Waker) {
+    let count = Arc::new(Count(AtomicUsize::new(0)));
+    (count.clone(), Waker::from(count))
+}
+
+#[test]
+fn a_tunnel_within_the_cap_of_the_wire_is_not_parked() {
+    let mut t = table(100);
+    t.read_headers(1);
+    let (count, waker) = counting();
+    assert_eq!(
+        t.backlog(1, 10_000, 10_000, &waker),
+        Backlog::Within,
+        "exactly the cap"
+    );
+    assert!(t.data_written(1, 5).is_none(), "nothing was parked");
+    assert_eq!(count.0.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_tunnel_over_the_cap_parks_its_waker_and_a_write_returns_it() {
+    let mut t = table(100);
+    t.read_headers(1);
+    let (_count, waker) = counting();
+    assert_eq!(t.backlog(1, 10_001, 10_000, &waker), Backlog::Over);
+    let parked = t
+        .data_written(1, 1)
+        .expect("the parked waker comes back with the write");
+    assert!(parked.will_wake(&waker));
+    assert!(t.data_written(1, 1).is_none(), "the waker is returned once");
+    assert_eq!(
+        t.backlog(1, 10_001, 10_000, &waker),
+        Backlog::Within,
+        "2 written, 9,999 ahead"
+    );
+}
+
+#[test]
+fn the_check_and_the_parking_are_one_step() {
+    // A write that lands between the application's read of the total and its parking would be
+    // lost if they were two steps; as one, a backlog that has already shrunk is never parked.
+    let mut t = table(100);
+    t.read_headers(1);
+    let (_count, waker) = counting();
+    t.data_written(1, 5_000);
+    assert_eq!(t.backlog(1, 15_000, 10_000, &waker), Backlog::Within);
+    assert!(
+        t.data_written(1, 1).is_none(),
+        "a Within answer parks nothing"
+    );
+}
+
+#[test]
+fn a_second_poll_by_the_same_task_keeps_one_waker() {
+    let mut t = table(100);
+    t.read_headers(1);
+    let (_count, waker) = counting();
+    assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
+    assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
+    assert!(t.data_written(1, 1).is_some());
+    assert!(t.data_written(1, 1).is_none());
+}
+
+#[test]
+fn the_end_of_a_stream_returns_the_parked_waker_on_every_removal_path() {
+    for end in 0..3 {
+        let mut t = table(100);
+        t.read_headers(1);
+        let (_count, waker) = counting();
+        assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
+        let parked = match end {
+            0 => t.read_reset(1),
+            1 => t.write_ended(1),
+            _ => {
+                t.write_headers_continue(1);
+                t.write_continuation_end(1)
+            }
+        };
+        assert!(parked.is_some(), "removal path {end}");
+        assert_eq!(
+            t.backlog(1, 20_000, 10_000, &waker),
+            Backlog::Within,
+            "the entry is gone"
+        );
+    }
+}
+
+#[test]
+fn a_stream_with_no_entry_is_never_parked() {
+    let mut t = table(100);
+    let (_count, waker) = counting();
+    assert_eq!(t.backlog(7, u64::MAX, 0, &waker), Backlog::Within);
+}
+
+#[test]
+fn another_streams_writes_do_not_release_a_parked_tunnel() {
+    let mut t = table(100);
+    t.read_headers(1);
+    t.read_headers(3);
+    let (_count, waker) = counting();
+    assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
+    assert!(
+        t.data_written(3, 1_000_000).is_none(),
+        "stream 3's DATA is not stream 1's progress"
+    );
+    assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
 }

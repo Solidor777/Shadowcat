@@ -30,7 +30,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::task::Poll;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -41,7 +41,7 @@ use self::parser::{
 };
 #[cfg(test)]
 use self::table::StreamState;
-use self::table::{ParseOutcome, StreamTable};
+use self::table::{Backlog, ParseOutcome, StreamTable};
 use super::kill::{ConnKill, KillReason};
 use super::{StallCuts, H2_MAX_CONCURRENT_STREAMS};
 
@@ -128,6 +128,13 @@ impl StallCounters {
 /// Locks `m`, ignoring poison: the state it guards is always consistent between statements.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Wakes a task a table operation handed back. Called after the table's lock is released.
+fn wake(parked: Option<Waker>) {
+    if let Some(waker) = parked {
+        waker.wake();
+    }
 }
 
 /// What a connection's writer and its streams have done, as the egress units read it: the
@@ -292,28 +299,117 @@ impl Egress {
     fn frame_written(&self, kind: u8, flags: u8, sid: u32) {
         let ends_stream = flags & FLAG_END_STREAM != 0;
         let ends_headers = flags & FLAG_END_HEADERS != 0;
-        match kind {
+        let parked = match kind {
             FRAME_TYPE_HEADERS if ends_stream && ends_headers => {
-                lock(&self.streams).write_ended(sid);
+                lock(&self.streams).write_ended(sid)
             }
-            FRAME_TYPE_HEADERS if ends_stream => lock(&self.streams).write_headers_continue(sid),
+            FRAME_TYPE_HEADERS if ends_stream => {
+                lock(&self.streams).write_headers_continue(sid);
+                None
+            }
             FRAME_TYPE_CONTINUATION if ends_headers => {
-                lock(&self.streams).write_continuation_end(sid);
+                lock(&self.streams).write_continuation_end(sid)
             }
             FRAME_TYPE_DATA if ends_stream => lock(&self.streams).write_ended(sid),
             FRAME_TYPE_RST_STREAM => lock(&self.streams).write_ended(sid),
-            _ => {}
-        }
+            _ => None,
+        };
+        wake(parked);
     }
 
-    /// The writer accepted `bytes` DATA payload bytes of stream `sid`.
+    /// The writer accepted `bytes` DATA payload bytes of stream `sid`; wakes a tunnel session
+    /// parked on the stream's backlog.
     fn data_written(&self, sid: u32, bytes: u64) {
-        lock(&self.streams).data_written(sid, bytes);
+        let parked = lock(&self.streams).data_written(sid, bytes);
+        wake(parked);
+    }
+
+    /// Whether the application has written no more than `cap` bytes to stream `sid`'s tunnel beyond
+    /// what the writer has put on the wire (`sent` is the application's own running total of
+    /// payload bytes). `Pending` parks `cx`'s task until the stream's written bytes advance or its
+    /// entry ends.
+    fn tunnel_within(&self, sid: u32, sent: u64, cap: u64, cx: &Context<'_>) -> Poll<()> {
+        match lock(&self.streams).backlog(sid, sent, cap, cx.waker()) {
+            Backlog::Within => Poll::Ready(()),
+            Backlog::Over => Poll::Pending,
+        }
     }
 
     /// The writer accepted a whole GOAWAY frame with last stream id `last`.
     fn goaway_written(&self, last: u32) {
         lock(&self.streams).goaway(last);
+    }
+}
+
+/// A WebSocket session's view of its own HTTP/2 stream's progress on the wire: how many DATA
+/// payload bytes the connection's writer has accepted for the tunnel's stream. The connection's
+/// lease service puts one in the extensions of every HTTP/2 request.
+///
+/// WHY it exists: hyper's tunnel task passes every written chunk on to h2 whether or not the peer
+/// has granted send credit, so a tunnel whose peer returns none absorbs writes without bound and
+/// the sink writing to it never goes pending. The session compares its own written total with the
+/// stream's written total and stops writing when it is further ahead than a send buffer.
+///
+/// # Examples
+///
+/// ```
+/// use axum::extract::Request;
+/// use shadowcat::http::conn_serve::TunnelProbe;
+///
+/// // Absent on HTTP/1 and when the router is served without `serve_router`.
+/// let req = Request::new(axum::body::Body::empty());
+/// assert!(req.extensions().get::<TunnelProbe>().is_none());
+/// ```
+#[derive(Clone)]
+pub struct TunnelProbe {
+    /// The connection's record, whose stream table counts the stream's written bytes.
+    egress: Arc<Egress>,
+    /// The request's HTTP/2 stream id.
+    sid: u32,
+}
+
+impl std::fmt::Debug for TunnelProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TunnelProbe")
+            .field("sid", &self.sid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TunnelProbe {
+    /// A probe of stream `sid` on the connection `egress` describes.
+    pub(super) fn new(egress: Arc<Egress>, sid: u32) -> Self {
+        Self { egress, sid }
+    }
+
+    /// `Ready` while the session has written no more than `cap` payload bytes beyond what the
+    /// writer has put on the wire for the stream (`sent` is the session's own running total).
+    /// `Pending` parks `cx`'s task until the stream's written bytes advance or its entry ends.
+    pub(crate) fn poll_within(&self, cx: &Context<'_>, sent: u64, cap: u64) -> Poll<()> {
+        self.egress.tunnel_within(self.sid, sent, cap, cx)
+    }
+
+    /// Reports `bytes` DATA payload bytes of the stream accepted by the connection's writer, as the
+    /// write path would.
+    #[cfg(test)]
+    pub(crate) fn written_on_wire(&self, bytes: u64) {
+        self.egress.data_written(self.sid, bytes);
+    }
+
+    /// Reports the end of the stream on the wire (a peer reset), as the read path would.
+    #[cfg(test)]
+    pub(crate) fn ended_on_wire(&self) {
+        self.egress
+            .frame_written(FRAME_TYPE_RST_STREAM, 0, self.sid);
+    }
+
+    /// A probe of stream `sid` on a fresh record whose stream table holds that stream.
+    #[cfg(test)]
+    pub(crate) fn detached(sid: u32) -> Self {
+        let egress = Arc::new(Egress::default());
+        let kill = ConnKill::new();
+        egress.request_started(sid, &kill);
+        Self::new(egress, sid)
     }
 }
 
@@ -446,7 +542,10 @@ impl ReadObserver {
                 kind: FRAME_TYPE_RST_STREAM,
                 sid,
                 ..
-            } => lock(&egress.streams).read_reset(sid),
+            } => {
+                let parked = lock(&egress.streams).read_reset(sid);
+                wake(parked);
+            }
             _ => {}
         });
     }

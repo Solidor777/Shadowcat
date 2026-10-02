@@ -38,6 +38,7 @@
 //!    a PING or SETTINGS acknowledgement and any other connection write never refresh an entry.
 
 use std::collections::HashMap;
+use std::task::Waker;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -71,12 +72,24 @@ pub(super) enum StreamState {
 }
 
 /// One stream id's state and the DATA payload bytes the writer has accepted for it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct Entry {
     /// The state machine position.
     state: StreamState,
     /// DATA payload bytes the writer accepted for this stream, in every state.
     written: u64,
+    /// The task parked by [`StreamTable::backlog`] until this stream's written bytes advance or its
+    /// entry ends: the tunnel session waiting for its peer to take earlier frames.
+    waker: Option<Waker>,
+}
+
+/// How far ahead of the wire a tunnel's application writes are, against a cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Backlog {
+    /// The unwritten bytes are within the cap, or the stream has no entry any more.
+    Within,
+    /// The unwritten bytes exceed the cap; the caller's waker is parked on the entry.
+    Over,
 }
 
 /// What parsing a request's HEADERS frame did to the table.
@@ -159,6 +172,7 @@ impl StreamTable {
             Entry {
                 state: StreamState::Open,
                 written: 0,
+                waker: None,
             },
         );
         let len = self.map.len();
@@ -167,22 +181,51 @@ impl StreamTable {
         ParseOutcome::Inserted { len, past_half }
     }
 
-    /// The read parser parsed a whole RST_STREAM frame for `sid`: the peer cancelled it.
-    pub(super) fn read_reset(&mut self, sid: u32) {
-        self.map.remove(&sid);
+    /// Removes `sid`'s entry, returning the task parked on it so the caller can wake it once the
+    /// table's lock is released.
+    fn remove(&mut self, sid: u32) -> Option<Waker> {
+        self.map.remove(&sid).and_then(|entry| entry.waker)
     }
 
-    /// The writer accepted `n` DATA payload bytes of `sid`.
-    pub(super) fn data_written(&mut self, sid: u32, n: u64) {
-        if let Some(entry) = self.map.get_mut(&sid) {
-            entry.written = entry.written.saturating_add(n);
+    /// The read parser parsed a whole RST_STREAM frame for `sid`: the peer cancelled it. Returns
+    /// the task parked on the entry, to be woken.
+    pub(super) fn read_reset(&mut self, sid: u32) -> Option<Waker> {
+        self.remove(sid)
+    }
+
+    /// The writer accepted `n` DATA payload bytes of `sid`. Returns the task parked on the entry
+    /// (and clears it), to be woken: its backlog just shrank.
+    pub(super) fn data_written(&mut self, sid: u32, n: u64) -> Option<Waker> {
+        let entry = self.map.get_mut(&sid)?;
+        entry.written = entry.written.saturating_add(n);
+        entry.waker.take()
+    }
+
+    /// Whether `sent` bytes written by the application to `sid`'s tunnel are within `cap` bytes of
+    /// what the wire has taken. Over the cap, `waker` is parked on the entry (replacing any earlier
+    /// one) and the next [`StreamTable::data_written`] or removal of the entry returns it; the
+    /// check and the parking are one step under the table's lock, so a write cannot slip between
+    /// them. An absent entry is `Within`: the stream ended, and the caller's next write reports it.
+    pub(super) fn backlog(&mut self, sid: u32, sent: u64, cap: u64, waker: &Waker) -> Backlog {
+        let Some(entry) = self.map.get_mut(&sid) else {
+            return Backlog::Within;
+        };
+        if sent.saturating_sub(entry.written) <= cap {
+            entry.waker = None;
+            return Backlog::Within;
         }
+        match &mut entry.waker {
+            Some(parked) if parked.will_wake(waker) => {}
+            slot => *slot = Some(waker.clone()),
+        }
+        Backlog::Over
     }
 
     /// The writer accepted the last byte of a frame that ends `sid`: DATA or HEADERS with
-    /// END_STREAM (HEADERS with END_HEADERS), or RST_STREAM.
-    pub(super) fn write_ended(&mut self, sid: u32) {
-        self.map.remove(&sid);
+    /// END_STREAM (HEADERS with END_HEADERS), or RST_STREAM. Returns the task parked on the entry,
+    /// to be woken.
+    pub(super) fn write_ended(&mut self, sid: u32) -> Option<Waker> {
+        self.remove(sid)
     }
 
     /// The writer accepted the last byte of a HEADERS frame with END_STREAM but without
@@ -191,12 +234,14 @@ impl StreamTable {
         self.continuation_end_stream = Some(sid);
     }
 
-    /// The writer accepted the last byte of a CONTINUATION frame with END_HEADERS.
-    pub(super) fn write_continuation_end(&mut self, sid: u32) {
+    /// The writer accepted the last byte of a CONTINUATION frame with END_HEADERS. Returns the task
+    /// parked on the entry it ended, to be woken.
+    pub(super) fn write_continuation_end(&mut self, sid: u32) -> Option<Waker> {
         if self.continuation_end_stream == Some(sid) {
             self.continuation_end_stream = None;
-            self.map.remove(&sid);
+            return self.remove(sid);
         }
+        None
     }
 
     /// The writer accepted a GOAWAY whose last stream id is `last`: ids above it are never

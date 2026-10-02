@@ -22,6 +22,7 @@ pub(crate) mod ruler;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
+pub mod tunnel_gate;
 pub mod vfx;
 
 pub use room::RoomRegistry;
@@ -394,27 +395,40 @@ impl WsState {
     /// The one constructor of the stall-bounded sink every session's socket is wrapped in: the
     /// window is `Config::egress_window` (the value `ConnLimits::for_config` gives the response
     /// bounds), the shutdown signal is this state's, and the sink counts its pending sends into
-    /// `pending_sends`. The bound is on the time of one pending flush, not on progress: a frame of
-    /// F bytes needs at least 8F / window bits per second to complete, and the socket the sink
-    /// wraps (`axum::extract::ws::WebSocket`) exposes no byte counter to measure progress with.
+    /// `pending_sends`. `tunnel` is the session's own HTTP/2 stream, when it has one: the sink
+    /// then also stops accepting frames while the session is more than one send buffer ahead of
+    /// the wire (`tunnel_gate`), which is what makes a stalled tunnel's send pending at all. The
+    /// time bound is on one pending flush, not on progress through a frame: a frame of F bytes
+    /// needs at least 8F / window bits per second to complete, and the socket the sink wraps
+    /// (`axum::extract::ws::WebSocket`) exposes no byte counter to measure progress with.
     ///
     /// # Examples
     ///
     /// ```
+    /// use axum::extract::ws::Message;
     /// use shadowcat::config::Config;
     /// use shadowcat::ws::WsState;
     ///
     /// let state = WsState::new();
-    /// let _sink = state.bounded_sink(futures_util::sink::drain::<u8>(), &Config::default());
+    /// let _sink = state.bounded_sink(
+    ///     futures_util::sink::drain::<Message>(),
+    ///     &Config::default(),
+    ///     None,
+    /// );
     /// assert_eq!(state.pending_sends(), 0);
     /// ```
     pub fn bounded_sink<S>(
         &self,
         socket: S,
         config: &crate::config::Config,
-    ) -> bounded_sink::BoundedSink<S> {
-        bounded_sink::BoundedSink::for_config(socket, self.shutdown.clone(), config)
-            .with_pending_gauge(self.pending_sends.clone())
+        tunnel: Option<crate::http::conn_serve::TunnelProbe>,
+    ) -> bounded_sink::BoundedSink<tunnel_gate::TunnelGate<S>> {
+        bounded_sink::BoundedSink::for_config(
+            tunnel_gate::TunnelGate::new(socket, tunnel),
+            self.shutdown.clone(),
+            config,
+        )
+        .with_pending_gauge(self.pending_sends.clone())
     }
 
     /// The number of WebSocket sends pending right now across every live session: a nonzero

@@ -26,7 +26,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tower::Service;
 
-use super::egress::{Egress, StallCounters, StallUnit, STREAM_TABLE_CAP};
+use super::egress::{Egress, StallCounters, StallUnit, TunnelProbe, STREAM_TABLE_CAP};
 use super::pruned::Pruned;
 use super::stream_exec::{current_cut, StreamCut};
 use super::EGRESS_FLOOR_BYTES;
@@ -453,6 +453,10 @@ where
             .get::<h2::StreamId>()
             .map(|id| u32::from(*id));
         req.extensions_mut().insert(lease.clone());
+        if let Some(sid) = sid {
+            req.extensions_mut()
+                .insert(TunnelProbe::new(live.egress(), sid));
+        }
         let fut = self.inner.call(req);
         Box::pin(async move {
             let res = fut.await?;

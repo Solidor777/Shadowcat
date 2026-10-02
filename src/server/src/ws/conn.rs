@@ -252,6 +252,7 @@ pub async fn ws_handler(
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
     lease: Option<Extension<crate::http::conn_serve::ConnLease>>,
+    tunnel: Option<Extension<crate::http::conn_serve::TunnelProbe>>,
 ) -> Response {
     // The connection's lease (absent when the router is not served through
     // `http::conn_serve::serve_router`) moves into the session task: hyper runs an HTTP/2
@@ -259,6 +260,9 @@ pub async fn ws_handler(
     // connection counted as busy (HTTP/2 idle bound) and its cap slot held while the session
     // lives.
     let lease = lease.map(|Extension(l)| l);
+    // The session's own HTTP/2 stream (absent over HTTP/1): lets the sink see how far ahead of the
+    // wire the session is, which hyper's tunnel task never reports.
+    let tunnel = tunnel.map(|Extension(t)| t);
     // Acquired HERE, synchronously, still within the HTTP request cycle hyper's own
     // graceful-shutdown accounting tracks — never inside the task `on_upgrade` spawns. That
     // task starts running strictly AFTER the 101 response is written, so if the guard were
@@ -272,7 +276,16 @@ pub async fn ws_handler(
         .max_frame_size(WS_MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _lease = lease;
-            handle_socket(socket, state, user.id, user.role, q.world, connection_guard).await
+            handle_socket(
+                socket,
+                state,
+                user.id,
+                user.role,
+                q.world,
+                connection_guard,
+                tunnel,
+            )
+            .await
         })
 }
 
@@ -409,6 +422,7 @@ async fn handle_socket(
     user_role: ServerRole,
     world_id: Uuid,
     _connection_guard: crate::ws::ConnectionGuard,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
 ) {
     // Held for this whole task's lifetime (every `return` path below drops it, including a
     // panic unwind): this is what makes this connection observable to
@@ -421,12 +435,12 @@ async fn handle_socket(
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config);
+            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
             reject_join(&mut s, WsErrorCode::WorldNotFound, "world not found").await;
             return;
         }
         Err(_) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config);
+            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
             reject_join(&mut s, WsErrorCode::Internal, "internal").await;
             return;
         }
@@ -438,7 +452,7 @@ async fn handle_socket(
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
         Err(_) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config);
+            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
             reject_join(&mut s, WsErrorCode::Forbidden, "not a member of this world").await;
             tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
             return;
@@ -473,7 +487,7 @@ async fn handle_socket(
     let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let egress_last_activity = last_activity.clone();
     let mut egress = tokio::spawn(egress_loop(
-        state.ws.bounded_sink(sink, &state.config),
+        state.ws.bounded_sink(sink, &state.config, tunnel),
         rx,
         erx,
         EgressConnState {

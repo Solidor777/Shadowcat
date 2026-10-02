@@ -101,6 +101,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use tower::{Layer, ServiceExt};
 
+pub use self::egress::TunnelProbe;
 use self::egress::{ReadObserver, Sampler, StallCounters, StallUnit, WriteCounter};
 use self::kill::{ConnKill, KillReason, KillSignal};
 pub use self::live::ConnLease;

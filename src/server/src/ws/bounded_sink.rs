@@ -12,7 +12,10 @@
 //! least 8F / `stall_timeout` bits per second to complete (the largest frame,
 //! `WS_MAX_MESSAGE_BYTES`, about 1.7 Mbps at the 60 s default; ordinary frames under 10 kbps). A
 //! progress-aware bound is not possible through `axum::extract::ws::WebSocket`, which exposes no
-//! byte counter; a WebSocket tunnelled inside an HTTP/2 connection has no other bound.
+//! byte counter. Inside an HTTP/2 stream a write never goes pending by itself (hyper's tunnel task
+//! absorbs it), so `WsState::bounded_sink` puts a [`TunnelGate`](crate::ws::tunnel_gate::TunnelGate)
+//! under this wrapper: it makes a session that is a send buffer ahead of the wire pending, which
+//! is what starts this bound's timer.
 //!
 //! INVARIANTS:
 //! 1. A send that has been pending for `stall_timeout` fails with [`BoundedSendError::Stalled`];

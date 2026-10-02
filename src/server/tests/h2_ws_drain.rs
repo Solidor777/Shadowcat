@@ -6,12 +6,14 @@
 use std::time::Duration;
 
 use axum::http::Request;
-use shadowcat::http::conn_serve::ConnLimits;
+use shadowcat::http::conn_serve::{ConnLimits, ABORT_WAIT};
 use shadowcat::http::{self, SESSION_GRACE};
+use shadowcat::ws::protocol::{ServerMsg, WsErrorCode};
 use shadowcat::ws::WsState;
 use shadowcat_test_support::h2::client::Builder as H2Builder;
 use shadowcat_test_support::h2_session::{login, seeded_state};
 use shadowcat_test_support::h2c::{h2c_connect, H2cSource};
+use shadowcat_test_support::measure::record_cut_overshoot;
 use shadowcat_test_support::tls::H2Client;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -20,22 +22,29 @@ use tokio::time::timeout;
 /// rather than on the sessions being told to end is visible as a slow return.
 const DRAIN_BOUND: Duration = Duration::from_secs(6);
 
-/// How quickly a graceful close must finish: well under `DRAIN_BOUND`.
-const GRACEFUL_WITHIN: Duration = Duration::from_secs(3);
-
 /// The drain bound of the stalled-peer test: short, so the abort that ends it is observable.
 const STALLED_DRAIN_BOUND: Duration = Duration::from_secs(1);
 
-/// Scheduling slack on a bound derived from the serve constants.
-const SLACK: Duration = Duration::from_millis(500);
-
-/// How quickly serve must return once that bound has expired: the documented worst case
-/// (`drain_timeout + SESSION_GRACE`) plus slack.
-const STALLED_WITHIN: Duration = Duration::from_millis(
-    STALLED_DRAIN_BOUND.as_millis() as u64
-        + SESSION_GRACE.as_millis() as u64
-        + SLACK.as_millis() as u64,
+/// The designed return time of a serve whose peer has stopped reading: the drain bound plus the
+/// session grace (`SESSION_GRACE`'s own doc). What lies beyond it is scheduling latency, which no
+/// premise bounds, so the overshoot is recorded per operating system and asserted on nothing.
+const STALLED_DESIGNED: Duration = Duration::from_millis(
+    STALLED_DRAIN_BOUND.as_millis() as u64 + SESSION_GRACE.as_millis() as u64,
 );
+
+/// The documented worst case of `serve_with` (`SESSION_GRACE`'s doc): the designed time plus
+/// `ABORT_WAIT` when a connection task outlives its killed IO. Derived from the serve constants,
+/// so the blocking assertion carries no empirical margin.
+const STALLED_WORST: Duration =
+    Duration::from_millis(STALLED_DESIGNED.as_millis() as u64 + ABORT_WAIT.as_millis() as u64);
+
+/// Size of the frames the stalled test broadcasts to block the session: far below the wire
+/// message cap, large enough to pass any small window.
+const BLOCKING_FRAME_BYTES: usize = 60 * 1024;
+
+/// How long the stalled test may wait for its session to be blocked in a send: a liveness guard,
+/// not a measured quantity (the wait ends the moment the gauge reads 1).
+const BLOCKED_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Default limits with `drain_timeout` set to `bound`.
 fn drain_limits(bound: Duration) -> ConnLimits {
@@ -55,6 +64,8 @@ struct Live {
     serve: tokio::task::JoinHandle<anyhow::Result<()>>,
     /// The session registry.
     ws: WsState,
+    /// The world the session joined.
+    world: uuid::Uuid,
     /// The client connection.
     client: H2Client,
     /// The open tunnel, kept alive for the test's duration.
@@ -91,6 +102,7 @@ async fn open_websocket(builder: H2Builder, limits: ConnLimits) -> Live {
         end,
         serve,
         ws,
+        world,
         client,
         _tunnel: tunnel,
     }
@@ -106,8 +118,9 @@ async fn a_live_h2_websocket_does_not_block_serve_when_the_source_ends() {
         .await
         .expect("serve never returned: a live h2 WebSocket held the drain")
         .unwrap();
+    // A close that depended on the drain bound would return at the bound or later.
     assert!(
-        started.elapsed() < GRACEFUL_WITHIN,
+        started.elapsed() < DRAIN_BOUND,
         "the session was not told to close before the drain: returned after {:?}",
         started.elapsed()
     );
@@ -124,22 +137,55 @@ async fn a_live_h2_websocket_does_not_block_serve_when_the_source_ends() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_returns_within_the_bound_when_an_h2_client_has_stopped_reading() {
-    // A zero stream window: the server can open the tunnel but can send no data on it, so the
-    // session is blocked sending its first frame and never reaches its shutdown arm; only the
-    // drain bound ends it.
+    // A zero stream window: the server can open the tunnel but the tunnel's writer can pass on at
+    // most one buffered frame (the Welcome), so a broadcast frame blocks the session in a send and
+    // it never reaches its shutdown arm; the sink's Close bound and the drain bound end it.
     let mut builder = H2Builder::new();
     builder.initial_window_size(0);
     let live = open_websocket(builder, drain_limits(STALLED_DRAIN_BOUND)).await;
+    // Premise: the session is blocked in a send. Frames are broadcast until one is observed
+    // pending, because how many fit before the tunnel's writer stops taking them is not fixed.
+    let blocked_by = std::time::Instant::now() + BLOCKED_DEADLINE;
+    let room = loop {
+        if let Some(room) = live.ws.rooms.get(live.world) {
+            break room;
+        }
+        assert!(
+            std::time::Instant::now() < blocked_by,
+            "the session never joined its room"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    let frame = ServerMsg::Error {
+        code: WsErrorCode::Internal,
+        message: "x".repeat(BLOCKING_FRAME_BYTES),
+    };
+    let mut sent = 0usize;
+    while live.ws.pending_sends() < 1 {
+        assert!(
+            std::time::Instant::now() < blocked_by,
+            "the session never blocked in a send: sent {sent} frames, live {}",
+            live.ws.live_connection_count()
+        );
+        room.broadcast_aux(frame.clone());
+        sent += 1;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
     let started = std::time::Instant::now();
     live.shutdown.send(()).unwrap();
     let result = timeout(Duration::from_secs(15), live.serve)
         .await
         .expect("serve never returned: a peer that stopped reading held the drain")
         .unwrap();
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() < STALLED_WITHIN,
-        "serve outlasted the drain bound while a peer had stopped reading: {:?}",
-        started.elapsed()
+        elapsed <= STALLED_WORST,
+        "serve outlasted its documented worst case while a peer had stopped reading: {elapsed:?}"
+    );
+    record_cut_overshoot(
+        "h2 websocket stalled peer at shutdown",
+        elapsed,
+        STALLED_DESIGNED,
     );
     result.expect("a requested shutdown is not an error");
     assert_eq!(live.ws.live_connection_count(), 0);
