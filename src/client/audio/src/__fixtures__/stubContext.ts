@@ -83,6 +83,14 @@ export function stubBuffer(durationSecs: number, sampleRate = 48_000, channels =
 
 /** `stubAudioContext`'s return shape: the stub context plus its captured nodes. */
 export interface StubAudioContext extends AudioContextLike {
+  /** How the next `resume()` behaves: `"resolve"` runs the context, `"reject"` refuses (a
+   * browser demanding a gesture), `"pend"` never settles (WebKit before a gesture). */
+  resumeMode: "resolve" | "reject" | "pend";
+  /** How many times `resume()` was called. */
+  resumeCalls: number;
+  /** Change the running state as the browser would, then fire `onstatechange`.
+   * @param next The new state. */
+  setState(next: "suspended" | "running" | "closed" | "interrupted"): void;
   /** The stub's audio clock, seconds — writable so a test can advance it with the server clock
    * or freeze it to model a suspended context. */
   currentTime: number;
@@ -109,17 +117,24 @@ export interface StubAudioContext extends AudioContextLike {
  */
 export function stubAudioContext(): StubAudioContext {
   /** The stub's current running state. */
-  let state: "suspended" | "running" | "closed" = "suspended";
+  let state: "suspended" | "running" | "closed" | "interrupted" = "suspended";
   const sources: BufferSourceNodeLike[] = [];
   const gains: GainNodeLike[] = [];
   const panners: PannerNodeLike[] = [];
   const mediaSources: MediaElementSourceNodeLike[] = [];
-  return {
+  const stub: StubAudioContext = {
     sources,
     gains,
     panners,
     mediaSources,
-    /** The stub's running state (flips to `"running"` on `resume`).
+    resumeMode: "resolve",
+    resumeCalls: 0,
+    setState(next): void {
+      state = next;
+      stub.onstatechange?.(new Event("statechange"));
+    },
+    onstatechange: null,
+    /** The stub's running state (flips to `"running"` on a resolving `resume`).
      * @returns The state.
      * @example
      * ```
@@ -169,9 +184,17 @@ export function stubAudioContext(): StubAudioContext {
     },
     decodeAudioData: async () => stubBuffer(1),
     resume: async () => {
-      state = "running";
+      stub.resumeCalls++;
+      if (stub.resumeMode === "pend") return new Promise<void>(() => {});
+      if (stub.resumeMode === "reject") {
+        const error = new Error("resume() requires a user gesture");
+        error.name = "NotAllowedError";
+        throw error;
+      }
+      stub.setState("running");
     },
   };
+  return stub;
 }
 
 /** `stubMediaElement`'s return shape: the element with a writable `paused` flag. */

@@ -29,6 +29,7 @@ function audioFixture(depth = 0.7, setDepth = vi.fn()) {
     },
     setChannel: () => {},
     unlock: async () => {},
+    needsGesture: false,
     context: () => null,
     duck: {
       depth,

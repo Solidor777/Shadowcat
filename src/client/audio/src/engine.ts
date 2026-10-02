@@ -34,9 +34,22 @@ interface FallbackEmitter {
  * `audio-state` so each player's position is re-measured against the server clock. */
 export const SYNC_TICK_MS = 1000;
 
-/** The periodic-callback seam `AudioEngine` drives its synchronisation tick through
- * (production passes the window's `setInterval`/`clearInterval`; tests drive a manual pair). */
+/** Longest the engine waits for a context to reach `"running"` after a `resume()` request,
+ * ms. `resume()` can stay pending forever (WebKit before a gesture), so "not running after
+ * this wait" is itself the signal that a user gesture is needed. */
+export const RESUME_WAIT_MS = 2000;
+
+/** The timer seam `AudioEngine` drives its synchronisation tick and its bounded resume wait
+ * through (production passes the window's timers; tests drive a manual set). */
 export interface AudioTimer {
+  /** Schedule `cb` once after `ms` milliseconds.
+   * @param cb The callback.
+   * @param ms The delay, milliseconds.
+   * @returns A handle for `clearTimeout`. */
+  setTimeout(cb: () => void, ms: number): number;
+  /** Cancel a schedule made by `setTimeout`.
+   * @param handle The handle `setTimeout` returned. */
+  clearTimeout(handle: number): void;
   /** Schedule `cb` every `ms` milliseconds.
    * @param cb The callback to run each period.
    * @param ms The period, milliseconds.
@@ -344,16 +357,25 @@ export class AudioEngine implements AudioApi {
    * falls back to bare `<audio>` elements (`FallbackTrackPlayer`, loops included via the
    * element's own `loop`), so streaming playback still works — just without the graph's
    * sample-accurate loops, per-bus gains, ducking, and crossfades.
-   * @returns Resolves once the context is running (or the degraded mode is armed).
+   * @returns Resolves once the context is running, once the bounded resume wait
+   * (`RESUME_WAIT_MS`) elapsed with `needsGesture` set, or once the degraded mode is armed.
    * @example
    * ```ts
    * // implements `AudioApi.unlock` — see that interface's own doc
    * ```
    */
   async unlock(): Promise<void> {
-    if (this.#noWebAudio) return;
+    // A user gesture lifts every earlier autoplay refusal: the elements are asked again.
+    this.#playGate.release();
+    if (this.#noWebAudio) {
+      this.#setNeedsGesture(false);
+      this.#restartDegraded();
+      return;
+    }
     if (this.#context !== null) {
-      if (this.#context.state !== "running") await this.#context.resume();
+      if (this.#context.state !== "running") await this.#resumeContext(this.#context);
+      else this.#setNeedsGesture(false);
+      if (this.#latestState) this.applyState(this.#latestState);
       return;
     }
     let context: AudioContextLike;
@@ -364,7 +386,7 @@ export class AudioEngine implements AudioApi {
       // it. RESOLVING (not rejecting) is the contract — streaming playback is available.
       this.#noWebAudio = true;
       this.#startSync();
-      if (this.#latestState) this.applyState(this.#latestState);
+      this.#restartDegraded();
       return;
     }
     this.#master = context.createGain();
@@ -393,7 +415,8 @@ export class AudioEngine implements AudioApi {
       },
       this.#opts.createOggOpusDecoder ?? createOggOpusDecoder,
     );
-    await context.resume();
+    context.onstatechange = () => this.#onContextStateChange();
+    await this.#resumeContext(context);
     if (this.#latestState) this.applyState(this.#latestState);
     if (this.#pendingAudibility) {
       this.applyAudibility(this.#pendingAudibility);
@@ -401,6 +424,65 @@ export class AudioEngine implements AudioApi {
     }
     this.#startDuckLoop();
     this.#startSync();
+  }
+
+  /** Ask `context` to resume and wait at most `RESUME_WAIT_MS` for it to run. The wait ends
+   * on a settled `resume()` or on the timeout; afterwards `needsGesture` is `true` when the
+   * request was rejected or the context is still not `"running"`, `false` otherwise. Never
+   * loops: one request per call.
+   * @param context The context to resume.
+   * @example
+   * ```
+   * // private; exercised through `engine-recovery.test.ts`
+   * ```
+   */
+  async #resumeContext(context: AudioContextLike): Promise<void> {
+    let timeout: number | null = null;
+    const elapsed = new Promise<void>((resolve) => {
+      timeout = this.#opts.timer.setTimeout(resolve, RESUME_WAIT_MS);
+    });
+    try {
+      await Promise.race([context.resume(), elapsed]);
+    } catch {
+      this.#setNeedsGesture(true);
+      return;
+    } finally {
+      if (timeout !== null) this.#opts.timer.clearTimeout(timeout);
+    }
+    this.#setNeedsGesture(context.state !== "running");
+  }
+
+  /** Recovery from a context state change: a context that ran again re-applies the latest
+   * state (and asks the gated elements again); a context that left `"running"` for anything
+   * but `"closed"` (suspension, a WebKit interruption) is asked to resume once. No player is
+   * created, started or stopped here — `applyState` is the only path that touches players.
+   * @example
+   * ```
+   * // private; exercised through `engine-recovery.test.ts`
+   * ```
+   */
+  #onContextStateChange(): void {
+    const context = this.#context;
+    if (!context) return;
+    if (context.state === "running") {
+      this.#setNeedsGesture(false);
+      this.#playGate.release();
+      if (this.#latestState) this.applyState(this.#latestState);
+    } else if (context.state !== "closed") {
+      void this.#resumeContext(context);
+    }
+  }
+
+  /** The degraded (no Web Audio) restart after a gesture: re-apply the latest state and ask
+   * every carried emitter's element to play again.
+   * @example
+   * ```
+   * // private; exercised through `playback-gate.test.ts`
+   * ```
+   */
+  #restartDegraded(): void {
+    if (this.#latestState) this.applyState(this.#latestState);
+    for (const entry of this.#fallbackEmitters.values()) this.#playGate.play(entry.el);
   }
 
   /** Start the synchronisation tick and the visibility trigger, once. Both run the same path:
@@ -418,7 +500,12 @@ export class AudioEngine implements AudioApi {
     };
     this.#tickHandle = this.#opts.timer.setInterval(resync, SYNC_TICK_MS);
     this.#visibilityOff = this.#opts.visibility.subscribe(() => {
-      if (this.#opts.visibility.isVisible()) resync();
+      if (!this.#opts.visibility.isVisible()) return;
+      const context = this.#context;
+      if (context && context.state !== "running" && context.state !== "closed") {
+        void this.#resumeContext(context);
+      }
+      resync();
     });
   }
 
@@ -757,6 +844,7 @@ export class AudioEngine implements AudioApi {
     }
     this.#visibilityOff?.();
     this.#visibilityOff = null;
+    if (this.#context) this.#context.onstatechange = null;
     if (this.#duckLoopHandle !== null) {
       this.#opts.caf(this.#duckLoopHandle);
       this.#duckLoopHandle = null;

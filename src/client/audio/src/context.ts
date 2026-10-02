@@ -181,8 +181,12 @@ export interface WasmOpusDecoderLike {
 export interface AudioContextLike {
   /** The context's running state. */
   readonly state: "suspended" | "running" | "closed" | "interrupted";
-  /** The context's audio-thread clock, seconds. */
+  /** The context's audio-thread clock, seconds. It stops while the context is not `"running"`
+   * (suspended or interrupted), which is how a stall becomes observable as drift. */
   readonly currentTime: number;
+  /** The DOM `statechange` handler property: called after every change of `state` (a
+   * suspension, a WebKit interruption, a resume). The engine installs one handler. */
+  onstatechange: ((ev: Event) => void) | null;
   /** The graph's terminal node. */
   readonly destination: AudioDestinationLike;
   /** Create a gain node.

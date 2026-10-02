@@ -431,6 +431,10 @@ export class WorldSession {
         }
       },
       unlock: () => engine.unlock(),
+      get needsGesture() {
+        subscribeAudio();
+        return engine.needsGesture;
+      },
       context: () => engine.context(),
       get duck() {
         const duck = engine.duck;
@@ -812,6 +816,8 @@ export class WorldSession {
       raf: (cb) => requestAnimationFrame(cb),
       caf: (handle) => cancelAnimationFrame(handle),
       timer: {
+        setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle),
         setInterval: (cb, ms) => window.setInterval(cb, ms),
         clearInterval: (handle) => window.clearInterval(handle),
       },

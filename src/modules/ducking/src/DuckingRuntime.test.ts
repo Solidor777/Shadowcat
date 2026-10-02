@@ -30,6 +30,7 @@ function audioFixture() {
     },
     setChannel: () => {},
     unlock: async () => {},
+    needsGesture: false,
     context: () => null,
     duck: { addSource, removeSource, gain: 1, depth: 0.7, setDepth: () => {} },
     playOneShot: () => {},

@@ -5,12 +5,26 @@ export interface TimerHarness extends AudioTimer {
   /** Run the scheduled callback once, as one elapsed period; a no-op while none is scheduled.
    * @returns Nothing. */
   fire(): void;
+  /** Run every pending one-shot timeout, as if its delay elapsed.
+   * @returns Nothing. */
+  fireTimeouts(): void;
+  /** The delays of the pending one-shot timeouts, ms.
+   * @returns The delays. */
+  pendingTimeoutMs(): number[];
   /** The period the engine scheduled, ms, or `null` while nothing is scheduled.
    * @returns The period, or `null`. */
   periodMs(): number | null;
   /** How many `clearInterval` calls the engine made.
    * @returns The count. */
   cleared(): number;
+}
+
+/** One scheduled one-shot timeout. */
+interface PendingTimeout {
+  /** The callback to run when the delay elapses. */
+  cb: () => void;
+  /** The delay, milliseconds. */
+  ms: number;
 }
 
 /** A manually fired `AudioTimer`: nothing runs until `fire()`.
@@ -25,7 +39,24 @@ export function timerHarness(): TimerHarness {
   let callback: (() => void) | null = null;
   let period: number | null = null;
   let clears = 0;
+  let nextTimeout = 100;
+  const timeouts = new Map<number, PendingTimeout>();
   return {
+    setTimeout(cb: () => void, ms: number): number {
+      const handle = nextTimeout++;
+      timeouts.set(handle, { cb, ms });
+      return handle;
+    },
+    clearTimeout(handle: number): void {
+      timeouts.delete(handle);
+    },
+    fireTimeouts(): void {
+      for (const [handle, pending] of [...timeouts]) {
+        timeouts.delete(handle);
+        pending.cb();
+      }
+    },
+    pendingTimeoutMs: () => [...timeouts.values()].map((t) => t.ms),
     setInterval(cb: () => void, ms: number): number {
       callback = cb;
       period = ms;

@@ -1050,6 +1050,7 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
         },
         setChannel: () => {},
         unlock: async () => {},
+        needsGesture: false,
         context: () => null,
         duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
         playOneShot,
