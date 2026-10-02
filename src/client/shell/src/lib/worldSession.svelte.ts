@@ -811,6 +811,17 @@ export class WorldSession {
       duckDepth: mirror?.duckDepth ?? DEFAULT_DUCK_DEPTH,
       raf: (cb) => requestAnimationFrame(cb),
       caf: (handle) => cancelAnimationFrame(handle),
+      timer: {
+        setInterval: (cb, ms) => window.setInterval(cb, ms),
+        clearInterval: (handle) => window.clearInterval(handle),
+      },
+      visibility: {
+        isVisible: () => document.visibilityState === "visible",
+        subscribe: (cb) => {
+          document.addEventListener("visibilitychange", cb);
+          return () => document.removeEventListener("visibilitychange", cb);
+        },
+      },
       spatial: () => performanceController.current.spatialAudio,
     });
     setMediaElementFactory(() => document.createElement("audio"));

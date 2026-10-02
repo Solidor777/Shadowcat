@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AssetResolver, type AudioStateEngine, type PlayingTrack, type SceneAudibility } from "@shadowcat/core";
 import { AudioEngine, type AudioEngineOpts } from "./engine";
 import { setMediaElementFactory } from "./track-player";
+import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
 import { stubAudioContext, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
 
 function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
@@ -54,6 +55,8 @@ function makeOpts(over: Partial<AudioEngineOpts> = {}): AudioEngineOpts {
     createOggOpusDecoder: async () => stubWasmDecoder(),
     raf: pump.raf,
     caf: pump.caf,
+    timer: timerHarness(),
+    visibility: visibilityHarness(),
     ...over,
   };
 }

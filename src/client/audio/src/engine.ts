@@ -29,6 +29,35 @@ interface FallbackEmitter {
   gain: number;
 }
 
+/** Period of the engine's synchronisation tick, ms: every tick re-applies the latest
+ * `audio-state` so each player's position is re-measured against the server clock. */
+export const SYNC_TICK_MS = 1000;
+
+/** The periodic-callback seam `AudioEngine` drives its synchronisation tick through
+ * (production passes the window's `setInterval`/`clearInterval`; tests drive a manual pair). */
+export interface AudioTimer {
+  /** Schedule `cb` every `ms` milliseconds.
+   * @param cb The callback to run each period.
+   * @param ms The period, milliseconds.
+   * @returns A handle for `clearInterval`. */
+  setInterval(cb: () => void, ms: number): number;
+  /** Cancel a schedule made by `setInterval`.
+   * @param handle The handle `setInterval` returned. */
+  clearInterval(handle: number): void;
+}
+
+/** The page-visibility seam `AudioEngine` observes (production wraps `document.hidden` and the
+ * `visibilitychange` event; the engine itself has no direct DOM access). */
+export interface VisibilitySource {
+  /** Whether the page is currently visible.
+   * @returns `true` when visible. */
+  isVisible(): boolean;
+  /** Observe every visibility change.
+   * @param cb Called after each change.
+   * @returns An unsubscribe function. */
+  subscribe(cb: () => void): () => void;
+}
+
 /** Channels every `AudioEngine` mixer graph carries (server-known three plus the two
  * client-only buses `AudioApi.channels` exposes device volume/mute for). */
 const ALL_CHANNELS: AudioChannelId[] = ["master", "music", "ambience", "sfx", "ui"];
@@ -75,6 +104,11 @@ export interface AudioEngineOpts {
   raf: (cb: (now: number) => void) => number;
   /** Cancels a frame scheduled by `raf` (production passes `cancelAnimationFrame`). */
   caf: (handle: number) => void;
+  /** The periodic source of the synchronisation tick (`SYNC_TICK_MS`). */
+  timer: AudioTimer;
+  /** The page-visibility source: a page returning to the foreground re-applies the latest
+   * state immediately, because a background page's timers are throttled. */
+  visibility: VisibilitySource;
 }
 
 /** The per-world mixer graph: `master ← duck ← {music, ambience, sfx, ui}` `GainNode`s, one
@@ -105,7 +139,7 @@ export class AudioEngine implements AudioApi {
   /** Live carried-emitter players, by emitter token id (`applyAudibility`'s diff key). */
   #emitterPlayers = new Map<string, EmitterPlayer>();
   /** Pending audibility slice to apply once `unlock()` completes — same rationale as
-   * `#pendingState`. */
+   * `#latestState`. */
   #pendingAudibility: SceneAudibility | null = null;
   /** True once `unlock()` found no Web Audio API at all — every playback path then degrades
    * to bare `<audio>` elements (`FallbackTrackPlayer` / a fire-and-forget one-shot element). */
@@ -114,10 +148,14 @@ export class AudioEngine implements AudioApi {
   #fallbackPlayers = new Map<string, FallbackTrackPlayer>();
   /** Live degraded carried emitters (`#noWebAudio` mode only), by emitter token id. */
   #fallbackEmitters = new Map<string, FallbackEmitter>();
-  /** Pending state to apply once `unlock()` completes — Web Audio node creation before a
-   * context exists is impossible, so a `PlayingTrack` set arriving before unlock is tracked
-   * here and replayed by `unlock()`'s own tail. */
-  #pendingState: AudioStateEngine | null = null;
+  /** The latest `AudioStateEngine` every `applyState` call received — the one source the
+   * `unlock()` replay (Web Audio node creation before a context exists is impossible), the
+   * synchronisation tick and the visibility trigger all re-apply. */
+  #latestState: AudioStateEngine | null = null;
+  /** The synchronisation tick's timer handle, or `null` before it starts / after `dispose()`. */
+  #tickHandle: number | null = null;
+  /** Unsubscribes the visibility observer, or `null` before it is installed / after `dispose()`. */
+  #visibilityOff: (() => void) | null = null;
   /** The `raf` handle for the running duck-gain driver loop, or `null` before `unlock()`/after
    * `dispose()`. */
   #duckLoopHandle: number | null = null;
@@ -300,11 +338,8 @@ export class AudioEngine implements AudioApi {
       // No Web Audio API at all: arm the degraded mode and replay any pending state through
       // it. RESOLVING (not rejecting) is the contract — streaming playback is available.
       this.#noWebAudio = true;
-      if (this.#pendingState) {
-        const pending = this.#pendingState;
-        this.#pendingState = null;
-        this.applyState(pending);
-      }
+      this.#startSync();
+      if (this.#latestState) this.applyState(this.#latestState);
       return;
     }
     this.#master = context.createGain();
@@ -334,15 +369,32 @@ export class AudioEngine implements AudioApi {
       this.#opts.createOggOpusDecoder ?? createOggOpusDecoder,
     );
     await context.resume();
-    if (this.#pendingState) {
-      this.applyState(this.#pendingState);
-      this.#pendingState = null;
-    }
+    if (this.#latestState) this.applyState(this.#latestState);
     if (this.#pendingAudibility) {
       this.applyAudibility(this.#pendingAudibility);
       this.#pendingAudibility = null;
     }
     this.#startDuckLoop();
+    this.#startSync();
+  }
+
+  /** Start the synchronisation tick and the visibility trigger, once. Both run the same path:
+   * `applyState` over `#latestState`, which is idempotent per entry id (an existing player is
+   * only re-synced), so a trigger never starts a second player.
+   * @example
+   * ```
+   * // private; exercised through `engine-sync.test.ts`
+   * ```
+   */
+  #startSync(): void {
+    if (this.#tickHandle !== null) return;
+    const resync = (): void => {
+      if (this.#latestState) this.applyState(this.#latestState);
+    };
+    this.#tickHandle = this.#opts.timer.setInterval(resync, SYNC_TICK_MS);
+    this.#visibilityOff = this.#opts.visibility.subscribe(() => {
+      if (this.#opts.visibility.isVisible()) resync();
+    });
   }
 
   /** Drives `DuckControllerImpl.tick` off `#opts.raf` and applies its output to `#duckNode`.
@@ -400,7 +452,8 @@ export class AudioEngine implements AudioApi {
 
   /** Diff `state.playing` by id against the live `TrackPlayer` set: create players for new
    * entries, `sync` existing ones, dispose removed ones. Called from the shell's `audio-state`
-   * document-store subscription on every change and on a 1 Hz drift-correction tick.
+   * document-store subscription on every change, from the engine's own synchronisation tick
+   * (`SYNC_TICK_MS`, over the latest state) and when the page becomes visible.
    * No-ops (tracks the state for replay) until `unlock()` has run.
    * @param state The world's current `AudioStateEngine`.
    * @example
@@ -409,15 +462,13 @@ export class AudioEngine implements AudioApi {
    * ```
    */
   applyState(state: AudioStateEngine): void {
+    this.#latestState = state;
     this.#releasePreloadIfNowPlaying(state);
     if (this.#noWebAudio) {
       this.#applyStateFallback(state);
       return;
     }
-    if (!this.#context) {
-      this.#pendingState = state;
-      return;
-    }
+    if (!this.#context) return;
     const serverNow = this.#opts.serverNow();
     const seen = new Set<string>();
     for (const entry of state.playing) {
@@ -673,6 +724,12 @@ export class AudioEngine implements AudioApi {
     for (const entry of this.#fallbackEmitters.values()) entry.el.pause();
     this.#fallbackEmitters.clear();
     this.#releasePreload();
+    if (this.#tickHandle !== null) {
+      this.#opts.timer.clearInterval(this.#tickHandle);
+      this.#tickHandle = null;
+    }
+    this.#visibilityOff?.();
+    this.#visibilityOff = null;
     if (this.#duckLoopHandle !== null) {
       this.#opts.caf(this.#duckLoopHandle);
       this.#duckLoopHandle = null;

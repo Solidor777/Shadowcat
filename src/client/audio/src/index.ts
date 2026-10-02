@@ -1,4 +1,4 @@
-export { AudioEngine, type AudioEngineOpts } from "./engine";
+export { AudioEngine, SYNC_TICK_MS, type AudioEngineOpts, type AudioTimer, type VisibilitySource } from "./engine";
 export { EmitterPlayer, AUDIBILITY_RAMP_TAU_SECS } from "./emitter-player";
 export { TrackPlayer, setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS, SYNC_RATE_NUDGE } from "./track-player";
 export { OneShotPlayer, ONE_SHOT_CACHE_BUDGET_BYTES } from "./one-shot-player";
