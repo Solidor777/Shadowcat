@@ -456,23 +456,20 @@ async fn drain_without_credit(body: &mut h2::RecvStream) -> u64 {
     got
 }
 
-/// Asserts a cut observed `cut_at` is not before `since + WINDOW`, and not as late as a second
-/// window, and records how far past the window plus one tick it landed.
+/// Asserts a cut observed `cut_at` is not before `since + WINDOW` and records how far past the
+/// window plus one tick it landed.
 ///
-/// The upper bound is a discrimination and not a latency bound: an entry whose own stream made no
-/// progress is cut at the first tick at or after its window (a tick is a quarter of it), while an
-/// entry that was refreshed by progress starts a new window and is cut a whole window later, so a
-/// cut at two windows or more means something refreshed it. The margin between the two outcomes is
-/// the window less one tick.
+/// The lower bound is derived: an entry's window starts no earlier than the body's drop, so no cut
+/// can precede it. The upper bound is not asserted here, because how late the sampler task runs is
+/// scheduling, not the unit's contract; the overshoot is recorded for each OS leg instead. That an
+/// entry was not refreshed by traffic that must not count is established by the tests that drive
+/// such traffic, from the order of events they cause (see
+/// `a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`).
 fn assert_tail_cut_timing(cut_at: Instant, since: Instant, what: &str) {
     let elapsed = cut_at.duration_since(since);
     assert!(
         elapsed >= WINDOW,
         "{what}: cut {elapsed:?} after the body dropped, before the {WINDOW:?} window"
-    );
-    assert!(
-        elapsed < WINDOW * 2,
-        "{what}: cut {elapsed:?} after the body dropped, a second window later: the entry was refreshed"
     );
     record_cut_overshoot(what, elapsed, WINDOW + TICK);
 }
@@ -659,14 +656,19 @@ async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window()
             send_scripted(&mut client, server.addr, &[size], BodyEnd::Final, false).await;
         let mut body = response.await.unwrap().into_body();
         let dropped_at = first_body_drop(&server).await;
-        // One KiB arrives with the window; release it so a second KiB flows, then stop: 2 KiB of
-        // the tail are written, below what remained, and that progress must not refresh the entry
-        // because the threshold is the whole remaining tail (a tail is at most one chunk).
+        // One KiB arrives with the window; three quarters of a window later it is released so a
+        // second KiB flows, then the reader stops: 2 KiB of the tail are written, below what
+        // remained, and that progress must not refresh the entry because the threshold is the
+        // whole remaining tail (a tail is at most one chunk).
         let first = tokio::time::timeout(Duration::from_secs(5), body.data())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+        tokio::time::sleep(WINDOW * 3 / 4).await;
+        // Taken before the release: the server cannot write the second KiB earlier, so an entry
+        // that the progress refreshed is cut no earlier than a whole window after this instant.
+        let released_at = Instant::now();
         body.flow_control().release_capacity(first.len()).unwrap();
         let got = drain_without_credit(&mut body).await;
         assert!(
@@ -680,6 +682,13 @@ async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window()
             cut_at,
             dropped_at,
             &format!("a partly drained {size} B tail"),
+        );
+        // An entry not refreshed is cut by `dropped_at + WINDOW + TICK` plus scheduling, which is
+        // half a window before `released_at + WINDOW` by the three-quarter delay above.
+        assert!(
+            cut_at < released_at + WINDOW,
+            "a partly drained {size} B tail was cut {:?} after the progress: the progress refreshed the entry",
+            cut_at.duration_since(released_at)
         );
         drop(client);
         let drain = server.finish().await;
@@ -738,6 +747,14 @@ async fn a_zombie_is_cut_while_a_sibling_stream_carries_steady_data_and_a_tunnel
         .expect("a zombie was never cut while its sibling kept the connection busy");
     assert_tail_cut_timing(cut_at, dropped_at, "a zombie beside a busy sibling");
     let steady = sibling.await.unwrap();
+    // The sibling's reader runs for eight seconds unless the connection ends first. Reaching its
+    // deadline means the connection outlived the sibling's traffic, which is what a zombie
+    // refreshed by a sibling's DATA looks like.
+    assert!(
+        matches!(steady.end, PacedEnd::Reset(_)),
+        "the sibling read until its deadline: its DATA postponed the zombie's cut ({:?})",
+        steady.end
+    );
     assert!(
         steady.got >= 2 * floor(),
         "the sibling moved too little DATA ({} B) for the control to mean anything",
