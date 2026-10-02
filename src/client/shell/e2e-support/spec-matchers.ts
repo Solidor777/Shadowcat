@@ -11,6 +11,10 @@ export const LAN_SPEC = /lan-plain-http\.spec\.ts$/;
  * can see a spurious cut. */
 export const MEDIA_RANGE_SPEC = /media-range\.spec\.ts$/;
 
+/** The WebM/Ogg derivative decode spec. It runs under the two `webm-decode-*` projects, one per
+ * engine whose `decodeAudioData` it measures, against the shared loopback server. */
+export const WEBM_DECODE_SPEC = /webm-decode\.spec\.ts$/;
+
 /** Specs that run under the three `https-*` browser projects (not the upgrade matrix). */
 export const HTTPS_SPECS = /https-(?!upgrade)[a-z0-9-]+\.spec\.ts$/;
 

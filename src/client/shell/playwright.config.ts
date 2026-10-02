@@ -11,6 +11,7 @@ import {
   MEDIA_RANGE_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
+  WEBM_DECODE_SPEC,
 } from "./e2e-support/spec-matchers";
 
 // The built `shadowcat` binary serves the embedded SPA + /api on one origin — the
@@ -252,7 +253,11 @@ function httpsServer(ip: string) {
 export default defineConfig({
   testDir: "./e2e",
   projects: [
-    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, ...ANY_HTTPS_SPEC] },
+    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, ...ANY_HTTPS_SPEC] },
+    // `decodeAudioData` of the server's Opus derivatives, once per engine that decodes them in Web
+    // Audio. Both run against the shared loopback server (the test only uploads and fetches).
+    { name: "webm-decode-chromium", testMatch: WEBM_DECODE_SPEC, use: { browserName: "chromium" } },
+    { name: "webm-decode-firefox", testMatch: WEBM_DECODE_SPEC, use: { browserName: "firefox", launchOptions: {} } },
     {
       // Seeking and playing a long WAV through byte-range responses. Its own server runs the short
       // egress window, so a response left idle across a media element's pause is really cut.

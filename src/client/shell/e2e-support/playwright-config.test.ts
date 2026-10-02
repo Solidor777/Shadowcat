@@ -4,7 +4,15 @@ import type { NetworkInterfaceInfo } from "node:os";
 import type { PlaywrightTestConfig } from "@playwright/test";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ANY_HTTPS_SPEC, HTTPS_SPECS, LAN_SPEC, MEDIA_RANGE_SPEC, UPGRADE_CHROMIUM_SPEC, UPGRADE_SPEC } from "./spec-matchers";
+import {
+  ANY_HTTPS_SPEC,
+  HTTPS_SPECS,
+  LAN_SPEC,
+  MEDIA_RANGE_SPEC,
+  UPGRADE_CHROMIUM_SPEC,
+  UPGRADE_SPEC,
+  WEBM_DECODE_SPEC,
+} from "./spec-matchers";
 
 // Addresses are from the RFC 5737 documentation range 192.0.2.0/24.
 
@@ -45,10 +53,16 @@ afterEach(() => {
 });
 
 describe("playwright.config LAN address handling", () => {
-  it("keeps the loopback, media-range-loopback and lan-plain-http projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
+  it("keeps the loopback, webm-decode, media-range-loopback and lan-plain-http projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const config = await loadConfig(LOOPBACK_ONLY, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
-    expect(names(config)).toEqual(["loopback", "media-range-loopback", "lan-plain-http"]);
+    expect(names(config)).toEqual([
+      "loopback",
+      "webm-decode-chromium",
+      "webm-decode-firefox",
+      "media-range-loopback",
+      "lan-plain-http",
+    ]);
     expect(config.webServer).toHaveLength(3);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain("HTTPS e2e projects OMITTED");
@@ -62,7 +76,13 @@ describe("playwright.config LAN address handling", () => {
   it("adds the HTTPS projects and their server when the host has a LAN address", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const all = names(config);
-    expect(all.slice(0, 3)).toEqual(["loopback", "media-range-loopback", "lan-plain-http"]);
+    expect(all.slice(0, 5)).toEqual([
+      "loopback",
+      "webm-decode-chromium",
+      "webm-decode-firefox",
+      "media-range-loopback",
+      "lan-plain-http",
+    ]);
     expect(all).toContain("https-chromium");
     expect(all.some((n) => n.startsWith("https-upgrade"))).toBe(true);
     expect(config.webServer).toHaveLength(4);
@@ -184,6 +204,7 @@ describe("spec-to-project assignment", () => {
       let expected: string[];
       if (LAN_SPEC.test(spec)) expected = ["lan-plain-http"];
       else if (MEDIA_RANGE_SPEC.test(spec)) expected = ["media-range-loopback"];
+      else if (WEBM_DECODE_SPEC.test(spec)) expected = projectsMatching(config, WEBM_DECODE_SPEC);
       else if (HTTPS_SPECS.test(spec)) expected = projectsMatching(config, HTTPS_SPECS);
       else if (UPGRADE_CHROMIUM_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_CHROMIUM_SPEC);
       else if (UPGRADE_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_SPEC);
@@ -197,7 +218,9 @@ describe("spec-to-project assignment", () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     for (const spec of specs) {
       const runners = projectsRunning(config, spec);
-      const families = new Set(runners.map((n) => (n.startsWith("https-") ? "https" : n)));
+      const families = new Set(
+        runners.map((n) => (n.startsWith("https-") ? "https" : n.startsWith("webm-decode-") ? "webm-decode" : n)),
+      );
       expect(families.size, `${spec} runs in ${runners.join(", ")}`).toBe(1);
     }
   });
