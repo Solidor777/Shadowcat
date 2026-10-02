@@ -3,9 +3,11 @@
 //! evidence that the stream ended, or when the connection (and with it the table) ends.
 //!
 //! WHY a table at all: once a response body has ended on the server's side, hyper's stream task
-//! completes and the body (with its lease and marker) is dropped, yet up to
-//! [`H2_SEND_BUF_BYTES`](super::super::H2_SEND_BUF_BYTES) plus one chunk of DATA can still be queued
-//! in h2 behind a stalled stream window. The stream holds a `max_concurrent_streams` slot and has
+//! completes and the body (with its lease and marker) is dropped, yet up to one chunk of DATA can
+//! still be queued in h2 behind a stalled stream window: hyper hands a chunk over only while the
+//! stream's send buffer holds less than the credit the peer has granted, so a body with more than
+//! one chunk left parks its next chunk with the body still open, where the stream marker acts. The
+//! stream holds a `max_concurrent_streams` slot and has
 //! no handle left to reset it, so the only bound on it is cutting the connection, and only the wire
 //! says when it is really over. Counting bodies ended against END_STREAM frames written is not an
 //! option: a peer reset after the body ended writes no END_STREAM, and a tunnel's closing

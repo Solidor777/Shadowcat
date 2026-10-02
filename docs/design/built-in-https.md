@@ -360,12 +360,79 @@ task paces its own accept errors.
     cannot see are then waited for `max(remaining, SESSION_GRACE)`, `SESSION_GRACE` being the Close
     bound plus one second, so `serve_with` returns within `drain_timeout + SESSION_GRACE`
     (`+ ABORT_WAIT` only when a task outlives its killed IO).
-  - Stalled peers: every WebSocket send goes through `ws::bounded_sink::BoundedSink`, constructed
-    once in `handle_socket` and used for the pre-join refusals, the Welcome and every later frame. A
-    send pending for `Config::egress_window` (`egress_window_secs`, 60 s by default, 1 to 3600; the
-    same value `ConnLimits::for_config` gives the response bounds) fails as stalled and ends the session, which
-    releases its `ConnectionGuard` and its `ConnLease` (the connection's cap slot); once shutdown is
-    signalled a pending send gets only `CLOSE_SEND_TIMEOUT` (2 s).
+  - Stalled peers. One window, `Config::egress_window` (`egress_window_secs`, 60 s by default, 1 to
+    3600), bounds every unit below; it reaches `ConnLimits::egress_window` and `WsState::bounded_sink`
+    from one method, so the response bounds and the WebSocket bound cannot be tuned apart. The
+    contract: **a response is cut when its peer returns no flow-control credit for a pending chunk,
+    or the socket accepts nothing, for the window, or a finished response's own stream makes less
+    than `min(egress_floor, bytes still queued)` of progress over the window.** A cut lands between
+    the window and the window plus one sampler tick (a quarter window) after the last progress: within
+    75 s at the default. Connections with nothing in flight are never cut by these units, and
+    `h2_idle` and keep-alive are unchanged.
+    - Stream unit: a response body is sliced into frames of at most `EGRESS_FLOOR_BYTES` (16 KiB,
+      one HTTP/2 frame), so a stalled peer is visible at a frame boundary. A stream whose pending
+      frame has waited for credit for the window is reset (CANCEL); its connection, its other
+      streams and every tunnel are untouched. The wait is timed only while hyper is not polling the
+      producer, so a sparse producer with a healthy reader is never cut.
+    - Ended-unflushed unit: a response whose body has ended hands its stream's handles back, so it
+      cannot be reset. hyper hands a chunk to h2 only while the stream's send buffer holds less than
+      the credit the peer granted, so what stays queued behind a stalled window is at most one chunk
+      (a larger body parks its next chunk with the body still open, and the stream unit acts). A
+      table of the connection's live streams, fed from the frames on the wire in both directions
+      (`egress::table`), tracks each finished response's own queued tail; a tail whose own stream
+      writes less than `min(egress_floor, bytes still queued)` over the window closes the
+      connection. Only a stream's own DATA counts as its progress: not another stream's, a tunnel's,
+      a PING's or any other write. The table is created at parse time, shrunk only on wire evidence
+      that the stream ended, purged at a GOAWAY, and fails closed: a connection whose table outgrows
+      its cap (`H2_MAX_CONCURRENT_STREAMS` plus a derived parse lag) is cut and counted as
+      `tracker_overflow`.
+    - Connection unit: HTTP/1 and an HTTP/2 writer parked on a socket that accepts nothing. The
+      sampler (an arm of `drive`'s `select!`, so a parked writer is re-observed with no other
+      wake source) closes a connection whose writer stayed parked for the whole window with fewer
+      than `egress_floor` bytes accepted (HTTP/2: DATA payload bytes only, so PING and SETTINGS
+      acknowledgements are not progress). The socket accepts data in lumps, not steadily: on Windows
+      loopback the lumps measured were about 100 to 520 KB, and on a bare socket pair their size
+      followed the reader's receive buffer. So a reader that consumes less than about one lump per
+      window (roughly 2 to 9 KB/s at the 60 s default) can be cut while it is still reading. Real
+      network paths are unmeasured; their steps are expected to be finer. Operators on extremely
+      slow networks raise `egress_window_secs`.
+    - Measured stream-unit boundary (the `h2` crate as client, loopback, a paced reader returning
+      credit as it reads, `/endless` body): at a 1 s window a reader at or below about 18 KiB/s was
+      always cut and one at or above about 40 KiB/s never was, with stream windows of 1 MiB and
+      above (32 KiB/s from 32 KiB windows); between, the outcome differed run to run. At a 3 s
+      window rates of 2.7 and 4 KiB/s were cut and 8 and 10.9 KiB/s were not, matching one 16 KiB
+      chunk per window. The default 60 s window was not measured, and neither was a browser's
+      window or credit batching; raising `egress_window_secs` lowers the rate that is cut.
+    - Consequences: a reader that returns credit for less than about one chunk per window is cut; a
+      cut `export_world` download restarts from zero (it has no length and no `Range`).
+    - Memory per stalled stream: `H2_SEND_BUF_BYTES` (64 KiB, hyper's default is 400 KiB) bounds the
+      body bytes polled ahead of an unread peer to the buffer plus one chunk, and the unsent backlog
+      behind a socket that accepts nothing. The throughput cost of that setting is recorded per
+      operating system by `tests/h2_send_buf_gate.rs`, which CI runs in a release build and which
+      asserts nothing but byte delivery until all three systems' values are recorded.
+    - No per-content-type exemption: a receiver that stops reading by choice (a paused media
+      element) is cut like any other.
+    - WebSocket sends: every send goes through `ws::bounded_sink::BoundedSink`, built by
+      `WsState::bounded_sink`, the one constructor (pre-join refusals, the Welcome and every later
+      frame). A send pending for the window fails as stalled and ends the session, releasing its
+      `ConnectionGuard` and `ConnLease` (the connection's cap slot); once shutdown is signalled a
+      pending send gets only `CLOSE_SEND_TIMEOUT` (2 s). The bound is on one pending flush, not on
+      progress through a frame: a frame of F bytes needs at least 8F / window bits per second
+      (the largest, `WS_MAX_MESSAGE_BYTES`, about 1.7 Mbps at 60 s), because the socket
+      (`axum::extract::ws::WebSocket`) exposes no byte counter. `WsState::pending_sends` counts the
+      sends pending now, and the shutdown drain warning reports it as `blocked_sends`.
+    - A WebSocket inside an HTTP/2 stream: hyper's tunnel task hands every write to h2 whether or
+      not the peer granted credit, and h2 buffers beyond the window without bound, so such a send
+      never went pending: with a peer returning no credit the heap grew by the volume broadcast
+      (measured with a counting allocator: about 24 MB per 400 frames of 60 KiB) and the stall bound
+      never started. `ws::tunnel_gate::TunnelGate`, under the sink, compares the bytes the session
+      wrote with the DATA payload bytes the connection's writer accepted for the session's own
+      stream (`TunnelProbe`, in every HTTP/2 request's extensions) and stops accepting frames while
+      the session is more than `H2_SEND_BUF_BYTES` ahead; the pending send is then bounded like any
+      other, and a reader that takes a frame in less than the window keeps its session. With the
+      gate the heap is flat under the same load.
+    - Residuals: a producer that pauses while its stream is stalled and holds nothing queued stays
+      open until it next produces; a tunnel's bound is per pending flush, as above.
   - Vendored `h2` (`vendor/h2`, 0.4.19 plus `SHADOWCAT-PATCH.diff`, verified by `pnpm lint:vendor` and
     `lint:vendor:upstream`): four changes in six files. (1) Two arms in `State::recv_eof` and
     `State::handle_error` turn a `ScheduledLibraryReset` stream into an error-closed one when the

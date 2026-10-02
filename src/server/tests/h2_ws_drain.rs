@@ -137,9 +137,9 @@ async fn a_live_h2_websocket_does_not_block_serve_when_the_source_ends() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_returns_within_the_bound_when_an_h2_client_has_stopped_reading() {
-    // A zero stream window: the server can open the tunnel but the tunnel's writer can pass on at
-    // most one buffered frame (the Welcome), so a broadcast frame blocks the session in a send and
-    // it never reaches its shutdown arm; the sink's Close bound and the drain bound end it.
+    // A zero stream window: the peer takes no tunnel DATA, so once the session is a send buffer
+    // ahead of the wire (`TunnelGate`) its next frame is pending and it never reaches its shutdown
+    // arm; the sink's Close bound and the drain bound end it.
     let mut builder = H2Builder::new();
     builder.initial_window_size(0);
     let live = open_websocket(builder, drain_limits(STALLED_DRAIN_BOUND)).await;

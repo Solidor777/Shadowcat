@@ -8,8 +8,9 @@
 //! path (router, egress layers) and so also carries that path's own cost, which a send-buffer
 //! change cannot move.
 //!
-//! A smaller send buffer bounds the body bytes polled ahead of an unread peer and the DATA queued
-//! behind a stalled window, at the price of more wake-ups per byte on a fast link. The 90 percent
+//! A smaller send buffer bounds the body bytes polled ahead of an unread peer, the unsent backlog
+//! behind a socket that accepts nothing and a WebSocket tunnel's lead over the wire, at the price
+//! of more wake-ups per byte on a fast link. The 90 percent
 //! figure is an empirical keep criterion (a throughput ratio on shared hardware has no derivation),
 //! so each run is recorded per operating system with `measure::record` and the ratio asserts
 //! nothing until the three operating systems' values are recorded. The premises that are not

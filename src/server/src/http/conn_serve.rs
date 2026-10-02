@@ -64,6 +64,13 @@
 //!    derived parse lag, and it fails closed: a connection whose table would outgrow it is cut and
 //!    counted in [`StallCuts::tracker_overflow`]. The highest length any table reached is
 //!    [`DrainReport::stream_table_peak`].
+//! 8. A WebSocket inside an HTTP/2 stream has no response body for the stream unit to watch, and
+//!    hyper's tunnel task hands every write to h2 whether or not the peer has granted credit, so a
+//!    session's own sends never go pending. [`TunnelProbe`], which the connection's lease service
+//!    puts in every HTTP/2 request's extensions, reports the DATA payload bytes the writer
+//!    accepted for the session's stream; `ws::tunnel_gate::TunnelGate` stops the session writing
+//!    while it is more than [`H2_SEND_BUF_BYTES`] ahead of that, which makes the send pending and
+//!    starts the per-send stall bound.
 //!
 //! Timeout semantics measured against hyper 1.x: the HTTP/1 header-read timeout is armed on every
 //! wait for a request head, so it bounds both a slow head and an idle keep-alive gap; it does not
@@ -241,10 +248,14 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The HTTP/2 send buffer per stream, in bytes (`http2::Builder::max_send_buf_size`): how much
 /// response data h2 queues for one stream beyond what the peer's window has let out. Bounds the
-/// body bytes polled ahead of an unread peer to this plus one chunk, and the DATA still queued
-/// behind a stalled window when a body has ended. Chosen over hyper's 400 KiB default for that
-/// bound (about a fifth of the memory a stalled peer can pin per stream), and kept above
-/// [`EGRESS_FLOOR_BYTES`] so a stream always has room to queue one whole chunk.
+/// body bytes polled ahead of an unread peer to this plus one chunk, and the unsent backlog behind
+/// a socket that accepts nothing. A WebSocket tunnel's lead over the wire is held to the same
+/// value ([`crate::ws::tunnel_gate`]), because hyper's tunnel task ignores the buffer. The DATA
+/// still queued behind a stalled stream window once a body has ended is at most one chunk, not
+/// this: hyper hands a chunk over only while the stream's buffer holds less than the credit the
+/// peer has granted. Chosen over hyper's 400 KiB default for these bounds (about a fifth of the
+/// memory a stalled peer can pin per stream), and kept above [`EGRESS_FLOOR_BYTES`] so a stream
+/// always has room to queue one whole chunk.
 ///
 /// The cost is download throughput on a fast link. Measured on Windows loopback with the `h2`
 /// client (24 MiB bodies, 6 MiB stream window, a bare hyper server, 100 downloads per setting, 3

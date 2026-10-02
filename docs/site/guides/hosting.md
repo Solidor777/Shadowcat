@@ -504,11 +504,16 @@ comparable per-process limit and the caps are not reduced there.
 
 ### Slow readers
 
-A response whose receiver makes no progress for `egress_window_secs` seconds is cut: an HTTP/2
-stream is reset (the rest of the connection is untouched), and a connection whose socket accepts
-almost nothing is closed. A WebSocket send that stays pending for that long ends its session. A
-connection with nothing in flight is never cut by this setting, and a cut media or attachment
-download can be resumed by a client that sends `Range`; a cut world export starts again from zero.
+A response whose receiver makes no progress for `egress_window_secs` seconds is cut, at most a
+quarter of that window late (so within 75 seconds at the default 60). A response whose receiver
+returns no flow-control credit for that long, or whose socket accepts almost nothing, is cut: an
+HTTP/2 stream is reset and the rest of the connection is untouched, or, when the response had
+already ended and its last bytes are stuck, or over HTTP/1, the whole connection is closed. A
+WebSocket send that stays pending for that long ends its session; over HTTP/2 a session that is
+more than a send buffer (64 KiB) ahead of what its peer has taken stops sending until the peer
+catches up, and that wait counts. A connection with nothing in flight is never cut by this setting.
+A cut download starts again from the beginning, and a cut world export has no length to resume
+from.
 
 A socket takes data in lumps rather than steadily. On Windows loopback the lumps measured were
 about 100 to 520 KB, so a reader that consumes less than about one lump per window (roughly 2 to 9
@@ -518,15 +523,21 @@ measured; their steps are expected to be finer. Over an extremely slow network, 
 measured boundary depends on the window: at a 1 second window the outcome was mixed between about
 18 and 33 KiB/s, and at a 3 second window it matched a one-chunk-per-window model. Those
 measurements used the `h2` crate as the client; a browser's own windows and credit batching were
-not measured.
+not measured. Measured with the same client, a reader at or below about 18 KiB/s was always cut at
+the 1 second window and one at or above about 40 KiB/s never was; the 60 second default was not
+measured, and raising the setting lowers the rate that is cut.
+
+A browser that cancels many requests at once (navigating away from a page of images) is served
+through however many cancellations arrive together; a connection that keeps cancelling streams
+faster than about 1,600 a second for ten seconds is ended as an attack.
 
 ### Shutdown
 
 On Ctrl+C or SIGTERM the server tells every WebSocket session to close, then gives open
 connections 5 seconds to finish. A session whose client has stopped reading is given 2 seconds to
-send its close message and is then dropped; no single message may take longer than
-`egress_window_secs` (60 by default) to send, so a client that stops reading while connected is
-dropped on its own. Connections still open
+send its close message and is then dropped; a send that stays pending for `egress_window_secs` (60
+by default) ends its session, so a client that stops reading while connected is dropped on its
+own. Connections still open
 after the 5 seconds are closed, and WebSocket sessions get a further 3 seconds at least to finish,
 so the server exits within about 8 seconds.
 
