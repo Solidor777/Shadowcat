@@ -184,3 +184,11 @@ async fn the_snapshot_is_taken_after_the_client_hello_arrives() {
         .expect("the client's handshake trusts the post-swap certificate");
     assert!(served.is_some());
 }
+
+#[tokio::test]
+async fn the_hand_off_queue_has_the_capacity_the_descriptor_budget_subtracts() {
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let config = Arc::new(Config::default());
+    let listener = SniffListener::new(tcp, TlsRuntime::disabled(), config, Limits::default());
+    assert_eq!(listener.rx.max_capacity(), HANDOFF_QUEUE_CAP);
+}

@@ -483,11 +483,14 @@ one refused client. A client is an IPv4 address or an IPv6 /64 prefix, the same 
 per-address cap counts. Nothing is logged per refused connection.
 
 Every connection holds one open file descriptor, so the caps only mean something if the process may
-hold that many. On Linux and macOS the server raises its soft open-file limit to the hard limit at
-startup (on macOS no higher than the system's `kern.maxfilesperproc`). It then reads the limit back
-and fits both caps inside that limit minus 512 descriptors kept for the database, asset files, logs
-and outbound requests, keeping the ratio between them. If the limit is too low to back the default
-caps (the common default of 1024 is), the caps are reduced and a startup warning says to what; raise
+hold that many. On Linux and macOS the server raises its soft open-file limit at startup to what the
+default caps and the reserve below need, never above the hard limit (on macOS no higher than the
+system's `kern.maxfilesperproc`); a limit that is already enough is left alone. It then reads the
+limit back and fits both caps inside that limit minus the reserve: 512 descriptors kept for the
+database, logs and outbound requests, 128 for connections waiting to be handed to the server, and
+256 for asset files held open while a slow client downloads them. The caps keep their ratio. If the
+limit is too low to back the default caps (the common default of 1024 is), the caps are reduced and
+a startup warning says to what; raise
 the limit with `ulimit -n` or, under systemd, `LimitNOFILE=`, to restore them. Windows has no
 comparable per-process limit and the caps are not reduced there.
 

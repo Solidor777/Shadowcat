@@ -53,6 +53,12 @@ use crate::config::Config;
 use crate::http::conn_serve::{accept_error_pause, ConnSource, ServeIo};
 use crate::http::peer_slots::PeerSlots;
 
+/// Capacity of the hand-off queue between the acceptor task and [`SniffListener::accept`]. A
+/// connection waiting in it holds a descriptor and belongs to neither the pre-hand-off cap (its
+/// permit is released once the send completes) nor the live cap (the serve loop admits it later),
+/// so `crate::fd_budget` subtracts this from the descriptor budget.
+pub const HANDOFF_QUEUE_CAP: usize = 128;
+
 /// The TLS handshake record type: the first byte of every TLS connection's ClientHello record.
 const TLS_HANDSHAKE_RECORD: u8 = 0x16;
 
@@ -295,7 +301,7 @@ impl SniffListener {
         let local = source
             .local_addr()
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-        let (tx, rx) = mpsc::channel(128);
+        let (tx, rx) = mpsc::channel(HANDOFF_QUEUE_CAP);
         let admission = Arc::new(
             PeerSlots::new(limits.global_cap, limits.per_ip_cap).named("pre-hand-off connections"),
         );

@@ -10,22 +10,29 @@
 //!
 //! INVARIANTS:
 //! 1. Both caps derive from ONE budget, the effective soft limit read back with `getrlimit` AFTER
-//!    the raise attempt minus [`FD_RESERVE`], never from the value the raise asked for: a failed
-//!    or partial raise must constrain the caps the same way a limit that was never raisable does.
+//!    the raise attempt minus [`descriptors_reserved`], never from the value the raise asked for:
+//!    a failed or partial raise must constrain the caps the same way a limit that was never
+//!    raisable does.
 //! 2. A descriptor is held by a connection either before hand-off or after it, never both, but a
 //!    connection is admitted to the next stage before the previous one releases, so the caps are
-//!    fitted to their SUM.
-//! 3. The platform ceiling is queried at runtime (macOS `kern.maxfilesperproc`), never a
+//!    fitted to their SUM. The hand-off queue ([`HANDOFF_QUEUE_CAP`]) holds descriptors that belong
+//!    to neither cap, so its capacity is subtracted too, as is [`STREAMED_FILE_PERMITS`], the bound
+//!    on asset files held open for stalled peers.
+//! 3. The raise and the fit read ONE definition of the need: [`descriptors_needed`] is
+//!    [`descriptors_reserved`] plus the two caps, and `fit_to_descriptor_budget` subtracts
+//!    [`descriptors_reserved`] from the soft limit, so a change to a cap or a reserved term moves
+//!    both.
+//! 4. The platform ceiling is queried at runtime (macOS `kern.maxfilesperproc`), never a
 //!    remembered literal, because `setrlimit` on macOS rejects a soft limit above it even when the
 //!    hard limit is unlimited.
-//! 4. A platform without `RLIMIT_NOFILE` reports no limit and the caps are not clamped; no ceiling
+//! 5. A platform without `RLIMIT_NOFILE` reports no limit and the caps are not clamped; no ceiling
 //!    is claimed for it.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::http::conn_serve::ConnLimits;
-use crate::tls::listener::Limits;
+use crate::tls::listener::{Limits, HANDOFF_QUEUE_CAP};
 
 /// Descriptors held back from the connection caps for everything that is not a client
 /// connection: the database and its write-ahead log, asset and backup files, the log file, the
@@ -34,8 +41,16 @@ use crate::tls::listener::Limits;
 /// small against any raised limit.
 pub const FD_RESERVE: u64 = 512;
 
+/// The most asset files the server holds open at once while streaming them to peers. A streamed
+/// response keeps its descriptor for as long as its peer stalls, so the descriptor budget owns the
+/// bound: [`descriptors_reserved`] subtracts it and the asset handlers take a permit from a
+/// semaphore of this size before opening a file. Chosen, not measured: a table's players times a
+/// few concurrent media or download requests, far above ordinary use and small against the
+/// connection caps.
+pub const STREAMED_FILE_PERMITS: usize = 256;
+
 /// Floor of [`Limits::global_cap`] after clamping. A server that admits nothing is not serving;
-/// when the descriptor limit is at or below [`FD_RESERVE`] the floors win over the budget and the
+/// when the descriptor limit is at or below [`descriptors_reserved`] the floors win over the budget and the
 /// startup warning says so.
 pub const MIN_PRE_HANDOFF_CAP: usize = 16;
 
@@ -48,7 +63,11 @@ pub const MIN_LIVE_CAP: usize = 32;
 /// # Examples
 ///
 /// ```
-/// let limit = shadowcat::fd_budget::raise_nofile_limit();
+/// use shadowcat::fd_budget::{descriptors_needed, raise_nofile_limit};
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let limit = raise_nofile_limit(descriptors_needed(&Limits::default(), &ConnLimits::default()));
 /// // `None` is "no limit to budget against" (unbounded, or a platform without the limit).
 /// if let Some(soft) = limit.soft {
 ///     assert!(soft > 0);
@@ -82,7 +101,7 @@ pub struct NofileLimit {
 pub struct Clamp {
     /// The soft limit the caps were fitted to.
     pub soft: u64,
-    /// `soft - FD_RESERVE`, saturating at zero.
+    /// `soft - descriptors_reserved()`, saturating at zero.
     pub budget: u64,
     /// [`Limits::global_cap`] before the clamp.
     pub pre_handoff_before: usize,
@@ -96,7 +115,46 @@ pub struct Clamp {
     pub floors_exceed_budget: bool,
 }
 
-/// Fits both connection caps inside `soft - FD_RESERVE` descriptors, keeping their ratio, and
+/// The descriptors the connection caps cannot use: [`FD_RESERVE`], the hand-off queue's
+/// [`HANDOFF_QUEUE_CAP`] and [`STREAMED_FILE_PERMITS`]. The single definition behind both
+/// [`descriptors_needed`] and [`fit_to_descriptor_budget`].
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::{descriptors_reserved, FD_RESERVE, STREAMED_FILE_PERMITS};
+/// use shadowcat::tls::listener::HANDOFF_QUEUE_CAP;
+///
+/// assert_eq!(
+///     descriptors_reserved(),
+///     FD_RESERVE + HANDOFF_QUEUE_CAP as u64 + STREAMED_FILE_PERMITS as u64
+/// );
+/// ```
+pub fn descriptors_reserved() -> u64 {
+    FD_RESERVE + HANDOFF_QUEUE_CAP as u64 + STREAMED_FILE_PERMITS as u64
+}
+
+/// The soft `RLIMIT_NOFILE` the process needs to back the caps `pre` and `live` AND everything
+/// [`descriptors_reserved`] counts: what startup asks the raise for, and the smallest soft limit
+/// at which [`fit_to_descriptor_budget`] changes nothing.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::{descriptors_needed, fit_to_descriptor_budget};
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let (pre, live) = (Limits::default(), ConnLimits::default());
+/// let needed = descriptors_needed(&pre, &live);
+/// assert!(fit_to_descriptor_budget(Some(needed), pre, live).2.is_none());
+/// assert!(fit_to_descriptor_budget(Some(needed - 1), pre, live).2.is_some());
+/// ```
+pub fn descriptors_needed(pre: &Limits, live: &ConnLimits) -> u64 {
+    pre.global_cap as u64 + live.max_live as u64 + descriptors_reserved()
+}
+
+/// Fits both connection caps inside `soft - descriptors_reserved()` descriptors, keeping their ratio, and
 /// returns the limits to use plus what changed (`None` when nothing had to). `soft` is the
 /// effective soft limit, `None` for no limit. Per-peer caps never exceed their global cap.
 ///
@@ -108,14 +166,14 @@ pub struct Clamp {
 /// # Examples
 ///
 /// ```
-/// use shadowcat::fd_budget::{fit_to_descriptor_budget, FD_RESERVE};
+/// use shadowcat::fd_budget::{descriptors_reserved, fit_to_descriptor_budget};
 /// use shadowcat::http::conn_serve::ConnLimits;
 /// use shadowcat::tls::listener::Limits;
 ///
 /// let (pre, live, clamp) =
 ///     fit_to_descriptor_budget(Some(1024), Limits::default(), ConnLimits::default());
 /// assert!(clamp.is_some());
-/// assert!(pre.global_cap as u64 + live.max_live as u64 <= 1024 - FD_RESERVE);
+/// assert!(pre.global_cap as u64 + live.max_live as u64 <= 1024 - descriptors_reserved());
 ///
 /// let (pre, live, clamp) = fit_to_descriptor_budget(None, Limits::default(), ConnLimits::default());
 /// assert!(clamp.is_none());
@@ -129,7 +187,7 @@ pub fn fit_to_descriptor_budget(
     let Some(soft) = soft else {
         return (pre, live, None);
     };
-    let budget = soft.saturating_sub(FD_RESERVE);
+    let budget = soft.saturating_sub(descriptors_reserved());
     let wanted = pre.global_cap as u128 + live.max_live as u128;
     if u128::from(budget) >= wanted {
         return (pre, live, None);
@@ -161,21 +219,88 @@ pub fn fit_to_descriptor_budget(
     (fitted_pre, fitted_live, Some(clamp))
 }
 
-/// Raises the soft `RLIMIT_NOFILE` to the hard limit (bounded by the platform ceiling) and returns
-/// the soft limit read back afterwards. A refused raise is logged at `warn` and the current
-/// limit is used.
+/// Raises the soft `RLIMIT_NOFILE` to `needed` descriptors (see [`descriptors_needed`]), bounded by
+/// the hard limit and the platform ceiling, and returns the soft limit read back afterwards. A
+/// limit already at or above `needed` is left alone. A refused raise is logged at `warn` and the
+/// current limit is used.
 ///
 /// # Examples
 ///
 /// ```
-/// let limit = shadowcat::fd_budget::raise_nofile_limit();
+/// use shadowcat::fd_budget::{descriptors_needed, raise_nofile_limit};
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let needed = descriptors_needed(&Limits::default(), &ConnLimits::default());
+/// let limit = raise_nofile_limit(needed);
 /// assert!(limit.soft.map_or(true, |soft| soft > 0));
 /// ```
 #[cfg(unix)]
-pub fn raise_nofile_limit() -> NofileLimit {
-    let Some((before_soft, hard)) = read_nofile() else {
+pub fn raise_nofile_limit(needed: u64) -> NofileLimit {
+    raise_with(
+        read_nofile,
+        write_nofile_soft,
+        platform_ceiling(),
+        needed,
+        widen(libc::RLIM_INFINITY),
+    )
+}
+
+/// On a platform without `RLIMIT_NOFILE` there is no limit to raise and none to budget against:
+/// the caps are not clamped, and no descriptor ceiling is claimed for the platform. `_needed` is
+/// the parameter the Unix variant raises to.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::{descriptors_needed, raise_nofile_limit};
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let needed = descriptors_needed(&Limits::default(), &ConnLimits::default());
+/// let limit = raise_nofile_limit(needed);
+/// assert!(limit.soft.map_or(true, |soft| soft > 0));
+/// ```
+#[cfg(not(unix))]
+pub fn raise_nofile_limit(_needed: u64) -> NofileLimit {
+    NofileLimit {
+        soft: None,
+        before: None,
+        problem: None,
+    }
+}
+
+/// The raise decision, independent of the platform so every OS's CI leg runs it: `read` returns
+/// `(soft, hard)` or `None` when the limit cannot be read, `write(soft, hard)` sets the soft limit
+/// while keeping `hard`, `ceiling` is the platform ceiling and `unlimited` the value `read` uses
+/// for "no limit". The soft limit is raised to [`raise_target`] only when it is below `needed`, and
+/// the result is read back through `read` again, so a refused or partial raise is reported as the
+/// limit the process actually has.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::raise_with;
+///
+/// let limit = raise_with(|| Some((1024, 4096)), |_, _| Ok(()), None, 2048, u64::MAX);
+/// assert_eq!(limit.before, Some(1024));
+/// assert!(limit.problem.is_none());
+/// ```
+pub fn raise_with(
+    read: impl Fn() -> Option<(u64, u64)>,
+    write: impl Fn(u64, u64) -> std::io::Result<()>,
+    ceiling: Option<u64>,
+    needed: u64,
+    unlimited: u64,
+) -> NofileLimit {
+    let bounded = |limit: u64| (limit != unlimited).then_some(limit);
+    let describe = |limit: u64| match bounded(limit) {
+        Some(n) => n.to_string(),
+        None => "unlimited".to_string(),
+    };
+    let Some((before_soft, hard)) = read() else {
         let problem = format!(
-            "getrlimit(RLIMIT_NOFILE) failed: {}",
+            "reading the open-file limit failed: {}",
             std::io::Error::last_os_error()
         );
         tracing::warn!("{problem}; the connection caps are not fitted to a descriptor limit");
@@ -185,10 +310,10 @@ pub fn raise_nofile_limit() -> NofileLimit {
             problem: Some(problem),
         };
     };
-    let target = raise_target(before_soft, hard, platform_ceiling());
+    let target = raise_target(before_soft, hard, ceiling, needed);
     let mut problem = None;
     if target > before_soft {
-        if let Err(e) = write_nofile_soft(target, hard) {
+        if let Err(e) = write(target, hard) {
             let message = format!(
                 "raising the open-file limit from {} to {target} failed: {e}",
                 describe(before_soft)
@@ -197,7 +322,7 @@ pub fn raise_nofile_limit() -> NofileLimit {
             problem = Some(message);
         }
     }
-    let after = read_nofile().map(|(soft, _)| soft);
+    let after = read().map(|(soft, _)| soft);
     if problem.is_none() && target > before_soft {
         tracing::info!(
             from = %describe(before_soft),
@@ -212,39 +337,23 @@ pub fn raise_nofile_limit() -> NofileLimit {
     }
 }
 
-/// On a platform without `RLIMIT_NOFILE` there is no limit to raise and none to budget against:
-/// the caps are not clamped, and no descriptor ceiling is claimed for the platform.
-///
-/// # Examples
-///
-/// ```
-/// let limit = shadowcat::fd_budget::raise_nofile_limit();
-/// assert!(limit.soft.map_or(true, |soft| soft > 0));
-/// ```
-#[cfg(not(unix))]
-pub fn raise_nofile_limit() -> NofileLimit {
-    NofileLimit {
-        soft: None,
-        before: None,
-        problem: None,
-    }
-}
-
-/// The soft limit a raise should ask for: the hard limit, bounded by the platform `ceiling`, and
-/// never below the current soft limit.
+/// The soft limit a raise should ask for: `needed`, bounded by the hard limit and the platform
+/// `ceiling`, and never below the current soft limit. A limit that already covers `needed` is not
+/// raised, and an unlimited hard limit does not make the target unlimited.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::fd_budget::raise_target;
 ///
-/// assert_eq!(raise_target(1024, 65_536, None), 65_536);
-/// assert_eq!(raise_target(1024, u64::MAX, Some(10_240)), 10_240);
-/// assert_eq!(raise_target(20_000, 65_536, Some(10_240)), 20_000);
+/// assert_eq!(raise_target(1024, 65_536, None, 3_000), 3_000);
+/// assert_eq!(raise_target(1024, 2_048, None, 3_000), 2_048);
+/// assert_eq!(raise_target(1024, u64::MAX, Some(2_500), 3_000), 2_500);
+/// assert_eq!(raise_target(20_000, 65_536, Some(10_240), 3_000), 20_000);
 /// ```
-pub fn raise_target(soft: u64, hard: u64, ceiling: Option<u64>) -> u64 {
-    let wanted = ceiling.map_or(hard, |c| hard.min(c));
-    wanted.max(soft)
+pub fn raise_target(soft: u64, hard: u64, ceiling: Option<u64>, needed: u64) -> u64 {
+    let bound = ceiling.map_or(hard, |c| hard.min(c));
+    needed.min(bound).max(soft)
 }
 
 /// Widens a platform `rlim_t` (32 or 64 bits depending on the target) to `u64` without a cast
@@ -252,21 +361,6 @@ pub fn raise_target(soft: u64, hard: u64, ceiling: Option<u64>) -> u64 {
 #[cfg(unix)]
 fn widen<T: Into<u64>>(value: T) -> u64 {
     value.into()
-}
-
-/// The soft limit as a budget input: `None` for an unbounded limit.
-#[cfg(unix)]
-fn bounded(limit: u64) -> Option<u64> {
-    (limit != widen(libc::RLIM_INFINITY)).then_some(limit)
-}
-
-/// A limit for a log line.
-#[cfg(unix)]
-fn describe(limit: u64) -> String {
-    match bounded(limit) {
-        Some(n) => n.to_string(),
-        None => "unlimited".to_string(),
-    }
 }
 
 /// Reads `(soft, hard)` of `RLIMIT_NOFILE`.
@@ -301,7 +395,7 @@ fn write_nofile_soft(soft: u64, hard: u64) -> std::io::Result<()> {
 
 /// The highest soft limit `setrlimit` accepts on this platform, when it is lower than the hard
 /// limit can say. macOS caps it at `kern.maxfilesperproc` regardless of an unlimited hard limit
-/// (`setrlimit(2)` on Darwin, EINVAL); Linux accepts any value up to the hard limit.
+/// (`setrlimit(2)` on Darwin, EINVAL).
 ///
 /// # Examples
 ///
@@ -330,9 +424,9 @@ pub fn platform_ceiling() -> Option<u64> {
     (status == 0 && value > 0).then_some(value as u64)
 }
 
-/// The highest soft limit `setrlimit` accepts on this platform; Linux and the other Unixes
-/// accept any value up to the hard limit, and a platform without the limit has no ceiling to
-/// claim.
+/// The highest soft limit `setrlimit` accepts on this platform when it is lower than the hard
+/// limit can say; this platform has no such ceiling to claim. A refused raise is handled by
+/// [`raise_with`], not prevented here.
 ///
 /// # Examples
 ///

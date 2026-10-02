@@ -137,13 +137,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Both connection caps are fitted to one descriptor budget, derived from the soft limit as it
-    // is AFTER the raise attempt (`fd_budget`).
-    let nofile = shadowcat::fd_budget::raise_nofile_limit();
-    let (sniff_limits, conn_limits, clamp) = shadowcat::fd_budget::fit_to_descriptor_budget(
-        nofile.soft,
-        shadowcat::tls::listener::Limits::default(),
-        shadowcat::http::conn_serve::ConnLimits::default(),
+    // is AFTER the raise attempt, which asks for exactly `descriptors_needed` (`fd_budget`).
+    let wanted_sniff = shadowcat::tls::listener::Limits::default();
+    let wanted_conn = shadowcat::http::conn_serve::ConnLimits::default();
+    let nofile = shadowcat::fd_budget::raise_nofile_limit(
+        shadowcat::fd_budget::descriptors_needed(&wanted_sniff, &wanted_conn),
     );
+    let (sniff_limits, conn_limits, clamp) =
+        shadowcat::fd_budget::fit_to_descriptor_budget(nofile.soft, wanted_sniff, wanted_conn);
     if let Some(clamp) = clamp {
         tracing::warn!(
             soft_limit = clamp.soft,
@@ -151,8 +152,9 @@ async fn main() -> anyhow::Result<()> {
             pre_handoff_cap = clamp.pre_handoff_after,
             live_cap = clamp.live_after,
             floors_exceed_budget = clamp.floors_exceed_budget,
-            "the open-file limit cannot back the default connection caps; they were reduced to fit. \
-             Raise the limit (ulimit -n / LimitNOFILE) to restore them"
+            "the open-file limit cannot back the default connection caps plus the descriptors \
+             reserved for the hand-off queue, streamed asset files and everything else; the caps \
+             were reduced to fit. Raise the limit (ulimit -n / LimitNOFILE) to restore them"
         );
     }
 

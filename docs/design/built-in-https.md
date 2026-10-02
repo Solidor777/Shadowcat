@@ -374,10 +374,16 @@ which ends the serve loop with an error log.
   - Refusals: `PeerSlots::admit` counts a refusal and logs one summary warning per
     `REFUSAL_WARN_INTERVAL` (10 s) with the count and one refused key (an IPv4 address or an IPv6
     /64); the state is a counter, never a map keyed by the attacker-chosen peer.
-  - Descriptors: `fd_budget` raises the soft `RLIMIT_NOFILE` to the hard limit at startup (macOS:
-    bounded by `kern.maxfilesperproc`, queried at runtime), reads the soft limit back and fits the
-    pre-hand-off cap and `max_live` together inside `soft - FD_RESERVE` (512), keeping their ratio
-    with floors, and warns once when it reduced them. A platform without the limit is not clamped.
+  - Descriptors: `fd_budget` raises the soft `RLIMIT_NOFILE` at startup to exactly
+    `descriptors_needed` (the two caps plus `descriptors_reserved`; never above the hard limit, on
+    macOS bounded by `kern.maxfilesperproc`, queried at runtime; a limit that already covers the
+    need is left alone), reads the soft limit back and fits the pre-hand-off cap and `max_live`
+    together inside `soft - descriptors_reserved()`, keeping their ratio with floors, and warns
+    once when it reduced them. `descriptors_reserved` is `FD_RESERVE` (512), the hand-off queue's
+    `HANDOFF_QUEUE_CAP` (128: a connection waiting in it holds a descriptor and belongs to neither
+    cap) and `STREAMED_FILE_PERMITS` (256: asset files held open for stalled peers). The raise and
+    the fit read the same definition, so they cannot disagree. A platform without the limit is not
+    clamped.
 - `ConnectInfo<ConnMeta>` is inserted in exactly two places: `conn_serve::serve_router` and
   `http::into_service` (for `axum::serve` transports, through `Connected` for
   `IncomingStream<TcpListener>`), so every serving path yields the same `ConnMeta`.
