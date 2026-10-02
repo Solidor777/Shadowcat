@@ -53,6 +53,12 @@ pub fn peer_key(ip: IpAddr) -> IpAddr {
 /// counted and reported by the next warning.
 pub const REFUSAL_WARN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Appended to the refusal warning when the per-peer cap refused: many players behind one reverse
+/// proxy share the proxy's address, and `Config::trusted_proxies` is what exempts it from the
+/// per-peer cap. The global cap's refusal gets no such advice, since no listing relieves it.
+const PER_PEER_REMEDY: &str =
+    "; if this address is a reverse proxy in front of the server, list it in `trusted_proxies`";
+
 /// The bounded state behind the refusal warning: a count and the time of the last warning.
 #[derive(Debug, Default)]
 struct Refusals {
@@ -183,13 +189,18 @@ impl PeerSlots {
             .ok()
             .and_then(|mut r| r.record(Instant::now()));
         if let Some(count) = report {
+            let remedy = match cause {
+                Cause::PerPeer => PER_PEER_REMEDY,
+                Cause::Global => "",
+            };
             tracing::warn!(
                 what = self.name,
                 refused = count,
                 peer = %key,
                 cap = ?cause,
-                "connection cap reached: refusing new {}; the peer is an IPv4 address or an IPv6 /64",
-                self.name
+                "connection cap reached: refusing new {}; the peer is an IPv4 address or an IPv6 /64{}",
+                self.name,
+                remedy
             );
         }
     }
