@@ -54,6 +54,7 @@ async fn accept(l: &mut SniffListener) -> (ConnStream, ConnMeta) {
     timeout(Duration::from_secs(10), ConnSource::accept(l))
         .await
         .expect("accept timed out")
+        .expect("a sniff listener never returns an accept error")
         .expect("the listener ended")
 }
 

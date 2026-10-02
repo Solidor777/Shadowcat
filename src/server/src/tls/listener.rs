@@ -24,7 +24,7 @@
 //!   idle time and the live-connection count (global and per peer, the same keying and
 //!   exemption, carried to it in `ConnMeta::cap_exempt`), and request-level throttles bound
 //!   abuse;
-//! - accept errors follow axum's own policy ([`crate::http::conn_serve::on_accept_error`]):
+//! - accept errors follow axum's own policy ([`crate::http::conn_serve::accept_error_pause`]):
 //!   connection-level errors are ignored, others are logged and followed by a 1 s pause, and the
 //!   accept loop never exits on error;
 //! - dropping the listener (graceful shutdown) releases the port immediately.
@@ -50,7 +50,7 @@ use tokio_rustls::LazyConfigAcceptor;
 use super::resolver::{finish_phase, hello_phase, CertResolver};
 use super::{ConnMeta, Selected, TlsRuntime};
 use crate::config::Config;
-use crate::http::conn_serve::{on_accept_error, ConnSource, ServeIo};
+use crate::http::conn_serve::{accept_error_pause, ConnSource, ServeIo};
 use crate::http::peer_slots::PeerSlots;
 
 /// The TLS handshake record type: the first byte of every TLS connection's ClientHello record.
@@ -327,7 +327,11 @@ impl SniffListener {
                             drop(permit);
                         });
                     }
-                    Err(e) => on_accept_error(e).await,
+                    Err(e) => {
+                        if let Some(pause) = accept_error_pause(&e) {
+                            tokio::time::sleep(pause).await;
+                        }
+                    }
                 }
             }
         });
@@ -391,11 +395,12 @@ impl Drop for SniffListener {
 impl ConnSource for SniffListener {
     type Io = ConnStream;
 
-    /// The next negotiated connection. `None` only when the acceptor task has ended (it exits
+    /// The next negotiated connection. `Ok(None)` only when the acceptor task has ended (it exits
     /// solely by panicking, since accept errors never end it), which the serve loop reports and
-    /// stops on rather than idling forever with a dead acceptor.
-    async fn accept(&mut self) -> Option<(ConnStream, ConnMeta)> {
-        self.rx.recv().await
+    /// stops on rather than idling forever with a dead acceptor. Never an `Err`: the acceptor
+    /// task paces its own accept errors, and `Receiver::recv` is cancel-safe.
+    async fn accept(&mut self) -> io::Result<Option<(ConnStream, ConnMeta)>> {
+        Ok(self.rx.recv().await)
     }
 }
 

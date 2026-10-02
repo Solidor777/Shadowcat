@@ -225,8 +225,10 @@ struct Exhausted;
 impl shadowcat::http::conn_serve::ConnSource for Exhausted {
     type Io = tokio::net::TcpStream;
 
-    async fn accept(&mut self) -> Option<(tokio::net::TcpStream, shadowcat::tls::ConnMeta)> {
-        None
+    async fn accept(
+        &mut self,
+    ) -> std::io::Result<Option<(tokio::net::TcpStream, shadowcat::tls::ConnMeta)>> {
+        Ok(None)
     }
 }
 

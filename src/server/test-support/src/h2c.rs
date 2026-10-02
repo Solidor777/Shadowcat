@@ -83,13 +83,13 @@ impl H2cSource {
 impl ConnSource for H2cSource {
     type Io = H2cStream;
 
-    async fn accept(&mut self) -> Option<(H2cStream, ConnMeta)> {
+    async fn accept(&mut self) -> io::Result<Option<(H2cStream, ConnMeta)>> {
         tokio::select! {
             accepted = self.listener.accept() => {
-                let (sock, peer) = accepted.ok()?;
-                Some((H2cStream(sock), ConnMeta::plain(peer)))
+                let (sock, peer) = accepted?;
+                Ok(Some((H2cStream(sock), ConnMeta::plain(peer))))
             }
-            _ = &mut self.end => None,
+            _ = &mut self.end => Ok(None),
         }
     }
 }

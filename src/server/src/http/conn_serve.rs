@@ -40,6 +40,11 @@
 //!    released when the session ends, and a session whose peer has stopped reading ends at the
 //!    per-send stall bound ([`crate::ws::bounded_sink::SEND_STALL_TIMEOUT`]), so a lease cannot
 //!    pin a slot for longer than that bound past the peer's last read.
+//! 5. The pause after an accept error is decided in [`serve_router`], never inside a
+//!    [`ConnSource::accept`] future: the loop drops that future on every reaped connection task, so
+//!    a pause held inside it would be cut short by the next reap. A source returns the error and
+//!    [`accept_error_pause`] is the one policy every caller (this loop and `SniffListener`'s
+//!    acceptor task) consults.
 //!
 //! Timeout semantics measured against hyper 1.x: the HTTP/1 header-read timeout is armed on every
 //! wait for a request head, so it bounds both a slow head and an idle keep-alive gap; it does not
@@ -113,8 +118,9 @@ impl ServeIo for TcpStream {
     }
 }
 
-/// A source of ready connections. `None` means the source has ended for good (the serve loop then
-/// stops accepting and drains).
+/// A source of ready connections. `Ok(None)` means the source has ended for good (the serve loop
+/// then stops accepting and drains); an `Err` is an accept failure the caller paces with
+/// [`accept_error_pause`].
 ///
 /// # Examples
 ///
@@ -128,7 +134,10 @@ pub trait ConnSource: Send + 'static {
     /// The connection IO type.
     type Io: ServeIo;
 
-    /// The next connection with its metadata, or `None` when the source is finished.
+    /// The next connection with its metadata, `Ok(None)` when the source is finished, or the
+    /// accept error. CONTRACT: the future is cancel-safe (dropping it between polls loses no
+    /// connection, because [`serve_router`] drops it on every reaped task), and it returns errors
+    /// instead of sleeping on them: the pause is the caller's, see [`accept_error_pause`].
     ///
     /// # Examples
     ///
@@ -137,49 +146,57 @@ pub trait ConnSource: Send + 'static {
     ///
     /// # #[tokio::main] async fn main() {
     /// let mut l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    /// let next = ConnSource::accept(&mut l).await;
+    /// let next = ConnSource::accept(&mut l).await.unwrap();
     /// assert!(next.is_some());
     /// # }
     /// ```
-    fn accept(&mut self) -> impl Future<Output = Option<(Self::Io, ConnMeta)>> + Send;
+    fn accept(&mut self) -> impl Future<Output = io::Result<Option<(Self::Io, ConnMeta)>>> + Send;
 }
 
 impl ConnSource for TcpListener {
     type Io = TcpStream;
 
-    async fn accept(&mut self) -> Option<(TcpStream, ConnMeta)> {
-        loop {
-            match TcpListener::accept(self).await {
-                Ok((sock, peer)) => return Some((sock, ConnMeta::plain(peer))),
-                Err(e) => on_accept_error(e).await,
-            }
-        }
+    async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
+        let (sock, peer) = TcpListener::accept(self).await?;
+        Ok(Some((sock, ConnMeta::plain(peer))))
     }
 }
 
-/// Axum's accept-error policy, shared by every source: connection-level errors are ignored;
-/// anything else (for example running out of file descriptors) is logged and followed by a 1 s
-/// pause so the loop does not spin.
+/// Axum's accept-error policy, shared by every caller of a source's `accept`: a connection-level
+/// error (refused, aborted, reset: the peer went away) is ignored and yields `None`; anything else
+/// (for example running out of file descriptors) is logged at error level and yields the
+/// [`ACCEPT_ERROR_PAUSE`] the caller must wait before accepting again, so the loop does not spin.
+/// The caller owns the wait: sleeping inside a `ConnSource::accept` future would be undone each
+/// time that future is dropped.
 ///
 /// # Examples
 ///
 /// ```
-/// # #[tokio::main(flavor = "current_thread", start_paused = true)] async fn main() {
-/// let e = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
-/// shadowcat::http::conn_serve::on_accept_error(e).await; // returns immediately
-/// # }
+/// use shadowcat::http::conn_serve::{accept_error_pause, ACCEPT_ERROR_PAUSE};
+///
+/// let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+/// assert_eq!(accept_error_pause(&reset), None);
+/// let exhausted = std::io::Error::from(std::io::ErrorKind::Other);
+/// assert_eq!(accept_error_pause(&exhausted), Some(ACCEPT_ERROR_PAUSE));
 /// ```
-pub async fn on_accept_error(e: io::Error) {
-    if matches!(
-        e.kind(),
-        io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-    ) {
-        return;
+pub fn accept_error_pause(e: &io::Error) -> Option<Duration> {
+    let pause = pause_for(e.kind());
+    if pause.is_some() {
+        tracing::error!("accept error: {e}");
     }
-    tracing::error!("accept error: {e}");
-    tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+    pause
+}
+
+/// The decision table of [`accept_error_pause`]: no pause for the connection-level kinds
+/// (`ConnectionRefused`, `ConnectionAborted`, `ConnectionReset`), [`ACCEPT_ERROR_PAUSE`] for every
+/// other kind. Source: axum's `serve` accept loop, which ignores exactly these three kinds.
+fn pause_for(kind: io::ErrorKind) -> Option<Duration> {
+    match kind {
+        io::ErrorKind::ConnectionRefused
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::ConnectionReset => None,
+        _ => Some(ACCEPT_ERROR_PAUSE),
+    }
 }
 
 /// The pause after a non-connection-level accept error.
@@ -423,14 +440,31 @@ where
     let dropped = Arc::new(AtomicUsize::new(0));
     let mut tasks = JoinSet::new();
     let mut drain = DrainReport::default();
+    // When accepting resumes after an accept error. Held here, not in the accept future, because
+    // that future is dropped on every reaped connection task.
+    let mut resume_at: Option<Instant> = None;
 
     let end = loop {
         let accepted = tokio::select! {
-            a = source.accept() => a,
+            // The branch expression is evaluated even while the precondition is false (only the
+            // resulting future goes unpolled), so it must be valid when `resume_at` is `None`.
+            a = source.accept(), if resume_at.is_none() => a,
+            _ = tokio::time::sleep_until(resume_at.unwrap_or_else(Instant::now)),
+                if resume_at.is_some() => {
+                resume_at = None;
+                continue;
+            }
             _ = signal_tx.closed() => break ServeEnd::Shutdown,
             // Reaps finished connection tasks so the set holds only live ones.
             Some(result) = tasks.join_next(), if !tasks.is_empty() => {
                 note_join(result, &mut drain);
+                continue;
+            }
+        };
+        let accepted = match accepted {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                resume_at = accept_error_pause(&e).map(|pause| Instant::now() + pause);
                 continue;
             }
         };

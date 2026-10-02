@@ -157,8 +157,8 @@ struct Exhausted;
 impl ConnSource for Exhausted {
     type Io = TcpStream;
 
-    async fn accept(&mut self) -> Option<(TcpStream, ConnMeta)> {
-        None
+    async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
+        Ok(None)
     }
 }
 
@@ -187,11 +187,13 @@ struct OneThenEnd {
 impl ConnSource for OneThenEnd {
     type Io = TcpStream;
 
-    async fn accept(&mut self) -> Option<(TcpStream, ConnMeta)> {
-        let listener = self.listener.as_ref()?;
-        let (sock, peer) = listener.accept().await.ok()?;
+    async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
+        let Some(listener) = self.listener.as_ref() else {
+            return Ok(None);
+        };
+        let (sock, peer) = listener.accept().await?;
         self.listener = None;
-        Some((sock, ConnMeta::plain(peer)))
+        Ok(Some((sock, ConnMeta::plain(peer))))
     }
 }
 
@@ -269,9 +271,9 @@ struct H2Source(TcpListener);
 impl ConnSource for H2Source {
     type Io = AlpnH2;
 
-    async fn accept(&mut self) -> Option<(AlpnH2, ConnMeta)> {
-        let (sock, peer) = self.0.accept().await.ok()?;
-        Some((AlpnH2(sock), ConnMeta::plain(peer)))
+    async fn accept(&mut self) -> io::Result<Option<(AlpnH2, ConnMeta)>> {
+        let (sock, peer) = self.0.accept().await?;
+        Ok(Some((AlpnH2(sock), ConnMeta::plain(peer))))
     }
 }
 
@@ -905,11 +907,11 @@ struct ExemptSource(TcpListener);
 impl ConnSource for ExemptSource {
     type Io = TcpStream;
 
-    async fn accept(&mut self) -> Option<(TcpStream, ConnMeta)> {
-        let (sock, peer) = self.0.accept().await.ok()?;
+    async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
+        let (sock, peer) = self.0.accept().await?;
         let mut meta = ConnMeta::plain(peer);
         meta.cap_exempt = true;
-        Some((sock, meta))
+        Ok(Some((sock, meta)))
     }
 }
 
@@ -1121,5 +1123,189 @@ async fn a_connection_that_ignores_its_failed_io_is_dropped_exactly_kill_grace_a
             was_dropped.load(Ordering::SeqCst),
             "{reason:?}: not dropped"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The accept-error pause: decided by `serve_router`, so a reaped connection task cannot cut it
+// short
+// ---------------------------------------------------------------------------------------------
+
+impl ServeIo for tokio::io::DuplexStream {
+    fn is_h2(&self) -> bool {
+        false
+    }
+}
+
+/// One scripted `accept` outcome.
+type Scripted = io::Result<Option<(tokio::io::DuplexStream, ConnMeta)>>;
+
+/// A source that replays a script, one entry per `accept` call, records the instant of every call
+/// that consumed an entry, and then parks (a parked call is dropped and re-made on every reap, so
+/// it is not recorded). Runs on the paused clock, so recorded instants are exact.
+struct ScriptedSource {
+    /// Outcomes still to return, in call order.
+    script: std::collections::VecDeque<Scripted>,
+    /// The instant of each `accept` call that consumed a script entry.
+    calls: Arc<std::sync::Mutex<Vec<Instant>>>,
+}
+
+impl ConnSource for ScriptedSource {
+    type Io = tokio::io::DuplexStream;
+
+    async fn accept(&mut self) -> Scripted {
+        match self.script.pop_front() {
+            Some(outcome) => {
+                self.calls.lock().unwrap().push(Instant::now());
+                outcome
+            }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// A connection whose client end the test keeps: the server side lives until that end drops.
+fn duplex_connection() -> (Scripted, tokio::io::DuplexStream) {
+    let (server, client) = tokio::io::duplex(1024);
+    let meta = ConnMeta::plain("192.0.2.1:4000".parse().unwrap());
+    (Ok(Some((server, meta))), client)
+}
+
+/// What a scripted serve loop exposes to a test.
+struct ScriptedLoop {
+    /// The instant of every `accept` call that consumed a script entry.
+    calls: Arc<std::sync::Mutex<Vec<Instant>>>,
+    /// Ends the loop.
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    /// The loop.
+    task: tokio::task::JoinHandle<ServeOutcome>,
+}
+
+/// Serves the scripted source with a plain router.
+fn serve_script(script: Vec<Scripted>) -> ScriptedLoop {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(serve_router(
+        ScriptedSource {
+            script: script.into(),
+            calls: calls.clone(),
+        },
+        app(),
+        async move {
+            let _ = rx.await;
+        },
+        ConnLimits::default(),
+        || {},
+    ));
+    ScriptedLoop {
+        calls,
+        shutdown,
+        task,
+    }
+}
+
+/// Lets the paused clock run `for_how_long` with every ready task polled.
+async fn settle(for_how_long: Duration) {
+    tokio::time::sleep(for_how_long).await;
+}
+
+const TICK: Duration = Duration::from_millis(1);
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn the_pause_after_an_accept_error_survives_a_connection_task_being_reaped() {
+    let (first, client) = duplex_connection();
+    let (second, _client2) = duplex_connection();
+    let loop_ = serve_script(vec![
+        first,
+        Err(io::Error::other("out of descriptors")),
+        second,
+    ]);
+    settle(TICK).await;
+    assert_eq!(
+        loop_.calls.lock().unwrap().len(),
+        2,
+        "the error was returned"
+    );
+    // The first connection ends while the loop is paused; reaping it must not resume accepting.
+    drop(client);
+    settle(TICK).await;
+    assert_eq!(
+        loop_.calls.lock().unwrap().len(),
+        2,
+        "a reap cut the accept pause short"
+    );
+    settle(ACCEPT_ERROR_PAUSE).await;
+    let calls = loop_.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3, "accepting never resumed");
+    assert_eq!(
+        calls[2] - calls[1],
+        ACCEPT_ERROR_PAUSE,
+        "the third accept must start exactly one pause after the error"
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn accepts_with_no_pending_pause_never_wait_and_never_evaluate_a_resume_instant() {
+    let t0 = Instant::now();
+    let mut script = Vec::new();
+    let mut clients = Vec::new();
+    for _ in 0..5 {
+        let (connection, client) = duplex_connection();
+        script.push(connection);
+        clients.push(client);
+    }
+    let loop_ = serve_script(script);
+    // Each connection is reaped between accepts.
+    clients.clear();
+    settle(TICK).await;
+    let calls = loop_.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 5, "the five scripted connections");
+    assert!(
+        calls.iter().all(|&at| at == t0),
+        "an accept waited with no pause pending: {calls:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn connection_level_accept_errors_resume_at_once() {
+    let (connection, _client) = duplex_connection();
+    let t0 = Instant::now();
+    let loop_ = serve_script(vec![
+        Err(io::Error::from(io::ErrorKind::ConnectionReset)),
+        Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
+        Err(io::Error::from(io::ErrorKind::ConnectionRefused)),
+        connection,
+    ]);
+    settle(TICK).await;
+    let calls = loop_.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 4, "three ignored errors and the connection");
+    assert!(calls.iter().all(|&at| at == t0), "{calls:?}");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_shutdown_during_the_accept_pause_ends_the_loop_at_once() {
+    let loop_ = serve_script(vec![Err(io::Error::other("out of descriptors"))]);
+    settle(TICK).await;
+    let paused_at = Instant::now();
+    loop_.shutdown.send(()).unwrap();
+    let outcome = loop_.task.await.unwrap();
+    assert_eq!(outcome.end, ServeEnd::Shutdown);
+    assert!(
+        Instant::now() - paused_at < ACCEPT_ERROR_PAUSE,
+        "the pause delayed the shutdown"
+    );
+}
+
+#[test]
+fn the_pause_decision_table_ignores_only_the_connection_level_kinds() {
+    for kind in [
+        io::ErrorKind::ConnectionRefused,
+        io::ErrorKind::ConnectionAborted,
+        io::ErrorKind::ConnectionReset,
+    ] {
+        assert_eq!(pause_for(kind), None, "{kind:?}");
+    }
+    for kind in [io::ErrorKind::Other, io::ErrorKind::OutOfMemory] {
+        assert_eq!(pause_for(kind), Some(ACCEPT_ERROR_PAUSE), "{kind:?}");
     }
 }
