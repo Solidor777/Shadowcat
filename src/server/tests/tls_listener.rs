@@ -499,6 +499,7 @@ async fn graceful_shutdown_releases_the_port_with_a_live_tls_connection() {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls,
     };
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();

@@ -55,6 +55,7 @@ use crate::ws::room::RoomStatsSnapshot;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let status = health(State(state)).await;
@@ -94,6 +95,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -139,6 +141,7 @@ pub async fn debug_rooms(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -280,6 +283,7 @@ const MAX_UI_STATE_BYTES: usize = 64 * 1024;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
@@ -342,6 +346,7 @@ pub async fn get_ui_state(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
@@ -428,6 +433,7 @@ pub struct ServerConfig {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let resp = config(State(state)).await;
@@ -470,6 +476,7 @@ pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -523,6 +530,7 @@ fn anti_enumeration_phc() -> &'static str {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
@@ -625,6 +633,7 @@ pub async fn login(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
@@ -684,6 +693,7 @@ pub struct SetupRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let body = SetupRequest { username: "admin".into(), password: "pw-admin".into(), token: None };
@@ -853,6 +863,7 @@ pub struct UserEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -914,6 +925,7 @@ pub async fn create_user(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -972,6 +984,7 @@ pub async fn list_users(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// // `delete_user` also clears the caller's session-store row, so the
@@ -1055,6 +1068,7 @@ pub struct ResetPasswordRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// // `reset_user_password` also clears the target's session-store rows, so the
@@ -1219,6 +1233,7 @@ pub struct WorldEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1276,6 +1291,7 @@ pub async fn list_worlds(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1361,6 +1377,7 @@ pub async fn create_world(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1451,6 +1468,7 @@ pub struct MemberEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1554,6 +1572,7 @@ pub struct AddMemberRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1714,6 +1733,7 @@ impl From<crate::data::sqlite::InviteRecord> for InviteEntry {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1788,6 +1808,7 @@ pub async fn create_invite(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1837,6 +1858,7 @@ pub async fn list_invites(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -1934,6 +1956,7 @@ pub struct AcceptInviteRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: pl, username: "pl".into(), role: ServerRole::User };
@@ -2046,6 +2069,7 @@ pub async fn accept_invite(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2094,6 +2118,7 @@ pub async fn remove_member(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2180,6 +2205,7 @@ pub struct DocQuery {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2292,6 +2318,7 @@ pub struct WorldSnapshot {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2400,6 +2427,7 @@ fn by_id_not_found(e: crate::data::DataError) -> AppError {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2532,6 +2560,7 @@ pub struct PatchRequest {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2643,6 +2672,7 @@ pub async fn patch_document(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2743,6 +2773,7 @@ fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2789,6 +2820,7 @@ pub async fn get_world_capability_defaults(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2841,6 +2873,7 @@ const MAX_CAPABILITY_REQUIREMENTS: usize = 256;
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -2887,6 +2920,7 @@ pub async fn get_world_capability_requirements(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -3060,6 +3094,7 @@ fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), A
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -3106,6 +3141,7 @@ pub async fn get_world_contract_declarations(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -3310,6 +3346,7 @@ fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppEr
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -3356,6 +3393,7 @@ pub async fn get_world_schema_declarations(
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };

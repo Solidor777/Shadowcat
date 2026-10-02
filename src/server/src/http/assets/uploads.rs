@@ -646,6 +646,7 @@ pub struct CreateUploadResponse {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -789,6 +790,7 @@ async fn owned_session(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -895,6 +897,7 @@ pub async fn put_chunk(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -1055,6 +1058,7 @@ async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };

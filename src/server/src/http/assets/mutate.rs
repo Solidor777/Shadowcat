@@ -75,6 +75,7 @@ async fn gm_asset(state: &AppState, user: &AuthUser, id: Uuid) -> Result<Asset, 
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -121,6 +122,7 @@ pub async fn original(
         },
         &headers,
         &method,
+        &state.file_permits,
     )
     .await
 }
@@ -168,6 +170,7 @@ pub(super) fn attachment_disposition(original_name: &str) -> String {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -343,6 +346,7 @@ pub struct PatchAssetRequest {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -519,6 +523,7 @@ pub struct BulkAssetRequest {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -619,6 +624,7 @@ pub struct FolderDeleteQuery {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };

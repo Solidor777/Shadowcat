@@ -14,6 +14,7 @@ pub(crate) async fn test_state() -> AppState {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: crate::tls::TlsRuntime::disabled(),
     }
 }
@@ -2940,6 +2941,7 @@ async fn file_backed_state() -> (AppState, tempfile::TempDir) {
         auth_throttle: Arc::new(throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: crate::tls::TlsRuntime::disabled(),
     };
     (state, tmp)

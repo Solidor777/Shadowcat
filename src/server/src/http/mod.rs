@@ -64,6 +64,7 @@ pub use scheme::into_service;
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
@@ -96,6 +97,9 @@ pub struct AppState {
     /// `chat::post_publish` link-preview-image/oEmbed-thumbnail resolves for
     /// the identical URL -- see `chat::post_publish::PreviewFetchLocks`.
     pub preview_fetch_locks: crate::chat::PreviewFetchLocks,
+    /// Permits bounding the asset files held open while streaming to peers
+    /// (`assets::permits`); its capacity is the descriptor term `fd_budget` reserves.
+    pub file_permits: Arc<assets::permits::StreamedFilePermits>,
     /// The TLS subsystem: status published by `/api/config` and the admin route.
     pub tls: Arc<crate::tls::TlsRuntime>,
 }
@@ -161,6 +165,7 @@ impl AppState {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let app = router(state).await;
@@ -452,6 +457,7 @@ pub(crate) fn session_wait(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -512,6 +518,7 @@ where
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

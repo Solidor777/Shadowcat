@@ -459,8 +459,17 @@ task paces its own accept errors.
     together inside `soft - descriptors_reserved()`, keeping their ratio with floors, and warns
     once when it reduced them. `descriptors_reserved` is `FD_RESERVE` (512), the hand-off queue's
     `HANDOFF_QUEUE_CAP` (128: a connection waiting in it holds a descriptor and belongs to neither
-    cap) and `STREAMED_FILE_PERMITS` (256: asset files held open for stalled peers). The raise and
-    the fit read the same definition, so they cannot disagree. A platform without the limit is not
+    cap) and `STREAMED_FILE_PERMITS` (256: the size of the semaphore, `AppState.file_permits`, that
+    every streamed asset file takes a permit from). `http::assets::permits::StreamedFilePermits`
+    owns the pool: `serve_file` (all four stored-file sites) and `export_world` call
+    `acquire`, a bounded wait of `PERMIT_WAIT` (2 s) that ends in `AppError::Unavailable` (503 with
+    `Retry-After: 1`) before any header is written. A GET takes the permit before it opens the file;
+    the permit moves into the body and is returned when the last file byte has been read (not when
+    the last buffered byte has been sent) or when the body is dropped, which a stall cut, a reset or
+    a drain does. A HEAD, a 304 answered before the file is touched and a 416 hold none. The pool
+    records its peak and logs a new peak at `debug`; a scene of 150 distinct images measured 3 to
+    4 at its peak over HTTP/1.1 and HTTP/2, which is why 256 stands. The raise and the fit read the
+    same definition, so they cannot disagree, and the pool is created from the same constant. A platform without the limit is not
     clamped.
 - `ConnectInfo<ConnMeta>` is inserted in exactly two places: `conn_serve::serve_router` and
   `http::into_service` (for `axum::serve` transports, through `Connected` for

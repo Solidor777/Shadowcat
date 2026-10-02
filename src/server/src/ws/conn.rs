@@ -222,6 +222,7 @@ fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// // `router` wires this handler at `GET /ws` (HTTP/1.1 upgrade) and `CONNECT /ws` (RFC 8441,

@@ -47,6 +47,7 @@ async fn spawn() -> Harness {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls: shadowcat::tls::TlsRuntime::disabled(),
     };
     let app = http::router(state).await;

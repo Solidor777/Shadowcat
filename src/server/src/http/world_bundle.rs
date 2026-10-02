@@ -80,7 +80,10 @@ impl std::io::Write for ChannelWriter {
 /// so releasing there is exact, not loose). Same accepted trade-off
 /// `assets::upload`/`assets::replace` already document for their own
 /// `DefaultBodyLimit`-disabled routes: a slow producer can hold the permit a
-/// long time. Streams the world's `.tar` bundle as the response body:
+/// long time. Also takes one `http::assets::permits::StreamedFilePermits` permit (a bounded wait,
+/// then 503 with `Retry-After`) before any header is written and releases it with the barrier,
+/// since the producing task reads asset files. The download has no length and no `Range`: a cut
+/// export restarts from zero. Streams the world's `.tar` bundle as the response body:
 /// `write_bundle` runs on a blocking thread and writes into a
 /// `ChannelWriter`, whose bounded channel this function turns directly into
 /// the response body stream — bytes reach the client as `write_bundle`
@@ -115,6 +118,7 @@ impl std::io::Write for ChannelWriter {
 ///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
@@ -132,6 +136,11 @@ pub async fn export_world(
     // `.read().await` guard is tied to a borrow of `state.write_barrier`
     // and cannot cross that move.
     let read_permit = state.write_barrier.clone().read_owned().await;
+    // The export reads asset files for as long as the client keeps receiving, so it takes one
+    // streamed-file permit before any header exists: an exhausted pool is a 503, and the permit
+    // is released with `read_permit` when the producing task ends, which a cut or dropped
+    // download triggers (the dropped receiver fails the next `ChannelWriter` write).
+    let file_permit = state.file_permits.acquire().await?;
     let data = state.repo.export_world_rows(world).await?;
     let assets_dir = state.config.assets_path();
 
@@ -153,6 +162,7 @@ pub async fn export_world(
         // snapshot can never interleave with this export's row read +
         // asset file reads.
         let _read_permit = read_permit;
+        let _file_permit = file_permit;
         if let Err(e) = handle.await {
             tracing::error!(?e, %world, "world export task panicked");
         }
@@ -366,6 +376,7 @@ async fn stream_bundle_upload(
 /// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 /// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// # };
 /// let admin_id = uuid::Uuid::new_v4();

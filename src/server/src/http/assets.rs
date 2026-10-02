@@ -3,6 +3,7 @@
 
 mod file_response;
 pub mod mutate;
+pub mod permits;
 pub mod query;
 mod range;
 pub mod uploads;
@@ -403,6 +404,7 @@ fn parse_containers_field(value: Option<&str>) -> Result<AudioContainers, AppErr
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::builder()
@@ -596,6 +598,7 @@ pub struct ServeQuery {
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
@@ -665,6 +668,7 @@ pub async fn serve(
             },
             &headers,
             &method,
+            &state.file_permits,
         )
         .await;
     }
@@ -711,6 +715,7 @@ pub async fn serve(
                 },
                 &headers,
                 &method,
+                &state.file_permits,
             )
             .await;
         }
@@ -785,6 +790,7 @@ pub async fn serve(
         },
         &headers,
         &method,
+        &state.file_permits,
     )
     .await
 }
@@ -818,6 +824,7 @@ pub async fn serve(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
@@ -901,6 +908,7 @@ async fn ensure_derivative(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let server = axum_test::TestServer::builder()
@@ -1155,6 +1163,7 @@ pub(super) async fn delete_asset_files_and_row(
 ///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
 ///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };

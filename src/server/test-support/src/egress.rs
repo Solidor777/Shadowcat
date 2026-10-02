@@ -13,7 +13,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::Query;
 use axum::routing::{any, get};
 use shadowcat::http::conn_serve::{serve_router, ConnLimits, DrainReport, ServeEnd, ServeOutcome};
-use shadowcat::http::router;
+use shadowcat::http::{router, AppState};
 use shadowcat::ws::WsState;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -65,6 +65,9 @@ pub struct EgressServer {
     pub addr: SocketAddr,
     /// The session registry.
     pub ws: WsState,
+    /// The application state the router serves over: the repository, the configuration and the
+    /// streamed-file permit pool.
+    pub state: AppState,
     /// The seeded world a tunnel joins.
     pub world: uuid::Uuid,
     /// Bytes `/endless` has produced.
@@ -99,6 +102,20 @@ impl EgressServer {
     /// (what the production listener does; the throughput ladder serves without it as a control).
     pub async fn start_tuned(limits: ConnLimits, protocol: Protocol, nodelay: bool) -> Self {
         let (state, world) = seeded_state().await;
+        Self::start_over(state, world, limits, protocol, nodelay).await
+    }
+
+    /// Serves `protocol` with `limits` over `state`, the application state a caller prepared (for
+    /// example with an assets directory and a small streamed-file permit pool). `world` is the
+    /// seeded world the state's user owns.
+    pub async fn start_over(
+        state: AppState,
+        world: uuid::Uuid,
+        limits: ConnLimits,
+        protocol: Protocol,
+        nodelay: bool,
+    ) -> Self {
+        let handle = state.clone();
         let ws = state.ws.clone();
         let hook_ws = ws.clone();
         let produced = Arc::new(AtomicUsize::new(0));
@@ -183,6 +200,7 @@ impl EgressServer {
         Self {
             addr,
             ws,
+            state: handle,
             world,
             produced,
             closed,

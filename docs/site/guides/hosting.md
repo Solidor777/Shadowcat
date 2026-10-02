@@ -502,6 +502,17 @@ a startup warning says to what; raise
 the limit with `ulimit -n` or, under systemd, `LimitNOFILE=`, to restore them. Windows has no
 comparable per-process limit and the caps are not reduced there.
 
+The 256 descriptors for asset files are a real limit, enforced by the server: every asset response
+that streams a file (audio, video, images, PDFs, archives, the retained-original download and the
+other asset variants) and every world export holds one of 256 permits for as long as it holds the
+file open. A permit comes back when the last byte of the file has been read from disk (even if the
+client has not yet taken every byte) or when the response is cut or the client goes away. A request
+that finds all 256 permits taken waits up to 2 seconds for one and is then refused with
+`503 Service Unavailable` and `Retry-After: 1`, before any response header is written. Loading a
+scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 and HTTP/2 (measured
+with a debug-build gauge), so 256 is far above ordinary use; a table whose members stall many
+downloads at once can exhaust it for up to the slow-reader window below.
+
 ### Slow readers
 
 A response whose receiver makes no progress for `egress_window_secs` seconds is cut, at most a
@@ -512,8 +523,10 @@ already ended and its last bytes are stuck, or over HTTP/1, the whole connection
 WebSocket send that stays pending for that long ends its session; over HTTP/2 a session that is
 more than a send buffer (64 KiB) ahead of what its peer has taken stops sending until the peer
 catches up, and that wait counts. A connection with nothing in flight is never cut by this setting.
-A cut download starts again from the beginning, and a cut world export has no length to resume
-from.
+A cut asset response of a type served with byte-range support (audio, video, images, PDFs and
+archives) can be resumed with a `Range` request from the first byte not received; a cut world
+export has no length and no `Range` and starts again from the beginning, and so does a cut
+response of a compressible type such as text or SVG.
 
 A socket takes data in lumps rather than steadily. On Windows loopback the lumps measured were
 about 100 to 520 KB, so a reader that consumes less than about one lump per window (roughly 2 to 9

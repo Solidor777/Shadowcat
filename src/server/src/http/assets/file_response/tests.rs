@@ -4,6 +4,7 @@
 
 use super::*;
 use axum::body::to_bytes;
+use std::time::Duration;
 
 /// The validator used by every case.
 const ETAG: &str = "\"22222222-2222-2222-2222-222222222222-1\"";
@@ -19,6 +20,11 @@ fn stored(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
     let path = dir.path().join("asset");
     std::fs::write(&path, bytes).unwrap();
     (dir, path)
+}
+
+/// A pool that never runs out inside one test.
+fn ample() -> StreamedFilePermits {
+    StreamedFilePermits::new(64, std::time::Duration::from_millis(50))
 }
 
 fn spec<'a>(path: &'a Path, content_type: &str, route: Route) -> FileResponse<'a> {
@@ -46,15 +52,25 @@ fn request(range: Option<&str>, if_range: Option<&str>) -> HeaderMap {
 }
 
 async fn get(path: &Path, content_type: &str, route: Route, headers: &HeaderMap) -> Response {
-    serve_file(spec(path, content_type, route), headers, &Method::GET)
-        .await
-        .unwrap()
+    serve_file(
+        spec(path, content_type, route),
+        headers,
+        &Method::GET,
+        &ample(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn head(path: &Path, content_type: &str, route: Route, headers: &HeaderMap) -> Response {
-    serve_file(spec(path, content_type, route), headers, &Method::HEAD)
-        .await
-        .unwrap()
+    serve_file(
+        spec(path, content_type, route),
+        headers,
+        &Method::HEAD,
+        &ample(),
+    )
+    .await
+    .unwrap()
 }
 
 fn text(response: &Response, name: header::HeaderName) -> Option<String> {
@@ -264,14 +280,14 @@ async fn head_of_a_missing_file_is_reported_like_a_get() {
     let path = dir.path().join("absent");
     for method in [Method::GET, Method::HEAD] {
         let mut s = spec(&path, "audio/ogg", Route::Embed);
-        let error = serve_file(s, &HeaderMap::new(), &method)
+        let error = serve_file(s, &HeaderMap::new(), &method, &ample())
             .await
             .err()
             .unwrap();
         assert!(matches!(error, AppError::NotFound), "{method}");
         s = spec(&path, "audio/ogg", Route::Embed);
         s.missing = MissingFile::Internal;
-        let error = serve_file(s, &HeaderMap::new(), &method)
+        let error = serve_file(s, &HeaderMap::new(), &method, &ample())
             .await
             .err()
             .unwrap();
@@ -324,4 +340,148 @@ fn not_modified_matches_any_listed_validator_and_carries_no_range_headers() {
     assert!(response.headers().get(header::ACCEPT_RANGES).is_none());
     assert!(not_modified(&headers, "\"c\"").is_none());
     assert!(not_modified(&HeaderMap::new(), ETAG).is_none());
+}
+
+/// A pool of one permit, so a held permit is observable as `held() == 1` and a second GET is
+/// refused.
+fn single() -> StreamedFilePermits {
+    StreamedFilePermits::new(1, Duration::from_millis(20))
+}
+
+/// Serves `path` as a GET with `headers` out of `permits`.
+async fn get_with(
+    permits: &StreamedFilePermits,
+    path: &Path,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    serve_file(
+        spec(path, "audio/ogg", Route::Embed),
+        headers,
+        &Method::GET,
+        permits,
+    )
+    .await
+}
+
+/// The permit is returned the moment the last file byte has been read, before the body is polled
+/// to its end, so a connection that still buffers the tail does not hold a descriptor.
+#[tokio::test]
+async fn the_permit_is_released_when_the_last_file_byte_is_read() {
+    use futures_util::StreamExt;
+    let bytes = file_bytes(FILE_READ_CHUNK * 4 + 100);
+    let (_dir, path) = stored(&bytes);
+    let permits = single();
+    let response = get_with(&permits, &path, &request(None, None))
+        .await
+        .unwrap();
+    assert_eq!(permits.held(), 1, "held while the response streams");
+    let mut stream = response.into_body().into_data_stream();
+    for read in 1..=4 {
+        stream.next().await.unwrap().unwrap();
+        assert_eq!(permits.held(), 1, "after chunk {read} of 5");
+    }
+    stream.next().await.unwrap().unwrap();
+    assert_eq!(permits.held(), 0, "the last chunk is the last file byte");
+    assert!(stream.next().await.is_none());
+}
+
+/// A multipart body still owes its terminator and close delimiter after the last file byte; the
+/// permit does not wait for them.
+#[tokio::test]
+async fn a_multipart_body_releases_the_permit_after_its_last_file_piece() {
+    use futures_util::StreamExt;
+    let (_dir, path) = stored(&file_bytes(1000));
+    let permits = single();
+    let response = get_with(&permits, &path, &request(Some("bytes=0-9,20-29"), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    let mut stream = response.into_body().into_data_stream();
+    let mut chunks = 0;
+    let mut released_at = None;
+    while let Some(chunk) = stream.next().await {
+        chunk.unwrap();
+        chunks += 1;
+        if released_at.is_none() && permits.held() == 0 {
+            released_at = Some(chunks);
+        }
+    }
+    let released_at = released_at.expect("released");
+    assert!(
+        released_at < chunks,
+        "released at chunk {released_at} of {chunks}, before the close delimiter"
+    );
+}
+
+/// Dropping the response (a reset, or a connection cut by the stall bounds) returns the permit
+/// even though no byte was read.
+#[tokio::test]
+async fn dropping_the_response_releases_the_permit() {
+    let (_dir, path) = stored(&file_bytes(FILE_READ_CHUNK * 3));
+    let permits = single();
+    let response = get_with(&permits, &path, &request(None, None))
+        .await
+        .unwrap();
+    assert_eq!(permits.held(), 1);
+    drop(response);
+    assert_eq!(permits.held(), 0);
+}
+
+/// A 416 and an empty file carry no file body, so neither keeps the permit.
+#[tokio::test]
+async fn a_response_without_file_bytes_holds_no_permit() {
+    let permits = single();
+    let (_dir, path) = stored(&file_bytes(100));
+    let refused = get_with(&permits, &path, &request(Some("bytes=500-"), None))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(permits.held(), 0, "416");
+    let (_empty_dir, empty) = stored(&[]);
+    let response = get_with(&permits, &empty, &request(None, None))
+        .await
+        .unwrap();
+    assert_eq!(permits.held(), 0, "empty file");
+    drop(response);
+}
+
+/// HEAD takes no permit and opens nothing, so it is answered while every permit is held.
+#[tokio::test]
+async fn head_is_answered_while_every_permit_is_held() {
+    let (_dir, path) = stored(&file_bytes(100));
+    let permits = std::sync::Arc::new(single());
+    let _held = permits.acquire().await.unwrap();
+    let response = serve_file(
+        spec(&path, "audio/ogg", Route::Embed),
+        &request(None, None),
+        &Method::HEAD,
+        &permits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(permits.held(), 1);
+}
+
+/// The permit is taken before the file is opened and before any header exists: with every permit
+/// held, a GET is refused as unavailable even for a file that does not exist.
+#[tokio::test]
+async fn an_exhausted_pool_refuses_before_the_file_is_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent = dir.path().join("absent");
+    let permits = std::sync::Arc::new(single());
+    let _held = permits.acquire().await.unwrap();
+    let error = get_with(&permits, &absent, &request(None, None))
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            error,
+            AppError::Unavailable {
+                retry_after_secs: 1
+            }
+        ),
+        "{error:?}"
+    );
 }

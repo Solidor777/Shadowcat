@@ -43,6 +43,7 @@ async fn seeded_state() -> (AppState, String, String) {
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+        file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls: shadowcat::tls::TlsRuntime::disabled(),
     };
     (state, "u".to_string(), world.id.to_string())
