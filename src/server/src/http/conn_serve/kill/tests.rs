@@ -91,6 +91,14 @@ fn both_consumers_see_the_reason_that_fired_the_switch() {
 }
 
 #[test]
+fn only_the_call_that_fires_the_switch_reports_having_done_so() {
+    let kill = ConnKill::new();
+    assert!(kill.fire(KillReason::Stall));
+    assert!(!kill.fire(KillReason::Drain));
+    assert!(!kill.fire(KillReason::Stall));
+}
+
+#[test]
 fn the_first_reason_wins() {
     let kill = ConnKill::new();
     let (wakes, waker) = counting();

@@ -44,10 +44,8 @@ use super::pruned::Pruned;
 pub(super) enum KillReason {
     /// The shutdown drain deadline passed.
     Drain,
-    /// A connection's peer stopped reading and a no-progress bound cut it. Built only by tests
-    /// until the egress bounds exist, which is why it is test-only: an unconstructed variant is
-    /// dead code in the release build.
-    #[cfg(test)]
+    /// The connection's socket accepted almost nothing for the egress window, so the connection
+    /// unit cut it.
     Stall,
 }
 
@@ -56,7 +54,6 @@ impl KillReason {
     fn message(self) -> &'static str {
         match self {
             Self::Drain => "connection ended: server shutdown deadline",
-            #[cfg(test)]
             Self::Stall => "connection ended: peer stopped reading",
         }
     }
@@ -99,12 +96,13 @@ impl ConnKill {
     }
 
     /// Fires the switch with `reason` and wakes every parked task. A switch that has already fired
-    /// keeps its first reason and wakes nobody.
-    pub(super) fn fire(&self, reason: KillReason) {
+    /// keeps its first reason and wakes nobody. Returns whether this call fired it, so a caller
+    /// that counts what it fired does not count a connection another reason already ended.
+    pub(super) fn fire(&self, reason: KillReason) -> bool {
         let wakers = {
             let mut inner = lock(&self.inner);
             if inner.reason.is_some() {
-                return;
+                return false;
             }
             inner.reason = Some(reason);
             std::mem::take(&mut inner.wakers)
@@ -112,6 +110,7 @@ impl ConnKill {
         for waker in wakers {
             waker.wake();
         }
+        true
     }
 
     /// `Ready(reason)` once fired; otherwise registers `cx`'s waker (once per distinct task) for

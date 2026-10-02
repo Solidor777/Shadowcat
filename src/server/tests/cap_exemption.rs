@@ -46,7 +46,7 @@ struct Running {
     _task: tokio::task::JoinHandle<ServeOutcome>,
 }
 
-/// Serves `/ok` behind a sniffing listener that reports every peer as `peer_ip`, with the live caps
+/// Serves `/ok` (and `/endless`, a response that never ends) behind a sniffing listener that reports every peer as `peer_ip`, with the live caps
 /// in `limits`. The admission caps are far above every test's connection count, so any refusal
 /// under test is the live cap.
 async fn serve(peer_ip: &str, limits: ConnLimits) -> Running {
@@ -77,7 +77,14 @@ async fn serve(peer_ip: &str, limits: ConnLimits) -> Running {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(serve_router(
         listener,
-        Router::new().route("/ok", get(|| async { "ok" })),
+        Router::new().route("/ok", get(|| async { "ok" })).route(
+            "/endless",
+            get(|| async {
+                axum::body::Body::from_stream(futures_util::stream::repeat_with(|| {
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![0u8; 16 * 1024]))
+                }))
+            }),
+        ),
         async move {
             let _ = rx.await;
         },
@@ -179,4 +186,39 @@ async fn a_refused_connection_is_closed_unread_and_a_closed_one_releases_its_slo
     })
     .await
     .expect("a closed connection never released its slot");
+}
+
+#[tokio::test]
+async fn a_stall_cut_releases_a_peers_slot_while_its_client_stays_connected() {
+    let server = serve(
+        "192.0.2.1",
+        ConnLimits {
+            egress_window: Duration::from_secs(1),
+            ..caps(100, 1)
+        },
+    )
+    .await;
+    // The only slot is taken by a connection whose client asks for an endless response and then
+    // never reads it: the server's writer parks and the connection unit cuts it.
+    let mut stalled = TcpStream::connect(server.addr).await.unwrap();
+    stalled
+        .write_all(b"GET /endless HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    assert_eq!(
+        bytes_before_close(server.addr).await,
+        Some(0),
+        "a second connection must be refused while the stalled one holds the slot"
+    );
+    // The slot comes back through the cut, not through the client: `stalled` is still open here.
+    timeout(Duration::from_secs(20), async {
+        loop {
+            if bytes_before_close(server.addr).await != Some(0) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("a stall cut never released its connection's slot");
+    drop(stalled);
 }

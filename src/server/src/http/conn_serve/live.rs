@@ -26,7 +26,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tower::Service;
 
-use super::egress::{StallCounters, StallUnit};
+use super::egress::{Egress, StallCounters, StallUnit};
 use super::pruned::Pruned;
 use super::stream_exec::{current_cut, StreamCut};
 use super::EGRESS_FLOOR_BYTES;
@@ -46,6 +46,9 @@ pub(super) struct LiveState {
     markers: Mutex<Pruned<StreamMarker>>,
     /// The serve loop's cut counters, shared by every connection.
     stalls: Arc<StallCounters>,
+    /// What the connection's writer has done: the connection unit's evidence, written by the
+    /// connection's IO and read by the sampler.
+    egress: Arc<Egress>,
 }
 
 /// Locks `m`, ignoring poison: the state it guards is always consistent between statements.
@@ -62,7 +65,18 @@ impl LiveState {
             streams: watch::channel(0).0,
             markers: Mutex::new(Pruned::new()),
             stalls,
+            egress: Arc::new(Egress::default()),
         })
+    }
+
+    /// The connection's writer evidence.
+    pub(super) fn egress(&self) -> Arc<Egress> {
+        self.egress.clone()
+    }
+
+    /// Counts one cut under `unit` in the serve loop's counters.
+    pub(super) fn record_stall(&self, unit: StallUnit) {
+        self.stalls.record_stall(unit);
     }
 
     /// Counts one more stream in flight until the returned lease (and its clones) drop.
@@ -108,7 +122,7 @@ impl LiveState {
                 "response stream cut: the peer returned no flow-control credit for a pending chunk"
             );
             marker.cut.fire();
-            self.stalls.record_stall(StallUnit::Stream);
+            self.record_stall(StallUnit::Stream);
             cut += 1;
         }
         cut

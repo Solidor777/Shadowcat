@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
+use super::egress::Egress;
 use super::kill::KillReason;
 use super::live::stalled_body;
 use super::stream_exec::{scoped, StreamExec};
@@ -496,13 +497,18 @@ impl AsyncWrite for Probe {
     }
 }
 
+/// A write counter feeding an egress record nobody else reads, for IO that no sampler watches.
+fn detached_writes() -> WriteCounter {
+    WriteCounter::new(Arc::new(Egress::default()), false)
+}
+
 fn replay(prefix: &[u8], tail: &[u8]) -> Replay<Probe> {
-    Replay {
-        prefix: prefix.to_vec(),
-        pos: 0,
-        inner: Probe::new(tail),
-        kill: ConnKill::new(),
-    }
+    Replay::new(
+        prefix.to_vec(),
+        Probe::new(tail),
+        ConnKill::new(),
+        detached_writes(),
+    )
 }
 
 #[tokio::test]
@@ -660,12 +666,12 @@ async fn run_op<I: AsyncRead + AsyncWrite + Unpin>(io: &mut I, op: Op) -> io::Re
 async fn every_io_method_fails_once_the_kill_signal_has_fired() {
     for op in OPS {
         let signal = KillSignal::new();
-        let mut io = Replay {
-            prefix: b"PRI".to_vec(),
-            pos: 0,
-            inner: Probe::new(b"tail"),
-            kill: signal.connection(),
-        };
+        let mut io = Replay::new(
+            b"PRI".to_vec(),
+            Probe::new(b"tail"),
+            signal.connection(),
+            detached_writes(),
+        );
         run_op(&mut io, op)
             .await
             .unwrap_or_else(|e| panic!("{op:?} failed before the signal fired: {e}"));
@@ -681,12 +687,7 @@ async fn every_io_method_fails_once_the_kill_signal_has_fired() {
 async fn a_task_parked_in_any_io_method_is_woken_and_failed_by_the_kill_signal() {
     for op in OPS {
         let signal = KillSignal::new();
-        let mut io = Replay {
-            prefix: Vec::new(),
-            pos: 0,
-            inner: Stuck,
-            kill: signal.connection(),
-        };
+        let mut io = Replay::new(Vec::new(), Stuck, signal.connection(), detached_writes());
         let parked = tokio::spawn(async move { run_op(&mut io, op).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!parked.is_finished(), "{op:?} did not park on a stuck io");
@@ -703,12 +704,12 @@ async fn a_task_parked_in_any_io_method_is_woken_and_failed_by_the_kill_signal()
 #[tokio::test]
 async fn dropping_the_kill_signal_does_not_fail_the_io() {
     let signal = KillSignal::new();
-    let mut io = Replay {
-        prefix: Vec::new(),
-        pos: 0,
-        inner: Probe::new(b"tail"),
-        kill: signal.connection(),
-    };
+    let mut io = Replay::new(
+        Vec::new(),
+        Probe::new(b"tail"),
+        signal.connection(),
+        detached_writes(),
+    );
     drop(signal);
     let mut buf = [0u8; 4];
     assert_eq!(io.read(&mut buf).await.unwrap(), 4);
@@ -1058,6 +1059,7 @@ fn watch_for(kill: Arc<ConnKill>, window: Duration) -> Watch {
         kill,
         live: LiveState::new(slot, Arc::new(StallCounters::default())),
         egress_window: window,
+        egress_floor: ConnLimits::default().egress_floor,
     }
 }
 
@@ -1089,12 +1091,7 @@ async fn a_connection_that_ends_when_its_io_fails_is_not_dropped() {
     for reason in [KillReason::Drain, KillReason::Stall] {
         let kill = ConnKill::new();
         let dropped = Arc::new(AtomicUsize::new(0));
-        let mut io = Replay {
-            prefix: Vec::new(),
-            pos: 0,
-            inner: Stuck,
-            kill: kill.clone(),
-        };
+        let mut io = Replay::new(Vec::new(), Stuck, kill.clone(), detached_writes());
         let conn = async move {
             let _ = io.read(&mut [0u8; 4]).await;
             Ok(())
@@ -1616,4 +1613,202 @@ async fn the_send_buffer_bounds_what_hyper_queues_behind_a_socket_that_accepts_n
         .await
         .unwrap()
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The connection unit: a parked writer that takes no bytes is cut
+// ---------------------------------------------------------------------------------------------
+
+/// Runs `drive` over a connection whose only work is a write that parks forever on a peer that
+/// accepts nothing, reporting its writes to the connection's own `live` state, and returns the
+/// task, the state and the instant the drive started.
+fn drive_parked_writer(
+    window: Duration,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<LiveState>,
+    Arc<AtomicUsize>,
+    Instant,
+) {
+    let kill = ConnKill::new();
+    let watch = watch_for(kill.clone(), window);
+    let live = watch.live.clone();
+    let writes = WriteCounter::new(live.egress(), false);
+    let mut io = Replay::new(Vec::new(), Stuck, kill, writes);
+    let conn = async move {
+        let _ = io.write_all(b"response bytes").await;
+        Ok(())
+    };
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let (signal_tx, signal_rx) = watch::channel(());
+    let counted = dropped.clone();
+    let started = Instant::now();
+    let task = tokio::spawn(async move {
+        let _keep = signal_rx;
+        drive(
+            conn,
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &counted,
+        )
+        .await;
+    });
+    (task, live, dropped, started)
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_writer_parked_with_nothing_accepted_is_cut_between_the_window_and_one_tick_after_it() {
+    let window = Duration::from_secs(8);
+    let tick = egress_tick(window);
+    let (task, live, dropped, started) = drive_parked_writer(window);
+    timeout(window + tick * 2, task)
+        .await
+        .expect("a parked writer was never cut")
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= window,
+        "cut after {elapsed:?}, before the window {window:?}"
+    );
+    assert!(
+        elapsed <= window + tick,
+        "cut after {elapsed:?}, later than the window plus one tick"
+    );
+    assert_eq!(
+        live.stall_counts(),
+        StallCuts {
+            stream: 0,
+            connection: 1
+        }
+    );
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        0,
+        "the IO failure ends it, not the drop"
+    );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_floor_of_zero_never_cuts_a_parked_writer() {
+    // Nothing is below a floor of zero, so no amount of parking is a stall: the comparison is
+    // against the configured floor and not a private constant.
+    let window = Duration::from_secs(8);
+    let kill = ConnKill::new();
+    let mut watch = watch_for(kill.clone(), window);
+    watch.egress_floor = 0;
+    let live = watch.live.clone();
+    let writes = WriteCounter::new(live.egress(), false);
+    let mut io = Replay::new(Vec::new(), Stuck, kill, writes);
+    let conn = async move {
+        let _ = io.write_all(b"response bytes").await;
+        Ok(())
+    };
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let (signal_tx, _keep) = watch::channel(());
+    let task = tokio::spawn(async move {
+        drive(
+            conn,
+            signal_tx,
+            std::future::pending(),
+            |_| {},
+            watch,
+            &dropped,
+        )
+        .await;
+    });
+    settle(window * 4).await;
+    assert!(!task.is_finished(), "a floor of zero cut a connection");
+    assert_eq!(live.stall_counts(), StallCuts::default());
+    task.abort();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_stream_waiting_behind_a_parked_writer_is_cut_as_a_connection_and_not_as_a_stream() {
+    // The stream's pending chunk is a window old at the same tick the writer has been parked for
+    // a window: the socket is what the response waits on, so only the connection unit acts.
+    let window = Duration::from_secs(8);
+    let tick = egress_tick(window);
+    let (task, live, _dropped, _started) = drive_parked_writer(window);
+    let stream_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = DropFlag(stream_dropped.clone());
+    let l = live.clone();
+    StreamExec.execute_test(async move {
+        let _flag = flag;
+        let _body = stalled_body(&l).await;
+        std::future::pending::<()>().await;
+    });
+    timeout(window + tick * 4, task)
+        .await
+        .expect("a parked writer was never cut")
+        .unwrap();
+    assert!(
+        !stream_dropped.load(Ordering::SeqCst),
+        "the stream unit cut a stream behind a parked writer"
+    );
+    assert_eq!(
+        live.stall_counts(),
+        StallCuts {
+            stream: 0,
+            connection: 1
+        }
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The write counter against the real HTTP/2 codec
+// ---------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn the_http2_write_counter_equals_the_data_bytes_a_real_client_receives() {
+    // Responses of several sizes, an empty one included, through the real h2 server codec writing
+    // via `Replay`: every frame type the server writes (SETTINGS, HEADERS, WINDOW_UPDATE, DATA)
+    // passes the parser, and only DATA payload is counted.
+    let sizes: [usize; 6] = [0, 1, 100, EGRESS_FLOOR_BYTES, 100_000, 1 << 20];
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let egress = Arc::new(Egress::default());
+    let kill = ConnKill::new();
+    let io = Replay::new(
+        Vec::new(),
+        server_io,
+        kill,
+        WriteCounter::new(egress.clone(), true),
+    );
+    let service = hyper::service::service_fn(|req: axum::http::Request<Incoming>| async move {
+        let n: usize = req.uri().path()[1..].parse().unwrap();
+        Ok::<_, std::convert::Infallible>(axum::http::Response::new(axum::body::Body::from(
+            vec![7u8; n],
+        )))
+    });
+    let server = tokio::spawn(async move {
+        let _ = http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(TokioIo::new(io), service)
+            .await;
+    });
+
+    let (mut sender, conn) = h2::client::handshake(client_io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let mut received = 0u64;
+    for size in sizes {
+        let request = axum::http::Request::get(format!("http://test/{size}"))
+            .body(())
+            .unwrap();
+        sender = sender.ready().await.unwrap();
+        let (response, _) = sender.send_request(request, true).unwrap();
+        let mut body = response.await.unwrap().into_body();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            received += chunk.len() as u64;
+            let _ = body.flow_control().release_capacity(chunk.len());
+        }
+    }
+    assert_eq!(received, sizes.iter().sum::<usize>() as u64);
+    // The server counts a write when the socket accepts it, so everything the client has read has
+    // been counted; anything still in flight when the last body ended is not DATA.
+    assert_eq!(egress.accepted(), received);
+    drop(sender);
+    let _ = timeout(Duration::from_secs(5), server).await;
 }

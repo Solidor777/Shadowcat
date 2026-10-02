@@ -10,9 +10,10 @@
 use std::time::Duration;
 
 use h2::Reason;
-use shadowcat::http::conn_serve::ConnLimits;
+use shadowcat::http::conn_serve::{ConnLimits, StallCuts};
 use shadowcat_test_support::egress::{
-    get_path, paced_read, read_unreleased, EgressServer, PacedEnd,
+    first_close, get_path, paced_read, ping_frame, raw_h2_request, read_unreleased,
+    wait_until_flat, EgressServer, PacedEnd,
 };
 use tokio::time::Instant;
 
@@ -26,6 +27,12 @@ const TICK: Duration = Duration::from_millis(250);
 /// first sampler tick at or after the window, so the derived bound is `WINDOW + TICK`; this covers
 /// timer and task wake-up latency of a loaded machine.
 const SLACK: Duration = Duration::from_millis(750);
+
+/// How often the producer's progress is sampled.
+const POLL: Duration = Duration::from_millis(50);
+
+/// How long the producer must stay quiet before it counts as parked.
+const SETTLE: Duration = Duration::from_millis(400);
 
 /// A server whose response bound is [`WINDOW`] and whose drain ends quickly.
 async fn serve() -> EgressServer {
@@ -76,7 +83,14 @@ async fn a_stream_with_no_credit_is_cut_alone_and_the_connection_keeps_serving()
 
     drop(client);
     let drain = server.finish().await;
-    assert_eq!(drain.stall_cuts.stream, 1, "{drain:?}");
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 1,
+            connection: 0
+        },
+        "{drain:?}"
+    );
     assert_eq!(drain.dropped, 0, "{drain:?}");
     assert_eq!(drain.aborted, 0, "{drain:?}");
     assert_eq!(drain.panicked, 0, "{drain:?}");
@@ -134,6 +148,7 @@ async fn a_cut_frees_the_stream_slot_for_a_new_request() {
     drop(client);
     let drain = server.finish().await;
     assert!(drain.stall_cuts.stream >= limit, "{drain:?}");
+    assert_eq!(drain.stall_cuts.connection, 0, "{drain:?}");
     assert_eq!(drain.dropped, 0, "{drain:?}");
 }
 
@@ -180,7 +195,14 @@ async fn steady_data_on_a_sibling_and_a_live_tunnel_do_not_postpone_a_stalled_st
 
     drop(client);
     let drain = server.finish().await;
-    assert_eq!(drain.stall_cuts.stream, 1, "{drain:?}");
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 1,
+            connection: 0
+        },
+        "{drain:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -211,7 +233,14 @@ async fn a_live_tunnel_with_no_response_is_never_cut_and_survives_a_siblings_cut
 
     drop(client);
     let drain = server.finish().await;
-    assert_eq!(drain.stall_cuts.stream, 1, "{drain:?}");
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 1,
+            connection: 0
+        },
+        "{drain:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -241,6 +270,110 @@ async fn a_sparse_producer_with_a_healthy_reader_is_not_cut_across_five_windows(
 
         drop(client);
         let drain = server.finish().await;
-        assert_eq!(drain.stall_cuts.stream, 0, "gap {gap_factor}: {drain:?}");
+        assert_eq!(
+            drain.stall_cuts,
+            StallCuts {
+                stream: 0,
+                connection: 0
+            },
+            "gap {gap_factor}: {drain:?}"
+        );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_a_stream() {
+    let server = serve().await;
+    let started = Instant::now();
+    // Windows at the protocol maximum: only the socket can stop the server.
+    let (mut client, reading) = server.connect_gated(i32::MAX as u32, i32::MAX as u32).await;
+    let _body = get_path(&mut client, server.addr, "/endless")
+        .await
+        .into_body();
+    // From here the peer reads nothing: its kernel buffer fills and the server's writer parks.
+    reading.store(false, std::sync::atomic::Ordering::SeqCst);
+    let quiet = wait_until_flat(&server.produced, POLL, SETTLE, Duration::from_secs(30)).await;
+
+    let closed_at = first_close(&server.closed, Duration::from_secs(20))
+        .await
+        .expect("the server never ended a connection whose peer stopped reading");
+    assert!(
+        closed_at >= started + WINDOW,
+        "cut {:?} after the start, before the {WINDOW:?} window",
+        closed_at.duration_since(started)
+    );
+    assert!(
+        closed_at <= quiet + WINDOW + TICK + SLACK,
+        "cut {:?} after the producer went quiet, later than {:?}",
+        closed_at.duration_since(quiet),
+        WINDOW + TICK + SLACK
+    );
+
+    drop(client);
+    let drain = server.finish().await;
+    // One connection cut; the stream behind it is not also counted as cut.
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 0,
+            connection: 1
+        },
+        "{drain:?}"
+    );
+    assert_eq!(drain.dropped, 0, "{drain:?}");
+    assert_eq!(drain.aborted, 0, "{drain:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_connection_cut() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use tokio::io::AsyncWriteExt;
+
+    let server = serve().await;
+    let started = Instant::now();
+    let mut peer = raw_h2_request(server.addr, "/endless").await;
+    // From here the peer reads nothing, and sends a PING about every 10 ms: the server answers
+    // each with an acknowledgement it cannot deliver. Acknowledgements are not response bytes.
+    let sent = Arc::new(AtomicU64::new(0));
+    let counter = sent.clone();
+    let flood = tokio::spawn(async move {
+        let ping = ping_frame();
+        while peer.write_all(&ping).await.is_ok() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let quiet = wait_until_flat(&server.produced, POLL, SETTLE, Duration::from_secs(30)).await;
+
+    let closed_at = first_close(&server.closed, Duration::from_secs(20))
+        .await
+        .expect("a ping flood kept a connection whose peer stopped reading alive");
+    assert!(
+        sent.load(Ordering::SeqCst) >= 50,
+        "only {} pings were sent, too few for the control to mean anything",
+        sent.load(Ordering::SeqCst)
+    );
+    assert!(
+        closed_at >= started + WINDOW,
+        "cut {:?} after the start, before the {WINDOW:?} window",
+        closed_at.duration_since(started)
+    );
+    assert!(
+        closed_at <= quiet + WINDOW + TICK + SLACK,
+        "cut {:?} after the producer went quiet, later than {:?}",
+        closed_at.duration_since(quiet),
+        WINDOW + TICK + SLACK
+    );
+    flood.abort();
+    let drain = server.finish().await;
+    assert_eq!(
+        drain.stall_cuts,
+        StallCuts {
+            stream: 0,
+            connection: 1
+        },
+        "{drain:?}"
+    );
 }

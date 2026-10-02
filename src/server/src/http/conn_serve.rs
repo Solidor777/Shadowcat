@@ -46,6 +46,13 @@
 //!    a pause held inside it would be cut short by the next reap. A source returns the error and
 //!    [`accept_error_pause`] is the one policy every caller (this loop and `SniffListener`'s
 //!    acceptor task) consults.
+//! 6. A response that makes no progress for [`ConnLimits::egress_window`] is cut, by exactly one of
+//!    two units that share one definition of no progress. The stream unit resets one HTTP/2 stream
+//!    whose pending chunk the peer returns no flow-control credit for; the connection unit closes a
+//!    connection whose writer stays parked on a socket that accepts fewer than
+//!    [`ConnLimits::egress_floor`] bytes. Both run on `drive`'s sampler tick, the connection unit
+//!    first; a parked writer is the connection unit's case alone. Every cut is counted in
+//!    [`DrainReport::stall_cuts`].
 //!
 //! Timeout semantics measured against hyper 1.x: the HTTP/1 header-read timeout is armed on every
 //! wait for a request head, so it bounds both a slow head and an idle keep-alive gap; it does not
@@ -83,8 +90,8 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use tower::{Layer, ServiceExt};
 
-use self::egress::StallCounters;
-use self::kill::{ConnKill, KillSignal};
+use self::egress::{Sampler, StallCounters, StallUnit, WriteCounter};
+use self::kill::{ConnKill, KillReason, KillSignal};
 pub use self::live::ConnLease;
 use self::live::{idle_for, LeaseService, LiveState};
 use self::stream_exec::StreamExec;
@@ -265,12 +272,19 @@ pub struct ConnLimits {
     /// stopping one host from holding the server. Trusted proxies and loopback peers are exempt
     /// (`Config::is_cap_exempt`) and stay bound by [`ConnLimits::max_live`].
     pub max_live_per_peer: u32,
-    /// How long a response may make no progress before it is cut: an HTTP/2 stream whose pending
+    /// How long a response may make no progress before it is cut. An HTTP/2 stream whose pending
     /// chunk the peer returns no flow-control credit for is reset (its connection, other streams
-    /// and tunnels are untouched). Checked four times per window (never less often than every
+    /// and tunnels are untouched); a connection whose socket accepts less than
+    /// [`ConnLimits::egress_floor`] response bytes while its writer is parked is closed. Checked
+    /// four times per window (never less often than every
     /// millisecond), so a cut lands between the window and the window plus one tick after the last
     /// progress.
     pub egress_window: Duration,
+    /// How many response bytes a socket must accept per [`ConnLimits::egress_window`] to count as
+    /// making progress while its writer is parked. A connection whose writer has been parked for a
+    /// whole window with fewer bytes accepted than this is cut: its peer has stopped reading the
+    /// socket. Exactly this many is progress. On HTTP/2 only DATA frame payload counts.
+    pub egress_floor: usize,
 }
 
 impl Default for ConnLimits {
@@ -284,6 +298,7 @@ impl Default for ConnLimits {
             max_live: 2048,
             max_live_per_peer: 256,
             egress_window: PEER_STALL_TIMEOUT,
+            egress_floor: EGRESS_FLOOR_BYTES,
         }
     }
 }
@@ -346,12 +361,16 @@ pub struct DrainReport {
 /// use shadowcat::http::conn_serve::StallCuts;
 ///
 /// assert_eq!(StallCuts::default().stream, 0);
+/// assert_eq!(StallCuts::default().connection, 0);
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StallCuts {
     /// HTTP/2 streams reset because the peer returned no flow-control credit for their pending
     /// chunk for [`ConnLimits::egress_window`]. The connection stayed open.
     pub stream: usize,
+    /// Connections closed because their socket accepted fewer than [`ConnLimits::egress_floor`]
+    /// response bytes over [`ConnLimits::egress_window`] while their writer was parked.
+    pub connection: usize,
 }
 
 /// What [`serve_router`] returns.
@@ -602,6 +621,8 @@ struct Watch {
     live: Arc<LiveState>,
     /// [`ConnLimits::egress_window`].
     egress_window: Duration,
+    /// [`ConnLimits::egress_floor`].
+    egress_floor: usize,
 }
 
 /// Drives one hyper connection to completion, calling `graceful` once when `signal_tx` closes or
@@ -612,10 +633,14 @@ struct Watch {
 /// is dropped and counted in `dropped`. Every reason takes this path, so the drain deadline and a
 /// per-connection cut end a connection identically.
 ///
-/// The egress sampler is an arm of this one `select!`: every [`egress_tick`] it scans the stream
-/// markers, and the loop then re-polls `conn`, which retries a parked write (hyper's HTTP/1 and
-/// HTTP/2 flush paths both retry on a poll), so a parked writer is re-observed each tick with no
-/// other wake source.
+/// The egress sampler is an arm of this one `select!`: every [`egress_tick`] it observes the
+/// connection's writer and, when the connection unit finds no progress, fires the kill switch with
+/// [`KillReason::Stall`]; otherwise it scans the stream markers, unless the writer is parked. A
+/// parked writer means the socket, not the peer's credit, is what the response is waiting on, and
+/// that case belongs to the connection unit: a stream cut could not even deliver its
+/// `RST_STREAM`. The loop then re-polls `conn`, which retries a
+/// parked write (hyper's HTTP/1 and HTTP/2 flush paths both retry on a poll), so a parked writer
+/// is re-observed each tick with no other wake source.
 async fn drive<C>(
     conn: C,
     signal_tx: watch::Sender<()>,
@@ -630,8 +655,11 @@ async fn drive<C>(
     let mut signal_closed = pin!(signal_tx.closed().fuse());
     let mut idle = pin!(idle.fuse());
     let mut killed = pin!(watch.kill.fired());
-    let mut ticker = tokio::time::interval(egress_tick(watch.egress_window));
+    let tick = egress_tick(watch.egress_window);
+    let mut ticker = tokio::time::interval(tick);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut sampler = Sampler::new(watch.egress_window, tick, watch.egress_floor as u64);
+    let egress = watch.live.egress();
     loop {
         tokio::select! {
             result = conn.as_mut() => {
@@ -660,7 +688,26 @@ async fn drive<C>(
             _ = &mut signal_closed => graceful(conn.as_mut()),
             _ = &mut idle => graceful(conn.as_mut()),
             _ = ticker.tick() => {
-                watch.live.cut_stalled_streams(Instant::now(), watch.egress_window);
+                let now = Instant::now();
+                match sampler.observe(now, egress.accepted(), egress.parked()) {
+                    Some(stall) => {
+                        // Counted only when this call ended the connection: a drain deadline that
+                        // fired first is not a stall.
+                        if watch.kill.fire(KillReason::Stall) {
+                            tracing::warn!(
+                                unit = "connection",
+                                span_ms = u64::try_from(stall.span.as_millis()).unwrap_or(u64::MAX),
+                                bytes_accepted = stall.accepted,
+                                "connection cut: its socket accepted almost nothing while its writer was parked"
+                            );
+                            watch.live.record_stall(StallUnit::Connection);
+                        }
+                    }
+                    None if !egress.parked() => {
+                        watch.live.cut_stalled_streams(now, watch.egress_window);
+                    }
+                    None => {}
+                }
             }
         }
     }
@@ -672,7 +719,8 @@ const H2_PREFACE_LEN: usize = 24;
 
 /// An IO wrapper that yields `prefix` before reading from `inner`; writes go straight through.
 /// Every method first asks `kill` (see the `kill` module), so a firing reaches a connection parked
-/// in any of them.
+/// in any of them. Every write-side method reports its outcome to `writes`, which is where the
+/// connection unit reads whether the writer is parked and how many response bytes it took.
 struct Replay<I> {
     /// The octets already read from `inner`, served first.
     prefix: Vec<u8>,
@@ -682,6 +730,23 @@ struct Replay<I> {
     inner: I,
     /// Fails the IO once the connection is told to end.
     kill: Arc<ConnKill>,
+    /// Counts what the writer accepted and tracks whether it is parked: the connection unit's
+    /// evidence.
+    writes: WriteCounter,
+}
+
+impl<I> Replay<I> {
+    /// IO over `inner` that first serves `prefix`, fails once `kill` fires, and reports its
+    /// writes to `writes`.
+    fn new(prefix: Vec<u8>, inner: I, kill: Arc<ConnKill>, writes: WriteCounter) -> Self {
+        Self {
+            prefix,
+            pos: 0,
+            inner,
+            kill,
+            writes,
+        }
+    }
 }
 
 impl<I: AsyncRead + Unpin> AsyncRead for Replay<I> {
@@ -710,7 +775,9 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Replay<I> {
     ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         this.kill.check(cx)?;
-        Pin::new(&mut this.inner).poll_write(cx, buf)
+        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.writes.after_write(&result, &[io::IoSlice::new(buf)]);
+        result
     }
 
     fn poll_write_vectored(
@@ -720,7 +787,9 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Replay<I> {
     ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         this.kill.check(cx)?;
-        Pin::new(&mut this.inner).poll_write_vectored(cx, bufs)
+        let result = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        this.writes.after_write(&result, bufs);
+        result
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -730,13 +799,17 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Replay<I> {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
         this.kill.check(cx)?;
-        Pin::new(&mut this.inner).poll_flush(cx)
+        let result = Pin::new(&mut this.inner).poll_flush(cx);
+        this.writes.after_flush(&result);
+        result
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = &mut *self;
         this.kill.check(cx)?;
-        Pin::new(&mut this.inner).poll_shutdown(cx)
+        let result = Pin::new(&mut this.inner).poll_shutdown(cx);
+        this.writes.after_flush(&result);
+        result
     }
 }
 
@@ -753,6 +826,7 @@ async fn read_h2_preface<I: AsyncRead + Unpin>(
     limit: Duration,
     interrupted: impl Future<Output = ()>,
     kill: Arc<ConnKill>,
+    writes: WriteCounter,
 ) -> io::Result<Replay<I>> {
     let mut prefix = vec![0u8; H2_PREFACE_LEN];
     let mut filled = 0;
@@ -770,12 +844,7 @@ async fn read_h2_preface<I: AsyncRead + Unpin>(
         r = read => r.map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??,
         () = interrupted => return Err(io::Error::from(io::ErrorKind::Interrupted)),
     }
-    Ok(Replay {
-        prefix,
-        pos: 0,
-        inner: io,
-        kill,
-    })
+    Ok(Replay::new(prefix, io, kill, writes))
 }
 
 /// What the serve loop ends a connection with: the graceful drain signal, the deadline's kill and
@@ -810,7 +879,9 @@ fn spawn_connection<I: ServeIo>(
         kill: kill.clone(),
         live: live.clone(),
         egress_window: limits.egress_window,
+        egress_floor: limits.egress_floor,
     };
+    let writes = WriteCounter::new(live.egress(), h2);
     let dropped = ending.dropped.clone();
     let service = TowerToHyperService::new(
         LeaseService::new(Extension(ConnectInfo(meta)).layer(app), live.clone())
@@ -819,7 +890,8 @@ fn spawn_connection<I: ServeIo>(
     let signal_tx = ending.signal_tx.clone();
     tasks.spawn(async move {
         if h2 {
-            let preface = read_h2_preface(io, limits.header_read, signal_tx.closed(), kill).await;
+            let preface =
+                read_h2_preface(io, limits.header_read, signal_tx.closed(), kill, writes).await;
             match preface {
                 Ok(io) => {
                     // Extended CONNECT carries WebSockets over HTTP/2 (RFC 8441).
@@ -844,12 +916,7 @@ fn spawn_connection<I: ServeIo>(
                 Err(err) => tracing::trace!("h2 connection closed before its preface: {err}"),
             }
         } else {
-            let io = Replay {
-                prefix: Vec::new(),
-                pos: 0,
-                inner: io,
-                kill,
-            };
+            let io = Replay::new(Vec::new(), io, kill, writes);
             let conn = http1::Builder::new()
                 .timer(TokioTimer::new())
                 .header_read_timeout(limits.header_read)

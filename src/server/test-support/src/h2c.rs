@@ -63,7 +63,7 @@ pub struct H2cSource {
 }
 
 /// Ends its [`H2cSource`] when [`EndHandle::end`] is called.
-pub struct EndHandle(oneshot::Sender<()>);
+pub struct EndHandle(pub(crate) oneshot::Sender<()>);
 
 impl EndHandle {
     /// Makes the paired source return `None` from its next `accept`, as a dead acceptor would.
