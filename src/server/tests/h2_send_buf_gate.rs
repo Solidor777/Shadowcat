@@ -22,6 +22,11 @@
 //! h2_send_buf_gate`) for the value that counts, and the debug run of `cargo test --all` records
 //! the profile artifact beside it.
 //!
+//! Cost: a release run fetches 24 MiB from three servers [`DOWNLOADS`] times in each of [`RUNS`]
+//! runs, 21.1 GiB at 100 and 3; a debug run fetches 8 and 1, 0.56 GiB. At 100 downloads and 3 runs
+//! a debug run took 32.5 s on one Windows machine; at 8 and 1 it takes 0.85 s, and its ratios are
+//! not the criterion's, so nothing is lost by the smaller median.
+//!
 //! One download is a fresh connection fetching 24 MiB with a 6 MiB stream window and a 15 MiB
 //! connection window (so the client never limits the server), the two servers' downloads
 //! interleaved with rotating order, each run's ratio taken from the medians of [`DOWNLOADS`]
@@ -43,11 +48,13 @@ use tokio::net::TcpListener;
 /// Bytes one download fetches.
 const BODY_BYTES: usize = 24 << 20;
 
-/// Downloads per server in one run.
-const DOWNLOADS: usize = 100;
+/// Downloads per server in one run. The release profile's count is the one the keep criterion is
+/// read from (a median over 100 per server); a debug run records the profile artifact only, so it
+/// moves a twelfth of that.
+const DOWNLOADS: usize = if cfg!(debug_assertions) { 8 } else { 100 };
 
-/// Independent runs.
-const RUNS: usize = 3;
+/// Independent runs. One in a debug build, for the reason [`DOWNLOADS`] gives.
+const RUNS: usize = if cfg!(debug_assertions) { 1 } else { 3 };
 
 /// The build profile the records name: the keep criterion is read from the release records only.
 const PROFILE: &str = if cfg!(debug_assertions) {
