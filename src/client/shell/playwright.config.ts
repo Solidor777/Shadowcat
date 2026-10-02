@@ -8,6 +8,8 @@ import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
   LAN_SPEC,
+  LONG_AUDIO_PLAYTHROUGH_SPEC,
+  LONG_AUDIO_SPEC,
   MEDIA_RANGE_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
@@ -23,7 +25,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const bin = path.join(
   repoRoot,
   "target",
-  "debug",
+  // The long-audio jobs transcode 20-minute tracks at import, which a debug build does about 30
+  // times slower than a release build, so they run the binary `e2e:build:release` produces.
+  process.env.SHADOWCAT_E2E_PROFILE === "release" ? "release" : "debug",
   process.platform === "win32" ? "shadowcat.exe" : "shadowcat",
 );
 
@@ -47,6 +51,12 @@ const MEDIA_RANGE_PORT = 32002;
  * the server's environment). Long enough for one browser read-ahead burst to finish, short enough
  * that a response left idle across a real pause between bursts is cut inside the test's budget. */
 const MEDIA_RANGE_EGRESS_WINDOW_SECS = "3";
+
+/** Port of the test server the long-audio projects target: bound beyond loopback with TLS on its
+ * default (`auto`) so one port answers both `https://` (h2) and plain `http://` (h1), and with a
+ * short egress window so a response left idle across a media element's read-ahead gap is really
+ * cut. */
+const LONG_AUDIO_PORT = 32003;
 
 /** The machine's real non-loopback IPv4 address. The HTTPS specs browse to it rather than to
  * loopback or a resolver-rule alias, because browsers treat loopback as potentially trustworthy
@@ -226,6 +236,88 @@ function httpsProjects(LAN_IP: string): Project[] {
   ];
 }
 
+/** The long-audio projects: sampled legs per engine and protocol, plus the two full-length
+ * play-throughs (one per protocol). All browse to the machine's real interface address on the
+ * long-audio server's port.
+ * @param LAN_IP The address the projects target.
+ * @returns The project definitions.
+ * @example
+ * ```
+ * const projects = longAudioProjects("192.0.2.1");
+ * ```
+ */
+function longAudioProjects(LAN_IP: string): Project[] {
+  const https = `https://${LAN_IP}:${LONG_AUDIO_PORT}`;
+  const http = `http://${LAN_IP}:${LONG_AUDIO_PORT}`;
+  return [
+    {
+      name: "long-audio-https-chromium",
+      testMatch: LONG_AUDIO_SPEC,
+      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true },
+    },
+    {
+      name: "long-audio-http-chromium",
+      testMatch: LONG_AUDIO_SPEC,
+      use: { browserName: "chromium", baseURL: http },
+    },
+    {
+      // Launches WITHOUT the autoplay flag: the real-browser check that playback is reached only
+      // through the unlock control's click.
+      name: "long-audio-https-chromium-noflag",
+      testMatch: LONG_AUDIO_SPEC,
+      use: {
+        browserName: "chromium",
+        baseURL: https,
+        ignoreHTTPSErrors: true,
+        launchOptions: { args: ["--use-gl=angle"] },
+      },
+    },
+    {
+      name: "long-audio-https-firefox",
+      testMatch: LONG_AUDIO_SPEC,
+      use: { browserName: "firefox", baseURL: https, ignoreHTTPSErrors: true },
+    },
+    {
+      name: "long-audio-https-webkit",
+      testMatch: LONG_AUDIO_SPEC,
+      use: { browserName: "webkit", baseURL: https, ignoreHTTPSErrors: true },
+    },
+    {
+      name: "long-audio-playthrough-http-chromium",
+      testMatch: LONG_AUDIO_PLAYTHROUGH_SPEC,
+      use: { browserName: "chromium", baseURL: http },
+    },
+    {
+      name: "long-audio-playthrough-https-chromium",
+      testMatch: LONG_AUDIO_PLAYTHROUGH_SPEC,
+      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true },
+    },
+  ];
+}
+
+/** The test server the long-audio projects target.
+ * @param ip The address the readiness probe dials.
+ * @returns The webServer definition.
+ * @example
+ * ```
+ * const server = longAudioServer("192.0.2.1");
+ * ```
+ */
+function longAudioServer(ip: string) {
+  return {
+    command: `"${bin}"`,
+    cwd: repoRoot,
+    url: `http://${ip}:${LONG_AUDIO_PORT}/health`,
+    timeout: 120_000,
+    reuseExistingServer: !process.env.CI,
+    env: {
+      ...SERVER_ENV,
+      SHADOWCAT_BIND: `0.0.0.0:${LONG_AUDIO_PORT}`,
+      SHADOWCAT_EGRESS_WINDOW_SECS: MEDIA_RANGE_EGRESS_WINDOW_SECS,
+    },
+  };
+}
+
 /** The test server the HTTPS projects target.
  * @param ip The address the readiness probe dials.
  * @returns The webServer definition.
@@ -253,7 +345,7 @@ function httpsServer(ip: string) {
 export default defineConfig({
   testDir: "./e2e",
   projects: [
-    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, ...ANY_HTTPS_SPEC] },
+    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC] },
     // `decodeAudioData` of the server's Opus derivatives, once per engine that decodes them in Web
     // Audio. Both run against the shared loopback server (the test only uploads and fetches).
     { name: "webm-decode-chromium", testMatch: WEBM_DECODE_SPEC, use: { browserName: "chromium" } },
@@ -275,7 +367,7 @@ export default defineConfig({
         launchOptions: { args: [...BASE_LAUNCH_ARGS, `--host-resolver-rules=MAP ${LAN_HOST} 127.0.0.1`] },
       },
     },
-    ...(LAN_IP === undefined ? [] : httpsProjects(LAN_IP)),
+    ...(LAN_IP === undefined ? [] : [...httpsProjects(LAN_IP), ...longAudioProjects(LAN_IP)]),
   ],
   // CPU budget. Each worker drives a Chromium rendering a WebGL stage, which costs
   // far more than one core, so Playwright's default (half the logical CPUs) heavily
@@ -335,7 +427,7 @@ export default defineConfig({
         SHADOWCAT_EGRESS_WINDOW_SECS: MEDIA_RANGE_EGRESS_WINDOW_SECS,
       },
     },
-    ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP)]),
+    ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP), longAudioServer(LAN_IP)]),
   ],
   // `trace` is the only forensic channel for a CI-only failure: the suite runs
   // against a real binary on a runner nobody can attach to, so without a

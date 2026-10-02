@@ -11,6 +11,14 @@ export const LAN_SPEC = /lan-plain-http\.spec\.ts$/;
  * can see a spurious cut. */
 export const MEDIA_RANGE_SPEC = /media-range\.spec\.ts$/;
 
+/** The sampled long-audio streaming spec. It runs under the `long-audio-*` projects against a server
+ * of its own with a short `egress_window_secs`; the play-through file name does not match. */
+export const LONG_AUDIO_SPEC = /long-audio\.spec\.ts$/;
+
+/** The full 20-minute real-time play-through spec, run under the two `long-audio-playthrough-*`
+ * projects (one per protocol, each its own CI job) against the same long-audio server. */
+export const LONG_AUDIO_PLAYTHROUGH_SPEC = /long-audio-playthrough\.spec\.ts$/;
+
 /** The WebM/Ogg derivative decode spec. It runs under the two `webm-decode-*` projects, one per
  * engine whose `decodeAudioData` it measures, against the shared loopback server. */
 export const WEBM_DECODE_SPEC = /webm-decode\.spec\.ts$/;

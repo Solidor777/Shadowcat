@@ -8,6 +8,8 @@ import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
   LAN_SPEC,
+  LONG_AUDIO_PLAYTHROUGH_SPEC,
+  LONG_AUDIO_SPEC,
   MEDIA_RANGE_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
@@ -84,23 +86,40 @@ describe("playwright.config LAN address handling", () => {
       "lan-plain-http",
     ]);
     expect(all).toContain("https-chromium");
+    expect(all).toContain("long-audio-https-chromium");
+    expect(all).toContain("long-audio-playthrough-http-chromium");
     expect(all.some((n) => n.startsWith("https-upgrade"))).toBe(true);
-    expect(config.webServer).toHaveLength(4);
+    expect(config.webServer).toHaveLength(5);
   });
 
-  it("gives the media-range project its own server with the short egress window, and no other server has one", async () => {
+  it("gives the media-range project its own server with the short egress window, and only the long-audio server shares that window", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const project = (config.projects ?? []).find((p) => p.name === "media-range-loopback");
     const baseURL = String(project?.use?.baseURL);
     const servers = [config.webServer ?? []].flat();
     const windowed = servers.filter((s) => s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
-    expect(windowed).toHaveLength(1);
-    expect(windowed[0].env?.SHADOWCAT_EGRESS_WINDOW_SECS).toBe("3");
-    // The project targets exactly that server's bind address and nothing else's.
-    const bind = String(windowed[0].env?.SHADOWCAT_BIND);
-    expect(baseURL).toBe(`http://${bind}`);
+    expect(windowed).toHaveLength(2);
+    for (const server of windowed) expect(server.env?.SHADOWCAT_EGRESS_WINDOW_SECS).toBe("3");
+    // The project targets exactly one windowed server's bind address, and no other project targets it.
+    const own = windowed.filter((s) => baseURL === `http://${String(s.env?.SHADOWCAT_BIND)}`);
+    expect(own).toHaveLength(1);
     for (const other of (config.projects ?? []).filter((p) => p.name !== "media-range-loopback")) {
       expect(String(other.use?.baseURL ?? "")).not.toBe(baseURL);
+    }
+  });
+
+  it("points every long-audio project at the long-audio server's port and no other project at it", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const server = [config.webServer ?? []]
+      .flat()
+      .find((s) => s.env?.SHADOWCAT_BIND?.startsWith("0.0.0.0:") && s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
+    expect(server, "the long-audio server is defined").toBeDefined();
+    const port = String(server!.env?.SHADOWCAT_BIND).split(":")[1];
+    for (const project of config.projects ?? []) {
+      const onPort = new URL(String(project.use?.baseURL ?? "http://unset")).port === port;
+      expect(onPort, `${project.name} ${onPort ? "targets" : "does not target"} the long-audio port`).toBe(
+        String(project.name).startsWith("long-audio-"),
+      );
     }
   });
 });
@@ -130,7 +149,13 @@ describe("CI project partition", () => {
   it("runs every Playwright project in exactly one CI job", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const jobs = ciProjectPatterns();
-    expect([...jobs.keys()].sort(), "both e2e jobs are read from ci.yml").toEqual(["ui-e2e", "ui-e2e-https"]);
+    expect([...jobs.keys()].sort(), "every e2e job is read from ci.yml").toEqual([
+      "e2e-long-audio",
+      "e2e-long-audio-playthrough-h1",
+      "e2e-long-audio-playthrough-h2",
+      "ui-e2e",
+      "ui-e2e-https",
+    ]);
     for (const name of names(config)) {
       const runners = [...jobs].filter(([, patterns]) => patterns.some((p) => matches(p, name))).map(([job]) => job);
       expect(runners, `project ${name} must run in exactly one CI job`).toHaveLength(1);
@@ -205,6 +230,8 @@ describe("spec-to-project assignment", () => {
       if (LAN_SPEC.test(spec)) expected = ["lan-plain-http"];
       else if (MEDIA_RANGE_SPEC.test(spec)) expected = ["media-range-loopback"];
       else if (WEBM_DECODE_SPEC.test(spec)) expected = projectsMatching(config, WEBM_DECODE_SPEC);
+      else if (LONG_AUDIO_PLAYTHROUGH_SPEC.test(spec)) expected = projectsMatching(config, LONG_AUDIO_PLAYTHROUGH_SPEC);
+      else if (LONG_AUDIO_SPEC.test(spec)) expected = projectsMatching(config, LONG_AUDIO_SPEC);
       else if (HTTPS_SPECS.test(spec)) expected = projectsMatching(config, HTTPS_SPECS);
       else if (UPGRADE_CHROMIUM_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_CHROMIUM_SPEC);
       else if (UPGRADE_SPEC.test(spec)) expected = projectsMatching(config, UPGRADE_SPEC);
@@ -219,7 +246,13 @@ describe("spec-to-project assignment", () => {
     for (const spec of specs) {
       const runners = projectsRunning(config, spec);
       const families = new Set(
-        runners.map((n) => (n.startsWith("https-") ? "https" : n.startsWith("webm-decode-") ? "webm-decode" : n)),
+        runners.map((n) => {
+          if (n.startsWith("https-")) return "https";
+          if (n.startsWith("webm-decode-")) return "webm-decode";
+          if (n.startsWith("long-audio-playthrough-")) return "long-audio-playthrough";
+          if (n.startsWith("long-audio-")) return "long-audio";
+          return n;
+        }),
       );
       expect(families.size, `${spec} runs in ${runners.join(", ")}`).toBe(1);
     }

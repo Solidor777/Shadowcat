@@ -417,3 +417,108 @@ workflow = "ci.yml"
 job = "audio-fixtures"
 command = "pnpm lint:audio-fixtures"
 tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit"
+tier = "ci-only"
+reason = "The sampled long-audio streaming specs: real-time playback of 20-minute tracks, about two minutes per track per engine and protocol plus the transcode, against a server of its own with a short egress window. Minutes of wall clock and a fixed port, so it stays in CI outside the local tiers, where only the isolated runner attributes a result to the tree under test."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h1"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-http-chromium"
+tier = "ci-only"
+reason = "The full 20-minute real-time play-through of one track over plain HTTP (h1): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h2 play-through."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell e2e:build:release"
+tier = "setup"
+reason = "Builds the client bundle and the RELEASE server binary the long-audio step serves: the import transcodes 20-minute tracks, which a debug build does about 30 times slower; Playwright starts its webServer before any setup hook, so the binary must exist first."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio-playthrough-h2"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-https-chromium"
+tier = "ci-only"
+reason = "The full 20-minute real-time play-through of one track over HTTPS (h2): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h1 play-through."
