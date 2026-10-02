@@ -3,6 +3,8 @@
 
 pub mod mutate;
 pub mod query;
+#[cfg(test)]
+mod range;
 pub mod uploads;
 
 use std::collections::HashMap;
