@@ -38,9 +38,7 @@ use std::time::Duration;
 use shadowcat::http::conn_serve::{ConnLimits, H2_SEND_BUF_BYTES};
 use shadowcat_test_support::egress::EgressServer;
 use shadowcat_test_support::measure::record;
-use shadowcat_test_support::throughput::{
-    bare_server, bulk_path, download, median, BareApp, BODY_BYTES,
-};
+use shadowcat_test_support::throughput::{bare_server, bulk_path, download, median, BareApp};
 
 /// Downloads per server in one run. The release profile's count is the one the keep criterion is
 /// read from (a median over 100 per server); a debug run records the profile artifact only, so it
