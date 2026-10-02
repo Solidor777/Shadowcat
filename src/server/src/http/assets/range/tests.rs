@@ -259,3 +259,220 @@ fn slice_length_counts_both_ends() {
     assert_eq!(s(0, 0).len(), 1);
     assert_eq!(s(10, 19).len(), 10);
 }
+
+fn parts(decision: RangeDecision) -> Vec<Slice> {
+    match decision {
+        RangeDecision::Slices(parts) => parts,
+        other => panic!("expected slices, got {other:?}"),
+    }
+}
+
+#[test]
+fn coalescing_table() {
+    // Unordered input is sorted.
+    assert_eq!(
+        parts(download("bytes=50-59,0-9,20-29", 100)),
+        vec![s(0, 9), s(20, 29), s(50, 59)]
+    );
+    // Duplicates and contained ranges merge.
+    assert_eq!(parts(download("bytes=5-9,5-9", 100)), vec![s(5, 9)]);
+    assert_eq!(parts(download("bytes=0-50,10-20", 100)), vec![s(0, 50)]);
+    // Overlapping ranges merge.
+    assert_eq!(parts(download("bytes=0-10,5-20", 100)), vec![s(0, 20)]);
+    // Adjacent ranges merge; a gap of one byte does not.
+    assert_eq!(parts(download("bytes=0-9,10-19", 100)), vec![s(0, 19)]);
+    assert_eq!(
+        parts(download("bytes=0-9,11-19", 100)),
+        vec![s(0, 9), s(11, 19)]
+    );
+    // A chain of adjacent ranges collapses to one part.
+    assert_eq!(
+        parts(download("bytes=20-29,0-9,10-19", 100)),
+        vec![s(0, 29)]
+    );
+    // Open-ended and suffix specs take part in the merge.
+    assert_eq!(parts(download("bytes=90-,-5", 100)), vec![s(90, 99)]);
+    assert_eq!(
+        parts(download("bytes=0-4,-5", 100)),
+        vec![s(0, 4), s(95, 99)]
+    );
+    // Whitespace around the commas and empty list elements are not significant.
+    assert_eq!(
+        parts(download("bytes=0-4 , 10-14,,20-24", 100)),
+        vec![s(0, 4), s(10, 14), s(20, 24)]
+    );
+}
+
+#[test]
+fn unsatisfiable_members_are_dropped() {
+    assert_eq!(
+        download("bytes=200-300,400-", 100),
+        RangeDecision::Unsatisfiable
+    );
+    assert_eq!(download("bytes=-0,100-", 100), RangeDecision::Unsatisfiable);
+    // One satisfiable member among unsatisfiable ones is a single ordinary part.
+    assert_eq!(download("bytes=200-300,5-9,-0", 100), one(5, 9));
+    assert_eq!(media("bytes=200-300,5-9,-0", 100), one(5, 9));
+    // A syntax error anywhere ignores the whole header.
+    assert_eq!(download("bytes=5-9,x-y", 100), RangeDecision::Full);
+    assert_eq!(download("bytes=5-9,9-5", 100), RangeDecision::Full);
+}
+
+/// Sixteen `bytes=0-` specs are one part: the response is the file once, never sixteen times.
+#[test]
+fn repeated_open_ranges_cannot_amplify() {
+    let header = format!("bytes={}", vec!["0-"; MAX_RANGE_SPECS].join(","));
+    assert_eq!(download(&header, LARGE), one(0, LARGE - 1));
+    // Against a media asset the same request coalesces to one slice at the cap.
+    assert_eq!(media(&header, LARGE), one(0, MAX_RANGE_SLICE - 1));
+    // A set of overlapping ranges never totals more than the file.
+    let overlapping = format!(
+        "bytes={}",
+        (0..MAX_RANGE_SPECS)
+            .map(|i| format!("{}-", i * 1000))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let total: u64 = parts(download(&overlapping, LARGE))
+        .iter()
+        .map(Slice::len)
+        .sum();
+    assert_eq!(total, LARGE);
+}
+
+#[test]
+fn spec_count_cap_is_sixteen() {
+    let specs = |n: usize| {
+        format!(
+            "bytes={}",
+            (0..n)
+                .map(|i| format!("{}-{}", i * 10, i * 10 + 4))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    assert_eq!(parts(download(&specs(16), 1000)).len(), 16);
+    assert_eq!(download(&specs(17), 1000), RangeDecision::Full);
+    // The count is of specs, not of coalesced parts: 17 identical specs are still over the cap.
+    let identical = format!("bytes={}", vec!["0-4"; MAX_RANGE_SPECS + 1].join(","));
+    assert_eq!(download(&identical, 1000), RangeDecision::Full);
+}
+
+#[test]
+fn media_multi_part_total_is_capped_without_truncating_a_part() {
+    // Two parts whose coalesced total is exactly the cap are served with every part intact.
+    let half = MAX_RANGE_SLICE / 2;
+    let at_cap = format!("bytes=0-{},{}-{}", half - 1, 4 * half, 5 * half - 1);
+    assert_eq!(
+        parts(media(&at_cap, LARGE)),
+        vec![s(0, half - 1), s(4 * half, 5 * half - 1)]
+    );
+    // One byte more answers in full; no part is shortened.
+    let over = format!("bytes=0-{},{}-{}", half - 1, 4 * half, 5 * half);
+    assert_eq!(media(&over, LARGE), RangeDecision::Full);
+    // The same set is a multipart answer for a download class.
+    assert_eq!(
+        parts(download(&over, LARGE)),
+        vec![s(0, half - 1), s(4 * half, 5 * half)]
+    );
+    // Sixteen disjoint small parts are a multipart response, seventeen are a full response.
+    let disjoint = |n: usize| {
+        format!(
+            "bytes={}",
+            (0..n)
+                .map(|i| format!("{}-{}", i * 100, i * 100 + 9))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    assert_eq!(parts(media(&disjoint(16), LARGE)).len(), 16);
+    assert_eq!(media(&disjoint(17), LARGE), RangeDecision::Full);
+}
+
+#[test]
+fn a_coalesced_single_part_is_shortened_like_a_single_spec() {
+    assert_eq!(media("bytes=0-,0-", LARGE), one(0, MAX_RANGE_SLICE - 1));
+    assert_eq!(
+        media("bytes=0-100,50-9999999", LARGE),
+        one(0, MAX_RANGE_SLICE - 1)
+    );
+    // Equal to the single-spec answer for the same coalesced range.
+    assert_eq!(media("bytes=0-,0-", LARGE), media("bytes=0-", LARGE));
+}
+
+/// Parses a `multipart/byteranges` body back into its parts, checking the framing byte for byte.
+fn parse_multipart(body: &[u8], boundary: &str, content_type: &str) -> Vec<(Slice, Vec<u8>)> {
+    let mut rest = body;
+    let mut found = Vec::new();
+    loop {
+        let delimiter = format!("--{boundary}");
+        assert!(rest.starts_with(delimiter.as_bytes()), "delimiter expected");
+        rest = &rest[delimiter.len()..];
+        if rest.starts_with(b"--\r\n") {
+            assert_eq!(rest, b"--\r\n", "nothing follows the close delimiter");
+            return found;
+        }
+        assert!(rest.starts_with(b"\r\n"));
+        rest = &rest[2..];
+        let end = rest
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("blank line ends the part headers");
+        let headers = std::str::from_utf8(&rest[..end]).unwrap();
+        rest = &rest[end + 4..];
+        let mut lines = headers.split("\r\n");
+        assert_eq!(
+            lines.next(),
+            Some(format!("Content-Type: {content_type}").as_str())
+        );
+        let range = lines
+            .next()
+            .and_then(|l| l.strip_prefix("Content-Range: bytes "))
+            .expect("Content-Range header");
+        assert_eq!(lines.next(), None);
+        let (span, _total) = range.split_once('/').unwrap();
+        let (start, end) = span.split_once('-').unwrap();
+        let slice = s(start.parse().unwrap(), end.parse().unwrap());
+        let payload = rest[..slice.len() as usize].to_vec();
+        rest = &rest[slice.len() as usize..];
+        assert!(rest.starts_with(PART_END.as_bytes()));
+        rest = &rest[PART_END.len()..];
+        found.push((slice, payload));
+    }
+}
+
+#[test]
+fn multipart_framing_has_an_exact_length_and_parses_back() {
+    let file: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    let boundary = new_boundary();
+    assert!(boundary.starts_with("shadowcat-"));
+    assert_eq!(
+        boundary.len(),
+        "shadowcat-".len() + 32,
+        "a v4 UUID in simple form"
+    );
+    assert_ne!(boundary, new_boundary(), "fresh per response");
+    let content_type = "audio/ogg";
+    let slices = vec![s(0, 9), s(100, 199), s(990, 999)];
+    let mut body = Vec::new();
+    for slice in &slices {
+        body.extend(multipart_part_head(&boundary, content_type, *slice, 1000).bytes());
+        body.extend(&file[slice.start as usize..=slice.end as usize]);
+        body.extend(PART_END.bytes());
+    }
+    body.extend(multipart_close(&boundary).bytes());
+    assert_eq!(
+        multipart_len(&boundary, content_type, &slices, 1000),
+        body.len() as u64
+    );
+    assert_eq!(
+        multipart_content_type(&boundary),
+        format!("multipart/byteranges; boundary={boundary}")
+    );
+    let found = parse_multipart(&body, &boundary, content_type);
+    assert_eq!(found.len(), slices.len());
+    for ((slice, payload), expected) in found.iter().zip(&slices) {
+        assert_eq!(slice, expected);
+        assert_eq!(payload, &file[slice.start as usize..=slice.end as usize]);
+    }
+}

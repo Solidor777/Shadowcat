@@ -12,6 +12,10 @@
 /// each fetched when the element needs it, so no response idles unread past the egress window.
 pub(super) const MAX_RANGE_SLICE: u64 = 2 * 1024 * 1024;
 
+/// Ceiling on `range-spec`s per request. A request over it is answered in full, never partially:
+/// the count bounds the number of part headers a response can carry.
+pub(super) const MAX_RANGE_SPECS: usize = 16;
+
 /// Whether a response is ranged, and how far one ranged response may extend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RangeClass {
@@ -226,9 +230,14 @@ fn if_range_holds(if_range: &str, etag: &str) -> bool {
 
 /// What `range` selects from a representation of `len` bytes with validator `etag`.
 ///
-/// `Full` when the class is `Ignore`, `range` is absent or ignorable, or `if_range` is present
-/// and does not validate. A `MediaSliced` slice is shortened to `MAX_RANGE_SLICE` (a server may
-/// send less than requested; the element continues from the `Content-Range` it receives).
+/// `Full` when the class is `Ignore`, `range` is absent or ignorable, `if_range` is present and
+/// does not validate, or the request names more than `MAX_RANGE_SPECS` ranges. Otherwise the
+/// satisfiable ranges are sorted and coalesced (overlapping and adjacent ranges merge) before
+/// anything is totalled, so the answer is a set of disjoint slices whose total is at most `len`.
+/// A single resulting `MediaSliced` slice is shortened to `MAX_RANGE_SLICE` (a server may send
+/// less than requested; the element continues from the `Content-Range` it receives); several
+/// slices whose total exceeds the cap are answered in full, because a part is never shortened: a
+/// truncated part would contradict its own `Content-Range`.
 pub(super) fn decide(
     class: RangeClass,
     range: Option<&str>,
@@ -245,18 +254,93 @@ pub(super) fn decide(
     let Some(specs) = parse_range(range) else {
         return RangeDecision::Full;
     };
-    let [spec] = specs.as_slice() else {
+    if specs.len() > MAX_RANGE_SPECS {
         return RangeDecision::Full;
-    };
-    let Some(mut slice) = resolve(*spec, len) else {
-        return RangeDecision::Unsatisfiable;
-    };
-    if class == RangeClass::MediaSliced {
-        slice.end = slice
-            .end
-            .min(slice.start.saturating_add(MAX_RANGE_SLICE - 1));
     }
-    RangeDecision::Slices(vec![slice])
+    let mut slices: Vec<Slice> = specs.iter().filter_map(|s| resolve(*s, len)).collect();
+    if slices.is_empty() {
+        return RangeDecision::Unsatisfiable;
+    }
+    let mut slices = coalesce(&mut slices);
+    if let [slice] = slices.as_mut_slice() {
+        if class == RangeClass::MediaSliced {
+            slice.end = slice
+                .end
+                .min(slice.start.saturating_add(MAX_RANGE_SLICE - 1));
+        }
+    } else if class == RangeClass::MediaSliced
+        && slices.iter().map(Slice::len).sum::<u64>() > MAX_RANGE_SLICE
+    {
+        return RangeDecision::Full;
+    }
+    RangeDecision::Slices(slices)
+}
+
+/// Sorts `slices` by start and merges every overlapping or adjacent pair, so the result is a set
+/// of disjoint, non-adjacent parts in ascending order whose total never exceeds the file length:
+/// a request cannot make the response larger than the file by repeating a range.
+fn coalesce(slices: &mut [Slice]) -> Vec<Slice> {
+    slices.sort_by_key(|s| s.start);
+    let mut merged: Vec<Slice> = Vec::with_capacity(slices.len());
+    for slice in slices.iter() {
+        match merged.last_mut() {
+            Some(last) if slice.start <= last.end.saturating_add(1) => {
+                last.end = last.end.max(slice.end);
+            }
+            _ => merged.push(*slice),
+        }
+    }
+    merged
+}
+
+/// A fresh multipart boundary: a random v4 UUID (122 random bits), so a payload containing the
+/// delimiter is negligible. RFC 9110 section 14.6 allows a boundary that cannot be proven absent
+/// from the payload.
+pub(super) fn new_boundary() -> String {
+    format!("shadowcat-{}", uuid::Uuid::new_v4().simple())
+}
+
+/// The `Content-Type` of a `multipart/byteranges` response.
+pub(super) fn multipart_content_type(boundary: &str) -> String {
+    format!("multipart/byteranges; boundary={boundary}")
+}
+
+/// The bytes that precede one part's payload: the delimiter line, the representation's
+/// `Content-Type` and the part's `Content-Range`, then the blank line. Every part's payload is
+/// followed by `PART_END`.
+pub(super) fn multipart_part_head(
+    boundary: &str,
+    content_type: &str,
+    slice: Slice,
+    len: u64,
+) -> String {
+    format!(
+        "--{boundary}\r\nContent-Type: {content_type}\r\nContent-Range: bytes {}-{}/{len}\r\n\r\n",
+        slice.start, slice.end
+    )
+}
+
+/// Terminates a part's payload.
+pub(super) const PART_END: &str = "\r\n";
+
+/// The close delimiter that ends a `multipart/byteranges` body.
+pub(super) fn multipart_close(boundary: &str) -> String {
+    format!("--{boundary}--\r\n")
+}
+
+/// The exact byte length of a `multipart/byteranges` body: every part head, payload and
+/// terminator, then the close delimiter. An exact length lets the response carry
+/// `Content-Length` instead of chunked framing.
+pub(super) fn multipart_len(boundary: &str, content_type: &str, slices: &[Slice], len: u64) -> u64 {
+    let parts: u64 = slices
+        .iter()
+        .map(|slice| {
+            multipart_part_head(boundary, content_type, *slice, len).len() as u64
+                + slice.len()
+                + PART_END.len() as u64
+        })
+        .sum();
+    parts + multipart_close(boundary).len() as u64
 }
 
 #[cfg(test)]
