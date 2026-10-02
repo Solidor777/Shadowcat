@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::header;
 use uuid::Uuid;
 
 #[test]
@@ -187,6 +188,7 @@ impl SheetFixture {
             Query(ServeQuery {
                 variant: Some("sheet".into()),
             }),
+            Method::GET,
             HeaderMap::new(),
         )
         .await
@@ -247,6 +249,7 @@ async fn serve_variant_sheet_is_not_found_without_the_sibling() {
         Query(ServeQuery {
             variant: Some("bogus".into()),
         }),
+        Method::GET,
         HeaderMap::new(),
     )
     .await;
@@ -270,6 +273,7 @@ async fn serve_canonical_sets_no_cache_control_on_200_and_304() {
         user.clone(),
         Path(f.asset),
         Query(ServeQuery { variant: None }),
+        Method::GET,
         HeaderMap::new(),
     )
     .await
@@ -288,6 +292,7 @@ async fn serve_canonical_sets_no_cache_control_on_200_and_304() {
         user,
         Path(f.asset),
         Query(ServeQuery { variant: None }),
+        Method::GET,
         revalidate,
     )
     .await
@@ -337,6 +342,7 @@ async fn serve_attachment_branch_reuses_attachment_disposition_for_filename() {
         user,
         Path(pdf),
         Query(ServeQuery { variant: None }),
+        Method::GET,
         HeaderMap::new(),
     )
     .await

@@ -1,9 +1,9 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+mod file_response;
 pub mod mutate;
 pub mod query;
-#[cfg(test)]
 mod range;
 pub mod uploads;
 
@@ -220,12 +220,13 @@ use crate::data::asset::{
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
-use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::Response;
 use axum::Json;
+use file_response::{not_modified, serve_file, FileResponse, MissingFile};
 use mutate::attachment_disposition;
+use range::{Disposition, Route};
 use tokio::io::AsyncWriteExt;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
@@ -564,6 +565,13 @@ pub struct ServeQuery {
 /// (`AssetMeta.sheet`; animated sources only) — written once at commit/reconvert time, never
 /// regenerated on demand, so a missing sheet sibling answers 404 instead.
 ///
+/// The file is streamed, never read whole into memory, and byte ranges are honoured for the media,
+/// raster-image, PDF, archive and font types (`Accept-Ranges: bytes`; `Range` and `If-Range`; 206,
+/// `multipart/byteranges` and 416 answers; a media response carries at most 2 MiB per request).
+/// Every other type is compressible and ignores `Range`. On every branch the validator check
+/// precedes any file access, and `If-None-Match` is answered before `Range` is read. A `HEAD` request answers the
+/// status and headers of the matching `GET` from the file's metadata, opening nothing.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -596,6 +604,7 @@ pub struct ServeQuery {
 ///     user,
 ///     axum::extract::Path(Uuid::new_v4()),
 ///     axum::extract::Query(shadowcat::http::assets::ServeQuery { variant: None }),
+///     axum::http::Method::GET,
 ///     axum::http::HeaderMap::new(),
 /// )
 /// .await;
@@ -606,6 +615,7 @@ pub async fn serve(
     user: AuthUser,
     Path(id): Path<uuid::Uuid>,
     Query(q): Query<ServeQuery>,
+    method: Method,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     // The Opus derivatives are NOT `Variant`s and bypass `ensure_derivative` entirely: a
@@ -623,28 +633,14 @@ pub async fn serve(
             .repo
             .permission_context(asset.world_id, user.id, user.role)
             .await?;
-        // ETag BEFORE the file read (a 304 costs no disk I/O, same as the canonical path),
+        // ETag BEFORE the file open (a 304 costs no disk I/O, same as the canonical path),
         // and the 304 carries the ETag back so a cache can refresh its validator.
         let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
-        let if_none_match = headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if if_none_match.split(',').any(|t| t.trim() == etag) {
-            return Ok((
-                [
-                    (header::ETAG, etag),
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                ],
-                StatusCode::NOT_MODIFIED,
-            )
-                .into_response());
+        if let Some(not_modified) = not_modified(&headers, &etag) {
+            return Ok(not_modified);
         }
         let canonical = state.config.assets_path().join(&asset.storage_key);
         let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
-        let bytes = tokio::fs::read(&sibling)
-            .await
-            .map_err(|_| AppError::NotFound)?;
         // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
         // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
         // `no-cache` (never `immutable`): the request URL (`/api/assets/{uuid}?variant=opus`)
@@ -656,16 +652,21 @@ pub async fn serve(
         // value on the way out — a per-handler copy here would be dead weight, proven by
         // `serve_never_lets_a_browser_render_a_stored_type_as_a_document` (an e2e test
         // against the live router) still asserting `nosniff` with no per-handler header.
-        return Ok((
-            [
-                (header::CONTENT_TYPE, content_type.to_string()),
-                (header::CONTENT_DISPOSITION, "inline".to_string()),
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            Body::from(bytes),
+        return serve_file(
+            FileResponse {
+                id,
+                path: &sibling,
+                content_type: content_type.to_string(),
+                content_disposition: "inline".to_string(),
+                disposition: Disposition::Inline,
+                route: Route::Embed,
+                etag,
+                missing: MissingFile::NotFound,
+            },
+            &headers,
+            &method,
         )
-            .into_response());
+        .await;
     }
     let variant = match q.variant.as_deref() {
         None => None,
@@ -688,43 +689,30 @@ pub async fn serve(
             if asset.meta.sheet.is_none() {
                 return Err(AppError::NotFound);
             }
+            let etag = format!("\"{}-{}\"", id, asset.version);
+            if let Some(not_modified) = not_modified(&headers, &etag) {
+                return Ok(not_modified);
+            }
             let canonical = state.config.assets_path().join(&asset.storage_key);
             let sheet = crate::data::asset::process::sheet_path(&canonical);
-            let bytes = tokio::fs::read(&sheet).await.map_err(|e| {
-                tracing::debug!(?e, %id, "grid sheet missing for an asset whose metadata names one");
-                AppError::NotFound
-            })?;
-            let etag = format!("\"{}-{}\"", id, asset.version);
-            let if_none_match = headers
-                .get(header::IF_NONE_MATCH)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            if if_none_match.split(',').any(|t| t.trim() == etag) {
-                return Ok((
-                    [
-                        (header::ETAG, etag),
-                        (header::CACHE_CONTROL, "no-cache".to_string()),
-                    ],
-                    StatusCode::NOT_MODIFIED,
-                )
-                    .into_response());
-            }
             // `no-cache`: `?variant=sheet` carries no asset version in the URL either.
             // `X-Content-Type-Options` comes from the global `security_headers` layer — see
             // the comment on the Opus branch above.
-            return Ok((
-                [
-                    (
-                        header::CONTENT_TYPE,
-                        crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
-                    ),
-                    (header::CONTENT_DISPOSITION, "inline".to_string()),
-                    (header::ETAG, etag),
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                ],
-                Body::from(bytes),
+            return serve_file(
+                FileResponse {
+                    id,
+                    path: &sheet,
+                    content_type: crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
+                    content_disposition: "inline".to_string(),
+                    disposition: Disposition::Inline,
+                    route: Route::Embed,
+                    etag,
+                    missing: MissingFile::NotFound,
+                },
+                &headers,
+                &method,
             )
-                .into_response());
+            .await;
         }
         Some(other) => {
             return Err(AppError::BadRequest(format!("unknown variant '{other}'")));
@@ -741,19 +729,8 @@ pub async fn serve(
     let etag = format!("\"{}-{}\"", id, asset.version);
     // `If-None-Match` is an RFC 7232 comma-separated list (browsers may send
     // several cached ETags); 304 if ours appears anywhere in it.
-    let if_none_match = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if if_none_match.split(',').any(|t| t.trim() == etag) {
-        return Ok((
-            [
-                (header::ETAG, etag),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            StatusCode::NOT_MODIFIED,
-        )
-            .into_response());
+    if let Some(not_modified) = not_modified(&headers, &etag) {
+        return Ok(not_modified);
     }
 
     let canonical = state.config.assets_path().join(&asset.storage_key);
@@ -773,10 +750,6 @@ pub async fn serve(
             }
         },
     };
-    let bytes = tokio::fs::read(&path).await.map_err(|e| {
-        tracing::error!(?e, %id, "asset file missing for existing record");
-        AppError::Internal
-    })?;
     // Pass-through stores a GM-declared type verbatim, and `serve` is
     // membership-gated, so the response never lets a browser render an
     // asset as a document: `nosniff` always, and `inline` only for the raster
@@ -786,25 +759,34 @@ pub async fn serve(
     // Reuses `mutate::attachment_disposition` rather than a bare `"attachment"`, so a
     // downloaded non-inline asset names itself after the upload exactly like
     // `mutate::original`'s retained-original download does.
-    let disposition = if INLINE_CONTENT_TYPES.contains(&content_type.as_str()) {
-        "inline".to_string()
+    let inline = INLINE_CONTENT_TYPES.contains(&content_type.as_str());
+    let (content_disposition, disposition) = if inline {
+        ("inline".to_string(), Disposition::Inline)
     } else {
-        attachment_disposition(&original_name)
+        (
+            attachment_disposition(&original_name),
+            Disposition::Attachment,
+        )
     };
     // `no-cache`: the request URL carries no asset version, so a cache must always
     // revalidate through `If-None-Match` rather than trust a heuristic freshness lifetime.
     // `X-Content-Type-Options` comes from the global `security_headers` layer — see the
     // comment on the Opus branch above.
-    Ok((
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, disposition),
-            (header::ETAG, etag),
-            (header::CACHE_CONTROL, "no-cache".to_string()),
-        ],
-        Body::from(bytes),
+    serve_file(
+        FileResponse {
+            id,
+            path: &path,
+            content_type,
+            content_disposition,
+            disposition,
+            route: Route::Embed,
+            etag,
+            missing: MissingFile::Internal,
+        },
+        &headers,
+        &method,
     )
-        .into_response())
+    .await
 }
 
 /// `GET /api/assets/{uuid}/meta` — membership-gated (any member of the asset's world may

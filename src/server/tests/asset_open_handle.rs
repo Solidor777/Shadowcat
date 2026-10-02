@@ -8,8 +8,10 @@
 //! the observed values with `measure::record`, which reaches the runner's step summary.
 //!
 //! The held handle is a `tokio::fs::File` from `File::open`, the open the streamed serve path
-//! uses. The delete control calls the production route, whose
-//! unlink is the route's own `remove_file`; the test itself performs no delete.
+//! uses, and `replace_and_delete_succeed_while_a_response_streams_the_canonical` repeats both
+//! controls with a real streaming response as the open handle. The delete controls call the
+//! production route, whose unlink is the route's own `remove_file`; the tests themselves perform
+//! no delete.
 
 use std::time::{Duration, Instant};
 
@@ -149,5 +151,77 @@ async fn delete_frees_the_name_while_a_reader_holds_the_canonical_open() {
     assert_eq!(
         seen, old,
         "the open handle keeps yielding the deleted file's bytes"
+    );
+}
+
+/// A payload several times larger than any loopback socket buffer pair, so a client that reads
+/// nothing leaves the server's body unfinished and its file open.
+fn large_payload(seed: u8) -> Vec<u8> {
+    let mut bytes = b"%PDF-1.7 ".to_vec();
+    bytes.extend((0..40 * 1024 * 1024u32).map(|i| (i as u8).wrapping_add(seed)));
+    bytes
+}
+
+/// The response-level form of the controls above: the open handle is a streaming response whose
+/// client has read nothing past the headers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_and_delete_succeed_while_a_response_streams_the_canonical() {
+    let h = common::spawn().await;
+    let old = large_payload(5);
+    let asset: serde_json::Value = h
+        .upload("streamed.pdf", "application/pdf", old.clone())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    let path = h.assets_dir.join(h.world.to_string()).join(&id);
+    let streaming = h
+        .client
+        .get(format!("http://{}/api/assets/{id}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(streaming.status(), 200);
+
+    let new = payload(9);
+    let replaced = tokio::time::timeout(
+        ROUTE_BUDGET,
+        h.replace(&id, "streamed2.pdf", "application/pdf", new.clone()),
+    )
+    .await
+    .expect("replace blocked on the streaming response");
+    assert_eq!(replaced.status(), 200, "{:?}", replaced.text().await);
+    assert_eq!(std::fs::read(&path).unwrap(), new);
+
+    let deleted = tokio::time::timeout(
+        ROUTE_BUDGET,
+        h.client
+            .delete(format!("http://{}/api/assets/{id}", h.addr))
+            .send(),
+    )
+    .await
+    .expect("delete blocked on the streaming response")
+    .unwrap();
+    assert_eq!(deleted.status(), 204);
+    let name_listed = path.exists();
+    record(&format!(
+        "asset-open-handle response os={} replace_status=200 delete_status=204 name_exists_after_delete={name_listed}",
+        leg()
+    ));
+    assert!(
+        !name_listed,
+        "the deleted name is still listed while a response streams it"
+    );
+
+    let body = streaming.bytes().await.unwrap();
+    assert_eq!(
+        body.len(),
+        old.len(),
+        "the streaming response completes over the replaced and deleted file"
+    );
+    assert!(
+        body == old,
+        "the response yields the bytes it was opened over"
     );
 }

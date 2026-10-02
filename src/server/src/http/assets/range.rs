@@ -37,6 +37,7 @@ pub(super) enum Route {
     /// `http::assets::serve`: the asset embedded in the page or fetched by an element.
     Embed,
     /// `http::assets::mutate::original`: the explicit download of the retained original.
+    #[cfg(test)]
     Original,
 }
 
@@ -133,6 +134,7 @@ pub(super) fn is_media_or_archive(content_type: &str) -> bool {
 /// so it must not turn an SVG or a text file into an uncompressed download.
 pub(super) fn classify(content_type: &str, disposition: Disposition, route: Route) -> RangeClass {
     match route {
+        #[cfg(test)]
         Route::Original => RangeClass::DownloadFull,
         Route::Embed if !is_media_or_archive(content_type) => RangeClass::Ignore,
         Route::Embed => match disposition {
