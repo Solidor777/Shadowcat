@@ -92,6 +92,30 @@ async fn first_byte_dispatches_plain_http_versus_tls() {
     assert_eq!(presented.alpn.as_deref(), Some(&b"http/1.1"[..]));
 }
 
+/// Every accepted connection, plain or TLS, has `TCP_NODELAY` set: the listener is the one place
+/// the production path configures an accepted socket.
+#[tokio::test]
+async fn an_accepted_connection_has_tcp_nodelay_set_plain_and_tls() {
+    let (mut l, addr) = listener_with(memory_config(), Limits::default()).await;
+    let mut c = TcpStream::connect(addr).await.unwrap();
+    c.write_all(b"G").await.unwrap();
+    let (plain, _) = accept(&mut l).await;
+    let ConnStream::Plain(plain) = plain else {
+        panic!("a plain first byte was not served as plain");
+    };
+    assert!(plain.nodelay().unwrap(), "a plain connection has Nagle on");
+    let client = tokio::spawn(async move { handshake_any(addr, None, &["http/1.1"]).await });
+    let (tls, _) = accept(&mut l).await;
+    let ConnStream::Tls(tls) = tls else {
+        panic!("a TLS first byte was not served as TLS");
+    };
+    assert!(
+        tls.get_ref().0.nodelay().unwrap(),
+        "a TLS connection has Nagle on"
+    );
+    client.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn an_ip_literal_or_sni_less_connection_gets_the_self_signed_fallback_carrying_the_ip_san() {
     let (mut l, addr, rt) = listener_with_runtime(memory_config(), Limits::default()).await;
