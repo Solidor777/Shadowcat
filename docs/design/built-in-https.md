@@ -366,14 +366,17 @@ task paces its own accept errors.
     same value `ConnLimits::for_config` gives the response bounds) fails as stalled and ends the session, which
     releases its `ConnectionGuard` and its `ConnLease` (the connection's cap slot); once shutdown is
     signalled a pending send gets only `CLOSE_SEND_TIMEOUT` (2 s).
-  - Open question: in a debug build the `h2` crate's `impl Drop for Counts` asserts that no stream
-    is still counted. Measured with `tests/h2_drain_kill.rs`: a tunnel whose peer has stopped reading,
-    told to close and then cut at the deadline, trips that assertion under the IO kill as it does
-    under abort (release builds compile it out). Mechanism, from an `h2=trace` run: the session ends
-    with unsent DATA on a zero-window stream, so dropping its handles schedules an implicit reset
-    (`ScheduledLibraryReset`) that queues behind the DATA and is never written, and h2's error and EOF
-    paths do not release a stream in that state. The other stalled cases in that test binary (live
-    tunnel, zero-window peer, peer that stops reading the socket) end cleanly.
+  - Vendored `h2` (`vendor/h2`, 0.4.19 plus `SHADOWCAT-PATCH.diff`, verified by `pnpm lint:vendor` and
+    `lint:vendor:upstream`): four changes in six files. (1) Two arms in `State::recv_eof` and
+    `State::handle_error` turn a `ScheduledLibraryReset` stream into an error-closed one when the
+    connection ends, so its slot is released (a stalled tunnel cut at the deadline otherwise trips the
+    debug `Counts` drop assertion). (2) Every server request carries the public `h2::StreamId` as an
+    extension, which the egress stream table correlates with wire frames. (3) `Connection::poll2`
+    stops reading frames while `H2_MAX_PENDING_ACCEPT_RESETS` reset streams await accept and resumes
+    as hyper accepts, so a cancel burst of any size is served and pending resets pin at most that many
+    header blocks. (4) A sustained reset-rate rule ends a connection that resets streams faster than
+    16 times that bound per 10 s with GOAWAY(ENHANCE_YOUR_CALM); it is the rapid-reset protection and
+    its numbers derive from the one reset limit hyper forwards.
   - In-flight requests at the deadline are cut off, not finished: their futures are dropped at the
     next await. The mutating handlers are ordered to survive that (asset replace commits the row
     before swapping the file; uploads stage into `*.tmp`; a backup writes `manifest.json` last and

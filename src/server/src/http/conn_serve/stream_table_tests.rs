@@ -501,15 +501,18 @@ const SOAK_PATHS: [&str; 5] = ["/", "/small", "/big", "/chunks", "/endless"];
 /// scheduler yields) when `early_cancels`, otherwise once the head has arrived. Returns the served
 /// connection after every stream has ended.
 ///
-/// Early cancels are kept to a low rate by the caller: h2 ends a connection with
-/// GOAWAY(ENHANCE_YOUR_CALM) when more than [`H2_MAX_PENDING_ACCEPT_RESETS`] streams are reset
-/// before the service accepted them, a guard that a cancel-heavy loop can trip on its own.
+/// `reset_budget` is the most requests that may end in a reset (a cancel, a partial read, an
+/// `/endless` read); once spent, every request reads its response to the end. An unpaced loop
+/// resetting streams is the rapid-reset pattern h2 ends with GOAWAY, so a soak large enough to
+/// outrun any pacing keeps its resets below the burst h2 admits at once (16 times
+/// [`H2_MAX_PENDING_ACCEPT_RESETS`]), which no speed can exceed.
 async fn soak(
     requests: usize,
     workers: usize,
     seed: u64,
     max_delay: Duration,
     early_cancels: bool,
+    reset_budget: usize,
 ) -> Served {
     let mut served = serve(egress::STREAM_TABLE_CAP);
     let peer = std::mem::replace(&mut served.peer, tokio::io::duplex(1).0);
@@ -527,16 +530,29 @@ async fn soak(
         let _ = conn.await;
     });
     let per_worker = requests / workers;
+    let reset_budget = Arc::new(AtomicUsize::new(reset_budget));
     let failure = Arc::new(std::sync::Mutex::new(None::<String>));
     let mut tasks = Vec::new();
     for worker in 0..workers {
         let mut sender = sender.clone();
         let failure = failure.clone();
+        let reset_budget = reset_budget.clone();
         tasks.push(tokio::spawn(async move {
             let mut rng = seed ^ (worker as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
             for _ in 0..per_worker {
-                let path = SOAK_PATHS[(xorshift(&mut rng) % SOAK_PATHS.len() as u64) as usize];
-                let action = xorshift(&mut rng) % 3;
+                let mut path = SOAK_PATHS[(xorshift(&mut rng) % SOAK_PATHS.len() as u64) as usize];
+                let mut action = xorshift(&mut rng) % 3;
+                let ends_in_reset = action != 1 || path == "/endless";
+                if ends_in_reset
+                    && reset_budget
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| b.checked_sub(1))
+                        .is_err()
+                {
+                    action = 1;
+                    if path == "/endless" {
+                        path = "/";
+                    }
+                }
                 let request = axum::http::Request::get(format!("http://test{path}"))
                     .body(())
                     .unwrap();
@@ -630,7 +646,7 @@ async fn soak(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_browser_style_cancel_and_read_soak_never_cuts_and_leaves_the_table_empty() {
     for seed in [0x5EED_0001u64, 0x5EED_0002, 0x5EED_0003] {
-        let served = soak(300, 6, seed, Duration::from_millis(40), true).await;
+        let served = soak(300, 6, seed, Duration::from_millis(40), true, usize::MAX).await;
         assert_eq!(
             served.counters.snapshot(),
             StallCuts::default(),
@@ -644,7 +660,15 @@ async fn a_browser_style_cancel_and_read_soak_never_cuts_and_leaves_the_table_em
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hundred_thousand_request_soak_never_cuts_and_its_table_peak_stays_below_the_cap() {
-    let served = soak(100_000, 32, 0x5EED_1E55, Duration::ZERO, false).await;
+    let served = soak(
+        100_000,
+        32,
+        0x5EED_1E55,
+        Duration::ZERO,
+        false,
+        8 * H2_MAX_PENDING_ACCEPT_RESETS,
+    )
+    .await;
     assert_eq!(served.counters.snapshot(), StallCuts::default());
     println!(
         "RECORD soak requests=100000 table_peak={} streams_limit={H2_MAX_CONCURRENT_STREAMS} cap={}",

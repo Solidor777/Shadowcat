@@ -276,21 +276,28 @@ const H2_MAX_CONCURRENT_STREAMS: u32 = 100;
 /// sends, a CANCEL, an implicit reset and a stall cut do not count.
 const H2_MAX_LOCAL_ERROR_RESETS: usize = 1024;
 
-/// How many streams h2 may hold that the client has already reset and hyper has not yet accepted
-/// (`http2::Builder::max_pending_accept_reset_streams`); the reset that would exceed it ends the
-/// connection with GOAWAY(ENHANCE_YOUR_CALM, `too_many_resets`). The count is the instantaneous size
-/// of that queue, not a lifetime total: it falls as hyper accepts. h2 reads every frame a read makes
-/// available before hyper accepts the next stream, so a client that cancels a page's requests in a
-/// burst, or whose stalled uplink delivers its HEADERS and RST_STREAM frames in one flush, has all
-/// of them pending at once, however many requests the page made. Measured with Chromium over
-/// HTTPS/h2 behind an uplink that holds bytes for 250 ms and then delivers them together, h2's
-/// default of 20 and a limit of 256 both end the connection, 1,024 does not; behind a 2 s hold
-/// 1,024 is still exceeded, so no count covers every stall.
+/// The bound on streams h2 holds that the client has already reset and hyper has not yet accepted
+/// (`http2::Builder::max_pending_accept_reset_streams`). Reaching it stops the connection reading
+/// frames (backpressure) until hyper's accepts bring the count back under it; the connection is
+/// never ended for the queue, so a client that cancels a page's requests in a burst, or whose stalled
+/// uplink delivers thousands of HEADERS and RST_STREAM frames in one flush, is served however many
+/// requests the page made. Accepting depends only on the queue, never on a handler finishing or on a
+/// frame not yet read, so a stopped connection always resumes.
 ///
 /// Each pending stream keeps its decoded request header block (at most hyper's 16 KiB header-list
-/// limit) until accepted, so the limit is also the connection's worst-case memory pin from this
-/// queue: about 16 MiB at 1,024 (the retention per reset stream is read from h2's frame handling,
-/// not measured). A reset flood is many times this in one read and still ends the connection.
+/// limit) until accepted, so the bound is the connection's worst-case memory pin from this queue:
+/// about 16 MiB at 1,024 (the retention per reset stream is read from h2's frame handling, not
+/// measured).
+///
+/// The same value sets the sustained-rate limit on RST_STREAM frames the vendored h2 enforces: 16
+/// times the bound per 10 s window (16,384 resets per 10 s at 1,024, an average of about 1,640 a
+/// second), a burst of up to that many admitted at once. A connection exceeding it ends with
+/// GOAWAY(ENHANCE_YOUR_CALM, `too_many_resets`). The rule is the HTTP/2 rapid-reset protection:
+/// opening and cancelling streams never holds the concurrent-stream limit, so only the reset rate
+/// bounds the server work a peer can demand. A page makes at most a few thousand requests and
+/// cancels them in waves tied to user actions, so a sustained average past one reset per
+/// millisecond for ten seconds is not a browser; the limit is derived from the bound, not fitted to
+/// one machine, and it is stated here because hyper forwards no other reset setting.
 const H2_MAX_PENDING_ACCEPT_RESETS: usize = 1024;
 
 /// The HTTP/2 connection builder every h2 connection is served with: one place sets the stream

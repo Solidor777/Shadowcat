@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Instant;
 
 #[derive(Debug)]
 struct Budget {
@@ -24,6 +25,55 @@ impl Budget {
 
     fn replenish(&mut self, amount: usize) {
         self.available = self.available.saturating_add(amount).min(self.max);
+    }
+}
+
+/// Length of the window the remote RST_STREAM rate is limited over.
+const REMOTE_RESET_RATE_WINDOW: Duration = Duration::from_secs(10);
+
+/// The per-window limit on remote RST_STREAM frames is this multiple of the pending-accept bound
+/// (`max_pending_accept_reset_streams`), the one reset limit an embedder can configure.
+const REMOTE_RESET_RATE_FACTOR: usize = 16;
+
+/// A connection reset streams faster than `ResetRate` allows.
+#[derive(Debug)]
+pub(super) struct ResetRateExceeded;
+
+/// Generic cell rate algorithm over remote RST_STREAM frames: a burst of up to the limit is
+/// admitted at once and the sustained rate is `limit` per `REMOTE_RESET_RATE_WINDOW`. Bounds the
+/// work a peer can make the server do by opening and cancelling streams without ever holding the
+/// concurrent-stream limit (the HTTP/2 "rapid reset" pattern), which a count of queued resets
+/// cannot do once reads wait for accepts.
+#[derive(Debug)]
+struct ResetRate {
+    /// Cost of one reset: the window divided by the limit.
+    interval: Duration,
+    /// Theoretical arrival time: when the budget the resets so far consumed is repaid.
+    tat: Option<Instant>,
+}
+
+impl ResetRate {
+    fn new(max_pending_accept: usize) -> Self {
+        let limit = max_pending_accept
+            .saturating_mul(REMOTE_RESET_RATE_FACTOR)
+            .min(u32::MAX as usize) as u32;
+        ResetRate {
+            interval: REMOTE_RESET_RATE_WINDOW / limit,
+            tat: None,
+        }
+    }
+
+    fn record(&mut self, now: Instant) -> Result<(), ResetRateExceeded> {
+        let base = match self.tat {
+            Some(tat) if tat > now => tat,
+            _ => now,
+        };
+        let next = base + self.interval;
+        if next - now > REMOTE_RESET_RATE_WINDOW {
+            return Err(ResetRateExceeded);
+        }
+        self.tat = Some(next);
+        Ok(())
     }
 }
 
@@ -57,6 +107,9 @@ pub(super) struct Counts {
     /// Current number of "pending accept" streams that were remotely reset
     num_remote_reset_streams: usize,
 
+    /// Sustained-rate limit on remote RST_STREAM frames (server peers only).
+    remote_reset_rate: ResetRate,
+
     /// Maximum number of locally reset streams due to protocol error across
     /// the lifetime of the connection.
     ///
@@ -86,8 +139,9 @@ impl Counts {
             num_recv_streams: 0,
             max_local_reset_streams: config.local_reset_max,
             num_local_reset_streams: 0,
-            max_remote_reset_streams: config.remote_reset_max,
+            max_remote_reset_streams: config.remote_reset_max.max(1),
             num_remote_reset_streams: 0,
+            remote_reset_rate: ResetRate::new(config.remote_reset_max.max(1)),
             max_local_error_reset_streams: config.local_max_error_reset_streams,
             num_local_error_reset_streams: 0,
             data_frame_budget: Budget::new(config.data_frame_budget),
@@ -235,6 +289,22 @@ impl Counts {
         assert!(self.can_inc_num_remote_reset_streams());
 
         self.num_remote_reset_streams += 1;
+    }
+
+    /// Whether a server peer holds as many pending-accept remotely-reset streams as the bound
+    /// allows. The connection stops reading frames while this holds, so the count never exceeds the
+    /// bound and a RST_STREAM never has to be refused for it.
+    pub(crate) fn remote_resets_at_bound(&self) -> bool {
+        self.peer.is_server() && self.num_remote_reset_streams >= self.max_remote_reset_streams
+    }
+
+    /// Charges one received RST_STREAM against the sustained-rate limit (server peers only).
+    /// `Err` when the connection has reset streams faster than the limit allows.
+    pub(crate) fn record_remote_reset(&mut self) -> Result<(), ResetRateExceeded> {
+        if !self.peer.is_server() {
+            return Ok(());
+        }
+        self.remote_reset_rate.record(Instant::now())
     }
 
     pub(crate) fn dec_num_remote_reset_streams(&mut self) {

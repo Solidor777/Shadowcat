@@ -908,6 +908,18 @@ impl Recv {
         // So, we have a separate limit for these.
         //
         // See https://github.com/hyperium/hyper/issues/2877
+        //
+        // A server never refuses a reset for this limit: its connection stops reading frames
+        // while the count is at the bound (`Streams::pause_for_accepts`), so `can_inc` holds.
+        // The separate rate limit bounds a peer that resets streams at attack rates.
+        if counts.record_remote_reset().is_err() {
+            tracing::warn!("recv_reset; remote reset rate limit exceeded");
+            return Err(Error::library_go_away_data(
+                Reason::ENHANCE_YOUR_CALM,
+                "too_many_resets",
+            ));
+        }
+
         if stream.is_pending_accept {
             if counts.can_inc_num_remote_reset_streams() {
                 counts.inc_num_remote_reset_streams();

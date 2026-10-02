@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { create } from "tar";
 import {
+  EXPECTED_HUNKS_BY_FILE,
   PATCHED_FILES,
   applyPatch,
   checkUpstream,
@@ -57,6 +58,82 @@ const SERVER_PATCHED = SERVER_UP.replace(
   "        let b = Request::builder();\n",
   "        let b = Request::builder();\n        b = b.extension(crate::StreamId::from_internal(stream_id));\n",
 );
+const CONN_UP = `impl Connection {
+    fn poll2(&mut self, cx: &mut Context) {
+        self.poll_ready(cx);
+        self.recv_frame();
+    }
+}
+`;
+const CONN_PATCHED = CONN_UP.replace(
+  "        self.poll_ready(cx);\n",
+  "        self.poll_ready(cx);\n        if self.inner.streams.pause_for_accepts(cx) {\n            return Pending;\n        }\n",
+);
+const COUNTS_UP = `use super::*;
+
+struct Counts {
+    open: usize,
+}
+
+impl Counts {
+    pub fn new() -> Self {
+        Counts {
+            open: 0,
+        }
+    }
+
+    pub fn dec(&mut self) {
+        self.open -= 1;
+    }
+}
+`;
+const COUNTS_PATCHED = COUNTS_UP.replace("use super::*;\n", "use super::*;\nuse std::time::Instant;\n")
+  .replace("    open: usize,\n", "    open: usize,\n    remote_reset_rate: ResetRate,\n")
+  .replace("            open: 0,\n", "            open: 0,\n            remote_reset_rate: ResetRate::new(),\n")
+  .replace(
+    "    pub fn dec(&mut self) {",
+    "    pub(crate) fn remote_resets_at_bound(&self) -> bool {\n        self.peer.is_server() && self.num_remote_reset_streams >= self.max_remote_reset_streams\n    }\n\n    pub fn dec(&mut self) {",
+  )
+  .replace(
+    "        self.open -= 1;\n    }\n",
+    "        self.open -= 1;\n    }\n\n    pub(crate) fn record_remote_reset(&mut self) {\n        self.remote_reset_rate.record(Instant::now());\n    }\n",
+  );
+const RECV_UP = `impl Recv {
+    pub fn recv_reset(&mut self, counts: &mut Counts) {
+        self.notify();
+    }
+}
+`;
+const RECV_PATCHED = RECV_UP.replace(
+  "        self.notify();\n",
+  "        if counts.record_remote_reset().is_err() {\n            return;\n        }\n        self.notify();\n",
+);
+const STREAMS_UP = `struct Actions {
+    task: Option<Waker>,
+}
+
+impl Inner {
+    fn new() -> Self {
+        Actions {
+            task: None,
+        }
+    }
+}
+
+impl Streams {
+    pub fn next_incoming(&mut self) {
+        let key = pop();
+        key
+    }
+}
+`;
+const STREAMS_PATCHED = STREAMS_UP.replace("    task: Option<Waker>,\n", "    task: Option<Waker>,\n    accept_waker: Option<Waker>,\n")
+  .replace("            task: None,\n", "            task: None,\n            accept_waker: None,\n")
+  .replace(
+    "    pub fn next_incoming(&mut self) {",
+    "    pub fn pause_for_accepts(&mut self, cx: &Context) -> bool {\n        me.counts.remote_resets_at_bound()\n    }\n\n    pub fn next_incoming(&mut self) {",
+  )
+  .replace("        let key = pop();\n", "        let key = pop();\n        me.actions.accept_waker.take();\n");
 const LICENSE = "Permission is hereby granted, free of charge, to any person obtaining a copy\n";
 const CARGO = '[package]\nname = "h2"\nversion = "0.4.19"\n';
 
@@ -84,7 +161,11 @@ function sectionFor(file, before, after) {
 
 const DIFF =
   sectionFor("src/proto/streams/state.rs", STATE_UP, STATE_PATCHED) +
-  sectionFor("src/server.rs", SERVER_UP, SERVER_PATCHED);
+  sectionFor("src/server.rs", SERVER_UP, SERVER_PATCHED) +
+  sectionFor("src/proto/connection.rs", CONN_UP, CONN_PATCHED) +
+  sectionFor("src/proto/streams/counts.rs", COUNTS_UP, COUNTS_PATCHED) +
+  sectionFor("src/proto/streams/recv.rs", RECV_UP, RECV_PATCHED) +
+  sectionFor("src/proto/streams/streams.rs", STREAMS_UP, STREAMS_PATCHED);
 
 const ROOT_TOML = `[workspace]\nmembers = ["src/server"]\nexclude = ["vendor/h2"]\n\n[patch.crates-io]\nh2 = { path = "vendor/h2" }\n`;
 const LOCK_OK = `[[package]]\nname = "h2"\nversion = "0.4.19"\ndependencies = []\n\n[[package]]\nname = "other"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`;
@@ -97,11 +178,19 @@ function fixture() {
     ["src/lib.rs", "pub mod x;\n"],
     ["src/proto/streams/state.rs", STATE_UP],
     ["src/server.rs", SERVER_UP],
+    ["src/proto/connection.rs", CONN_UP],
+    ["src/proto/streams/counts.rs", COUNTS_UP],
+    ["src/proto/streams/recv.rs", RECV_UP],
+    ["src/proto/streams/streams.rs", STREAMS_UP],
     ["data.bin", "a\r\nb"],
   ]);
   const vendored = new Map(upstream);
   vendored.set("src/proto/streams/state.rs", STATE_PATCHED);
   vendored.set("src/server.rs", SERVER_PATCHED);
+  vendored.set("src/proto/connection.rs", CONN_PATCHED);
+  vendored.set("src/proto/streams/counts.rs", COUNTS_PATCHED);
+  vendored.set("src/proto/streams/recv.rs", RECV_PATCHED);
+  vendored.set("src/proto/streams/streams.rs", STREAMS_PATCHED);
   vendored.set("SHADOWCAT-PATCH.diff", DIFF);
   vendored.set("SHADOWCAT-PATCH.md", "prose\n");
   const record = [...vendored.keys()]
@@ -275,12 +364,52 @@ test("dropping the StreamId extension line fails the extension assertion", () =>
   expect(checkVendor(inputs(vendored)).some((e) => e.includes("does not add the StreamId extension"))).toBe(true);
 });
 
-test("PATCHED_FILES names exactly the two files carrying the three changes", () => {
-  expect([...PATCHED_FILES].sort()).toEqual(["src/proto/streams/state.rs", "src/server.rs"]);
-  expect([...hunkCounts(DIFF)]).toEqual([
-    ["src/proto/streams/state.rs", 2],
-    ["src/server.rs", 1],
+test("PATCHED_FILES names exactly the six files carrying the vendored changes", () => {
+  expect([...PATCHED_FILES].sort()).toEqual([
+    "src/proto/connection.rs",
+    "src/proto/streams/counts.rs",
+    "src/proto/streams/recv.rs",
+    "src/proto/streams/state.rs",
+    "src/proto/streams/streams.rs",
+    "src/server.rs",
   ]);
+  expect(Object.fromEntries(hunkCounts(DIFF))).toEqual(EXPECTED_HUNKS_BY_FILE);
+});
+
+/** Replaces a vendored file's text and fixes its record so only the behaviour assertions can object. */
+function withFile(vendored, file, text) {
+  vendored.set(file, text);
+  const old = parseRecord(vendored.get(".vendored-sha256")).records.get(file);
+  vendored.set(".vendored-sha256", vendored.get(".vendored-sha256").replace(old.vendored, hashFile(file, Buffer.from(text))));
+}
+
+test("reverting any pending-accept reset change fails its assertion even when its record is updated", () => {
+  const cases = [
+    ["src/proto/connection.rs", CONN_UP, "does not stop reading while pending-accept resets are at their bound"],
+    ["src/proto/streams/recv.rs", RECV_UP, "does not enforce the sustained reset-rate limit"],
+    ["src/proto/streams/counts.rs", COUNTS_UP, "does not compare the count with the bound"],
+    ["src/proto/streams/counts.rs", COUNTS_UP, "does not charge the reset-rate limit"],
+    ["src/proto/streams/streams.rs", STREAMS_UP, "does not test the pending-accept reset bound"],
+    ["src/proto/streams/streams.rs", STREAMS_UP, "does not wake a connection parked on the reset bound"],
+  ];
+  for (const [file, upstream, message] of cases) {
+    const { vendored } = fixture();
+    withFile(vendored, file, upstream);
+    expect(checkVendor(inputs(vendored)).some((e) => e.includes(message)), `${file}: ${message}`).toBe(true);
+  }
+});
+
+test("a tampered backpressure hunk in the vendored file fails its record hash", () => {
+  const { vendored } = fixture();
+  vendored.set("src/proto/connection.rs", CONN_PATCHED.replace("pause_for_accepts(cx)", "pause_for_accept(cx)"));
+  expect(checkVendor(inputs(vendored)).some((e) => e.includes("src/proto/connection.rs: hash"))).toBe(true);
+});
+
+test("a tampered backpressure hunk in the committed diff fails the upstream replay", async () => {
+  const f = await networkedFixture();
+  const key = "vendor/h2/SHADOWCAT-PATCH.diff";
+  f.files.set(key, Buffer.from(f.files.get(key).toString("latin1").replace("pause_for_accepts(cx)", "pause_for_accept(cx)"), "latin1"));
+  expect(checkUpstream(f).some((e) => e.includes("src/proto/connection.rs: upstream plus"))).toBe(true);
 });
 
 /** An upstream `.crate` for the fixture, with its pinned hash, and a `readFile` over the vendored tree. */

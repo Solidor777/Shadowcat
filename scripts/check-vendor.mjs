@@ -41,8 +41,19 @@ export const UPSTREAM = {
   url: "https://static.crates.io/crates/h2/h2-0.4.19.crate",
 };
 
-/** The vendored files that differ from upstream: the three vendored changes live in these two. */
-export const PATCHED_FILES = ["src/proto/streams/state.rs", "src/server.rs"];
+/**
+ * The vendored files that differ from upstream: the connection-end arms live in `state.rs`, the
+ * stream-id extension in `server.rs`, and the pending-accept reset backpressure with the sustained
+ * reset-rate rule in the other four.
+ */
+export const PATCHED_FILES = [
+  "src/proto/connection.rs",
+  "src/proto/streams/counts.rs",
+  "src/proto/streams/recv.rs",
+  "src/proto/streams/state.rs",
+  "src/proto/streams/streams.rs",
+  "src/server.rs",
+];
 
 /** Files the patch adds beside upstream's tree; their record's upstream hash is `-`. */
 export const ADDED_FILES = ["SHADOWCAT-PATCH.diff"];
@@ -58,8 +69,34 @@ export const RECORD_FILE = ".vendored-sha256";
 export const REMOVED_UPSTREAM = [".cargo-ok", ".cargo_vcs_info.json", ".gitignore", "Cargo.lock"];
 export const REMOVED_UPSTREAM_PREFIXES = [".github/"];
 
-/** Number of hunks the committed diff must carry: two in `state.rs`, one in `server.rs`. */
-export const EXPECTED_HUNKS = 3;
+/** Hunks the committed diff must carry in each patched file. */
+export const EXPECTED_HUNKS_BY_FILE = {
+  "src/proto/connection.rs": 1,
+  "src/proto/streams/counts.rs": 5,
+  "src/proto/streams/recv.rs": 1,
+  "src/proto/streams/state.rs": 2,
+  "src/proto/streams/streams.rs": 4,
+  "src/server.rs": 1,
+};
+
+/** Number of hunks the committed diff must carry in all. */
+export const EXPECTED_HUNKS = Object.values(EXPECTED_HUNKS_BY_FILE).reduce((a, b) => a + b, 0);
+
+/**
+ * What each vendored change must still contain, so a hunk reverted together with its record is
+ * caught: the function whose body must include the text, and the failure message.
+ */
+export const BEHAVIOUR_CHECKS = [
+  { file: "src/proto/streams/state.rs", fn: "recv_eof", needle: "Closed(Cause::ScheduledLibraryReset(_)) =>", message: "State::recv_eof has no ScheduledLibraryReset conversion arm" },
+  { file: "src/proto/streams/state.rs", fn: "handle_error", needle: "Closed(Cause::ScheduledLibraryReset(_)) =>", message: "State::handle_error has no ScheduledLibraryReset conversion arm" },
+  { file: "src/server.rs", fn: "convert_poll_message", needle: "crate::StreamId::from_internal(stream_id)", message: "Peer::convert_poll_message does not add the StreamId extension" },
+  { file: "src/proto/connection.rs", fn: "poll2", needle: "pause_for_accepts(cx)", message: "Connection::poll2 does not stop reading while pending-accept resets are at their bound" },
+  { file: "src/proto/streams/streams.rs", fn: "pause_for_accepts", needle: "remote_resets_at_bound()", message: "Streams::pause_for_accepts does not test the pending-accept reset bound" },
+  { file: "src/proto/streams/streams.rs", fn: "next_incoming", needle: "accept_waker", message: "Streams::next_incoming does not wake a connection parked on the reset bound" },
+  { file: "src/proto/streams/counts.rs", fn: "remote_resets_at_bound", needle: "self.num_remote_reset_streams >= self.max_remote_reset_streams", message: "Counts::remote_resets_at_bound does not compare the count with the bound" },
+  { file: "src/proto/streams/counts.rs", fn: "record_remote_reset", needle: "self.remote_reset_rate.record(", message: "Counts::record_remote_reset does not charge the reset-rate limit" },
+  { file: "src/proto/streams/recv.rs", fn: "recv_reset", needle: "counts.record_remote_reset()", message: "Recv::recv_reset does not enforce the sustained reset-rate limit" },
+];
 
 const TEXT_EXTENSIONS = [".rs", ".toml", ".md", ".orig"];
 
@@ -268,27 +305,17 @@ export function checkVendor({ paths, readFile, rootCargoToml, cargoLock }) {
 
   if (has(PATCH_DIFF)) {
     const counts = hunkCounts(readFile(`${crateDir}${PATCH_DIFF}`).toString("utf8"));
-    const wantedCounts = { "src/proto/streams/state.rs": 2, "src/server.rs": 1 };
-    for (const [file, n] of Object.entries(wantedCounts)) {
+    for (const [file, n] of Object.entries(EXPECTED_HUNKS_BY_FILE)) {
       if (counts.get(file) !== n) errors.push(`${PATCH_DIFF}: ${file} carries ${counts.get(file) ?? 0} hunk(s), expected ${n}`);
     }
     const total = [...counts.values()].reduce((a, b) => a + b, 0);
     if (total !== EXPECTED_HUNKS) errors.push(`${PATCH_DIFF}: ${total} hunk(s), expected ${EXPECTED_HUNKS}`);
   }
 
-  if (has("src/proto/streams/state.rs")) {
-    const state = readFile(`${crateDir}src/proto/streams/state.rs`).toString("utf8").replace(/\r\n/g, "\n");
-    for (const fn of ["recv_eof", "handle_error"]) {
-      if (!functionBody(state, fn).includes("Closed(Cause::ScheduledLibraryReset(_)) =>")) {
-        errors.push(`${crateDir}src/proto/streams/state.rs: State::${fn} has no ScheduledLibraryReset conversion arm`);
-      }
-    }
-  }
-  if (has("src/server.rs")) {
-    const server = readFile(`${crateDir}src/server.rs`).toString("utf8").replace(/\r\n/g, "\n");
-    if (!functionBody(server, "convert_poll_message").includes("crate::StreamId::from_internal(stream_id)")) {
-      errors.push(`${crateDir}src/server.rs: Peer::convert_poll_message does not add the StreamId extension`);
-    }
+  for (const { file, fn, needle, message } of BEHAVIOUR_CHECKS) {
+    if (!has(file)) continue;
+    const text = readFile(`${crateDir}${file}`).toString("utf8").replace(/\r\n/g, "\n");
+    if (!functionBody(text, fn).includes(needle)) errors.push(`${crateDir}${file}: ${message}`);
   }
   return errors;
 }

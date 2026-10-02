@@ -368,6 +368,12 @@ where
             }
             ready!(self.poll_ready(cx))?;
 
+            // Backpressure: no frame is read while the remotely-reset streams awaiting accept
+            // are at their bound; `Streams::next_incoming` wakes this task as they drain.
+            if self.inner.streams.pause_for_accepts(cx) {
+                return Poll::Pending;
+            }
+
             match self
                 .inner
                 .as_dyn()

@@ -1,3 +1,147 @@
+--- a/src/proto/connection.rs
++++ b/src/proto/connection.rs
+@@ -368,6 +368,12 @@ where
+             }
+             ready!(self.poll_ready(cx))?;
+ 
++            // Backpressure: no frame is read while the remotely-reset streams awaiting accept
++            // are at their bound; `Streams::next_incoming` wakes this task as they drain.
++            if self.inner.streams.pause_for_accepts(cx) {
++                return Poll::Pending;
++            }
++
+             match self
+                 .inner
+                 .as_dyn()
+--- a/src/proto/streams/counts.rs
++++ b/src/proto/streams/counts.rs
+@@ -1,4 +1,5 @@
+ use super::*;
++use std::time::Instant;
+ 
+ #[derive(Debug)]
+ struct Budget {
+@@ -27,6 +28,55 @@ impl Budget {
+     }
+ }
+ 
++/// Length of the window the remote RST_STREAM rate is limited over.
++const REMOTE_RESET_RATE_WINDOW: Duration = Duration::from_secs(10);
++
++/// The per-window limit on remote RST_STREAM frames is this multiple of the pending-accept bound
++/// (`max_pending_accept_reset_streams`), the one reset limit an embedder can configure.
++const REMOTE_RESET_RATE_FACTOR: usize = 16;
++
++/// A connection reset streams faster than `ResetRate` allows.
++#[derive(Debug)]
++pub(super) struct ResetRateExceeded;
++
++/// Generic cell rate algorithm over remote RST_STREAM frames: a burst of up to the limit is
++/// admitted at once and the sustained rate is `limit` per `REMOTE_RESET_RATE_WINDOW`. Bounds the
++/// work a peer can make the server do by opening and cancelling streams without ever holding the
++/// concurrent-stream limit (the HTTP/2 "rapid reset" pattern), which a count of queued resets
++/// cannot do once reads wait for accepts.
++#[derive(Debug)]
++struct ResetRate {
++    /// Cost of one reset: the window divided by the limit.
++    interval: Duration,
++    /// Theoretical arrival time: when the budget the resets so far consumed is repaid.
++    tat: Option<Instant>,
++}
++
++impl ResetRate {
++    fn new(max_pending_accept: usize) -> Self {
++        let limit = max_pending_accept
++            .saturating_mul(REMOTE_RESET_RATE_FACTOR)
++            .min(u32::MAX as usize) as u32;
++        ResetRate {
++            interval: REMOTE_RESET_RATE_WINDOW / limit,
++            tat: None,
++        }
++    }
++
++    fn record(&mut self, now: Instant) -> Result<(), ResetRateExceeded> {
++        let base = match self.tat {
++            Some(tat) if tat > now => tat,
++            _ => now,
++        };
++        let next = base + self.interval;
++        if next - now > REMOTE_RESET_RATE_WINDOW {
++            return Err(ResetRateExceeded);
++        }
++        self.tat = Some(next);
++        Ok(())
++    }
++}
++
+ #[derive(Debug)]
+ pub(super) struct Counts {
+     /// Acting as a client or server. This allows us to track which values to
+@@ -57,6 +107,9 @@ pub(super) struct Counts {
+     /// Current number of "pending accept" streams that were remotely reset
+     num_remote_reset_streams: usize,
+ 
++    /// Sustained-rate limit on remote RST_STREAM frames (server peers only).
++    remote_reset_rate: ResetRate,
++
+     /// Maximum number of locally reset streams due to protocol error across
+     /// the lifetime of the connection.
+     ///
+@@ -86,8 +139,9 @@ impl Counts {
+             num_recv_streams: 0,
+             max_local_reset_streams: config.local_reset_max,
+             num_local_reset_streams: 0,
+-            max_remote_reset_streams: config.remote_reset_max,
++            max_remote_reset_streams: config.remote_reset_max.max(1),
+             num_remote_reset_streams: 0,
++            remote_reset_rate: ResetRate::new(config.remote_reset_max.max(1)),
+             max_local_error_reset_streams: config.local_max_error_reset_streams,
+             num_local_error_reset_streams: 0,
+             data_frame_budget: Budget::new(config.data_frame_budget),
+@@ -237,6 +291,22 @@ impl Counts {
+         self.num_remote_reset_streams += 1;
+     }
+ 
++    /// Whether a server peer holds as many pending-accept remotely-reset streams as the bound
++    /// allows. The connection stops reading frames while this holds, so the count never exceeds the
++    /// bound and a RST_STREAM never has to be refused for it.
++    pub(crate) fn remote_resets_at_bound(&self) -> bool {
++        self.peer.is_server() && self.num_remote_reset_streams >= self.max_remote_reset_streams
++    }
++
++    /// Charges one received RST_STREAM against the sustained-rate limit (server peers only).
++    /// `Err` when the connection has reset streams faster than the limit allows.
++    pub(crate) fn record_remote_reset(&mut self) -> Result<(), ResetRateExceeded> {
++        if !self.peer.is_server() {
++            return Ok(());
++        }
++        self.remote_reset_rate.record(Instant::now())
++    }
++
+     pub(crate) fn dec_num_remote_reset_streams(&mut self) {
+         assert!(self.num_remote_reset_streams > 0);
+ 
+--- a/src/proto/streams/recv.rs
++++ b/src/proto/streams/recv.rs
+@@ -908,6 +908,18 @@ impl Recv {
+         // So, we have a separate limit for these.
+         //
+         // See https://github.com/hyperium/hyper/issues/2877
++        //
++        // A server never refuses a reset for this limit: its connection stops reading frames
++        // while the count is at the bound (`Streams::pause_for_accepts`), so `can_inc` holds.
++        // The separate rate limit bounds a peer that resets streams at attack rates.
++        if counts.record_remote_reset().is_err() {
++            tracing::warn!("recv_reset; remote reset rate limit exceeded");
++            return Err(Error::library_go_away_data(
++                Reason::ENHANCE_YOUR_CALM,
++                "too_many_resets",
++            ));
++        }
++
+         if stream.is_pending_accept {
+             if counts.can_inc_num_remote_reset_streams() {
+                 counts.inc_num_remote_reset_streams();
 --- a/src/proto/streams/state.rs
 +++ b/src/proto/streams/state.rs
 @@ -298,6 +298,10 @@
@@ -29,6 +173,59 @@
              Closed(..) => {}
              ref state => {
                  tracing::trace!("recv_eof; state={:?}", state);
+--- a/src/proto/streams/streams.rs
++++ b/src/proto/streams/streams.rs
+@@ -91,6 +91,10 @@ struct Actions {
+     /// Task that calls `poll_complete`.
+     task: Option<Waker>,
+ 
++    /// Task parked by `Streams::pause_for_accepts`; woken when `Streams::next_incoming` accepts
++    /// a remotely-reset stream and so lowers the count that parked it.
++    accept_waker: Option<Waker>,
++
+     /// If the connection errors, a copy is kept for any StreamRefs.
+     conn_error: Option<proto::Error>,
+ }
+@@ -127,6 +131,21 @@ where
+             .set_target_connection_window(size, &mut me.actions.task)
+     }
+ 
++    /// Whether the connection must stop reading frames until accepts drain the count of
++    /// remotely-reset streams that are still pending accept (server peers only). When it returns
++    /// true, `cx`'s task is parked and `next_incoming` wakes it once the count falls below the
++    /// bound.
++    pub fn pause_for_accepts(&mut self, cx: &Context) -> bool {
++        let mut me = self.inner.lock().unwrap();
++        let me = &mut *me;
++        if me.counts.remote_resets_at_bound() {
++            me.actions.accept_waker = Some(cx.waker().clone());
++            true
++        } else {
++            false
++        }
++    }
++
+     pub fn next_incoming(&mut self) -> Option<StreamRef<B>> {
+         let mut me = self.inner.lock().unwrap();
+         let me = &mut *me;
+@@ -144,6 +163,9 @@ where
+             // Pending-accepted remotely-reset streams are counted.
+             if stream.state.is_remote_reset() {
+                 me.counts.dec_num_remote_reset_streams();
++                if let Some(waker) = me.actions.accept_waker.take() {
++                    waker.wake();
++                }
+             }
+ 
+             StreamRef {
+@@ -455,6 +477,7 @@ impl Inner {
+                 recv: Recv::new(peer, &config),
+                 send: Send::new(&config),
+                 task: None,
++                accept_waker: None,
+                 conn_error: None,
+             },
+             store: Store::new(),
 --- a/src/server.rs
 +++ b/src/server.rs
 @@ -1683,6 +1683,10 @@
