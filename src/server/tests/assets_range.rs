@@ -23,21 +23,10 @@ fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| ((i * 7 + i / 251) % 256) as u8).collect()
 }
 
-/// Inserts an asset row of `content_type` in the harness world and writes `files` (suffix,
-/// bytes) beside its canonical path. `with_sheet` records grid-sheet metadata on the row.
-async fn seed(h: &Harness, content_type: &str, files: &[(&str, &[u8])], with_sheet: bool) -> Uuid {
+/// Inserts an asset row of `content_type` with `meta` in the harness world, at version 3, and
+/// returns its id. No file is written.
+async fn insert_row(h: &Harness, content_type: &str, meta: AssetMeta) -> Uuid {
     let id = Uuid::new_v4();
-    let mut meta = AssetMeta::unprocessed(content_type, 0);
-    if with_sheet {
-        meta.sheet = Some(SheetMeta {
-            rows: 1,
-            cols: 2,
-            count: 2,
-            frame_ms: vec![100, 100],
-            width: 4,
-            height: 4,
-        });
-    }
     h.repo
         .insert_asset(&Asset {
             id,
@@ -56,11 +45,46 @@ async fn seed(h: &Harness, content_type: &str, files: &[(&str, &[u8])], with_she
         })
         .await
         .unwrap();
+    id
+}
+
+/// Writes `files` (suffix, bytes) beside the canonical path of asset `id`.
+fn write_files(h: &Harness, id: Uuid, files: &[(&str, &[u8])]) {
     let dir = h.assets_dir.join(h.world.to_string());
     std::fs::create_dir_all(&dir).unwrap();
     for (suffix, bytes) in files {
         std::fs::write(dir.join(format!("{id}{suffix}")), bytes).unwrap();
     }
+}
+
+/// Inserts an asset row of `content_type` in the harness world and writes `files` (suffix,
+/// bytes) beside its canonical path. `with_sheet` records grid-sheet metadata on the row.
+async fn seed(h: &Harness, content_type: &str, files: &[(&str, &[u8])], with_sheet: bool) -> Uuid {
+    let mut meta = AssetMeta::unprocessed(content_type, 0);
+    if with_sheet {
+        meta.sheet = Some(SheetMeta {
+            rows: 1,
+            cols: 2,
+            count: 2,
+            frame_ms: vec![100, 100],
+            width: 4,
+            height: 4,
+        });
+    }
+    let id = insert_row(h, content_type, meta).await;
+    write_files(h, id, files);
+    id
+}
+
+/// Seeds an asset whose retained original (`<id>.orig`) is `bytes`, arrived as
+/// `original_type`, beside a one-byte canonical.
+async fn seed_original(h: &Harness, original_type: &str, bytes: &[u8]) -> Uuid {
+    let mut meta = AssetMeta::unprocessed("image/webp", 1);
+    meta.original_retained = true;
+    meta.original_content_type = original_type.into();
+    meta.original_byte_size = bytes.len() as i64;
+    let id = insert_row(h, "image/webp", meta).await;
+    write_files(h, id, &[("", b"x"), (".orig", bytes)]);
     id
 }
 
@@ -593,4 +617,140 @@ async fn a_validator_hit_is_answered_without_opening_the_file() {
         .await;
         assert_eq!(res.status(), 304, "{label}");
     }
+}
+
+/// The retained-original download is a ranged, uncompressed, uncapped download of every type, so a
+/// resume `bytes=N-` is the rest of the file in one response.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_retained_original_is_a_resumable_download_of_any_type() {
+    let h = common::spawn().await;
+    let bytes = pattern(SIZE);
+    for original_type in ["application/octet-stream", "text/plain", "image/png"] {
+        let id = seed_original(&h, original_type, &bytes).await;
+        let url = format!("http://{}/api/assets/{id}/original", h.addr);
+        let res = fetch(&h, &url, &[], false).await;
+        assert_eq!(res.status(), 200, "{original_type}");
+        assert_eq!(header(&res, "accept-ranges").as_deref(), Some("bytes"));
+        assert!(
+            header(&res, "content-encoding").is_none(),
+            "{original_type}"
+        );
+        assert_eq!(
+            header(&res, "content-length"),
+            Some(SIZE.to_string()),
+            "{original_type}"
+        );
+        assert!(header(&res, "content-disposition")
+            .unwrap()
+            .starts_with("attachment; filename="));
+        assert_eq!(header(&res, "content-type").as_deref(), Some(original_type));
+        assert_eq!(header(&res, "etag"), Some(format!("\"{id}-3-orig\"")));
+        assert_eq!(res.bytes().await.unwrap().as_ref(), bytes.as_slice());
+
+        let res = fetch(&h, &url, &[("range", "bytes=5-9".into())], false).await;
+        assert_eq!(res.status(), 206, "{original_type}");
+        assert_eq!(res.bytes().await.unwrap().as_ref(), &bytes[5..10]);
+
+        let resume = 100;
+        let res = fetch(&h, &url, &[("range", format!("bytes={resume}-"))], false).await;
+        assert_eq!(res.status(), 206, "{original_type}");
+        assert_eq!(
+            header(&res, "content-range"),
+            Some(format!("bytes {resume}-{}/{SIZE}", SIZE - 1))
+        );
+        assert_eq!(res.bytes().await.unwrap().as_ref(), &bytes[resume..]);
+    }
+}
+
+/// The original's validator order: a matching `If-None-Match` answers 304 before the file is
+/// touched, a stale `If-Range` yields the whole file, and HEAD answers the GET's headers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_retained_original_honours_validators_and_head() {
+    let h = common::spawn().await;
+    let bytes = pattern(4096);
+    let id = seed_original(&h, "application/octet-stream", &bytes).await;
+    let url = format!("http://{}/api/assets/{id}/original", h.addr);
+    let etag = format!("\"{id}-3-orig\"");
+
+    let res = fetch(
+        &h,
+        &url,
+        &[
+            ("if-none-match", etag.clone()),
+            ("range", "bytes=0-9".into()),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 304);
+    assert!(header(&res, "content-range").is_none());
+
+    let res = fetch(
+        &h,
+        &url,
+        &[
+            ("range", "bytes=0-9".into()),
+            ("if-range", "\"stale\"".into()),
+        ],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.bytes().await.unwrap().len(), 4096);
+
+    let res = fetch(
+        &h,
+        &url,
+        &[("range", "bytes=0-9".into()), ("if-range", etag)],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 206);
+
+    let res = fetch(&h, &url, &[("range", "bytes=10-19".into())], true).await;
+    assert_eq!(res.status(), 206);
+    assert_eq!(
+        header(&res, "content-range").as_deref(),
+        Some("bytes 10-19/4096")
+    );
+    assert!(res.bytes().await.unwrap().is_empty());
+}
+
+/// The original keeps its GM gate when a `Range` is present, and a not-retained original is a 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_retained_original_keeps_its_gm_gate_and_its_missing_statuses() {
+    let h = common::spawn().await;
+    let id = seed_original(&h, "application/octet-stream", &pattern(64)).await;
+    let url = format!("http://{}/api/assets/{id}/original", h.addr);
+    let (_pid, cookie) = h.add_player("range-viewer").await;
+    let res = reqwest::Client::new()
+        .get(&url)
+        .header("cookie", &cookie)
+        .header("range", "bytes=0-9")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    let not_retained = seed(&h, "image/webp", &[("", b"x")], false).await;
+    let res = fetch(
+        &h,
+        &format!("http://{}/api/assets/{not_retained}/original", h.addr),
+        &[("range", "bytes=0-9".into())],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 404);
+
+    let mut meta = AssetMeta::unprocessed("image/webp", 1);
+    meta.original_retained = true;
+    let absent = insert_row(&h, "image/webp", meta).await;
+    let res = fetch(
+        &h,
+        &format!("http://{}/api/assets/{absent}/original", h.addr),
+        &[],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 500);
 }

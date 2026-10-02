@@ -3,10 +3,9 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, Method};
+use axum::response::Response;
 use axum::Json;
 use serde::{Deserialize, Deserializer};
 use ts_rs::TS;
@@ -22,6 +21,8 @@ use crate::http::error::AppError;
 use crate::http::{routes::require_gm, routes::write_ops, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
 
+use super::file_response::{not_modified, serve_file, FileResponse, MissingFile};
+use super::range::{Disposition, Route};
 use super::uploads::{validate_folder, validate_tags};
 use super::{commit_replacement, delete_asset_files_and_row, detect_audio_type};
 
@@ -45,7 +46,10 @@ async fn gm_asset(state: &AppState, user: &AuthUser, id: Uuid) -> Result<Asset, 
 /// `GET /api/assets/{uuid}/original` — GM-gated download of the retained
 /// original bytes (`<uuid>.orig`), served under the arrived content type as
 /// an attachment named after the upload. 404 when the original was not
-/// retained (pass-through upload, or `retain_originals = false`).
+/// retained (pass-through upload, or `retain_originals = false`). The response streams from the
+/// file with `Range`, `If-Range` and `If-None-Match` support and a validator of
+/// `"{id}-{version}-orig"`; an explicit download is never compressed and never capped, so a
+/// resume `bytes=N-` runs to the end of the file.
 ///
 /// # Examples
 ///
@@ -78,6 +82,8 @@ async fn gm_asset(state: &AppState, user: &AuthUser, id: Uuid) -> Result<Asset, 
 ///     axum::extract::State(state),
 ///     user,
 ///     axum::extract::Path(Uuid::new_v4()),
+///     axum::http::Method::GET,
+///     axum::http::HeaderMap::new(),
 /// )
 /// .await;
 /// # }
@@ -86,29 +92,37 @@ pub async fn original(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    method: Method,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let asset = gm_asset(&state, &user, id).await?;
     if !asset.meta.original_retained {
         return Err(AppError::NotFound);
     }
+    // The validator is derived from the record, so a matching `If-None-Match` is answered before
+    // the file is touched. The `-orig` suffix keeps it distinct from the canonical's validator:
+    // the two representations of one version differ.
+    let etag = format!("\"{id}-{}-orig\"", asset.version);
+    if let Some(not_modified) = not_modified(&headers, &etag) {
+        return Ok(not_modified);
+    }
     let canonical = state.config.assets_path().join(&asset.storage_key);
-    let bytes = tokio::fs::read(original_path(&canonical))
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, %id, "retained original missing for existing record");
-            AppError::Internal
-        })?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, asset.meta.original_content_type),
-            (
-                header::CONTENT_DISPOSITION,
-                attachment_disposition(&asset.original_name),
-            ),
-        ],
-        Body::from(bytes),
+    let path = original_path(&canonical);
+    serve_file(
+        FileResponse {
+            id,
+            path: &path,
+            content_type: asset.meta.original_content_type,
+            content_disposition: attachment_disposition(&asset.original_name),
+            disposition: Disposition::Attachment,
+            route: Route::Original,
+            etag,
+            missing: MissingFile::Internal,
+        },
+        &headers,
+        &method,
     )
-        .into_response())
+    .await
 }
 
 /// `Content-Disposition: attachment; filename="<name>"`. The display name is
