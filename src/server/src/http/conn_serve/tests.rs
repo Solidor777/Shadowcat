@@ -745,7 +745,8 @@ async fn an_h2_peer_that_sends_nothing_does_not_delay_a_shutdown() {
 }
 
 /// The HTTP/2 client connection preface followed by an empty SETTINGS frame.
-const H2_OPEN: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+pub(super) const H2_OPEN: &[u8] =
+    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00";
 
 /// An acknowledgement of a SETTINGS frame.
 const SETTINGS_ACK: &[u8] = b"\x00\x00\x00\x04\x01\x00\x00\x00\x00";
@@ -1516,7 +1517,7 @@ impl ConnSource for OneConnection {
 }
 
 /// One HTTP/2 frame header and payload.
-fn h2_frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+pub(super) fn h2_frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
     let len = payload.len() as u32;
     let mut out = len.to_be_bytes()[1..].to_vec();
     out.push(kind);

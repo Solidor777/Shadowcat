@@ -263,6 +263,23 @@ const H2_MAX_CONCURRENT_STREAMS: u32 = 100;
 /// sends, a CANCEL, an implicit reset and a stall cut do not count.
 const H2_MAX_LOCAL_ERROR_RESETS: usize = 1024;
 
+/// How many streams h2 may hold that the client has already reset and hyper has not yet accepted
+/// (`http2::Builder::max_pending_accept_reset_streams`); the reset that would exceed it ends the
+/// connection with GOAWAY(ENHANCE_YOUR_CALM, `too_many_resets`). The count is the instantaneous size
+/// of that queue, not a lifetime total: it falls as hyper accepts. h2 reads every frame a read makes
+/// available before hyper accepts the next stream, so a client that cancels a page's requests in a
+/// burst, or whose stalled uplink delivers its HEADERS and RST_STREAM frames in one flush, has all
+/// of them pending at once, however many requests the page made. Measured with Chromium over
+/// HTTPS/h2 behind an uplink that holds bytes for 250 ms and then delivers them together, h2's
+/// default of 20 and a limit of 256 both end the connection, 1,024 does not; behind a 2 s hold
+/// 1,024 is still exceeded, so no count covers every stall.
+///
+/// Each pending stream keeps its decoded request header block (at most hyper's 16 KiB header-list
+/// limit) until accepted, so the limit is also the connection's worst-case memory pin from this
+/// queue: about 16 MiB at 1,024 (the retention per reset stream is read from h2's frame handling,
+/// not measured). A reset flood is many times this in one read and still ends the connection.
+const H2_MAX_PENDING_ACCEPT_RESETS: usize = 1024;
+
 /// The HTTP/2 connection builder every h2 connection is served with: one place sets the stream
 /// executor, timer, extended CONNECT, the send buffer, the stream and error-reset limits and the
 /// keep-alive pings.
@@ -274,6 +291,7 @@ fn h2_builder(limits: &ConnLimits) -> http2::Builder<StreamExec> {
         .max_send_buf_size(H2_SEND_BUF_BYTES)
         .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
         .max_local_error_reset_streams(Some(H2_MAX_LOCAL_ERROR_RESETS))
+        .max_pending_accept_reset_streams(Some(H2_MAX_PENDING_ACCEPT_RESETS))
         .keep_alive_interval(Some(limits.h2_ping_interval))
         .keep_alive_timeout(limits.h2_ping_timeout);
     builder
@@ -1011,6 +1029,8 @@ fn spawn_connection<I: ServeIo>(
     });
 }
 
+#[cfg(test)]
+mod reset_guard_tests;
 #[cfg(test)]
 mod stream_table_tests;
 #[cfg(test)]
