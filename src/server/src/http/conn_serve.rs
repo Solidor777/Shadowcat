@@ -236,8 +236,18 @@ pub const ACCEPT_ERROR_PAUSE: Duration = Duration::from_secs(1);
 
 /// The largest data frame a response body hands to hyper, and so the smallest unit whose
 /// completion the egress bounds can observe. Equals HTTP/2's default maximum frame size (16 KiB),
-/// so a slice is one frame.
-const EGRESS_FLOOR_BYTES: usize = 16 * 1024;
+/// so a slice is one frame. The stream unit's boundary is this chunk's wait for credit against
+/// [`ConnLimits::egress_window`]; it does not read [`ConnLimits::egress_floor`], whose default is
+/// this value and which tests vary independently of the chunk.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::conn_serve::{ConnLimits, EGRESS_CHUNK_BYTES};
+///
+/// assert_eq!(ConnLimits::default().egress_floor, EGRESS_CHUNK_BYTES);
+/// ```
+pub const EGRESS_CHUNK_BYTES: usize = 16 * 1024;
 
 /// The default of [`crate::config::Config::egress_window_secs`]: how long a peer may return no
 /// flow-control credit, or a socket accept nothing, before a response is cut, and how long one
@@ -255,7 +265,7 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// still queued behind a stalled stream window once a body has ended is at most one chunk, not
 /// this: hyper hands a chunk over only while the stream's buffer holds less than the credit the
 /// peer has granted. Chosen over hyper's 400 KiB default for these bounds (about a fifth of the
-/// memory a stalled peer can pin per stream), and kept above [`EGRESS_FLOOR_BYTES`] so a stream
+/// memory a stalled peer can pin per stream), and kept above [`EGRESS_CHUNK_BYTES`] so a stream
 /// always has room to queue one whole chunk.
 ///
 /// The cost is download throughput on a fast link. Measured on Windows loopback with the `h2`
@@ -272,7 +282,7 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const H2_SEND_BUF_BYTES: usize = 64 * 1024;
 
 // A buffer smaller than one chunk would make every chunk wait for credit it cannot be granted.
-const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_FLOOR_BYTES);
+const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_CHUNK_BYTES);
 
 /// How many streams a client may have open on one HTTP/2 connection
 /// (`http2::Builder::max_concurrent_streams`). Set explicitly so the bound on the egress stream
@@ -390,6 +400,11 @@ pub struct ConnLimits {
     /// number bounds a finished response's queued tail: its own stream must write this many DATA
     /// bytes per window, or all that remains when that is less, and nothing else on the connection
     /// counts as that stream's progress.
+    ///
+    /// The default is one response chunk (`EGRESS_CHUNK_BYTES`, 16 KiB, one HTTP/2 frame); the field
+    /// is separate so tests can vary the floor without changing the chunk. The tail rule counts DATA
+    /// payload bytes the writer accepted, a byte at a time, so a floor that is no multiple of the
+    /// chunk or of any frame size is judged exactly: it is not rounded to a whole frame.
     pub egress_floor: usize,
 }
 
@@ -428,7 +443,7 @@ impl Default for ConnLimits {
             max_live: 2048,
             max_live_per_peer: 256,
             egress_window: PEER_STALL_TIMEOUT,
-            egress_floor: EGRESS_FLOOR_BYTES,
+            egress_floor: EGRESS_CHUNK_BYTES,
         }
     }
 }

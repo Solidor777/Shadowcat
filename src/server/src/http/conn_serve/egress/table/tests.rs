@@ -284,6 +284,32 @@ fn the_threshold_is_the_floor_the_caller_passes() {
 }
 
 #[test]
+fn a_floor_that_is_no_multiple_of_a_chunk_is_judged_to_the_byte() {
+    // A floor of 1,001 bytes is no multiple of a 16 KiB chunk or of any frame size the writer
+    // emits: 1,000 bytes written over the window are a stall and 1,001 are progress, written one
+    // byte at a time and in one piece alike.
+    const ODD_FLOOR: u64 = 1_001;
+    for (written, stalls) in [(ODD_FLOOR - 1, true), (ODD_FLOOR, false)] {
+        for one_byte_writes in [false, true] {
+            let base = Instant::now();
+            let mut t = queued(1, 5_000, base);
+            if one_byte_writes {
+                for _ in 0..written {
+                    t.data_written(1, 1);
+                }
+            } else {
+                t.data_written(1, written);
+            }
+            assert_eq!(
+                t.scan(at(base, 10), WINDOW, ODD_FLOOR).is_some(),
+                stalls,
+                "{written} bytes written, one-byte writes {one_byte_writes}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_new_window_starts_when_the_threshold_is_reached_and_its_target_follows_what_remains() {
     let base = Instant::now();
     let mut t = queued(1, 150, base);

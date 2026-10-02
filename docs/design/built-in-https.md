@@ -369,7 +369,7 @@ task paces its own accept errors.
     the window and the window plus one sampler tick (a quarter window) after the last progress: within
     75 s at the default. Connections with nothing in flight are never cut by these units, and
     `h2_idle` and keep-alive are unchanged.
-    - Stream unit: a response body is sliced into frames of at most `EGRESS_FLOOR_BYTES` (16 KiB,
+    - Stream unit: a response body is sliced into frames of at most `EGRESS_CHUNK_BYTES` (16 KiB,
       one HTTP/2 frame), so a stalled peer is visible at a frame boundary. A stream whose pending
       frame has waited for credit for the window is reset (CANCEL); its connection, its other
       streams and every tunnel are untouched. The wait is timed only while hyper is not polling the

@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use shadowcat::http::conn_serve::ConnLimits;
+use shadowcat::http::conn_serve::{ConnLimits, EGRESS_CHUNK_BYTES};
 
 use crate::egress::{get_path, paced_read, EgressServer, Paced};
 
@@ -80,9 +80,11 @@ pub async fn read_at(window: Duration, stream_window: u32, rate: u64, limit: Dur
     }
 }
 
-/// The rate at which one `EGRESS_FLOOR_BYTES` chunk's wait for credit equals `window`, bytes per
-/// second: `min(stream_window / 2, 16 KiB) / window`.
+/// The rate at which one response chunk's wait for credit equals `window`, bytes per second:
+/// `min(stream_window / 2, EGRESS_CHUNK_BYTES) / window`. The stream unit's boundary is the chunk
+/// the body is sliced into, so the chunk constant is its one source here;
+/// `ConnLimits::egress_floor` does not enter.
 pub fn hypothesis(window: Duration, stream_window: u32) -> f64 {
-    let chunk = (stream_window as f64 / 2.0).min(16.0 * 1024.0);
+    let chunk = (stream_window as f64 / 2.0).min(EGRESS_CHUNK_BYTES as f64);
     chunk / window.as_secs_f64()
 }

@@ -1,4 +1,4 @@
-//! `LeasedBody`: the chunk bound ([`EGRESS_FLOOR_BYTES`]), exact size hints, pass-through of
+//! `LeasedBody`: the chunk bound ([`EGRESS_CHUNK_BYTES`]), exact size hints, pass-through of
 //! non-data frames, and the stream marker the stream unit scans.
 
 use std::collections::VecDeque;
@@ -9,7 +9,7 @@ use http_body::Body as _;
 
 use super::*;
 use crate::http::conn_serve::stream_exec::{scoped, StreamExec};
-use crate::http::conn_serve::EGRESS_FLOOR_BYTES;
+use crate::http::conn_serve::EGRESS_CHUNK_BYTES;
 use crate::http::peer_slots::PeerSlots;
 
 /// A connection's live state over a fresh slot and fresh counters.
@@ -91,7 +91,7 @@ async fn a_one_mebibyte_chunk_is_yielded_as_sixty_four_frames_of_the_floor() {
     let mut delivered = 0u64;
     while let Some(frame) = next(&mut body).await {
         let data = frame.unwrap().into_data().unwrap();
-        assert_eq!(data.len(), EGRESS_FLOOR_BYTES, "frame {frames}");
+        assert_eq!(data.len(), EGRESS_CHUNK_BYTES, "frame {frames}");
         delivered += data.len() as u64;
         frames += 1;
         let hint = body.size_hint();
@@ -109,7 +109,7 @@ async fn a_one_mebibyte_chunk_is_yielded_as_sixty_four_frames_of_the_floor() {
 async fn the_end_of_stream_is_reported_only_after_the_last_pending_slice() {
     let mut body = leased(vec![Frame::data(Bytes::from(vec![
         1u8;
-        3 * EGRESS_FLOOR_BYTES
+        3 * EGRESS_CHUNK_BYTES
     ]))]);
     assert!(!body.is_end_stream());
     for _ in 0..2 {
@@ -126,7 +126,7 @@ async fn a_frame_within_the_floor_passes_whole_and_the_remainder_follows() {
     let mut body = leased(vec![
         Frame::data(Bytes::from_static(b"abc")),
         Frame::data(Bytes::new()),
-        Frame::data(Bytes::from(vec![2u8; EGRESS_FLOOR_BYTES + 5])),
+        Frame::data(Bytes::from(vec![2u8; EGRESS_CHUNK_BYTES + 5])),
     ]);
     let lens: Vec<usize> = {
         let mut v = Vec::new();
@@ -135,7 +135,7 @@ async fn a_frame_within_the_floor_passes_whole_and_the_remainder_follows() {
         }
         v
     };
-    assert_eq!(lens, vec![3, 0, EGRESS_FLOOR_BYTES, 5]);
+    assert_eq!(lens, vec![3, 0, EGRESS_CHUNK_BYTES, 5]);
 }
 
 #[tokio::test]
@@ -143,7 +143,7 @@ async fn trailers_pass_through_after_the_data_slices() {
     let mut trailers = axum::http::HeaderMap::new();
     trailers.insert("x-end", axum::http::HeaderValue::from_static("1"));
     let mut body = leased(vec![
-        Frame::data(Bytes::from(vec![3u8; EGRESS_FLOOR_BYTES + 1])),
+        Frame::data(Bytes::from(vec![3u8; EGRESS_CHUNK_BYTES + 1])),
         Frame::trailers(trailers),
     ]);
     assert_eq!(
@@ -154,7 +154,7 @@ async fn trailers_pass_through_after_the_data_slices() {
             .into_data()
             .unwrap()
             .len(),
-        EGRESS_FLOOR_BYTES
+        EGRESS_CHUNK_BYTES
     );
     assert_eq!(
         next(&mut body)
@@ -173,7 +173,7 @@ async fn trailers_pass_through_after_the_data_slices() {
 
 #[tokio::test]
 async fn every_slice_shares_the_original_allocation() {
-    let big = Bytes::from(vec![9u8; 2 * EGRESS_FLOOR_BYTES]);
+    let big = Bytes::from(vec![9u8; 2 * EGRESS_CHUNK_BYTES]);
     let base = big.as_ptr();
     let mut body = leased(vec![Frame::data(big)]);
     let first = next(&mut body).await.unwrap().unwrap().into_data().unwrap();
@@ -185,7 +185,7 @@ async fn every_slice_shares_the_original_allocation() {
     );
     assert_eq!(
         second.as_ptr(),
-        base.wrapping_add(EGRESS_FLOOR_BYTES),
+        base.wrapping_add(EGRESS_CHUNK_BYTES),
         "the second slice is a view, not a copy"
     );
 }
@@ -297,7 +297,7 @@ async fn an_empty_data_frame_and_trailers_leave_the_marker_clear() {
 async fn every_slice_of_a_large_frame_marks_the_stream() {
     let live = live();
     in_scope(async {
-        let mut body = leased_in(&live, vec![data(2 * EGRESS_FLOOR_BYTES)]);
+        let mut body = leased_in(&live, vec![data(2 * EGRESS_CHUNK_BYTES)]);
         next(&mut body).await.unwrap().unwrap();
         let marker = only_marker(&live);
         let first = marker.delivered_at().unwrap();
@@ -541,7 +541,7 @@ async fn a_chunk_that_is_not_the_last_slice_of_its_frame_does_not_register() {
     let mut body = leased_for(
         &live,
         Some(1),
-        vec![Frame::data(Bytes::from(vec![0u8; EGRESS_FLOOR_BYTES + 1]))],
+        vec![Frame::data(Bytes::from(vec![0u8; EGRESS_CHUNK_BYTES + 1]))],
     );
     next(&mut body).await.unwrap().unwrap();
     assert_eq!(

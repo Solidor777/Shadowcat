@@ -29,7 +29,7 @@ use tower::Service;
 use super::egress::{Egress, StallCounters, StallUnit, TunnelProbe, STREAM_TABLE_CAP};
 use super::pruned::Pruned;
 use super::stream_exec::{current_cut, StreamCut};
-use super::EGRESS_FLOOR_BYTES;
+use super::EGRESS_CHUNK_BYTES;
 use crate::http::peer_slots::Slot;
 
 /// What a connection holds for its whole life: its cap slot, the in-flight stream count, the
@@ -233,7 +233,7 @@ impl std::fmt::Debug for ConnLease {
 }
 
 /// A response body that keeps its request's lease until the body is dropped, yields data in
-/// frames of at most [`EGRESS_FLOOR_BYTES`], and, on an HTTP/2 stream, tells the stream unit when
+/// frames of at most [`EGRESS_CHUNK_BYTES`], and, on an HTTP/2 stream, tells the stream unit when
 /// it is waiting on the peer and the stream table when it has returned the frame that carries
 /// END_STREAM and when it is gone.
 ///
@@ -282,10 +282,10 @@ impl LeasedBody {
         }
     }
 
-    /// Takes the next slice of `pending` (at most [`EGRESS_FLOOR_BYTES`]) as a data frame and
+    /// Takes the next slice of `pending` (at most [`EGRESS_CHUNK_BYTES`]) as a data frame and
     /// marks it delivered. An empty frame waits for no credit, so it leaves the marker clear.
     fn deliver(&mut self) -> Frame<Bytes> {
-        let n = self.pending.len().min(EGRESS_FLOOR_BYTES);
+        let n = self.pending.len().min(EGRESS_CHUNK_BYTES);
         let slice = self.pending.split_to(n);
         self.handed += slice.len() as u64;
         if let (Some(marker), false) = (&self.marker, slice.is_empty()) {
@@ -380,7 +380,7 @@ impl Drop for LeasedBody {
 #[cfg(test)]
 pub(super) async fn stalled_body(live: &Arc<LiveState>) -> impl Send {
     let mut body = LeasedBody::new(
-        Body::from(Bytes::from(vec![1u8; 2 * EGRESS_FLOOR_BYTES])),
+        Body::from(Bytes::from(vec![1u8; 2 * EGRESS_CHUNK_BYTES])),
         live.lease(),
         live.clone(),
         None,
@@ -390,7 +390,7 @@ pub(super) async fn stalled_body(live: &Arc<LiveState>) -> impl Send {
 }
 
 /// A response body in `live` for stream `sid` that has delivered its single, final chunk of `bytes`
-/// bytes (at most [`EGRESS_FLOOR_BYTES`]) and has not been polled since, as a stream waiting on its
+/// bytes (at most [`EGRESS_CHUNK_BYTES`]) and has not been polled since, as a stream waiting on its
 /// peer's credit is. The body is returned so the caller decides when it drops.
 #[cfg(test)]
 pub(super) async fn stalled_final_body_of(

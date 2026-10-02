@@ -1536,7 +1536,7 @@ async fn the_send_buffer_bounds_what_hyper_queues_behind_a_socket_that_accepts_n
     const DUPLEX: usize = 8 * 1024;
     const FRAME_HEADER: usize = 9;
     let lower = H2_SEND_BUF_BYTES;
-    let upper = H2_SEND_BUF_BYTES + 2 * (EGRESS_FLOOR_BYTES + FRAME_HEADER) + DUPLEX;
+    let upper = H2_SEND_BUF_BYTES + 2 * (EGRESS_CHUNK_BYTES + FRAME_HEADER) + DUPLEX;
     assert!(
         upper < 256 * 1024,
         "the derivation must sit far below hyper's 400 KiB default"
@@ -1550,10 +1550,10 @@ async fn the_send_buffer_bounds_what_hyper_queues_behind_a_socket_that_accepts_n
             let counter = counter.clone();
             async move {
                 axum::body::Body::from_stream(futures_util::stream::repeat_with(move || {
-                    counter.fetch_add(EGRESS_FLOOR_BYTES as u64, Ordering::SeqCst);
+                    counter.fetch_add(EGRESS_CHUNK_BYTES as u64, Ordering::SeqCst);
                     Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![
                         0u8;
-                        EGRESS_FLOOR_BYTES
+                        EGRESS_CHUNK_BYTES
                     ]))
                 }))
             }
@@ -1765,7 +1765,7 @@ async fn the_http2_write_counter_equals_the_data_bytes_a_real_client_receives() 
     // Responses of several sizes, an empty one included, through the real h2 server codec writing
     // via `Replay`: every frame type the server writes (SETTINGS, HEADERS, WINDOW_UPDATE, DATA)
     // passes the parser, and only DATA payload is counted.
-    let sizes: [usize; 6] = [0, 1, 100, EGRESS_FLOOR_BYTES, 100_000, 1 << 20];
+    let sizes: [usize; 6] = [0, 1, 100, EGRESS_CHUNK_BYTES, 100_000, 1 << 20];
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let egress = Arc::new(Egress::default());
     let kill = ConnKill::new();
