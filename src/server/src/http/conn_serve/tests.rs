@@ -1339,7 +1339,7 @@ fn the_sampler_period_is_a_quarter_of_the_window() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "ConnLimits::egress_window must be nonzero")]
+#[should_panic(expected = "a nonzero sampler period")]
 async fn serve_router_rejects_a_zero_egress_window() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     // A loop that accepted the zero window would serve forever; the timeout turns that into a
@@ -2214,5 +2214,42 @@ async fn each_cut_site_moves_exactly_its_own_counter_by_one() {
                 ..StallCuts::default()
             }
         );
+    }
+}
+
+#[test]
+fn the_sampler_period_is_nonzero_from_four_nanoseconds_up() {
+    for ns in [1u64, 2, 3] {
+        assert!(
+            egress_tick(Duration::from_nanos(ns)).is_zero(),
+            "{ns} ns quantises to a zero period"
+        );
+    }
+    assert_eq!(
+        egress_tick(Duration::from_nanos(4)),
+        Duration::from_nanos(1)
+    );
+}
+
+#[tokio::test]
+async fn serve_router_rejects_a_window_whose_sampler_period_is_zero() {
+    for ns in [1u64, 2, 3] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ended = tokio::spawn(timeout(
+            Duration::from_secs(5),
+            serve_router(
+                listener,
+                Router::new(),
+                std::future::pending::<()>(),
+                ConnLimits {
+                    egress_window: Duration::from_nanos(ns),
+                    ..ConnLimits::default()
+                },
+                || {},
+            ),
+        ))
+        .await;
+        let err = ended.expect_err("serve_router served on a window below four nanoseconds");
+        assert!(err.is_panic(), "{ns} ns: {err:?}");
     }
 }
