@@ -17,7 +17,6 @@ const WEBM_CLUSTER_FRAMES: usize = 64;
 /// selects a `.opus.webm` whose head lacks it.
 pub(crate) const WEBM_WRITING_APP: &str = "shadowcat-webm/2";
 
-#[cfg(test)]
 /// Bytes at the start of a `.opus.webm` that always contain `WEBM_WRITING_APP` when the file was
 /// written by the current muxer, and that the derivative `ETag` hashes: the EBML header, the
 /// Segment header, `SeekHead` and `Info` precede the first `Tracks` byte and total well under it.
@@ -306,7 +305,6 @@ pub(super) fn mux_webm(
     Ok(out)
 }
 
-#[cfg(test)]
 /// Whether the head of a `.opus.webm` (its first `WEBM_HEAD_BYTES` bytes, or the whole file when
 /// shorter) was written by the current muxer: the `WritingApp` marker is present.
 pub(crate) fn head_is_current(head: &[u8]) -> bool {
@@ -315,4 +313,4 @@ pub(crate) fn head_is_current(head: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

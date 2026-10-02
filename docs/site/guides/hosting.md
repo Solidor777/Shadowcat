@@ -537,6 +537,16 @@ decided by its type, once:
   scanning the file and decodes exactly the audio that was uploaded, and the derivative's `ETag`
   is computed from the file itself, so replacing a derivative's bytes in place is seen by every
   cache.
+- **Older audio derivatives are upgraded in place, once per start.** After the server starts it
+  walks the transcoded audio assets one at a time in the background. A WebM written before the
+  duration, seek index and end padding existed is rewritten from its Ogg sibling's packets. An Ogg
+  written before the encoder flushed its lookahead and whose length falls in the affected range (one
+  in about three of all lengths: the valid-sample count modulo 960 is 0 or at least 649) lost its
+  last few milliseconds; for those, both siblings are encoded again from the stored original. When the
+  original is gone the lost milliseconds cannot be recovered, and the WebM is rewritten to the length
+  it can decode and the asset is named in the log. The sweep changes no asset record and no version;
+  the derivative's `ETag` changes, so caches fetch the new file. A file that cannot be replaced (a
+  platform that refuses to rename over an open file) is retried at the next start.
 - **A retained-original download** (GM only) is a download of whatever type the original was: it is
   never compressed and is resumable to the end of the file.
 - `HEAD` answers the status and headers of the matching `GET` with no body.

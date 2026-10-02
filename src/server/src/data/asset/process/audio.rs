@@ -47,7 +47,10 @@ const OPUS_FRAME_SAMPLES: u64 = OPUS_TARGET_SAMPLE_RATE as u64 * OPUS_FRAME_MS a
 pub(crate) const OPUS_VENDOR_MARKER: &str = "shadowcat-opus/2";
 
 /// The WebM muxer and the layout checks the upgrade sweep reads.
-mod webm;
+pub(super) mod webm;
+
+/// The blocking half of the derivative upgrade sweep.
+pub(crate) mod upgrade;
 
 /// Which Opus derivative container(s) an audio import emits. Selected at import time
 /// (`CreateUploadRequest.audio_containers` / the multipart `containers` field); `Both` is the
@@ -623,4 +626,4 @@ pub fn process_staged_audio(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

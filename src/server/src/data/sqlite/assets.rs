@@ -1135,4 +1135,34 @@ impl SqliteRepository {
         self.fill_tags(&mut assets).await?;
         Ok(assets)
     }
+
+    /// Every asset the audio pipeline transcoded (one with a recorded duration), as
+    /// `(id, storage_key)` in creation order: the set whose Opus siblings the derivative upgrade
+    /// sweep examines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main] async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.list_transcoded_audio_assets().await?.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_transcoded_audio_assets(&self) -> Result<Vec<(Uuid, String)>, DataError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, storage_key FROM assets WHERE duration_ms IS NOT NULL ORDER BY created_at, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(id, key)| {
+                Uuid::parse_str(&id)
+                    .map(|id| (id, key))
+                    .map_err(|e| DataError::OpFailed(e.to_string()))
+            })
+            .collect()
+    }
 }

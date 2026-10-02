@@ -11,3 +11,4 @@ src/types/generated/** text eol=lf
 *.png binary
 *.ogg binary
 src/client/shell/e2e-fixtures/audio/** binary
+src/server/tests/fixtures/** binary

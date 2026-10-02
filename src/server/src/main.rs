@@ -161,6 +161,14 @@ async fn main() -> anyhow::Result<()> {
     for line in tls.startup_lines(bound) {
         tracing::info!("reachable at {line}");
     }
+    // Upgrades stored Opus derivatives written by an older encoder or muxer, one asset at a time
+    // in the background. Started after the listener is bound so it never delays accepting; it
+    // writes no database row and bumps no version (`data::asset::audio_upgrade`).
+    shadowcat::data::asset::audio_upgrade::spawn_audio_upgrade(
+        state.repo.clone(),
+        config.assets_path(),
+        state.write_barrier.clone(),
+    );
     // `http::serve_with` runs `http::conn_serve::serve_router` (per-connection `ConnMeta` connect-info,
     // so `throttle::ClientIp` and the scheme decider see a real peer; header-read, HTTP/2 idle,
     // keep-alive and live-connection bounds), tells live WebSocket sessions to close when the

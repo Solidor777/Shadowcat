@@ -553,6 +553,7 @@ pub async fn create_asset_from_bytes(
     commit_staged_asset(repo, &tmp_path, &final_path, asset, &derived).await
 }
 
+pub mod audio_upgrade;
 pub mod process;
 pub mod query;
 pub mod tags;

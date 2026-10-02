@@ -234,7 +234,9 @@ fn codec_delay_equals_the_opus_head_pre_skip() {
 
 /// Every `DiscardPadding` in the file as `(cluster index, group is last in its cluster, value)`,
 /// plus the cluster count.
-fn discard_paddings(bytes: &[u8]) -> (Vec<(usize, bool, i64)>, usize) {
+pub(in crate::data::asset::process::audio) fn discard_paddings(
+    bytes: &[u8],
+) -> (Vec<(usize, bool, i64)>, usize) {
     let seg = segment(bytes);
     let clusters = of(&children(bytes, seg), 0x1F43B675);
     let mut found = Vec::new();
@@ -361,7 +363,9 @@ fn webm_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
 
 /// What a decoder reads from a WebM: the packets, the front trim in samples (`CodecDelay`), the end
 /// trim in samples (`DiscardPadding`, zero when absent) and the `Duration` in milliseconds.
-fn webm_trim(bytes: &[u8]) -> (Vec<Vec<u8>>, u64, u64, f64) {
+pub(in crate::data::asset::process::audio) fn webm_trim(
+    bytes: &[u8],
+) -> (Vec<Vec<u8>>, u64, u64, f64) {
     let seg = segment(bytes);
     let elems = children(bytes, seg);
     let tracks = of(&elems, 0x1654AE6B).remove(0);
@@ -402,7 +406,7 @@ fn ogg_trim(bytes: &[u8]) -> (Vec<Vec<u8>>, u64, String, u64) {
 }
 
 /// Decodes `packets` with libopus (mono) to one sample vector.
-fn libopus_decode(packets: &[Vec<u8>]) -> Vec<f32> {
+pub(in crate::data::asset::process::audio) fn libopus_decode(packets: &[Vec<u8>]) -> Vec<f32> {
     let mut decoder = opus::Decoder::new(48_000, opus::Channels::Mono).unwrap();
     let mut out = Vec::new();
     for packet in packets {
@@ -414,7 +418,7 @@ fn libopus_decode(packets: &[Vec<u8>]) -> Vec<f32> {
 }
 
 /// RMS of the last `n` samples.
-fn tail_rms(samples: &[f32], n: usize) -> f32 {
+pub(in crate::data::asset::process::audio) fn tail_rms(samples: &[f32], n: usize) -> f32 {
     let tail = &samples[samples.len() - n..];
     (tail.iter().map(|s| s * s).sum::<f32>() / n as f32).sqrt()
 }
