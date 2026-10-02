@@ -397,3 +397,23 @@ workflow = "ci.yml"
 job = "docs"
 command = "pnpm docs:check-rust-examples"
 tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy python3-scipy"
+tier = "ci-only"
+reason = "Installs the generator's tools on the Ubuntu runner, whose image carries none of ffmpeg, NumPy or SciPy; apt-get with sudo exists only there, and a developer machine supplies its own."
+
+[[gate]]
+workflow = "ci.yml"
+job = "audio-fixtures"
+command = "pnpm lint:audio-fixtures"
+tier = "push"

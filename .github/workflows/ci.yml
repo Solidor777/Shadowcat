@@ -7,7 +7,9 @@ on:
 # Job timeouts bound a hang, not a regression: each is twice the longest successful run among the
 # last 100 completed runs of this workflow (per job, and per OS leg for `rust`), rounded up to five
 # minutes. Longest successful run, minutes: rust windows 60.8, rust macos 28.9, rust ubuntu 23.3,
-# web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. Without one a hung job runs to the platform's six hours.
+# web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. `audio-fixtures` has no run history yet; its 30 is sized from the
+# measured local regeneration of the three 20-minute tracks and is re-derived from the recorded runs
+# once they exist. Without one a hung job runs to the platform's six hours.
 jobs:
   rust:
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 60 || 50 }}
@@ -248,6 +250,29 @@ jobs:
           path: src/client/shell/test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+  # Regenerates the committed long-audio e2e fixtures and compares them with the committed files
+  # (scripts/check-audio-fixtures.mjs). The runner images carry python but not ffmpeg, NumPy or
+  # SciPy, so the tools are installed here and --require-tools makes a missing one fatal rather than
+  # a skip. Byte equality of the .ogg files is enforced only when the installed ffmpeg and NumPy
+  # match the manifest's recorded versions; the structural tier always runs.
+  audio-fixtures:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install ffmpeg and the NumPy/SciPy generator dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-numpy python3-scipy
+      - name: Committed audio fixtures equal a regeneration
+        run: pnpm lint:audio-fixtures
 
   # Docs pipeline: portal + generated references assembled and link-checked.
   # Single-OS: the docs site is a build artifact, not platform-gated code; the

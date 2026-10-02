@@ -31,6 +31,7 @@
     "lint:secure-context": "node scripts/check-secure-context-apis.mjs",
     "lint:crypto-backend": "node scripts/check-crypto-backend.mjs",
     "lint:vendor": "node scripts/check-vendor.mjs",
+    "lint:audio-fixtures": "node scripts/check-audio-fixtures.mjs --require-tools",
     "lint:vendor:upstream": "node scripts/check-vendor.mjs --upstream",
     "lint:aria-labels": "node scripts/check-aria-label-keys.mjs",
     "lint:binary-size": "node scripts/check-binary-size.mjs",
