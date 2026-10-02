@@ -30,6 +30,23 @@ pub fn record(line: &str) {
     }
 }
 
+/// Records how long after its derived bound a cut was observed.
+///
+/// `derived` is the part of the detection delay the design fixes (the window plus one sampler
+/// tick: the cut lands at the first tick at or after the window). What lies beyond it is timer
+/// and task wake-up latency, which no premise bounds, so the overshoot is recorded per operating
+/// system and asserted on nothing. It becomes a blocking bound once the three legs are recorded,
+/// set below the worst leg by a stated headroom with the recorded values beside the constant.
+pub fn record_cut_overshoot(what: &str, observed: Duration, derived: Duration) {
+    let overshoot_ms = observed.as_secs_f64() * 1e3 - derived.as_secs_f64() * 1e3;
+    record(&format!(
+        "RECORD cut_overshoot os={} what=\"{what}\" observed_ms={:.0} derived_ms={:.0} overshoot_ms={overshoot_ms:.0}",
+        std::env::consts::OS,
+        observed.as_secs_f64() * 1e3,
+        derived.as_secs_f64() * 1e3,
+    ));
+}
+
 /// What one paced read saw, from the client and from the server's drain report.
 pub struct Run {
     /// The client's view: how its read ended.
