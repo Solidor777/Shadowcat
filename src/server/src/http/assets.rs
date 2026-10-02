@@ -225,7 +225,7 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use file_response::{not_modified, serve_file, FileResponse, MissingFile};
+use file_response::{not_modified, serve_file, FileResponse, MissingFile, Validator};
 use mutate::attachment_disposition;
 use range::{Disposition, Route};
 use tokio::io::AsyncWriteExt;
@@ -636,12 +636,9 @@ pub async fn serve(
             .repo
             .permission_context(asset.world_id, user.id, user.role)
             .await?;
-        // ETag BEFORE the file open (a 304 costs no disk I/O, same as the canonical path),
-        // and the 304 carries the ETag back so a cache can refresh its validator.
-        let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
-        if let Some(not_modified) = not_modified(&headers, &etag) {
-            return Ok(not_modified);
-        }
+        // The validator is derived from the served file's bytes (`Validator::OfFile`), so the
+        // `If-None-Match` check runs inside `serve_file` after the open, under the permit.
+        let stem = format!("{id}-{}-{etag_suffix}", asset.version);
         let canonical = state.config.assets_path().join(&asset.storage_key);
         let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
         // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
@@ -663,7 +660,7 @@ pub async fn serve(
                 content_disposition: "inline".to_string(),
                 disposition: Disposition::Inline,
                 route: Route::Embed,
-                etag,
+                etag: Validator::OfFile { stem },
                 missing: MissingFile::NotFound,
             },
             &headers,
@@ -710,7 +707,7 @@ pub async fn serve(
                     content_disposition: "inline".to_string(),
                     disposition: Disposition::Inline,
                     route: Route::Embed,
-                    etag,
+                    etag: Validator::Version(etag),
                     missing: MissingFile::NotFound,
                 },
                 &headers,
@@ -785,7 +782,7 @@ pub async fn serve(
             content_disposition,
             disposition,
             route: Route::Embed,
-            etag,
+            etag: Validator::Version(etag),
             missing: MissingFile::Internal,
         },
         &headers,

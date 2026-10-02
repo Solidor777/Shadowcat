@@ -313,7 +313,7 @@ async fn head_416_and_304_of_a_ranged_type_carry_no_content_encoding() {
     assert_eq!(unsatisfiable.status(), 416);
     assert!(header(&unsatisfiable, "content-encoding").is_none());
 
-    let etag = format!("\"{id}-3-opus\"");
+    let etag = header(&head, "etag").unwrap();
     let revalidated = h
         .client
         .get(&url)

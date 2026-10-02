@@ -559,15 +559,14 @@ async fn an_attachment_download_is_uncapped_and_a_compressible_type_ignores_rang
     assert_eq!(res.bytes().await.unwrap().as_ref(), bytes.as_slice());
 }
 
-/// A validator hit costs no file access: the answer is the same with the file absent.
+/// A validator hit on a version-validated site costs no file access: the answer is the same with
+/// the file absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_validator_hit_is_answered_without_opening_the_file() {
+async fn a_version_validator_hit_is_answered_without_opening_the_file() {
     let h = common::spawn().await;
-    let opus = seed(&h, "audio/wav", &[], false).await;
     let sheet = seed(&h, "image/webp", &[], true).await;
     let canonical = seed(&h, "image/webp", &[], false).await;
     for (label, id, query, etag) in [
-        ("opus", opus, "?variant=opus", format!("\"{opus}-3-opus\"")),
         ("sheet", sheet, "?variant=sheet", format!("\"{sheet}-3\"")),
         ("canonical", canonical, "", format!("\"{canonical}-3\"")),
     ] {
@@ -580,6 +579,65 @@ async fn a_validator_hit_is_answered_without_opening_the_file() {
         .await;
         assert_eq!(res.status(), 304, "{label}");
     }
+}
+
+/// An Opus derivative's validator is derived from the file's bytes, so a hit is answered after the
+/// open: the tag names the record, a request carrying it is a 304 (before `Range`), and a missing
+/// file is a 404 whatever validator is presented.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_derivative_validator_is_derived_from_the_file_and_a_hit_is_answered_after_the_open() {
+    let h = common::spawn().await;
+    let bytes = pattern(8192);
+    for (suffix, query) in [
+        (".opus.ogg", "?variant=opus"),
+        (".opus.webm", "?variant=opus-webm"),
+    ] {
+        let id = seed(&h, "audio/wav", &[(suffix, &bytes)], false).await;
+        let url = format!("http://{}/api/assets/{id}{query}", h.addr);
+        let first = fetch(&h, &url, &[], false).await;
+        assert_eq!(first.status(), 200, "{suffix}");
+        let etag = header(&first, "etag").unwrap();
+        let stem = if query.ends_with("webm") {
+            "opus-webm"
+        } else {
+            "opus"
+        };
+        assert!(etag.starts_with(&format!("\"{id}-3-{stem}-")), "{etag}");
+        let hit = fetch(
+            &h,
+            &url,
+            &[
+                ("if-none-match", etag.clone()),
+                ("range", "bytes=0-9".into()),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(hit.status(), 304, "{suffix}");
+        assert!(header(&hit, "content-range").is_none());
+        assert_eq!(header(&hit, "etag"), Some(etag));
+        let stale = fetch(
+            &h,
+            &url,
+            &[("if-none-match", format!("\"{id}-3-{stem}\""))],
+            false,
+        )
+        .await;
+        assert_eq!(
+            stale.status(),
+            200,
+            "the record-derived tag is no longer the validator"
+        );
+    }
+    let absent = seed(&h, "audio/wav", &[], false).await;
+    let res = fetch(
+        &h,
+        &format!("http://{}/api/assets/{absent}?variant=opus", h.addr),
+        &[("if-none-match", "\"x\"".into())],
+        false,
+    )
+    .await;
+    assert_eq!(res.status(), 404);
 }
 
 /// The retained-original download is a ranged, uncompressed, uncapped download of every type, so a

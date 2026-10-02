@@ -10,12 +10,19 @@
 //! the file is opened and before any header is written, so an exhausted pool is a clean 503, and
 //! it moves into the body, which returns it when the last file byte has been read or when the
 //! body is dropped (a peer that reset, or a connection cut by the egress stall bounds).
+//!
+//! A response whose validator is derived from the file's own bytes (`Validator::OfFile`) cannot
+//! answer a validator hit before opening: the file is opened under the permit, its length,
+//! modification time and head are read from that one handle, and a 304 is answered after the open
+//! (the permit is held until the 304 is returned). A response with a version-derived validator
+//! (`Validator::Version`) is answered 304 by its caller before any open and holds no permit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
 use std::collections::VecDeque;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -45,6 +52,39 @@ pub(super) enum MissingFile {
     Internal,
 }
 
+/// Bytes of the file head the byte-derived validator hashes.
+pub(super) const VALIDATOR_HEAD_BYTES: usize = 4096;
+
+/// Where a response's strong validator comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Validator {
+    /// Derived from the record (asset id and version), known before the file is opened; the
+    /// caller has already answered any `If-None-Match` hit.
+    Version(String),
+    /// Derived from the served file: `stem` (the unquoted record-derived prefix) plus the length,
+    /// modification time and a hash of the first `VALIDATOR_HEAD_BYTES` bytes, all read from the
+    /// handle the body is streamed from. A rewrite of the file (an upgrade that swaps in new bytes
+    /// without a version bump) changes the validator, so a cache and a resumed `If-Range` see it.
+    OfFile {
+        /// The record-derived prefix, without quotes.
+        stem: String,
+    },
+}
+
+/// The strong validator `Validator::OfFile` yields: `stem`, the length and modification time in
+/// hexadecimal and the first eight bytes of the SHA-256 of `head`. The head hash covers a
+/// same-length rewrite inside one coarse modification-time tick; a rewrite that keeps the length,
+/// the modification time and the first `VALIDATOR_HEAD_BYTES` bytes is the residual no validator
+/// built from these three can see.
+pub(super) fn byte_derived_etag(stem: &str, len: u64, mtime_ns: u128, head: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, head);
+    let hash: String = digest.as_ref()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("\"{stem}-{len:x}-{mtime_ns:x}-{hash}\"")
+}
+
 /// Everything `serve_file` needs to answer for one stored file.
 pub(super) struct FileResponse<'a> {
     /// The asset id, named in the log line of an open failure.
@@ -59,8 +99,8 @@ pub(super) struct FileResponse<'a> {
     pub(super) disposition: Disposition,
     /// The route the response is served from.
     pub(super) route: Route,
-    /// The strong validator, with its quotes.
-    pub(super) etag: String,
+    /// The strong validator, or the recipe for deriving it from the file.
+    pub(super) etag: Validator,
     /// How an absent file is reported.
     pub(super) missing: MissingFile,
 }
@@ -212,13 +252,14 @@ fn stream_body(file: File, permit: FilePermit, segments: VecDeque<Segment>) -> B
 /// both edges. A response without a file body (a 416) drops `open`, returning the permit.
 fn respond(
     spec: &FileResponse<'_>,
+    etag: &str,
     class: RangeClass,
     decision: RangeDecision,
     len: u64,
     open: Option<(File, FilePermit)>,
 ) -> Result<Response, AppError> {
     let mut headers = HeaderMap::new();
-    headers.insert(header::ETAG, value(&spec.etag)?);
+    headers.insert(header::ETAG, value(etag)?);
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     if class != RangeClass::Ignore {
         headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
@@ -324,9 +365,10 @@ fn multipart_segments(
 /// length, then the matching 200, 206 or 416 with the body streamed from the file.
 ///
 /// A GET takes a permit from `permits` (a bounded wait, then 503), opens the file and takes the
-/// length from that handle, so the length, the validator the caller computed and the bytes
-/// streamed describe one file even when a replace renames over the name mid-request. A HEAD reads
-/// the length from the file's metadata, takes no permit and opens nothing.
+/// length from that handle, so the length, the validator and the bytes streamed describe one file
+/// even when a replace renames over the name mid-request. A HEAD with a version-derived validator
+/// reads the length from the file's metadata, takes no permit and opens nothing; with a
+/// byte-derived validator it opens the file for the head read alone.
 pub(super) async fn serve_file(
     spec: FileResponse<'_>,
     headers: &HeaderMap,
@@ -343,24 +385,73 @@ pub(super) async fn serve_file(
             AppError::NotFound
         }
     };
-    let (len, open) = if *method == Method::HEAD {
-        let metadata = tokio::fs::metadata(spec.path).await.map_err(missing)?;
-        (metadata.len(), None)
-    } else {
-        let permit = permits.acquire().await?;
-        let file = File::open(spec.path).await.map_err(missing)?;
-        let len = file.metadata().await.map_err(|_| AppError::Internal)?.len();
-        (len, Some((file, permit)))
+    let is_head = *method == Method::HEAD;
+    let (len, etag, open) = match (&spec.etag, is_head) {
+        (Validator::Version(etag), true) => {
+            let metadata = tokio::fs::metadata(spec.path).await.map_err(missing)?;
+            (metadata.len(), etag.clone(), None)
+        }
+        (Validator::Version(etag), false) => {
+            let permit = permits.acquire().await?;
+            let file = File::open(spec.path).await.map_err(missing)?;
+            let len = file.metadata().await.map_err(|_| AppError::Internal)?.len();
+            (len, etag.clone(), Some((file, permit)))
+        }
+        (Validator::OfFile { stem }, true) => {
+            // A HEAD must name the validator its GET would, so it reads the same head; it holds
+            // the descriptor only for that read and takes no permit, like every HEAD.
+            let mut file = File::open(spec.path).await.map_err(missing)?;
+            let (len, etag) = file_validator(&mut file, stem).await?;
+            if let Some(not_modified) = not_modified(headers, &etag) {
+                return Ok(not_modified);
+            }
+            (len, etag, None)
+        }
+        (Validator::OfFile { stem }, false) => {
+            let permit = permits.acquire().await?;
+            let mut file = File::open(spec.path).await.map_err(missing)?;
+            let (len, etag) = file_validator(&mut file, stem).await?;
+            // The validator exists only after the open, so this 304 holds the permit it took; the
+            // permit and the file are released when the response is returned.
+            if let Some(not_modified) = not_modified(headers, &etag) {
+                return Ok(not_modified);
+            }
+            (len, etag, Some((file, permit)))
+        }
     };
     let decision = decide(
         class,
         header_text(headers, header::RANGE),
         header_text(headers, header::IF_RANGE),
-        &spec.etag,
+        &etag,
         len,
     );
-    respond(&spec, class, decision, len, open)
+    respond(&spec, &etag, class, decision, len, open)
+}
+
+/// The length and the byte-derived validator of the file behind `file`, read from that handle:
+/// its metadata and its first `VALIDATOR_HEAD_BYTES` bytes.
+async fn file_validator(file: &mut File, stem: &str) -> Result<(u64, String), AppError> {
+    let metadata = file.metadata().await.map_err(|_| AppError::Internal)?;
+    let mtime_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let mut head = Vec::with_capacity(VALIDATOR_HEAD_BYTES);
+    (&mut *file)
+        .take(VALIDATOR_HEAD_BYTES as u64)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    Ok((
+        metadata.len(),
+        byte_derived_etag(stem, metadata.len(), mtime_ns, &head),
+    ))
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod byte_validator_tests;

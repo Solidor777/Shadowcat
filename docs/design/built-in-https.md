@@ -498,16 +498,26 @@ Every stored-file response (`http::assets::serve`'s canonical, `thumb`/`preview`
 differ between sites. The file is read in 64 KiB pieces as the connection pulls them; no response
 holds a file in memory, and `LeasedBody` re-chunks to the egress frame size.
 
-- Order, every arm: authorisation (`permission_context`; `gm_asset` for the original), then a
-  matching `If-None-Match` is answered 304 with `ETag` and `Cache-Control` and no range headers
-  before any file access and holding no permit, then (canonical, `thumb`, `preview`)
-  `ensure_derivative`, then the streamed-file permit (8, Descriptors), then the file is opened and
-  its length read from that same handle, then `decide`. A GET streams from the handle it opened:
-  an asset replaced or deleted mid-response is not waited on and the open response keeps the old
-  bytes. A HEAD calls `fs::metadata`, takes no permit and answers the GET's status and headers
-  with an empty body. Validators: `"{id}-{version}"` (canonical, `thumb`, `preview`, `sheet`),
-  `"{id}-{version}-opus"` and `"{id}-{version}-opus-webm"` (derivatives), `"{id}-{version}-orig"`
-  (original).
+- Order, canonical, `thumb`, `preview`, `sheet` and the original (validators derived from the
+  record): authorisation (`permission_context`; `gm_asset` for the original), then a matching
+  `If-None-Match` is answered 304 with `ETag` and `Cache-Control` and no range headers before any
+  file access and holding no permit, then (canonical, `thumb`, `preview`) `ensure_derivative`, then
+  the streamed-file permit (8, Descriptors), then the file is opened and its length read from that
+  same handle, then `decide`. Order, `opus` and `opus-webm` (the validator is derived from the
+  served file, `Validator::OfFile`): authorisation, then the permit (a bounded wait, 503 under
+  starvation), then the file is opened and its length, modification time and a SHA-256 of its first
+  4 KiB are read from that handle into the `ETag`, then a matching `If-None-Match` is answered 304,
+  then `decide`. A 304 on this arm therefore takes a permit and is refused with 503 when the pool
+  is exhausted; a `Range` request never bypasses that order. A GET streams from the handle it
+  opened: an asset replaced or deleted mid-response is not waited on and the open response keeps
+  the old bytes. A HEAD of a version-validated arm calls `fs::metadata`, takes no permit and
+  answers the GET's status and headers with an empty body; a HEAD of a byte-validated arm opens the
+  file for the head read alone and takes no permit. Validators: `"{id}-{version}"` (canonical,
+  `thumb`, `preview`, `sheet`), `"{id}-{version}-orig"` (original), and for the derivatives
+  `"{id}-{version}-opus-{len}-{mtime}-{head hash}"` and `"{id}-{version}-opus-webm-{len}-{mtime}-{head
+  hash}"` (length and modification time in hexadecimal, eight bytes of the head hash in hex): an
+  in-place rewrite of a derivative (the WebM upgrade sweep swaps files without a version bump)
+  changes the validator, so a cached copy and an `If-Range` resume across the swap both restart.
 - One classification, `range::classify(content_type, disposition, route)`: `Route::Original` is
   `DownloadFull` for every type. On `Route::Embed` a type in the ranged list is `MediaSliced` when
   served inline and `DownloadFull` as an attachment; any other type is `Ignore`. The list is

@@ -122,8 +122,8 @@ samples, pre-skip 312, produced by `data::asset::process::audio` from a syntheti
 
 | Engine | decodeAudioData | decoded length | delta vs 48,240 |
 | --- | --- | --- | --- |
-| Chromium | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
-| Firefox | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
+| Chromium | OK | 48,648 | +408 (trailing padding only, NOT trimmed; see the correction below) |
+| Firefox | OK | 48,648 | +408 (trailing padding only, NOT trimmed; see the correction below) |
 | WebKit | **FAIL** | — | — |
 
 The WebKit failure is API-level, not codec-level: this machine's Playwright WebKit build
@@ -140,10 +140,12 @@ pipeline keeps emitting both `.opus.ogg` and `.opus.webm` derivatives per the im
 selection, the `ogg` crate stays, and the WASM `ogg-opus-decoder` fallback stays for Ogg on
 WebKit. Two measurements this probe DID establish are recorded for the architecture: (1)
 chromium and firefox both decode WebM/Opus successfully but do NOT trim to the valid sample
-count (+408 = pre-skip + tail padding), so any future sample-exact looping must come from
+count (+408 = trailing padding only; the original text read "pre-skip + tail padding", corrected below), so any future sample-exact looping must come from
 transcode-known bounds rather than decoder trim behavior; (2) WebKit clients play the WebM
 derivative via the streaming `<audio>` element path (the media stack reports `probably`), and
 the buffered paths that need Web Audio degrade exactly as designed.
+
+> **CORRECTION (the +408 reading above): 408 is trailing padding only, not "pre-skip + tail".** Arithmetic over the recorded values: 48,240 valid samples, pre-skip 312, 51 frames of 960 = 48,960 samples encoded; the engines returned 48,648 = 48,960 - 312, so the decoder DID drop the pre-skip from the front (the track's `CodecDelay`) and did not drop the 720 samples of end padding the old muxer never declared (720 - 312 = 408 net). The muxer now writes `Duration` and a `DiscardPadding` on the last block, and its tests decode every residue of the valid count modulo one frame to exactly the valid length; the browser re-measurement is the `webm-decode` e2e spec. The table cells above keep the originally recorded values.
 
 #### Measured: Ogg decodeAudioData trim per engine (the loop-bounds follow-on probe)
 
@@ -156,8 +158,8 @@ run so the matrix is self-consistent:
 | --- | --- | --- | --- |
 | Chromium | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
 | Firefox | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
-| Chromium | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
-| Firefox | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
+| Chromium | `.opus.webm` | 48,648 | +408 (NOT trimmed; trailing padding only, see the correction below) |
+| Firefox | `.opus.webm` | 48,648 | +408 (NOT trimmed; trailing padding only, see the correction below) |
 
 **Outcome (the directive's conditional, applied):** BOTH engines trim the Ogg derivative to
 exactly the valid sample count (both honor RFC 7845's pre-skip header field and end-trim

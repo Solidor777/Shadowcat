@@ -35,7 +35,7 @@ fn spec<'a>(path: &'a Path, content_type: &str, route: Route) -> FileResponse<'a
         content_disposition: "inline".to_string(),
         disposition: Disposition::Inline,
         route,
-        etag: ETAG.to_string(),
+        etag: Validator::Version(ETAG.to_string()),
         missing: MissingFile::NotFound,
     }
 }

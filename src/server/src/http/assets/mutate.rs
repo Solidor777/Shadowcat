@@ -21,7 +21,7 @@ use crate::http::error::AppError;
 use crate::http::{routes::require_gm, routes::write_ops, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
 
-use super::file_response::{not_modified, serve_file, FileResponse, MissingFile};
+use super::file_response::{not_modified, serve_file, FileResponse, MissingFile, Validator};
 use super::range::{Disposition, Route};
 use super::uploads::{validate_folder, validate_tags};
 use super::{commit_replacement, delete_asset_files_and_row, detect_audio_type};
@@ -117,7 +117,7 @@ pub async fn original(
             content_disposition: attachment_disposition(&asset.original_name),
             disposition: Disposition::Attachment,
             route: Route::Original,
-            etag,
+            etag: Validator::Version(etag),
             missing: MissingFile::Internal,
         },
         &headers,

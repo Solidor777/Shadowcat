@@ -531,6 +531,12 @@ decided by its type, once:
   it), advertise no ranges, ignore `Range` and answer in full.
 - **`audio/wav` and `audio/aiff` assets are no longer compressed.** Raw PCM compresses well; the
   trade buys seeking within the file.
+- **Audio derivatives.** Importing an audio file still writes both an Opus-in-Ogg and an
+  Opus-in-WebM derivative (the import's container selection decides which). The WebM declares its
+  duration, a seek index and the length of its end padding, so a player seeks by time without
+  scanning the file and decodes exactly the audio that was uploaded, and the derivative's `ETag`
+  is computed from the file itself, so replacing a derivative's bytes in place is seen by every
+  cache.
 - **A retained-original download** (GM only) is a download of whatever type the original was: it is
   never compressed and is resumable to the end of the file.
 - `HEAD` answers the status and headers of the matching `GET` with no body.
