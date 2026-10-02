@@ -31,13 +31,6 @@ use tokio::time::{Instant, Sleep};
 /// the session task, and with it `WsState::wait_for_drain`, until the drain bound expires.
 pub const CLOSE_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Longest one send may stay pending before the session is ended. Chosen, not measured: above any
-/// single frame's transfer time on a slow mobile link (a frame is at most the wire message cap),
-/// below `PING_TIMEOUT` (90 s) so a stalled peer is dropped before the heartbeat would be. The same
-/// value as the response bound ([`crate::http::conn_serve::PEER_STALL_TIMEOUT`]), defined once
-/// there so the two cannot be tuned apart.
-pub const SEND_STALL_TIMEOUT: Duration = crate::http::conn_serve::PEER_STALL_TIMEOUT;
-
 /// Why a bounded send failed.
 ///
 /// # Examples
@@ -108,6 +101,36 @@ impl<S> BoundedSink<S> {
             stall_timeout,
             stall: None,
         }
+    }
+
+    /// Wraps `inner` with the window the configuration sets for every stalled-peer bound
+    /// (`Config::egress_window`), the same value `ConnLimits::for_config` gives the response
+    /// bounds, so one WebSocket send and one response cannot be tuned apart. Chosen, not measured:
+    /// the default is above any single frame's transfer time on a slow mobile link (a frame is at
+    /// most the wire message cap) and below `PING_TIMEOUT` (90 s), so a stalled peer is dropped
+    /// before the heartbeat would be.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::Config;
+    /// use shadowcat::ws::bounded_sink::BoundedSink;
+    ///
+    /// let (_tx, rx) = tokio::sync::watch::channel(false);
+    /// let _sink = BoundedSink::for_config(futures_util::sink::drain::<u8>(), rx, &Config::default());
+    /// ```
+    pub fn for_config(
+        inner: S,
+        shutdown: watch::Receiver<bool>,
+        config: &crate::config::Config,
+    ) -> Self {
+        Self::new(inner, shutdown, config.egress_window())
+    }
+
+    /// The bound on one pending send.
+    #[cfg(test)]
+    pub(crate) fn stall_timeout(&self) -> Duration {
+        self.stall_timeout
     }
 
     /// Applies the stall bound to the result of a poll of the wrapped sink.

@@ -501,9 +501,9 @@ const SOAK_PATHS: [&str; 5] = ["/", "/small", "/big", "/chunks", "/endless"];
 /// scheduler yields) when `early_cancels`, otherwise once the head has arrived. Returns the served
 /// connection after every stream has ended.
 ///
-/// Early cancels are kept to a low rate by the caller: h2 itself ends a connection with
-/// GOAWAY(ENHANCE_YOUR_CALM) when more than its pending-accept reset limit of streams are reset
-/// before the service accepted them, a rapid-reset guard that a cancel-heavy loop trips on its own.
+/// Early cancels are kept to a low rate by the caller: h2 ends a connection with
+/// GOAWAY(ENHANCE_YOUR_CALM) when more than [`H2_MAX_PENDING_ACCEPT_RESETS`] streams are reset
+/// before the service accepted them, a guard that a cancel-heavy loop can trip on its own.
 async fn soak(
     requests: usize,
     workers: usize,

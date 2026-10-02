@@ -362,7 +362,8 @@ task paces its own accept errors.
     (`+ ABORT_WAIT` only when a task outlives its killed IO).
   - Stalled peers: every WebSocket send goes through `ws::bounded_sink::BoundedSink`, constructed
     once in `handle_socket` and used for the pre-join refusals, the Welcome and every later frame. A
-    send pending for `SEND_STALL_TIMEOUT` (60 s, chosen) fails as stalled and ends the session, which
+    send pending for `Config::egress_window` (`egress_window_secs`, 60 s by default, 1 to 3600; the
+    same value `ConnLimits::for_config` gives the response bounds) fails as stalled and ends the session, which
     releases its `ConnectionGuard` and its `ConnLease` (the connection's cap slot); once shutdown is
     signalled a pending send gets only `CLOSE_SEND_TIMEOUT` (2 s).
   - Open question: in a debug build the `h2` crate's `impl Drop for Counts` asserts that no stream

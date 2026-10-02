@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
     // The raise-then-fit is `fd_budget::raise_and_fit`, the same call the `test_server` binary makes.
     let (sniff_limits, conn_limits) = shadowcat::fd_budget::raise_and_fit(
         shadowcat::tls::listener::Limits::default(),
-        shadowcat::http::conn_serve::ConnLimits::default(),
+        shadowcat::http::conn_serve::ConnLimits::for_config(&config),
     );
 
     let tcp = tokio::net::TcpListener::bind(&config.bind).await?;

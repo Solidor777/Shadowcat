@@ -33,7 +33,7 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::http::AppState;
-use crate::ws::bounded_sink::{BoundedSink, CLOSE_SEND_TIMEOUT, SEND_STALL_TIMEOUT};
+use crate::ws::bounded_sink::{BoundedSink, CLOSE_SEND_TIMEOUT};
 use crate::ws::protocol::{ClientMsg, PathErrorReason, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::ruler::{canonical, origin_admissible, points_admissible, RULER_RATE_PER_MIN};
@@ -421,12 +421,12 @@ async fn handle_socket(
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            let mut s = BoundedSink::for_config(socket, shutdown.clone(), &state.config);
             reject_join(&mut s, WsErrorCode::WorldNotFound, "world not found").await;
             return;
         }
         Err(_) => {
-            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            let mut s = BoundedSink::for_config(socket, shutdown.clone(), &state.config);
             reject_join(&mut s, WsErrorCode::Internal, "internal").await;
             return;
         }
@@ -438,7 +438,7 @@ async fn handle_socket(
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
         Err(_) => {
-            let mut s = BoundedSink::new(socket, shutdown.clone(), SEND_STALL_TIMEOUT);
+            let mut s = BoundedSink::for_config(socket, shutdown.clone(), &state.config);
             reject_join(&mut s, WsErrorCode::Forbidden, "not a member of this world").await;
             tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
             return;
@@ -473,7 +473,7 @@ async fn handle_socket(
     let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let egress_last_activity = last_activity.clone();
     let mut egress = tokio::spawn(egress_loop(
-        BoundedSink::new(sink, shutdown.clone(), SEND_STALL_TIMEOUT),
+        BoundedSink::for_config(sink, shutdown.clone(), &state.config),
         rx,
         erx,
         EgressConnState {

@@ -171,6 +171,10 @@ pub struct Cli {
     /// HTTPS requests.
     #[arg(long)]
     pub hsts_max_age_secs: Option<u64>,
+    /// How long a peer may make no progress receiving a response, or a WebSocket send may stay
+    /// pending, before the server cuts it (`Config.egress_window_secs`; 1 to 3600).
+    #[arg(long)]
+    pub egress_window_secs: Option<u64>,
     /// One-shot: regenerate the persisted self-signed certificate and exit. Mutually exclusive
     /// with `--backup-to`, `--restore-from` and any subcommand.
     #[arg(long)]
@@ -368,7 +372,22 @@ pub struct Config {
     pub acme_directory: String,
     /// Opt-in HSTS `max-age` (seconds). `None` (default) never sends HSTS.
     pub hsts_max_age_secs: Option<u64>,
+    /// How long, in seconds, a peer may make no progress receiving data before the server cuts it
+    /// (1 to [`EGRESS_WINDOW_SECS_MAX`]; default [`crate::http::conn_serve::PEER_STALL_TIMEOUT`],
+    /// 60). One value: it is the no-progress window of every response and the bound on one pending
+    /// WebSocket send ([`Config::egress_window`]), so the two cannot be tuned apart. A reader that
+    /// the socket can only feed in lumps larger than one window's worth of its reading rate is cut
+    /// while still reading; raise this on extremely slow networks. A connection with nothing in
+    /// flight is never cut by it.
+    pub egress_window_secs: u64,
 }
+
+/// The least [`Config::egress_window_secs`] accepts.
+pub const EGRESS_WINDOW_SECS_MIN: u64 = 1;
+
+/// The most [`Config::egress_window_secs`] accepts: one hour, far above any peer that is merely
+/// slow and low enough that a stalled peer cannot pin a connection for a day.
+pub const EGRESS_WINDOW_SECS_MAX: u64 = 3600;
 
 impl Default for Config {
     fn default() -> Self {
@@ -409,6 +428,7 @@ impl Default for Config {
             acme_challenge: AcmeChallenge::TlsAlpn01,
             acme_directory: DEFAULT_ACME_DIRECTORY.into(),
             hsts_max_age_secs: None,
+            egress_window_secs: crate::http::conn_serve::PEER_STALL_TIMEOUT.as_secs(),
         }
     }
 }
@@ -717,7 +737,33 @@ impl Config {
         if let Some(v) = cli.hsts_max_age_secs {
             cfg.hsts_max_age_secs = Some(v);
         }
+        if let Some(v) = cli.egress_window_secs {
+            cfg.egress_window_secs = v;
+        }
+        if !(EGRESS_WINDOW_SECS_MIN..=EGRESS_WINDOW_SECS_MAX).contains(&cfg.egress_window_secs) {
+            return Err(Box::new(figment::Error::from(format!(
+                "egress_window_secs must be {EGRESS_WINDOW_SECS_MIN} to {EGRESS_WINDOW_SECS_MAX}, got {}",
+                cfg.egress_window_secs
+            ))));
+        }
         Ok(cfg)
+    }
+
+    /// The no-progress window every stalled-peer bound uses: [`Config::egress_window_secs`] as a
+    /// duration. The one reader of that key; `ConnLimits::for_config` and
+    /// `BoundedSink::for_config` both call it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use shadowcat::config::Config;
+    ///
+    /// let cfg = Config { egress_window_secs: 90, ..Config::default() };
+    /// assert_eq!(cfg.egress_window(), Duration::from_secs(90));
+    /// ```
+    pub fn egress_window(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.egress_window_secs)
     }
 
     /// Resolves a directory named `name` as a sibling of the on-disk database

@@ -1043,3 +1043,83 @@ fn loopback_is_cap_exempt_without_becoming_a_forwarded_header_authority() {
         assert!(!cfg.is_trusted_proxy(ip), "{loopback}");
     }
 }
+
+#[test]
+fn egress_window_defaults_to_the_peer_stall_timeout() {
+    let cfg = Config::default();
+    assert_eq!(
+        cfg.egress_window(),
+        crate::http::conn_serve::PEER_STALL_TIMEOUT
+    );
+    assert_eq!(cfg.egress_window_secs, 60);
+}
+
+/// Loads a configuration from the environment's `SHADOWCAT_EGRESS_WINDOW_SECS` and `cli`.
+fn load_with_egress_env(value: Option<&str>, cli: Cli) -> Result<Config, Box<figment::Error>> {
+    let _guard = config_env_test_lock();
+    // SAFETY: single-threaded test-only env mutation under `config_env_test_lock`, restored below.
+    unsafe {
+        match value {
+            Some(v) => std::env::set_var("SHADOWCAT_EGRESS_WINDOW_SECS", v),
+            None => std::env::remove_var("SHADOWCAT_EGRESS_WINDOW_SECS"),
+        }
+    }
+    let loaded = Config::load(cli);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("SHADOWCAT_EGRESS_WINDOW_SECS") };
+    loaded
+}
+
+#[test]
+fn egress_window_layers_cli_over_env_over_default() {
+    let cfg = load_with_egress_env(None, Cli::default()).unwrap();
+    assert_eq!(cfg.egress_window_secs, 60);
+    let cfg = load_with_egress_env(Some("120"), Cli::default()).unwrap();
+    assert_eq!(cfg.egress_window_secs, 120);
+    assert_eq!(cfg.egress_window(), std::time::Duration::from_secs(120));
+    let cli = Cli {
+        egress_window_secs: Some(30),
+        ..Cli::default()
+    };
+    let cfg = load_with_egress_env(Some("120"), cli).unwrap();
+    assert_eq!(cfg.egress_window_secs, 30);
+}
+
+#[test]
+fn egress_window_accepts_exactly_one_to_thirty_six_hundred_seconds() {
+    for ok in [EGRESS_WINDOW_SECS_MIN, EGRESS_WINDOW_SECS_MAX] {
+        let cfg = load_with_egress_env(Some(&ok.to_string()), Cli::default()).unwrap();
+        assert_eq!(cfg.egress_window_secs, ok);
+    }
+    for bad in [EGRESS_WINDOW_SECS_MIN - 1, EGRESS_WINDOW_SECS_MAX + 1] {
+        let from_env = load_with_egress_env(Some(&bad.to_string()), Cli::default());
+        assert!(from_env.is_err(), "env value {bad} was accepted");
+        let cli = Cli {
+            egress_window_secs: Some(bad),
+            ..Cli::default()
+        };
+        assert!(
+            load_with_egress_env(None, cli).is_err(),
+            "CLI value {bad} was accepted"
+        );
+    }
+}
+
+#[test]
+fn one_configured_window_reaches_the_response_bounds_and_the_websocket_send_bound() {
+    let cfg = Config {
+        egress_window_secs: 7,
+        ..Config::default()
+    };
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let sink = crate::ws::bounded_sink::BoundedSink::for_config(
+        futures_util::sink::drain::<u8>(),
+        rx,
+        &cfg,
+    );
+    assert_eq!(
+        crate::http::conn_serve::ConnLimits::for_config(&cfg).egress_window,
+        std::time::Duration::from_secs(7)
+    );
+    assert_eq!(sink.stall_timeout(), std::time::Duration::from_secs(7));
+}

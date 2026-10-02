@@ -237,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
     // descriptor budget the production binary would not accept (`fd_budget::raise_and_fit`).
     let (sniff_limits, conn_limits) = shadowcat::fd_budget::raise_and_fit(
         shadowcat::tls::listener::Limits::default(),
-        http::conn_serve::ConnLimits::default(),
+        http::conn_serve::ConnLimits::for_config(&config),
     );
     let listener = shadowcat::tls::listener::SniffListener::new(
         tcp,

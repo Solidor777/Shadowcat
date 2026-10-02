@@ -106,6 +106,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `tls_advertise_hostname` | `false` | List this machine's hostname (and `<hostname>.local`) in the self-signed certificate. Off by default because the certificate is shown to anyone who connects, before any login, and machine names often contain a person's name. Turn it on if players type the machine name; the price is that the name is visible to every peer that reaches the port. Changing it regenerates the certificate at the next start (browsers warn once more) |
 | `tls_dir` | `tls/` beside the db | Where the self-signed certificate and key are kept |
 | `public_url` | *(unset)* | The `https://` origin players should use (scheme, host and optional port only: user information, a path, a query or a fragment stop the server at start), published in `GET /api/config` |
+| `egress_window_secs` | `60` | Seconds a peer may make no progress receiving data before the server cuts it (1 to 3600; anything else stops the server at start). Applies to every response and to each pending WebSocket send; see [Slow readers](#slow-readers) |
 | `hsts_max_age_secs` | *(unset: no HSTS)* | Opt-in `Strict-Transport-Security` (read the HSTS section first) |
 | `acme_domains`, `acme_email`, `acme_terms_agreed`, `acme_challenge`, `acme_directory`, `acme_ca_root` | *(unset)* | Accepted and validated; certificate issuance is not available in this version |
 
@@ -501,12 +502,31 @@ a startup warning says to what; raise
 the limit with `ulimit -n` or, under systemd, `LimitNOFILE=`, to restore them. Windows has no
 comparable per-process limit and the caps are not reduced there.
 
+### Slow readers
+
+A response whose receiver makes no progress for `egress_window_secs` seconds is cut: an HTTP/2
+stream is reset (the rest of the connection is untouched), and a connection whose socket accepts
+almost nothing is closed. A WebSocket send that stays pending for that long ends its session. A
+connection with nothing in flight is never cut by this setting, and a cut media or attachment
+download can be resumed by a client that sends `Range`; a cut world export starts again from zero.
+
+A socket takes data in lumps rather than steadily. On Windows loopback the lumps measured were
+about 100 to 520 KB, so a reader that consumes less than about one lump per window (roughly 2 to 9
+KB/s at the 60 second default) can be cut while it is still reading. Real network paths were not
+measured; their steps are expected to be finer. Over an extremely slow network, raise
+`egress_window_secs`. For an HTTP/2 stream whose receiver returns flow-control credit slowly the
+measured boundary depends on the window: at a 1 second window the outcome was mixed between about
+18 and 33 KiB/s, and at a 3 second window it matched a one-chunk-per-window model. Those
+measurements used the `h2` crate as the client; a browser's own windows and credit batching were
+not measured.
+
 ### Shutdown
 
 On Ctrl+C or SIGTERM the server tells every WebSocket session to close, then gives open
 connections 5 seconds to finish. A session whose client has stopped reading is given 2 seconds to
-send its close message and is then dropped; no single message may take longer than 60 seconds to
-send, so a client that stops reading while connected is dropped on its own. Connections still open
+send its close message and is then dropped; no single message may take longer than
+`egress_window_secs` (60 by default) to send, so a client that stops reading while connected is
+dropped on its own. Connections still open
 after the 5 seconds are closed, and WebSocket sessions get a further 3 seconds at least to finish,
 so the server exits within about 8 seconds.
 

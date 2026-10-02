@@ -39,7 +39,7 @@
 //!    connection over a cap is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection
 //!    that has had no request in flight for that long. A lease held by a WebSocket session is
 //!    released when the session ends, and a session whose peer has stopped reading ends at the
-//!    per-send stall bound ([`crate::ws::bounded_sink::SEND_STALL_TIMEOUT`]), so a lease cannot
+//!    per-send stall bound ([`crate::ws::bounded_sink::BoundedSink::for_config`]), so a lease cannot
 //!    pin a slot for longer than that bound past the peer's last read.
 //! 5. The pause after an accept error is decided in [`serve_router`], never inside a
 //!    [`ConnSource::accept`] future: the loop drops that future on every reaped connection task, so
@@ -230,8 +230,9 @@ pub const ACCEPT_ERROR_PAUSE: Duration = Duration::from_secs(1);
 /// so a slice is one frame.
 const EGRESS_FLOOR_BYTES: usize = 16 * 1024;
 
-/// How long a peer may return no flow-control credit, or a socket accept nothing, before a response
-/// is cut, and how long one WebSocket send may stay pending ([`crate::ws::bounded_sink`]). Not below
+/// The default of [`crate::config::Config::egress_window_secs`]: how long a peer may return no
+/// flow-control credit, or a socket accept nothing, before a response is cut, and how long one
+/// WebSocket send may stay pending ([`crate::ws::bounded_sink`]). Not below
 /// `h2_ping_interval + h2_ping_timeout` (50 s), so a peer that is merely slow to acknowledge pings
 /// is ended by keep-alive rather than by a stall cut; it equals the default `h2_idle`. Those two
 /// constraints bind the default only: an operator who sets the window is not bound by them.
@@ -349,9 +350,10 @@ pub struct ConnLimits {
     /// and tunnels are untouched); a connection whose socket accepts less than
     /// [`ConnLimits::egress_floor`] response bytes while its writer is parked is closed; a
     /// connection whose finished response still has DATA queued that its own stream does not write
-    /// at the rate [`ConnLimits::egress_floor`] states is closed. Checked four times per window
-    /// (never less often than every millisecond), so a cut lands between the window and the window
-    /// plus one tick after the last progress.
+    /// at the rate [`ConnLimits::egress_floor`] states is closed. Checked four times per window,
+    /// so a cut lands between the window and the window plus one tick after the last progress.
+    /// Nonzero: [`serve_router`] panics on a zero window (the configuration admits 1 to 3600
+    /// seconds).
     pub egress_window: Duration,
     /// How many response bytes a socket must accept per [`ConnLimits::egress_window`] to count as
     /// making progress while its writer is parked. A connection whose writer has been parked for a
@@ -361,6 +363,30 @@ pub struct ConnLimits {
     /// bytes per window, or all that remains when that is less, and nothing else on the connection
     /// counts as that stream's progress.
     pub egress_floor: usize,
+}
+
+impl ConnLimits {
+    /// The defaults with the no-progress window the configuration sets
+    /// ([`crate::config::Config::egress_window`], validated to 1 to 3600 seconds when the
+    /// configuration loads). The window also bounds one pending WebSocket send through
+    /// `BoundedSink::for_config`, from the same method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use shadowcat::config::Config;
+    /// use shadowcat::http::conn_serve::ConnLimits;
+    ///
+    /// let config = Config { egress_window_secs: 90, ..Config::default() };
+    /// assert_eq!(ConnLimits::for_config(&config).egress_window, Duration::from_secs(90));
+    /// ```
+    pub fn for_config(config: &crate::config::Config) -> Self {
+        Self {
+            egress_window: config.egress_window(),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for ConnLimits {
@@ -501,15 +527,11 @@ pub const KILL_GRACE: Duration = Duration::from_secs(2);
 /// completion being observed by the serve loop's join. Chosen, not measured.
 const ABORT_MARGIN: Duration = Duration::from_secs(1);
 
-/// The shortest interval of the egress sampler: a one-millisecond floor keeps a tiny window from
-/// building a zero-period timer, which `tokio::time::interval` rejects with a panic.
-const MIN_TICK: Duration = Duration::from_millis(1);
-
-/// The egress sampler's period for `window`: a quarter of it, never below [`MIN_TICK`]. Four ticks
-/// per window bound how late a cut can land past the window to one tick. The one place the period
-/// is derived, so the floor holds for any caller-built [`ConnLimits`].
+/// The egress sampler's period for `window`: a quarter of it. Four ticks per window bound how
+/// late a cut can land past the window to one tick. `window` is nonzero ([`serve_router`] checks),
+/// so the period is too, which `tokio::time::interval` requires.
 fn egress_tick(window: Duration) -> Duration {
-    (window / 4).max(MIN_TICK)
+    window / 4
 }
 
 /// Records the result of reaping one connection task: a panic is an error-level event, and a
@@ -599,6 +621,10 @@ pub async fn serve_router<S>(
 where
     S: ConnSource,
 {
+    assert!(
+        !limits.egress_window.is_zero(),
+        "ConnLimits::egress_window must be nonzero"
+    );
     // `signal_tx.closed()` resolves once the only receiver is dropped: by the watcher task when
     // `shutdown` resolves, or by aborting it when the source ends. Every connection task waits on
     // it, so both causes drain identically.

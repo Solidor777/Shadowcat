@@ -1327,7 +1327,7 @@ fn the_pause_decision_table_ignores_only_the_connection_level_kinds() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn the_sampler_period_is_a_quarter_of_the_window_and_never_below_the_floor() {
+fn the_sampler_period_is_a_quarter_of_the_window() {
     assert_eq!(
         egress_tick(Duration::from_secs(1)),
         Duration::from_millis(250)
@@ -1336,34 +1336,29 @@ fn the_sampler_period_is_a_quarter_of_the_window_and_never_below_the_floor() {
         egress_tick(Duration::from_secs(60)),
         Duration::from_secs(15)
     );
-    assert_eq!(egress_tick(Duration::from_millis(4)), MIN_TICK);
-    assert_eq!(egress_tick(Duration::from_nanos(1)), MIN_TICK);
-    assert_eq!(egress_tick(Duration::ZERO), MIN_TICK);
 }
 
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn a_zero_window_does_not_build_a_zero_period_timer() {
-    // `tokio::time::interval` panics on a zero period; the floor in `egress_tick` is what keeps a
-    // caller-built `ConnLimits { egress_window: ZERO, .. }` from reaching it.
-    let kill = ConnKill::new();
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let (signal_tx, _keep) = watch::channel(());
-    let watch = watch_for(kill.clone(), Duration::ZERO);
-    let task = tokio::spawn(async move {
-        drive(
-            std::future::pending::<Result<(), hyper::Error>>(),
-            signal_tx,
-            std::future::pending(),
-            |_| {},
-            watch,
-            &dropped,
-        )
-        .await;
-    });
-    settle(Duration::from_millis(10)).await;
-    assert!(!task.is_finished());
-    kill.fire(KillReason::Drain);
-    timeout(KILL_GRACE * 2, task).await.unwrap().unwrap();
+#[tokio::test]
+#[should_panic(expected = "ConnLimits::egress_window must be nonzero")]
+async fn serve_router_rejects_a_zero_egress_window() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // A loop that accepted the zero window would serve forever; the timeout turns that into a
+    // failure whose message differs from the expected panic.
+    timeout(
+        Duration::from_secs(5),
+        serve_router(
+            listener,
+            Router::new(),
+            std::future::pending::<()>(),
+            ConnLimits {
+                egress_window: Duration::ZERO,
+                ..ConnLimits::default()
+            },
+            || {},
+        ),
+    )
+    .await
+    .expect("serve_router served with a zero egress window");
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
