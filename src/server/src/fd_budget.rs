@@ -219,6 +219,71 @@ pub fn fit_to_descriptor_budget(
     (fitted_pre, fitted_live, Some(clamp))
 }
 
+/// The startup sequence every serving binary runs: raise the soft `RLIMIT_NOFILE` through `raise`
+/// to [`descriptors_needed`] for `pre` and `live`, then fit both caps to the limit `raise` reports
+/// back ([`fit_to_descriptor_budget`]), warning once when the fit reduced them. `raise` receives the
+/// need and returns the limit as it stands afterwards; production passes [`raise_nofile_limit`]
+/// through [`raise_and_fit`], a test passes a stand-in built on [`raise_with`].
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::{descriptors_needed, raise_and_fit_with, raise_with};
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let (pre, live) = (Limits::default(), ConnLimits::default());
+/// let needed = descriptors_needed(&pre, &live);
+/// let (fitted_pre, fitted_live) = raise_and_fit_with(
+///     |need| raise_with(|| Some((256, 1 << 20)), |_, _| Ok(()), None, need, u64::MAX),
+///     pre,
+///     live,
+/// );
+/// // The stand-in reads back 256 after the "raise", so the caps shrink to fit it.
+/// assert!(fitted_pre.global_cap < pre.global_cap);
+/// assert!(fitted_live.max_live < live.max_live);
+/// assert!(needed > 256);
+/// ```
+pub fn raise_and_fit_with(
+    raise: impl FnOnce(u64) -> NofileLimit,
+    pre: Limits,
+    live: ConnLimits,
+) -> (Limits, ConnLimits) {
+    let nofile = raise(descriptors_needed(&pre, &live));
+    let (pre, live, clamp) = fit_to_descriptor_budget(nofile.soft, pre, live);
+    if let Some(clamp) = clamp {
+        tracing::warn!(
+            soft_limit = clamp.soft,
+            budget = clamp.budget,
+            pre_handoff_cap = clamp.pre_handoff_after,
+            live_cap = clamp.live_after,
+            floors_exceed_budget = clamp.floors_exceed_budget,
+            "the open-file limit cannot back the default connection caps plus the descriptors \
+             reserved for the hand-off queue, streamed asset files and everything else; the caps \
+             were reduced to fit. Raise the limit (ulimit -n / LimitNOFILE) to restore them"
+        );
+    }
+    (pre, live)
+}
+
+/// [`raise_and_fit_with`] over the process's real limit ([`raise_nofile_limit`]): the one call
+/// `main` and the `test_server` binary make before binding, so the browser-suite server runs under
+/// the same descriptor budget as production.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::fd_budget::raise_and_fit;
+/// use shadowcat::http::conn_serve::ConnLimits;
+/// use shadowcat::tls::listener::Limits;
+///
+/// let (pre, live) = raise_and_fit(Limits::default(), ConnLimits::default());
+/// assert!(pre.global_cap > 0 && live.max_live > 0);
+/// ```
+pub fn raise_and_fit(pre: Limits, live: ConnLimits) -> (Limits, ConnLimits) {
+    raise_and_fit_with(raise_nofile_limit, pre, live)
+}
+
 /// Raises the soft `RLIMIT_NOFILE` to `needed` descriptors (see [`descriptors_needed`]), bounded by
 /// the hard limit and the platform ceiling, and returns the soft limit read back afterwards. A
 /// limit already at or above `needed` is left alone. A refused raise is logged at `warn` and the

@@ -233,11 +233,17 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state).await;
     let tcp = tokio::net::TcpListener::bind(&config.bind).await?;
     let addr = tcp.local_addr()?;
+    // The same raise-then-fit `main` runs, so the browser-suite server never serves under a
+    // descriptor budget the production binary would not accept (`fd_budget::raise_and_fit`).
+    let (sniff_limits, conn_limits) = shadowcat::fd_budget::raise_and_fit(
+        shadowcat::tls::listener::Limits::default(),
+        http::conn_serve::ConnLimits::default(),
+    );
     let listener = shadowcat::tls::listener::SniffListener::new(
         tcp,
         tls.clone(),
         config.clone(),
-        shadowcat::tls::listener::Limits::default(),
+        sniff_limits,
     );
     tracing::info!(%addr, world = %world.id, "test_server listening (gm/pw, pl/pw)");
     println!(
@@ -255,13 +261,8 @@ async fn main() -> anyhow::Result<()> {
         "test_server-tls: {}",
         serde_json::json!({ "enabled": tls.status().enabled, "url": format!("https://{addr}") })
     );
-    let end = http::conn_serve::serve_router(
-        listener,
-        app,
-        std::future::pending(),
-        http::conn_serve::ConnLimits::default(),
-        || {},
-    )
-    .await;
+    let end =
+        http::conn_serve::serve_router(listener, app, std::future::pending(), conn_limits, || {})
+            .await;
     anyhow::bail!("test_server stopped serving: {end:?}")
 }

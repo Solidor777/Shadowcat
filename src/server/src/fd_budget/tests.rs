@@ -274,3 +274,55 @@ fn the_macos_ceiling_is_queried_and_positive() {
         "implausible kern.maxfilesperproc: {ceiling}"
     );
 }
+
+#[test]
+fn the_startup_sequence_raises_to_the_need_then_fits_the_caps_to_the_read_back_limit() {
+    let (pre, live) = defaults();
+    let needed = descriptors_needed(&pre, &live);
+    let state = std::sync::Mutex::new((256u64, 1u64 << 20));
+    let asked = std::sync::Mutex::new(None);
+    let (fitted_pre, fitted_live) = raise_and_fit_with(
+        |need| {
+            *asked.lock().unwrap() = Some(need);
+            raise_with(
+                || Some(*state.lock().unwrap()),
+                |soft, hard| {
+                    *state.lock().unwrap() = (soft, hard);
+                    Ok(())
+                },
+                None,
+                need,
+                u64::MAX,
+            )
+        },
+        pre,
+        live,
+    );
+    assert_eq!(*asked.lock().unwrap(), Some(needed));
+    assert_eq!(state.lock().unwrap().0, needed, "the soft limit was raised");
+    assert_eq!(
+        fitted_pre.global_cap, pre.global_cap,
+        "a raised limit leaves the caps whole"
+    );
+    assert_eq!(fitted_live.max_live, live.max_live);
+}
+
+#[test]
+fn the_startup_sequence_fits_the_caps_when_the_raise_is_refused() {
+    let (pre, live) = defaults();
+    let (fitted_pre, fitted_live) = raise_and_fit_with(
+        |need| {
+            raise_with(
+                || Some((256, 256)),
+                |_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+                None,
+                need,
+                u64::MAX,
+            )
+        },
+        pre,
+        live,
+    );
+    assert_eq!(fitted_pre.global_cap, MIN_PRE_HANDOFF_CAP);
+    assert_eq!(fitted_live.max_live, MIN_LIVE_CAP);
+}
