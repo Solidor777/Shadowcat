@@ -54,9 +54,10 @@
 //!    finished response has DATA still queued in h2 that its own stream writes less than
 //!    `min(egress_floor, bytes still queued)` of per window (the stream has no handle left to reset
 //!    it, and only a stream's own DATA counts as its progress: not another stream's, a tunnel's,
-//!    a PING's or any other write). All three run on `drive`'s sampler tick in that order; a parked
-//!    writer is the connection unit's case alone. Every cut is counted in
-//!    [`DrainReport::stall_cuts`].
+//!    a PING's or any other write). All three run on `drive`'s sampler tick, in the order
+//!    connection, ended-unflushed, stream; the last two run only when the writer is not parked, and
+//!    the stream unit runs only when the ended-unflushed unit cut nothing, so a parked writer is
+//!    the connection unit's case alone. Every cut is counted in [`DrainReport::stall_cuts`].
 //! 7. An HTTP/2 connection's IO walks the frames of both directions (the `egress` module's frame
 //!    parser) and keeps a table of the connection's live client streams in step with the wire: an
 //!    entry is created when a request's HEADERS frame is read and removed only when the wire shows
