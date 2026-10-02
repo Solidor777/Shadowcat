@@ -5,9 +5,12 @@ members = ["src/server", "src/server/test-support"]
 # over it. `exclude` keeps that true even if a future `members` glob would otherwise reach it.
 exclude = ["vendor/h2"]
 
-# `h2` carries two connection-end fixes (`State::recv_eof`, `State::handle_error`) that release
-# the stream slots of a scheduled-reset stream when the connection ends. Every `h2` consumer in
-# the graph resolves to this copy.
+# `h2` carries four changes: two connection-end arms (`State::recv_eof`, `State::handle_error`)
+# that release the stream slots of a scheduled-reset stream when the connection ends; the public
+# `h2::StreamId` request extension (`Peer::convert_poll_message`); and backpressure on
+# pending-accept resets (`Connection::poll2`, `Streams::pause_for_accepts`) with a sustained
+# reset-rate rule (`ResetRate`). `vendor/h2/SHADOWCAT-PATCH.md` states each change and its reason.
+# Every `h2` consumer in the graph resolves to this copy.
 [patch.crates-io]
 h2 = { path = "vendor/h2" }
 

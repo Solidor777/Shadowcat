@@ -12,7 +12,7 @@
 //! Each connection end is driven over `tokio::io::duplex` (no sockets) through `Gate`, whose
 //! writes park once `block` is set (a peer that stopped reading) and whose reads fail on demand.
 //!
-//! Two arms of the vendored `state.rs` are under test. The clean-EOF test needs the
+//! Two arms of the vendored `State` are under test. The clean-EOF test needs the
 //! `State::recv_eof` arm. A transport failure runs `Streams::handle_error` (the failure sweep)
 //! and then, when the connection drops, `Streams::recv_eof` (the drop sweep). A stream whose
 //! reset-expiration window is still open (`Stream::reset_at` is `Some`, so

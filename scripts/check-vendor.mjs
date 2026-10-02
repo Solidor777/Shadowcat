@@ -42,9 +42,10 @@ export const UPSTREAM = {
 };
 
 /**
- * The vendored files that differ from upstream: the connection-end arms live in `state.rs`, the
- * stream-id extension in `server.rs`, and the pending-accept reset backpressure with the sustained
- * reset-rate rule in the other four.
+ * The vendored files that differ from upstream. They carry the connection-end arms
+ * (`State::recv_eof`, `State::handle_error`), the `h2::StreamId` request extension
+ * (`Peer::convert_poll_message`), and the pending-accept reset backpressure with the sustained
+ * reset-rate rule (`Connection::poll2`, `Streams::pause_for_accepts`, `ResetRate`).
  */
 export const PATCHED_FILES = [
   "src/proto/connection.rs",
