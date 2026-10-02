@@ -82,6 +82,9 @@ export function stubBuffer(durationSecs: number, sampleRate = 48_000, channels =
 
 /** `stubAudioContext`'s return shape: the stub context plus its captured nodes. */
 export interface StubAudioContext extends AudioContextLike {
+  /** The stub's audio clock, seconds — writable so a test can advance it with the server clock
+   * or freeze it to model a suspended context. */
+  currentTime: number;
   /** Every buffer source the stub created, in creation order (spy targets). */
   sources: BufferSourceNodeLike[];
   /** Every gain node the stub created, in creation order (spy targets). */

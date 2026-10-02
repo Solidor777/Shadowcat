@@ -4,7 +4,7 @@ import { AssetResolver, type PlayingTrack } from "@shadowcat/core";
 import type { AudioParamLike, GainNodeLike } from "./context";
 import { OneShotPlayer } from "./one-shot-player";
 import { setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS, TrackPlayer } from "./track-player";
-import { stubAudioContext, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
+import { stubAudioContext, stubBuffer, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
 
 function entry(over: Partial<PlayingTrack> = {}): PlayingTrack {
   return {
@@ -209,5 +209,72 @@ describe("TrackPlayer — buffered loop mode", () => {
     expect(directWrites).toEqual([]);
     expect(ramp).toHaveBeenCalledWith(0.8, 2, expect.any(Number));
     player.dispose();
+  });
+});
+
+describe("TrackPlayer — audio-clock position", () => {
+  /** A buffered player started at server time 0 over a 100-second decoded buffer. */
+  async function bufferedAtZero() {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
+    const ctx = stubAudioContext();
+    ctx.decodeAudioData = async () => stubBuffer(100);
+    const e = entry({ loop: true });
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    player.sync(e, 0);
+    await flush();
+    return { ctx, e, player };
+  }
+
+  it("a context clock that stops while the server clock advances restarts the source at the server position", async () => {
+    const { ctx, e, player } = await bufferedAtZero();
+    expect(ctx.sources).toHaveLength(1);
+    // The context is suspended for 30 s: its clock does not move, the server clock does.
+    player.sync(e, 30_000);
+    expect(ctx.sources).toHaveLength(2);
+    expect(ctx.sources[0].stop).toHaveBeenCalledTimes(1);
+    expect(ctx.sources[1].start).toHaveBeenCalledWith(0, 30);
+    player.dispose();
+  });
+
+  it("a context clock that advances with the server clock leaves the running source alone", async () => {
+    const { ctx, e, player } = await bufferedAtZero();
+    ctx.currentTime = 30;
+    player.sync(e, 30_000);
+    expect(ctx.sources).toHaveLength(1);
+    expect(ctx.sources[0].stop).not.toHaveBeenCalled();
+    player.dispose();
+  });
+
+  it("after the recovery restart the audible position is within the seek threshold of the server position", async () => {
+    const { ctx, e, player } = await bufferedAtZero();
+    player.sync(e, 30_000);
+    // The new source is anchored on the context clock at the restart: a further 10 s of both
+    // clocks keeps it in step, so no second restart.
+    ctx.currentTime = 10;
+    player.sync(e, 40_000);
+    expect(ctx.sources).toHaveLength(2);
+    player.dispose();
+  });
+});
+
+describe("TrackPlayer — streaming element under a suspended context", () => {
+  it("an element whose clock froze with the context (Chromium) is seeked to the server position", () => {
+    const ctx = stubAudioContext();
+    const el = stubMediaElement();
+    setMediaElementFactory(() => el);
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    el.currentTime = 4; // froze here while the server clock ran on to 10 s
+    player.sync(entry(), 10_000);
+    expect(el.currentTime).toBeCloseTo(10, 5);
+  });
+
+  it("an element whose clock kept running (Firefox) is left in position", () => {
+    const ctx = stubAudioContext();
+    const el = stubMediaElement();
+    setMediaElementFactory(() => el);
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    el.currentTime = 10;
+    player.sync(entry(), 10_000);
+    expect(el.currentTime).toBe(10);
   });
 });

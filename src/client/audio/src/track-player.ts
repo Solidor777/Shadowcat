@@ -36,14 +36,17 @@ export function pickStreamSrc(el: MediaElementLike, urls: AudioUrls): string {
   return urls.fallback;
 }
 
-/** Position anchor for the buffered mode: the unwrapped buffer position at `serverNow`, plus
- * the rate it is advancing at. `positionAt` is pure arithmetic over the anchor — no reads of
- * the live source node, so a rate nudge mid-flight stays tracked exactly. */
+/** Position anchor for the buffered mode: the unwrapped buffer position at the moment the
+ * context clock read `ctxTime`, plus the rate it is advancing at. `#positionAt` is arithmetic
+ * over the anchor and the CONTEXT's own clock (`AudioContextLike.currentTime`) — a suspended
+ * or interrupted context stops that clock, so the source's audible position stalls and the
+ * stall surfaces as drift against the server position instead of being masked by wall-clock
+ * arithmetic. A rate nudge mid-flight stays tracked exactly because each nudge re-anchors. */
 interface PositionAnchor {
-  /** Unwrapped position, seconds, at `serverNow`. */
+  /** Unwrapped position, seconds, at `ctxTime`. */
   offset: number;
-  /** The calibrated server-clock ms the anchor was taken at. */
-  serverNow: number;
+  /** The context's `currentTime`, seconds, the anchor was taken at. */
+  ctxTime: number;
   /** Advance rate (the source's `playbackRate`). */
   rate: number;
 }
@@ -153,30 +156,29 @@ export class TrackPlayer {
     }
   }
 
-  /** The buffered loop's current unwrapped position at `serverNow`, seconds.
-   * @param serverNow The calibrated server-clock ms to evaluate at.
+  /** The buffered loop's current unwrapped audible position, seconds, measured on the
+   * context's audio clock.
    * @returns The unwrapped position, seconds.
    * @example
    * ```
    * // private helper; exercised through the buffered-loop sync tests
    * ```
    */
-  #positionAt(serverNow: number): number {
+  #positionAt(): number {
     const anchor = this.#anchor;
     if (!anchor) return 0;
-    return anchor.offset + ((serverNow - anchor.serverNow) / 1000) * anchor.rate;
+    return anchor.offset + (this.#context.currentTime - anchor.ctxTime) * anchor.rate;
   }
 
   /** (Re)start the buffered source at unwrapped position `target`, rate `rate`.
    * @param target The unwrapped position to start from, seconds (mod the buffer duration).
    * @param rate The source's playback rate (`1` = unity).
-   * @param serverNow The calibrated server-clock ms at this (re)start.
    * @example
    * ```
    * // private helper; exercised through the buffered-loop sync tests
    * ```
    */
-  #startBufferedAt(target: number, rate: number, serverNow: number): void {
+  #startBufferedAt(target: number, rate: number): void {
     const buffer = this.#buffer;
     if (!buffer) return;
     this.#bufferSource?.stop();
@@ -189,7 +191,7 @@ export class TrackPlayer {
     source.connect(this.#gain);
     source.start(0, target % buffer.duration);
     this.#bufferSource = source;
-    this.#anchor = { offset: target, serverNow, rate };
+    this.#anchor = { offset: target, ctxTime: this.#context.currentTime, rate };
   }
 
   /** Decode the loop buffer on first use, then apply any stashed sync — latched
@@ -265,21 +267,22 @@ export class TrackPlayer {
         return;
       }
       if (!playing) {
-        this.#startBufferedAt(this.#frozen ?? targetSecs, 1, serverNow);
+        this.#startBufferedAt(this.#frozen ?? targetSecs, 1);
         this.#frozen = null;
         return;
       }
-      const drift = Math.abs(this.#positionAt(serverNow) - targetSecs);
+      const position = this.#positionAt();
+      const drift = Math.abs(position - targetSecs);
       if (drift > SYNC_SEEK_THRESHOLD_SECS) {
-        this.#startBufferedAt(targetSecs, 1, serverNow);
+        this.#startBufferedAt(targetSecs, 1);
       } else if (drift > 0) {
-        const behind = this.#positionAt(serverNow) < targetSecs;
+        const behind = position < targetSecs;
         const rate = behind ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
         if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
-        this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate };
+        this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate };
       } else if (this.#anchor?.rate !== 1) {
         if (this.#bufferSource) this.#bufferSource.playbackRate.value = 1;
-        this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate: 1 };
+        this.#anchor = { offset: position, ctxTime: this.#context.currentTime, rate: 1 };
       }
       return;
     }
