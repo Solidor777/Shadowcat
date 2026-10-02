@@ -420,8 +420,9 @@ pub(crate) fn session_wait(
 }
 
 /// Serve `state`'s router over `source` until `shutdown_fut` resolves, then return — the
-/// testable core of the `shadowcat` binary's normal (non-backup/restore) startup path. Uses
-/// [`conn_serve::ConnLimits::default`]; [`serve_with`] takes the limits.
+/// testable core of the `shadowcat` binary's normal (non-backup/restore) startup path. Runs on
+/// [`conn_serve::ConnLimits::for_config`] of `state.config`, the same derivation the binary uses,
+/// so the configured `egress_window_secs` applies; [`serve_with`] takes the limits.
 ///
 /// # Errors
 ///
@@ -466,13 +467,8 @@ pub async fn serve<S>(
 where
     S: conn_serve::ConnSource,
 {
-    serve_with(
-        source,
-        state,
-        shutdown_fut,
-        conn_serve::ConnLimits::default(),
-    )
-    .await
+    let limits = conn_serve::ConnLimits::for_config(&state.config);
+    serve_with(source, state, shutdown_fut, limits).await
 }
 
 /// [`serve`] with explicit connection `limits`.

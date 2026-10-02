@@ -3139,3 +3139,20 @@ async fn write_barrier_blocks_asset_writes_while_backup_holds_it() {
             .unwrap()
     );
 }
+
+/// `serve` takes its no-progress window from `Config::egress_window_secs`, as `serve_with`'s
+/// callers do through `ConnLimits::for_config`. A window of zero is rejected by
+/// `serve_router`, so a panic there proves the configured key reached it; a `serve` that ignored
+/// the key would run on the default window and return.
+#[tokio::test]
+async fn serve_honours_the_configured_egress_window() {
+    let mut state = test_state().await;
+    state.config = Arc::new(Config {
+        egress_window_secs: 0,
+        ..Config::default()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let outcome = tokio::spawn(serve(listener, state, async {})).await;
+    let err = outcome.expect_err("serve ran on a window other than the configured one");
+    assert!(err.is_panic(), "{err:?}");
+}
