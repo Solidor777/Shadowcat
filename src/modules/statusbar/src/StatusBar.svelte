@@ -6,6 +6,9 @@
   let unlocked = $state(false);
 
   /** Unlock this device's `AudioContext` from the click gesture, then swap to the mute toggle.
+   * The unlock button also returns whenever `AudioApi.needsGesture` is `true` (the browser
+   * refused playback or an interrupted context did not resume), and this same handler is the
+   * retry.
    * @example
    * ```
    * // component handler; exercised through `StatusBar.test.ts`'s unlock-click case
@@ -19,7 +22,7 @@
 
 <footer class="statusbar">
   <span>{role}</span>
-  {#if !unlocked}
+  {#if !unlocked || ctx.audio.needsGesture}
     <button type="button" data-testid="audio-unlock" onclick={unlock}>{ctx.t("statusbar.audio.enable")}</button>
   {:else}
     <button
