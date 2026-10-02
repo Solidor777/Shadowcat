@@ -99,6 +99,12 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "cargo test -p shadowcat --test asset_open_handle -- --nocapture --test-threads 1"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "pnpm lint:binary-size"
 tier = "push"
 

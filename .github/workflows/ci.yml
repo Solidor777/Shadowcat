@@ -76,6 +76,10 @@ jobs:
       # only that every download delivers every byte.
       - name: Send-buffer throughput gate (release, record-only)
         run: cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture
+      # Replace and delete over a file a reader holds open: the contract is asserted and the
+      # observed values are recorded per OS leg (stdout, and the step summary).
+      - name: Asset replace/delete with an open reader (all OSes, recorded)
+        run: cargo test -p shadowcat --test asset_open_handle -- --nocapture --test-threads 1
       - name: Binary size budget
         run: pnpm lint:binary-size
       # Assemble the icon-carrying distributable. Windows is excluded: the icon
