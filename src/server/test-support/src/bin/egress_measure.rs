@@ -11,18 +11,30 @@
 //! - `mixed-serial`: the rates `grid` found cut in some runs and not in others, one server at a
 //!   time and repeated, to tell load from the concurrent grid apart from behaviour of the unit
 //!   (about three minutes).
+//! - `h1-progress <windows> <multiples> [windows_per_run [recv_buffer_bytes]]`: an HTTP/1 reader that takes
+//!   `multiple x ConnLimits::egress_floor` bytes per window, for each comma-separated window (in
+//!   seconds) and multiple, one run at a time. Each run prints when, and how many bytes at a
+//!   time, the server's socket accepted writes (the figure the connection unit's sampler reads),
+//!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
+//!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
 //!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use shadowcat::http::conn_serve::ConnLimits;
+use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::measure::{hypothesis, read_at, record, Run};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 
 /// Runs the subcommand named by the first argument.
 fn main() {
     let mut args = std::env::args().skip(1);
     let sub = args.next().unwrap_or_default();
+    let rest: Vec<String> = args.collect();
     let workers = if sub == "grid" { 8 } else { 2 };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
@@ -32,11 +44,45 @@ fn main() {
     match sub.as_str() {
         "grid" => runtime.block_on(grid()),
         "mixed-serial" => runtime.block_on(mixed_serial()),
+        "h1-progress" => {
+            let windows = parse_list(rest.first().map(String::as_str).unwrap_or("1,3,10"));
+            let multiples = parse_list(rest.get(1).map(String::as_str).unwrap_or("1.5,2,4"));
+            let per_run = rest.get(2).and_then(|v| v.parse().ok()).unwrap_or(3.0f64);
+            let recv_buffer = rest.get(3).and_then(|v| v.parse().ok()).unwrap_or(0u32);
+            runtime.block_on(h1_progress(&windows, &multiples, per_run, recv_buffer));
+        }
+        "socket-grants" => {
+            let nums: Vec<u32> = rest.iter().filter_map(|v| v.parse().ok()).collect();
+            let at = |i: usize| nums.get(i).copied().unwrap_or(0);
+            runtime.block_on(socket_grants(
+                at(0),
+                at(1),
+                u64::from(at(2).max(1)),
+                (at(3) as usize).max(1),
+            ));
+        }
         other => {
-            eprintln!("unknown subcommand {other:?}: grid | mixed-serial");
+            eprintln!(
+                "unknown subcommand {other:?}: grid | mixed-serial | h1-progress | socket-grants"
+            );
             std::process::exit(2);
         }
     }
+}
+
+/// The HTTP/1.1 request the probe sends.
+const REQUEST: &[u8] = b"GET /endless HTTP/1.1\r\nHost: test\r\n\r\n";
+
+/// Parses a comma-separated list of numbers, exiting on a malformed entry.
+fn parse_list(text: &str) -> Vec<f64> {
+    text.split(',')
+        .map(|v| {
+            v.trim().parse().unwrap_or_else(|_| {
+                eprintln!("not a number: {v:?}");
+                std::process::exit(2)
+            })
+        })
+        .collect()
 }
 
 /// The `grid` subcommand.
@@ -109,4 +155,133 @@ async fn mixed_serial() {
             ));
         }
     }
+}
+
+/// One HTTP/1 reader per (window, multiple): `multiple` floors per window, for `windows_per_run`
+/// windows or until the server drops the connection. `recv_buffer` sets the reader socket's
+/// receive buffer in bytes (0 leaves the system default).
+async fn h1_progress(windows: &[f64], multiples: &[f64], windows_per_run: f64, recv_buffer: u32) {
+    let floor = ConnLimits::default().egress_floor;
+    for &window_secs in windows {
+        for &multiple in multiples {
+            let window = Duration::from_secs_f64(window_secs);
+            let server = EgressServer::start_with(
+                ConnLimits {
+                    egress_window: window,
+                    drain_timeout: Duration::from_millis(500),
+                    ..ConnLimits::default()
+                },
+                Protocol::H1,
+            )
+            .await;
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            if recv_buffer > 0 {
+                socket.set_recv_buffer_size(recv_buffer).unwrap();
+            }
+            let mut peer = socket.connect(server.addr).await.unwrap();
+            peer.write_all(REQUEST).await.unwrap();
+            let per_window = multiple * floor as f64;
+            let step = Duration::from_millis(100);
+            let chunk = ((per_window * step.as_secs_f64() / window_secs) as usize).max(1);
+            let mut buf = vec![0u8; chunk];
+            let run_for = window.mul_f64(windows_per_run);
+            let start = Instant::now();
+            let mut last = 0u64;
+            // (milliseconds since the request, bytes the socket accepted since the last sample),
+            // for the samples that accepted anything: the writer's view of the reader's progress.
+            let mut grants: Vec<(u128, u64)> = Vec::new();
+            let mut read = 0usize;
+            let mut cut_at = None;
+            while start.elapsed() < run_for {
+                tokio::time::sleep(step).await;
+                if let Ok(Ok(n)) =
+                    tokio::time::timeout(Duration::from_millis(200), peer.read(&mut buf)).await
+                {
+                    read += n;
+                }
+                let accepted = server.writes.accepted.load(Ordering::Relaxed);
+                if accepted != last {
+                    grants.push((start.elapsed().as_millis(), accepted - last));
+                    last = accepted;
+                }
+                if let Some(at) = server.closed.lock().unwrap().first().copied() {
+                    cut_at = Some(at.duration_since(start));
+                    break;
+                }
+            }
+            let parks = server.writes.parks.load(Ordering::Relaxed);
+            drop(peer);
+            let drain = server.finish().await;
+            record(&format!(
+                "RESULT h1 egress_window={window_secs}s multiple={multiple} recv_buffer={recv_buffer} floor_B={floor} per_window_B={per_window:.0} read_B={read} cut_at={cut_at:?} write_parks={parks} stall_cuts={:?}",
+                drain.stall_cuts
+            ));
+            record(&format!("RESULT h1   accepted_grants (ms, B)={grants:?}"));
+        }
+    }
+}
+
+/// A bare loopback socket pair with no server in the way: the writer fills the send path until a
+/// write would block, then waits for writability and writes again; the reader takes
+/// `rate` bytes per second. Prints when, and how many bytes at a time, the writer was let back in:
+/// the operating system's grant granularity for a slow reader. `send_buffer` and `recv_buffer`
+/// (bytes; 0 leaves the default) set the listener's and the reader's buffers; `block_len` is the
+/// size of each write offered.
+async fn socket_grants(send_buffer: u32, recv_buffer: u32, rate: u64, block_len: usize) {
+    let listener_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    if send_buffer > 0 {
+        listener_socket.set_send_buffer_size(send_buffer).unwrap();
+    }
+    listener_socket
+        .bind("127.0.0.1:0".parse().unwrap())
+        .unwrap();
+    let listener = listener_socket.listen(16).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let reader_socket = tokio::net::TcpSocket::new_v4().unwrap();
+    if recv_buffer > 0 {
+        reader_socket.set_recv_buffer_size(recv_buffer).unwrap();
+    }
+    let (reader, accepted) = tokio::join!(reader_socket.connect(addr), listener.accept());
+    let mut reader = reader.unwrap();
+    let (writer, _) = accepted.unwrap();
+    let start = Instant::now();
+    let writer_task = tokio::spawn(async move {
+        let block = vec![0u8; block_len];
+        let mut grants: Vec<(u128, usize)> = Vec::new();
+        let mut run = 0usize;
+        while start.elapsed() < Duration::from_secs(8) {
+            match writer.try_write(&block) {
+                Ok(n) => run += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if run > 0 {
+                        grants.push((start.elapsed().as_millis(), run));
+                        run = 0;
+                    }
+                    if tokio::time::timeout(Duration::from_secs(1), writer.writable())
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        grants
+    });
+    let step = Duration::from_millis(100);
+    let mut buf = vec![0u8; ((rate as f64 * step.as_secs_f64()) as usize).max(1)];
+    let mut read = 0usize;
+    while start.elapsed() < Duration::from_secs(8) {
+        tokio::time::sleep(step).await;
+        if let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(200), reader.read(&mut buf)).await
+        {
+            read += n;
+        }
+    }
+    let grants = writer_task.await.unwrap();
+    record(&format!(
+        "RESULT socket send_buffer={send_buffer} recv_buffer={recv_buffer} reader_Bps={rate} block_B={block_len} read_B={read} write_grants (ms, B)={grants:?}"
+    ));
 }

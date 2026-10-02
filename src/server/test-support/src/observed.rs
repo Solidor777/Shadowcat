@@ -6,6 +6,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -21,6 +22,16 @@ use crate::h2c::EndHandle;
 /// The instants at which the server dropped its end of each connection, in drop order.
 pub type ClosedLog = Arc<Mutex<Vec<Instant>>>;
 
+/// What the server's writes to its connections' sockets did, counted at the socket exactly as the
+/// serve loop's write counter sees them (it wraps the same stream, so it sees the same results).
+#[derive(Debug, Default)]
+pub struct WriteStats {
+    /// Bytes the socket accepted over every connection: the sum of each `Ready(Ok(n))` write.
+    pub accepted: AtomicU64,
+    /// Write polls that returned `Pending`: the writer parked.
+    pub parks: AtomicU64,
+}
+
 /// A TCP stream that logs the instant it is dropped and reports whether it speaks HTTP/2.
 pub struct ObservedStream {
     /// The socket.
@@ -29,6 +40,23 @@ pub struct ObservedStream {
     h2: bool,
     /// Where the drop instant goes.
     closed: ClosedLog,
+    /// Where write outcomes are counted.
+    stats: Arc<WriteStats>,
+}
+
+impl ObservedStream {
+    /// Counts one write outcome.
+    fn count(&self, result: &Poll<io::Result<usize>>) {
+        match result {
+            Poll::Pending => {
+                self.stats.parks.fetch_add(1, Ordering::Relaxed);
+            }
+            Poll::Ready(Ok(n)) => {
+                self.stats.accepted.fetch_add(*n as u64, Ordering::Relaxed);
+            }
+            Poll::Ready(Err(_)) => {}
+        }
+    }
 }
 
 impl Drop for ObservedStream {
@@ -55,7 +83,9 @@ impl AsyncWrite for ObservedStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
+        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        self.count(&result);
+        result
     }
 
     fn poll_write_vectored(
@@ -63,7 +93,9 @@ impl AsyncWrite for ObservedStream {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
+        self.count(&result);
+        result
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -96,6 +128,8 @@ pub struct ObservedSource {
     h2: bool,
     /// Shared with every connection the source hands out.
     closed: ClosedLog,
+    /// Shared with every connection the source hands out.
+    stats: Arc<WriteStats>,
 }
 
 impl ObservedSource {
@@ -110,10 +144,18 @@ impl ObservedSource {
                 end,
                 h2,
                 closed: closed.clone(),
+                stats: Arc::default(),
             },
             EndHandle(tx),
             closed,
         )
+    }
+}
+
+impl ObservedSource {
+    /// The write counts of every connection the source hands out.
+    pub fn write_stats(&self) -> Arc<WriteStats> {
+        self.stats.clone()
     }
 }
 
@@ -125,7 +167,12 @@ impl ConnSource for ObservedSource {
             accepted = self.listener.accept() => {
                 let (sock, peer): (TcpStream, SocketAddr) = accepted?;
                 Ok(Some((
-                    ObservedStream { inner: sock, h2: self.h2, closed: self.closed.clone() },
+                    ObservedStream {
+                        inner: sock,
+                        h2: self.h2,
+                        closed: self.closed.clone(),
+                        stats: self.stats.clone(),
+                    },
                     ConnMeta::plain(peer),
                 )))
             }

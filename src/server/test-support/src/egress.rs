@@ -22,7 +22,7 @@ use tokio::time::Instant;
 
 use crate::h2_session::{login, seeded_state};
 use crate::h2c::{h2c_connect, EndHandle};
-use crate::observed::{ClosedLog, ObservedSource};
+use crate::observed::{ClosedLog, ObservedSource, WriteStats};
 use crate::tls::{H2Client, H2Pipe};
 
 /// The size of one chunk the `/endless` route produces.
@@ -54,6 +54,8 @@ pub struct EgressServer {
     pub produced: Arc<AtomicUsize>,
     /// The instants the server dropped its end of each connection, in drop order.
     pub closed: ClosedLog,
+    /// What the server's socket writes did.
+    pub writes: Arc<WriteStats>,
     /// Keeps the source open: dropping it ends the source.
     _end: EndHandle,
     /// Resolves the shutdown future.
@@ -107,6 +109,7 @@ impl EgressServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (source, end, closed) = ObservedSource::new(listener, protocol == Protocol::H2);
+        let writes = source.write_stats();
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let task = tokio::spawn(serve_router(
             source,
@@ -123,6 +126,7 @@ impl EgressServer {
             world,
             produced,
             closed,
+            writes,
             _end: end,
             shutdown,
             task,

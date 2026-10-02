@@ -114,13 +114,16 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
     assert_eq!(drain.aborted, 0, "{drain:?}");
 }
 
-/// How many multiples of `ConnLimits::egress_floor` per window the progressing reader takes. Over
-/// loopback the kernel makes room for the writer in steps as large as a segment (up to 64 KiB), so
-/// at this one-second window a reader's progress reaches the server's socket in coarse bursts and
-/// a reader slower than a few hundred KiB per second is seen as flat for a whole window and cut;
-/// readers at 32 times the floor and above were not cut in any measured run. At the default window
-/// the same step is a small fraction of the window's floor-per-window rate, so the multiple here is
-/// a property of the short window and the loopback, not of the unit.
+/// How many multiples of `ConnLimits::egress_floor` per window the progressing reader takes. The
+/// connection unit reads the bytes the socket ACCEPTS, and over loopback they arrive in lumps of
+/// 100 to 260 KB (the peer's receive-window step, plus on Windows a whole queued write accepted
+/// at once; the `egress_measure` program's `h1-progress` and `socket-grants` subcommands print
+/// the lumps). A reader taking fewer floors per window than a lump holds sees no acceptance for
+/// whole windows and is cut, at every window length measured (1, 3, 10 and 60 s), because the
+/// lump is a count of bytes and the floor is a count of bytes per window. Readers at 16 times the
+/// floor and above were not cut at a 1 s window in the one run that measured them; the multiple here keeps the control well clear
+/// of the lumps, so it states a property of the loopback and the measure, not a promise of the
+/// unit at lower rates.
 const PROGRESS_FLOORS_PER_WINDOW: usize = 64;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
