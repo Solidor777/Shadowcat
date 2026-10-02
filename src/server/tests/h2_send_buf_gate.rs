@@ -15,6 +15,12 @@
 //! nothing until the three operating systems' values are recorded. The premises that are not
 //! empirical are asserted: every download delivers every byte.
 //!
+//! The criterion is defined for the release profile: a debug build's per-frame cost dominates the
+//! loopback download, so the ratios of a debug run are not comparable with it. Each record names
+//! its profile; CI runs this test in a release build (`cargo test --release -p shadowcat --test
+//! h2_send_buf_gate`) for the value that counts, and the debug run of `cargo test --all` records
+//! the profile artifact beside it.
+//!
 //! One download is a fresh connection fetching 24 MiB with a 6 MiB stream window and a 15 MiB
 //! connection window (so the client never limits the server), the two servers' downloads
 //! interleaved with rotating order, each run's ratio taken from the medians of [`DOWNLOADS`]
@@ -41,6 +47,13 @@ const DOWNLOADS: usize = 100;
 
 /// Independent runs.
 const RUNS: usize = 3;
+
+/// The build profile the records name: the keep criterion is read from the release records only.
+const PROFILE: &str = if cfg!(debug_assertions) {
+    "debug"
+} else {
+    "release"
+};
 
 /// A bare hyper HTTP/2 server serving [`bulk_body`] on every request, with `send_buf` as its send
 /// buffer or the library's default when `None`.
@@ -136,7 +149,7 @@ async fn the_production_send_buffer_keeps_loopback_throughput_against_the_librar
         let buffer_ratio = default_median.as_secs_f64() / buffer_median.as_secs_f64();
         let production_ratio = default_median.as_secs_f64() / production_median.as_secs_f64();
         record(&format!(
-            "RECORD send_buf_gate os={} run={run} downloads={DOWNLOADS} default_median_ms={:.2} buffer_median_ms={:.2} production_median_ms={:.2} buffer_ratio={buffer_ratio:.3} production_ratio={production_ratio:.3}",
+            "RECORD send_buf_gate os={} profile={PROFILE} run={run} downloads={DOWNLOADS} default_median_ms={:.2} buffer_median_ms={:.2} production_median_ms={:.2} buffer_ratio={buffer_ratio:.3} production_ratio={production_ratio:.3}",
             std::env::consts::OS,
             default_median.as_secs_f64() * 1e3,
             buffer_median.as_secs_f64() * 1e3,

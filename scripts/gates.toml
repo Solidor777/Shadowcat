@@ -93,6 +93,12 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "pnpm lint:binary-size"
 tier = "push"
 

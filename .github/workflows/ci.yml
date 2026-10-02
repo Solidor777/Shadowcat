@@ -69,6 +69,13 @@ jobs:
         run: git diff --exit-code src/types/generated
       - name: Release build
         run: cargo build --release
+      # The send-buffer keep criterion (H2_SEND_BUF_BYTES against the library default) is defined
+      # for the release profile: a debug build's per-frame cost dominates the loopback download
+      # and reads 0.66 to 0.79 where release reads above 0.94. Record-only: every run prints its
+      # buffer_ratio and production_ratio per OS leg (stdout, and the step summary), and asserts
+      # only that every download delivers every byte.
+      - name: Send-buffer throughput gate (release, record-only)
+        run: cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture
       - name: Binary size budget
         run: pnpm lint:binary-size
       # Assemble the icon-carrying distributable. Windows is excluded: the icon
