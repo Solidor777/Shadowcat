@@ -60,7 +60,7 @@
   const viewedSceneLevels = $derived.by((): SceneEngine["levels"] => {
     subscribe();
     const vsid = ctx.viewedSceneId;
-    const doc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+    const doc = vsid ? documents.get(vsid) : undefined;
     return (doc?.engine as SceneEngine | undefined)?.levels ?? [];
   });
 
@@ -307,7 +307,7 @@
       let lastAnimKey = "";
       const onDocs = (): void => {
         const vsid = ctx.viewedSceneId;
-        const activeSceneDoc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+        const activeSceneDoc = vsid ? documents.get(vsid) : undefined;
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(activeSceneDoc, documents);
         const g = (activeSceneDoc?.engine as {

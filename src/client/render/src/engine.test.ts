@@ -76,7 +76,7 @@ test("reconcileNow re-resolves the background after an asset rev bump", () => {
   expect(first).toBe(assets.url("u1"));
   // An out-of-band AssetChanged(replaced) bumps the resolver rev (no store change);
   // reconcileNow must re-resolve to the cache-busted URL.
-  assets.onAssetChanged({ uuid: "u1", op: "replaced", version: 1 });
+  assets.onAssetChanged({ uuid: "u1", op: "replaced", version: 2 });
   engine.reconcileNow();
   expect(backend.background?.url).not.toBe(first);
   expect(backend.background?.url).toBe(assets.url("u1"));
@@ -465,7 +465,7 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
   });
   engine.start();
   const before = backend.tokens.get("t1")!.visual;
-  assets.onAssetChanged({ uuid: "i1", op: "replaced", version: 1 }); // cache-bust, no store change
+  assets.onAssetChanged({ uuid: "i1", op: "replaced", version: 2 }); // cache-bust, no store change
   engine.reconcileNow();
   expect(backend.tokens.get("t1")!.visual).not.toEqual(before);
   expect((backend.tokens.get("t1")!.visual as { kind: "image"; url: string }).url).toBe(assets.url("i1"));
@@ -1987,4 +1987,20 @@ describe("lighting budget", () => {
     expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] });
 
   });
+});
+
+test("a RenderEngine given no viewedSceneId resolves the OLDEST scene, whatever the store order", () => {
+  const { store, backend, engine } = makeEngine();
+  const withBg = (id: string, background: string, createdAt: number) => ({
+    ...buildSceneDoc("w1", { background }, id), created_at: createdAt,
+  });
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: withBg("a-newer", "newer-bg", 200) },
+      { op: "create", doc: withBg("z-older", "older-bg", 100) },
+    ],
+  });
+  engine.start();
+  expect(backend.background?.url).toBe(new AssetResolver().url("older-bg"));
 });

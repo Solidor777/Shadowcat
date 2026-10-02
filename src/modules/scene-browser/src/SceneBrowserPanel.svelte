@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildSceneDoc, listAssets, buildUpdate, type WireDocument, type WorldSettingsEngine, type SceneEngine, type SceneLevel } from "@shadowcat/core";
+  import { buildSceneDoc, queryScenesInCreationOrder, listAssets, buildUpdate, type WireDocument, type WorldSettingsEngine, type SceneEngine, type SceneLevel } from "@shadowcat/core";
   import type { Asset } from "@shadowcat/types";
   import LevelsEditor from "./LevelsEditor.svelte";
 
@@ -43,7 +43,7 @@
 
   const scenes = $derived.by((): WireDocument[] => {
     subscribe();
-    return ctx.documents.query("scene");
+    return queryScenesInCreationOrder(ctx.documents);
   });
   const ws = $derived.by((): WireDocument | undefined => {
     subscribe();

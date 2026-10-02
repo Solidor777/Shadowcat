@@ -25,6 +25,21 @@ function seed(): DocumentStore {
 }
 
 describe("SceneBrowserPanel", () => {
+  it("lists scenes in creation order, not store (id) order", async () => {
+    const s = new DocumentStore();
+    // Store order and id order both put "a-newer" first; creation order puts "z-older" first.
+    s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
+      { op: "create", doc: { ...buildSceneDoc("w1", {}, "a-newer"), created_at: 200 } },
+      { op: "create", doc: { ...buildSceneDoc("w1", {}, "z-older"), created_at: 100 } },
+    ] });
+    const roams: (string | null)[] = [];
+    const context = setAppContextForTest({ documents: s, store: s, role: "gm", setGmViewedScene: (id) => roams.push(id) });
+    const { getAllByRole } = render(SceneBrowserPanel, { context });
+    await fireEvent.click(getAllByRole("button", { name: /view/i })[0]);
+    await fireEvent.click(getAllByRole("button", { name: /view/i })[1]);
+    expect(roams).toEqual(["z-older", "a-newer"]);
+  });
+
   it("lists every scene", () => {
     const store = seed();
     const context = setAppContextForTest({ documents: store, store, role: "gm" });

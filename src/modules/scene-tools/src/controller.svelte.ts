@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -133,7 +133,7 @@ export interface ToolContext {
   /** The current user's id (from `AppContext.selfId`) — the door-toggle advisory reach
    * pre-check resolves "tokens the clicker controls" through it (`ownerFloorApplies`). */
   selfId?: string;
-  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
+  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ `resolveViewedScene`. */
   viewedSceneId?: () => string | null;
   /** The server's resolved token footprints (from `ctx.footprints`). The hit-test, the selection
    * ring and the place tool all read their extents from here rather than computing any; absent ⇒
@@ -253,7 +253,7 @@ function notifyEmptyRoute(ctx: ToolContext, result: PathResult): void {
  * beyond this: `SceneEcs::scene_grid_sizes` is the server's sole intentional cell-size
  * defaulting source and also falls back to 100, but the movement gates themselves REFUSE
  * rather than default when a scene has no live document (`Room::publish`).
- * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
+ * @param ctx The tool context; reads `viewedSceneId()` (falling back to `resolveViewedScene`) and
  * `documents`.
  * @returns The resolved scene id + grid size + grid kind + distance scale, or `null` when no
  * scene is viewed and none exists.
@@ -279,7 +279,7 @@ function activeScene(ctx: ToolContext): {
   /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
   unit: string;
 } | null {
-  const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
+  const vsid = ctx.viewedSceneId?.() ?? resolveViewedScene(ctx.documents);
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
   const grid = (scene.engine as {

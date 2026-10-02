@@ -80,7 +80,7 @@
   const activeScene = $derived.by((): WireDocument | undefined => {
     subscribe();
     const vsid = ctx.viewedSceneId;
-    return vsid ? ctx.documents.get(vsid) : ctx.documents.query("scene")[0];
+    return vsid ? ctx.documents.get(vsid) : undefined;
   });
   const snapToGrid = $derived.by((): boolean => {
     subscribe();

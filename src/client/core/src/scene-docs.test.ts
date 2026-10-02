@@ -1,7 +1,7 @@
 import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, deterministicId, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
+  buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
@@ -588,6 +588,26 @@ function store(docs: WireDocument[]): DocumentStore {
 function ws(activeScene: string | null): WireDocument {
   return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsEngine);
 }
+
+describe("scene creation order", () => {
+  const sceneAt = (id: string, createdAt: number): WireDocument => ({ ...buildSceneDoc("w1", {}, id), created_at: createdAt });
+
+  it("lists scenes by created_at, then id, whatever order the store holds them in", () => {
+    const newest = sceneAt("a-newest", 300);
+    const oldest = sceneAt("z-oldest", 100);
+    const tieB = sceneAt("m-tie-b", 200);
+    const tieA = sceneAt("b-tie-a", 200);
+    const s = storeWith(newest, tieB, oldest, tieA);
+    expect(queryScenesInCreationOrder(s).map((d) => d.id)).toEqual(["z-oldest", "b-tie-a", "m-tie-b", "a-newest"]);
+  });
+
+  it("resolveViewedScene falls back to the oldest scene even when it has the larger id", () => {
+    const newerSmallId = sceneAt("a-newer", 200);
+    const olderLargeId = sceneAt("z-older", 100);
+    expect(resolveViewedScene(storeWith(newerSmallId, olderLargeId))).toBe("z-older");
+    expect(resolveViewedScene(storeWith(olderLargeId, newerSmallId))).toBe("z-older");
+  });
+});
 
 describe("resolveViewedScene", () => {
   it("returns null when no scene exists", () => {

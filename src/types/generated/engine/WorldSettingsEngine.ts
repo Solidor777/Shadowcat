@@ -39,7 +39,7 @@ pathfinding?: PathfindingOverlay | null,
  */
 animation?: AnimationOverlay | null, 
 /**
- * The scene players render. `None`/absent/dangling ⇒ the first scene.
+ * The scene players render. `None`/absent/dangling ⇒ the oldest scene (`created_at`, then `id`).
  */
 activeScene?: string | null, 
 /**

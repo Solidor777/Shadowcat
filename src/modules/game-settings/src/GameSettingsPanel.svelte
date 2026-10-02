@@ -6,7 +6,7 @@
     resolveSettingProvenance,
     resolveGradation,
     buildUpdate,
-    listAssets,
+    listAssets, queryScenesInCreationOrder,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type Perception,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
@@ -228,7 +228,7 @@
   // updates after the resync stream lands (same reactive pattern as ws/lgDoc/vmDoc above).
   const scenes = $derived.by((): WireDocument[] => {
     subscribe();
-    return ctx.documents.query("scene");
+    return queryScenesInCreationOrder(ctx.documents);
   });
   let selectedSceneId = $state<string | null>(null);
 

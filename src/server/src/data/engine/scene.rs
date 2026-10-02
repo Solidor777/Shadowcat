@@ -683,7 +683,7 @@ pub struct WorldSettingsEngine {
     /// Move-animation overlay.
     #[ts(optional = nullable)]
     pub animation: Option<super::system_defaults::AnimationOverlay>,
-    /// The scene players render. `None`/absent/dangling ⇒ the first scene.
+    /// The scene players render. `None`/absent/dangling ⇒ the oldest scene (`created_at`, then `id`).
     #[ts(optional = nullable)]
     pub active_scene: Option<Uuid>,
     /// Combat-rule overrides (movement resource / interpretation / enforcement /

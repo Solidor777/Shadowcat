@@ -24,9 +24,10 @@ function tokenDocs(): ReadableDocuments {
 /** A documents view exposing a single scene doc with the given `engine` body, read by
  * `resolveSceneSettings` via `documents.query("scene")[0]`. */
 function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
+  const scene = { id: "s1", doc_type: "scene", engine, system: {}, created_at: 0 };
   return {
-    query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", engine, system: {} }] : []),
-    get: () => undefined,
+    query: (t: string) => (t === "scene" ? [scene] : []),
+    get: (id: string) => (id === "s1" ? scene : undefined),
     subscribe: () => () => {},
     snapshot: () => [],
     appliedSeq: 0,

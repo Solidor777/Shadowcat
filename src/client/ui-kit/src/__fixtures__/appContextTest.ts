@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController, NotConnectedError } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController, NotConnectedError, resolveViewedScene } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { Dice3DBridge } from "../dice3dInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
@@ -143,7 +143,9 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     // interception overrides this with its own emitter.
     hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
-    viewedSceneId: over.viewedSceneId ?? null,
+    // Mirrors `WorldSession.viewedSceneId`: null only when no scene exists, otherwise the
+    // `resolveViewedScene` answer (snapshotted at construction).
+    viewedSceneId: over.viewedSceneId !== undefined ? over.viewedSceneId : resolveViewedScene(documents),
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),

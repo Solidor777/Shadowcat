@@ -672,10 +672,47 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   };
 }
 
+/** The one definition of scene order: creation order, `created_at` ascending with `id` as the
+ * tie-break (the store's own iteration order is `id` order over random ids, so it carries no
+ * meaning). Every scene list and `resolveViewedScene`'s fallback read it, so the scene a client
+ * renders by default is the first one a list shows.
+ * @param a The first scene document.
+ * @param b The second scene document.
+ * @returns A negative number when `a` sorts first, positive when `b` does, `0` for the same scene.
+ * @example
+ * ```ts
+ * import { compareScenesByCreation, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const scenes: WireDocument[];
+ * const oldestFirst = [...scenes].sort(compareScenesByCreation);
+ * ```
+ */
+export function compareScenesByCreation(a: WireDocument, b: WireDocument): number {
+  if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+/** Every scene document in creation order (`compareScenesByCreation`).
+ * @param store The document store to query scenes from.
+ * @returns A fresh array of scene documents, oldest first.
+ * @example
+ * ```ts
+ * import { queryScenesInCreationOrder, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const firstScene = queryScenesInCreationOrder(store)[0];
+ * ```
+ */
+export function queryScenesInCreationOrder(store: ReadableDocuments): WireDocument[] {
+  return [...store.query("scene")].sort(compareScenesByCreation);
+}
+
 /** The single client-side answer to "which scene does THIS client render/subscribe to".
  * Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
- * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
- * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
+ * `world-settings.activeScene` (players follow) → the oldest scene (`compareScenesByCreation`,
+ * the first scene a scene list shows). `null` ONLY when no scene exists. Fail-closed by
+ * construction: an id that no longer names a scene is ignored
  * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
  * Players never pass `gmViewedScene`, so they always follow `activeScene`.
  * @param store The document store to query scenes and world-settings from.
@@ -695,7 +732,7 @@ export function resolveViewedScene(
   store: ReadableDocuments,
   opts: { /** The GM's local-roam scene id override, or `undefined`/`null` for a player. */ gmViewedScene?: string | null } = {},
 ): string | null {
-  const scenes = store.query("scene");
+  const scenes = queryScenesInCreationOrder(store);
   if (scenes.length === 0) return null;
   const exists = (id: string | null | undefined): id is string => !!id && scenes.some((s) => s.id === id);
   if (exists(opts.gmViewedScene)) return opts.gmViewedScene;

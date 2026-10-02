@@ -85,6 +85,21 @@ test("place stamps the placed token onto the viewed scene, not the first scene",
   }
 });
 
+test("place with no viewedSceneId resolver stamps the OLDEST scene, whatever the store order", () => {
+  const d = new DocumentStore();
+  d.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [
+    { op: "create", doc: { ...buildSceneDoc("w1", {}, "a-newer"), created_at: 200 } },
+    { op: "create", doc: { ...buildSceneDoc("w1", {}, "z-older"), created_at: 100 } },
+  ] });
+  const { ctx, sent } = ctxWith(d);
+  const controller = new ToolController(ctx);
+  controller.selectedAsset = "asset-1";
+  expect(makePlaceTool(ctx, controller).onPointerDown({ x: 0, y: 0 }, ev)).toBe(true);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.parent_id).toBe("z-older");
+  else throw new Error("expected a create op");
+});
+
 test("place is unhandled when no scene exists", () => {
   const { ctx, sent } = ctxWith(docsWithScene(false));
   const controller = new ToolController(ctx);

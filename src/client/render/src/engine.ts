@@ -1,4 +1,4 @@
-import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
@@ -106,7 +106,7 @@ export interface RenderEngineOpts {
    * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
   onLightingApplied?: (frame: LightingFrame, sweeping: boolean) => void;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
-   * Absent ⇒ the first scene, preserving single-scene behavior. */
+   * Absent ⇒ `resolveViewedScene` over `store`. */
   viewedSceneId?: () => string | null;
   /** Which level (of the viewed scene) to additionally scope by. From the host (Stage →
    * `ctx.viewedLevel`). Absent ⇒ every level, preserving pre-levels behavior. Also threaded
@@ -334,8 +334,8 @@ export class RenderEngine implements SceneToolHost {
    * STOP, this one the cells seen from the START, and the sweeping line of sight runs between
    * them. Cleared when the last vision sweep ends. */
   private lightingBeforeSweep: LightingInput | null = null;
-  /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
-   * unaffected. The single definition every view + reconciler + fog filter reads.
+  /** Resolved viewed scene, deferring to `resolveViewedScene` when the host supplies no
+   * `RenderEngineOpts.viewedSceneId`. The single definition every view + reconciler + fog filter reads.
    * @returns The viewed scene's document id, or `null` when no scene document exists yet.
    * @example
    * ```
@@ -344,7 +344,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   private readonly viewedScene = (): string | null =>
-    this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+    this.opts.viewedSceneId?.() ?? resolveViewedScene(this.opts.store);
   /** Resolved viewed level, falling back to `null` (every level) so pre-levels tests/hosts are
    * unaffected. The single definition every level-scoped view reads.
    * @returns The viewed level id, or `null` for every level.
