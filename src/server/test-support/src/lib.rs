@@ -20,6 +20,8 @@ pub mod h2_session;
 pub mod h2c;
 /// Log capture for tests that assert on what the server logs.
 pub mod logs;
+/// Paced-read measurement runs and the record sink for measured-but-unasserted values.
+pub mod measure;
 /// A serve-loop source that records when the server drops each connection.
 pub mod observed;
 /// TLS client helpers.
