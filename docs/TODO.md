@@ -15,7 +15,16 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   (a throughput ratio on shared hardware has no derivation), so the numeric-assertion rule keeps
   it record-only until every operating system's value is recorded. Trigger: one CI run in which the
   "Send-buffer throughput gate (release, record-only)" step has printed `profile=release` records
-  on ubuntu, macos and windows (Windows loopback has read 0.944, 0.969 and 0.961). Then, in the
+  on ubuntu, macos and windows. Records must come from the current harness (the production send buffer and
+  TCP_NODELAY set on every accepted socket); Windows loopback in release read `buffer_ratio` 0.959,
+  0.955 and 0.954 with it (4 workers, 100 downloads, 3 runs). The same servers under `egress_measure
+  layers`, which defaults to 2 workers, read the bare 64 KiB buffer at 0.994 of the default buffer
+  and the production path 3.1% slower than bare 64 KiB; the gate reads the production path 4.9% to
+  6.2% slower. At 4 workers `layers` reads 5.2% (median of six processes), but its absolute times
+  and buffer sign differ from the gate's records on that host, so the worker count is not
+  established as the cause of the 3.1% versus 5% gap. A later host state that reproduces the
+  gate's 12 ms regime would settle it: run `egress_measure layers 100 3 4
+  bare-default-buf,bare-64k,serve_router+full-router+observed-source` next to the gate. Then, in the
   same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
   set below the worst of the three legs by a stated headroom and the three recorded values written
   beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
