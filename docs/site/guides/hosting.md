@@ -575,12 +575,15 @@ about 100 to 520 KB, so a reader that consumes less than about one lump per wind
 KB/s at the 60 second default) can be cut while it is still reading. Real network paths were not
 measured; their steps are expected to be finer. Over an extremely slow network, raise
 `egress_window_secs`. For an HTTP/2 stream whose receiver returns flow-control credit slowly the
-measured boundary depends on the window. With the `h2` crate as the client, at a 1 second window a
-reader at or below about 20 KiB/s was always cut, one at or above about 40 KiB/s never was, and the
-outcome was mixed between 24 and 32 KiB/s. At a 3 second window rates of 2.7 and 4 KiB/s were cut
-and 8 and 10.7 KiB/s were not, consistent with one 16 KiB chunk per window (5.3 KiB/s at 3 seconds;
-10.7 KiB/s is two chunks per window). A browser's own windows and credit batching were not
-measured, nor was the 60 second default, and raising the setting lowers the rate that is cut.
+measured boundary depends on the window. With the `h2` crate as the client over loopback and a 1
+second window, at stream windows of 1 MiB and 6 MiB (six runs per rate) a reader at or below 20 KiB/s was cut in every run, one at or above
+40 KiB/s in none, and 24 to 32 KiB/s was cut in some runs and not in others; at a 32 KiB stream
+window (three runs per rate) every rate up to 24 KiB/s was cut and 32 KiB/s and above was not. At a
+3 second window, at stream windows of 64 KiB and 1 MiB (six runs per rate), rates of 2.7 and 4 KiB/s
+were cut and 8 and 10.7 KiB/s were not. One 16 KiB chunk per window works out to 5.3 KiB/s at 3
+seconds, and 10.7 KiB/s is two chunks per window; those two figures are derived from the chunk size,
+not measured. A browser's own windows and credit batching were not measured, nor was the 60 second
+default, and raising the setting lowers the rate that is cut.
 
 A browser that cancels many requests at once (navigating away from a page of images) is served
 through however many cancellations arrive together; a connection that keeps cancelling streams

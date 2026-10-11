@@ -397,13 +397,16 @@ task paces its own accept errors.
       network paths are unmeasured; their steps are expected to be finer. Operators on extremely
       slow networks raise `egress_window_secs`.
     - Measured stream-unit boundary (the `h2` crate as client, loopback, a paced reader returning
-      credit as it reads, `/endless` body): at a 1 s window a reader at or below about 20 KiB/s was
-      always cut and one at or above about 40 KiB/s never was, with stream windows of 1 MiB and
-      above (32 KiB/s from 32 KiB windows); between 24 and 32 KiB/s the outcome differed run to
-      run. At a 3 s window rates of 2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not,
-      consistent with one 16 KiB chunk per window (5.3 KiB/s at 3 s; 10.7 KiB/s is two chunks per
-      window). The default 60 s window was not measured, and neither was a browser's
-      window or credit batching; raising `egress_window_secs` lowers the rate that is cut.
+      credit as it reads, `/endless` body): at a 1 s window and stream windows of 1 MiB and 6 MiB
+      (six runs per rate) a reader at or below 20 KiB/s was cut in every run, one at or above
+      40 KiB/s in none, and 24 to 32 KiB/s was cut in some runs and not in others; at a 32 KiB
+      stream window (three runs per rate) every rate up to 24 KiB/s was cut and 32 KiB/s and above
+      was not. At a 3 s window, at stream windows of 64 KiB and 1 MiB (six runs per rate), rates of
+      2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not. One 16 KiB chunk per window works out
+      to 5.3 KiB/s at 3 s, and 10.7 KiB/s is two chunks per window; those two figures are derived
+      from the chunk size, not measured. The default 60 s window was not measured, and neither was
+      a browser's window or credit batching; raising `egress_window_secs` lowers the rate that is
+      cut.
     - Consequences: a reader that returns credit for less than about one chunk per window is cut; a
       cut `export_world` download restarts from zero (it has no length and no `Range`).
     - Memory per stalled stream: `H2_SEND_BUF_BYTES` (64 KiB, hyper's default is 400 KiB) bounds the
