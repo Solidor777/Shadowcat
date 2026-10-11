@@ -17,20 +17,12 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   "Send-buffer throughput gate (release, record-only)" step has printed `profile=release` records
   on ubuntu, macos and windows. Records must come from the current harness (the production send buffer and
   TCP_NODELAY set on the accepted sockets, as the production listeners do); Windows loopback in release read `buffer_ratio` 0.958,
-  0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs). The same servers under `egress_measure
-  layers`, which defaults to 2 workers, read the bare 64 KiB buffer at 0.994 of the default buffer
-  and the production path 3.1% slower than bare 64 KiB; the gate reads the production path 4.9% to
-  6.2% slower. At 4 workers `layers` reads 5.2% (median of six processes), but its absolute times
-  and buffer sign differ from the gate's records on that host, so the worker count is not
-  established as the cause of the 3.1% versus 5% gap. A later host state that reproduces the
-  gate's 12 ms regime would settle it: run `egress_measure layers 100 3 4
-  bare-default-buf,bare-64k,serve_router+full-router+observed-source` next to the gate. Three gate
-  processes and three of those `layers` processes run alternately on one host (release, otherwise
-  idle desktop) did not reproduce the regime: every median read 25.8 to 49.6 ms, and in that state
-  both instruments read the 64 KiB buffer faster than the library default (gate `buffer_ratio` 0.946
-  to 1.309, median 1.180 over nine runs; `layers` default over 64 KiB 1.209, 1.210, 1.297) and the
-  production path 1.03 to 1.10 times bare 64 KiB under `layers` (gate 0.989 to 1.204, median 1.027),
-  so the 0.954 to 0.958 records and the 3.1% versus 5% gap are not reconciled. Then, in the
+  0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs). Two instruments read the production
+  path against bare hyper at 64 KiB: `egress_measure layers` (2 workers by default) reads the production
+  path 3.1% slower, and the gate reads it 4.9% to 6.2% slower. The owner ruled that difference noise:
+  there is no open reconciliation and nothing to rerun. Host observation, not a blocker and with no
+  diagnosed cause: a 2-worker process of these servers runs about 11.5 ms per download, then 29 to
+  39 ms after sustained load on the author's host. Then, in the
   same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
   set below the worst of the three legs by a stated headroom and the three recorded values written
   beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
