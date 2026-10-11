@@ -22,11 +22,18 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   path 3.1% slower, and the gate reads it 4.9% to 6.2% slower. The owner ruled that production-path
   difference noise: there is no open reconciliation and nothing to rerun. The ruling does not cover
   the buffer-ratio difference: the gate reads `buffer_ratio` 0.954 to 0.958 and the ladder reads the
-  same quantity (default-buffer median over 64 KiB median) 0.996. That difference is an unexplained
-  observation. Its named confound is the worker count: `egress_measure layers` defaults to 2
-  workers and the gate runs 4, and `layers` accepts a worker argument. It is not measured on this
-  host, where in its slow regime the gate's `buffer_ratio` readings spread 0.946 to 1.309 across
-  nine runs; whether to measure it is the owner's decision. Host observation, not a blocker and
+  same quantity (default-buffer median over 64 KiB median) 0.995 for the `bare-64k` rung
+  (`bare-64k+full-router` prints 0.996). That difference is an unexplained observation with at
+  least two uncontrolled factors. Worker count: `egress_measure layers` defaults to 2 workers and
+  the gate runs 4, and `layers` accepts a worker argument. Host regime: regime alone moves the
+  2-worker `layers` reading from 0.995 (fast) to 1.10 to 1.25 (per-file `layers` results of three
+  slow-regime runs; per-run 0.991 to 1.267), where "slow regime" means a download median above the
+  ~11.5 ms a fast 2-worker run reads. The only equal-worker (4) `layers` readings were taken in the
+  slow regime: default-buffer over 64 KiB 1.21 to 1.30 per file (per-run 1.02 to 1.41, nine runs),
+  while the gate in the same state read `buffer_ratio` 0.946 to 1.309 per run across nine runs. No
+  fast-regime equal-worker comparison exists. The instruments also differ in downloads per run
+  (gate 100, ladder 150 in the fast-regime record) and in interleaved versus blocked rung order.
+  Whether to measure it is the owner's decision. Host observation, not a blocker and
   with no diagnosed cause: a 2-worker process of these servers runs about 11.5 ms per download,
   then 29 to 39 ms after sustained load on the author's host. Then, in the
   same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
