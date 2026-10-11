@@ -33,8 +33,9 @@ fn tick() -> Duration {
 }
 
 /// The no-progress window of the partly drained tail's test. The test's margins on each side are
-/// three eighths of the window, so this is the one dial for them: 1.5 s at 4 s.
-const PARTIAL_TAIL_WINDOW: Duration = Duration::from_secs(4);
+/// three eighths of the window, so this is the one dial for them: 0.9 s at 2.4 s, under the 1 s
+/// ceiling a timing assertion's margin carries.
+const PARTIAL_TAIL_WINDOW: Duration = Duration::from_millis(2400);
 
 /// How often the producer's progress is sampled.
 const POLL: Duration = Duration::from_millis(50);
