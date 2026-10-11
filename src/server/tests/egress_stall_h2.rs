@@ -687,22 +687,22 @@ async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window()
         // Margins, with the sampler period `window / 4` (the period `ConnLimits::egress_window`
         // yields): an entry not refreshed is cut in `[dropped_at + window, dropped_at + 1.25 *
         // window]` plus scheduling lateness. The release at five eighths of a window leaves
-        // three eighths of a window on each side: before the earliest unrefreshed cut (P1), and
-        // between the latest unrefreshed cut and the earliest refreshed one (B).
+        // three eighths of a window on each side: before the earliest unrefreshed cut, and
+        // between the latest unrefreshed cut and the earliest refreshed one.
         assert!(
             released_at < dropped_at + window,
-            "P1: the release came {:?} after the body dropped, past the {window:?} window",
+            "the release came {:?} after the body dropped, past the {window:?} window",
             released_at.duration_since(dropped_at)
         );
         body.flow_control().release_capacity(first.len()).unwrap();
         let got = drain_without_credit(&mut body).await;
         assert!(
             got > 0,
-            "P2: no byte arrived after the release, so the entry saw no progress"
+            "no byte arrived after the release, so the entry saw no progress"
         );
         assert!(
             got < size as u64 - first.len() as u64,
-            "P3: the tail was drained"
+            "the tail was drained"
         );
         let cut_at = close_after(&server, already, Duration::from_secs(20))
             .await
@@ -715,7 +715,7 @@ async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window()
         );
         assert!(
             cut_at < released_at + window,
-            "B: a {size} B tail was cut {:?} after the progress: the progress refreshed the entry, or the sampler ran over 3/8 of a window late",
+            "a {size} B tail was cut {:?} after the progress: the progress refreshed the entry, or the sampler ran over 3/8 of a window late",
             cut_at.duration_since(released_at)
         );
         drop(client);
