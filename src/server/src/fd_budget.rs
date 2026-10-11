@@ -2,7 +2,7 @@
 //! the connection caps inside what remains.
 //!
 //! WHY: every admitted connection holds one descriptor, and both connection caps
-//! ([`Limits::global_cap`] before hand-off, [`ConnLimits::max_live`] after it) are chosen
+//! ([`Limits::global_cap`](crate::tls::listener::Limits::global_cap) before hand-off, [`ConnLimits::max_live`](crate::http::conn_serve::ConnLimits::max_live) after it) are chosen
 //! bounds, not measured capacities. A soft limit below their sum (the common Unix default is 1024)
 //! lets a flood exhaust descriptors, after which `accept` fails and the server cannot open its
 //! database, assets or outbound fetches either. The budget makes the caps structurally unable to
@@ -10,18 +10,18 @@
 //!
 //! INVARIANTS:
 //! 1. Both caps derive from ONE budget, the effective soft limit read back with `getrlimit` AFTER
-//!    the raise attempt minus [`descriptors_reserved`], never from the value the raise asked for:
+//!    the raise attempt minus [`descriptors_reserved`](crate::fd_budget::descriptors_reserved), never from the value the raise asked for:
 //!    a failed or partial raise must constrain the caps the same way a limit that was never
 //!    raisable does.
 //! 2. A descriptor is held by a connection either before hand-off or after it, never both, but a
 //!    connection is admitted to the next stage before the previous one releases, so the caps are
-//!    fitted to their SUM. The hand-off queue ([`HANDOFF_QUEUE_CAP`]) holds descriptors that belong
-//!    to neither cap, so its capacity is subtracted too, as is [`STREAMED_FILE_PERMITS`], the size of
+//!    fitted to their SUM. The hand-off queue ([`HANDOFF_QUEUE_CAP`](crate::tls::listener::HANDOFF_QUEUE_CAP)) holds descriptors that belong
+//!    to neither cap, so its capacity is subtracted too, as is [`STREAMED_FILE_PERMITS`](crate::fd_budget::STREAMED_FILE_PERMITS), the size of
 //!    the semaphore every streamed asset file takes a permit from, which bounds the asset files held
 //!    open for stalled peers.
-//! 3. The raise and the fit read ONE definition of the need: [`descriptors_needed`] is
-//!    [`descriptors_reserved`] plus the two caps, and `fit_to_descriptor_budget` subtracts
-//!    [`descriptors_reserved`] from the soft limit, so a change to a cap or a reserved term moves
+//! 3. The raise and the fit read ONE definition of the need: [`descriptors_needed`](crate::fd_budget::descriptors_needed) is
+//!    [`descriptors_reserved`](crate::fd_budget::descriptors_reserved) plus the two caps, and `fit_to_descriptor_budget` subtracts
+//!    [`descriptors_reserved`](crate::fd_budget::descriptors_reserved) from the soft limit, so a change to a cap or a reserved term moves
 //!    both.
 //! 4. The platform ceiling is queried at runtime (macOS `kern.maxfilesperproc`), never a
 //!    remembered literal, because `setrlimit` on macOS rejects a soft limit above it even when the

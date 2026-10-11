@@ -207,7 +207,7 @@ impl Drop for LeaseInner {
 }
 
 /// A claim that keeps one stream counted as in flight, and the connection's cap slot held, for
-/// as long as any clone lives. [`LeaseService`] puts one in every request's extensions; a handler
+/// as long as any clone lives. `LeaseService` puts one in every request's extensions; a handler
 /// that detaches long-lived work (a WebSocket session) moves a clone into that work.
 ///
 /// # Examples
