@@ -27,9 +27,13 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   least two uncontrolled factors:
   - Worker count: `egress_measure layers` defaults to 2 workers and the gate runs 4, and `layers`
     accepts a worker argument.
-  - Host regime: fast is download medians of about 11.6 to 12.1 ms (the `VE-f2-*` records); slow is
-    20.7 to 54.9 ms at 4 workers (the `VEfix3-T1-F4-layers-*` records) and 33.9 to 42.9 ms at 2
-    workers (runs 2 and 3 of the `VEfix2-T3-subset-w2-rep*` records).
+  - Host regime, read as per-run download medians. Fast: the default-buffer rung reads 11.58 to
+    11.71 ms in the 2-worker ladder and 11.94 to 12.07 ms in the 4-worker gate (the `VE-f2-*`
+    records); the 64 KiB rung reads 11.64 to 11.74 ms in the ladder and 12.52 to 12.59 ms in the
+    gate. Slow: the default-buffer rung reads 27.5 to 54.9 ms at 4 workers (the
+    `VEfix3-T1-F4-layers-*` records) and 38.3 to 42.9 ms at 2 workers (runs 2 and 3 of the
+    `VEfix2-T3-subset-w2-rep*` records); the 64 KiB rung reads 20.7 to 41.7 ms at 4 workers and
+    33.9 to 36.7 ms at 2 workers.
   - The 2-worker `layers` reading is 0.995 in the fast-regime record, per file, over five runs
     (per run 0.994 to 0.997; 150 downloads, full ladder), and 1.10 to 1.25 per file in three
     slow-regime subset records (100 downloads). Within each slow file, run 1 reads 0.991 to 0.997
