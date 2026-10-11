@@ -3,6 +3,60 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Audio — a streaming track's element drifted ahead of the server position at about 2 percent per second
+
+- [High, FIXED] `TrackPlayer.sync`'s streaming arm set `el.playbackRate` to `1 + SYNC_RATE_NUDGE`
+  when the element was behind the server position and returned it to 1 only at a drift of exactly 0,
+  and `sync` ran only when `AudioEngine.applyState` did on an `audio-state` change, so the nudge
+  engaged once and stayed: the element's `currentTime` minus the server position grew 0.0202 seconds
+  per second and left the audible 10-second slot at about 305 seconds. Fixed by the engine's
+  `SYNC_TICK_MS` tick (`90a1f3e1`) and the single rate decision `rateForDrift` with an engage bound of
+  `SYNC_RATE_ENGAGE_SECS` and a release bound of `SYNC_RATE_RELEASE_SECS`, shared by the streaming
+  arm and `FallbackTrackPlayer` through `syncElementPosition` (`0b1eb013`). Tests:
+  `engine-sync.test.ts` (the 300-second simulated run stays under 0.05 seconds of drift; without the
+  tick it exceeds 1 second), `rate-deadband.test.ts` (jitter of 5 ms over 60 ticks writes
+  `playbackRate` zero times, real drift engages then releases). Mutants observed red: the tick
+  callback replaced by a no-op (2 red), both bounds set to 0 (all 6 red). End to end:
+  `long-audio-playthrough.spec.ts` over plain HTTP/1.1 and over HTTPS/h2, 20 minutes real time each,
+  release server, all 120 slots matched the position code with no media error and the natural end
+  stopped the server entry; element drift stayed within 0.0064 to 0.0800 seconds on h1 and 0.0151 to
+  0.0815 seconds on h2 (it was +6.05 seconds at slot 30 before the fix). A first h1 run (drift 0.0018
+  to 0.0455 seconds) failed only on the spec's own gap assertion, which counted the start-up requests
+  that precede the first possible reading; the assertion now counts gaps of at least the egress
+  window. The sampled `long-audio-*` projects stayed green (10 passed).
+
+## Audio — a suspended or interrupted context, or a refused `play()`, left playback silent until the page was reloaded
+
+- [High, FIXED] The engine did not observe its `AudioContext` leaving `running` (phone call, tab
+  backgrounding, OS interruption) nor a `play()` rejected for lack of a gesture, so playback stayed
+  silent and the unlock control stayed hidden. Fixed in three parts. A buffered track's audible
+  position is measured on the audio context clock (`PositionAnchor.ctxTime`), so a stalled context
+  surfaces as drift and the existing seek arm restarts the source at the server position
+  (`931c701b`). Elements start only through `PlaybackGate`, which always handles the `play()`
+  rejection and marks a `NotAllowedError` element blocked (`996badbc`). `AudioEngine` observes
+  `onstatechange` and page visibility, asks a non-running context to resume once per transition,
+  re-applies the latest state, and derives `needsGesture` (on `AudioApi` and `WorldSession.audio`)
+  from a rejected resume, a context still not running after `RESUME_WAIT_MS`, or a refused play
+  (`086d2fdb`); the status bar shows the unlock control whenever `needsGesture` is true and its click
+  retries (`efd08e7c`). Tests: `track-player.test.ts` "audio-clock position", `playback-gate.test.ts`,
+  `engine-recovery.test.ts` cases (1) to (6) plus the gesture-retry and no-duplicate-player cases,
+  `StatusBar` needsGesture cases. Mutants observed red: wall-clock position arithmetic (2 red), gate
+  without the paused/blocked check (6 red), no statechange handler ((1), (2), (5) red), resume on
+  every statechange ((1), (5) red), `needsGesture` only from rejection ((3) red), recovery with a
+  fresh entry id (duplicate-player test red), the visibility handler without its resume or resuming
+  while hidden ((4) red), `dispose` leaving `onstatechange` installed ((6) red), the status bar
+  ignoring `needsGesture` (1 red). Not verified on a real device interruption.
+
+## Audio — no periodic synchronisation existed, so any drift or missed `audio-state` change persisted
+
+- [High, FIXED] `AudioEngine` re-synchronised its players only when an `audio-state` change arrived;
+  a position error, a dropped update or a page returning from the background was never corrected
+  until the next unrelated change. `AudioEngine` now runs a `SYNC_TICK_MS` tick and a page-visible
+  trigger, both through `applyState` over the latest state (idempotent per entry id), and `unlock`
+  replays the same latest state (`90a1f3e1`). Tests and mutants as in the drift entry above
+  (`engine-sync.test.ts`, 9 tests, including its dispose case: the timer is cleared, the observer is
+  removed and nothing re-applies; no-op timer callback 2 red).
+
 ## Audio panel — the seek slider's range was the stored length in milliseconds, or only 60 seconds past the position
 
 - [Medium, FIXED] `AudioPanel`'s now-playing seek slider took its `max` from the asset listing it
