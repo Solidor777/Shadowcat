@@ -18,11 +18,14 @@
 //!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
 //!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
 //!
-//! - `layers [downloads [runs]]`: loopback download throughput of a ladder of servers, each adding
-//!   one layer of the production path to a bare hyper server (the router, the application's
-//!   middleware, the serve loop, the harness's observed source), with a body-producer control and
-//!   TCP_NODELAY off as a control. Run it in a release build. Prints one `RECORD layers` line per run and per rung and a
-//!   `RESULT layers` summary of the median over runs with each rung's cost against the one before it.
+//! - `layers [downloads [runs]]`: loopback download throughput of a ladder of servers over a bare
+//!   hyper server (the router, the application's middleware, the serve loop, the harness's
+//!   observed source), with a body-producer control and TCP_NODELAY off as controls. The ladder is
+//!   a tree: each rung names the rung it is compared with, and the three `-no-nodelay` rungs
+//!   repeat a nodelay rung with the option off. Run it in a release build. Prints one
+//!   `RECORD layers` line per run and per rung and a `RESULT layers` summary of the median over
+//!   runs, where every rung but the root also prints its `baseline` and
+//!   `throughput_vs_baseline` (the baseline's median over the rung's).
 //!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
@@ -159,15 +162,16 @@ async fn grid() {
 /// within a run so no rung always follows the same neighbour.
 async fn layers(downloads: usize, runs: usize) {
     use shadowcat_test_support::throughput::{
-        bare_server, bulk_path, download, full_app, median, minimal_app, served, BareApp, Rung,
-        PRODUCTION_SEND_BUF,
+        bare_server, baseline_index, bulk_path, download, full_app, median, minimal_app, served,
+        BareApp, Rung, PRODUCTION_SEND_BUF,
     };
     let path = bulk_path();
     let default_buf = None;
     let sixty_four = Some(PRODUCTION_SEND_BUF);
-    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY, as the production listener
-    // does, so each step between neighbours adds one layer. The no-nodelay rungs repeat a bare
-    // rung and the production rungs without the option.
+    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY, as every production accept
+    // path does. Each rung's `over` names the rung its step is read against, so a step is one
+    // layer (or, for a no-nodelay rung, the option turned off) and never a comparison across
+    // several.
     let rungs: Vec<Rung> = vec![
         Rung::bare(
             "bare-default-buf",
@@ -176,43 +180,53 @@ async fn layers(downloads: usize, runs: usize) {
         Rung::bare(
             "bare-64k",
             bare_server(sixty_four, true, BareApp::Chunks).await,
-        ),
+        )
+        .over("bare-default-buf"),
         Rung::bare(
             "bare-64k-onebuffer-producer",
             bare_server(sixty_four, true, BareApp::one_buffer()).await,
-        ),
+        )
+        .over("bare-64k"),
         Rung::bare(
             "bare-64k+minimal-router",
             bare_server(sixty_four, true, BareApp::Router(minimal_app())).await,
-        ),
+        )
+        .over("bare-64k"),
         Rung::bare(
             "bare-64k+full-router",
             bare_server(sixty_four, true, BareApp::Router(full_app().await)).await,
-        ),
+        )
+        .over("bare-64k+minimal-router"),
         Rung::served(
             "serve_router+minimal-router",
             served(minimal_app(), true).await,
-        ),
+        )
+        .over("bare-64k+minimal-router"),
         Rung::served(
             "serve_router+full-router",
             served(full_app().await, true).await,
-        ),
+        )
+        .over("bare-64k+full-router"),
         Rung::harness(
             "serve_router+full-router+observed-source",
             EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, true).await,
-        ),
+        )
+        .over("serve_router+full-router"),
         Rung::bare(
             "bare-64k-no-nodelay",
             bare_server(sixty_four, false, BareApp::Chunks).await,
-        ),
+        )
+        .over("bare-64k"),
         Rung::served(
             "serve_router+full-router-no-nodelay",
             served(full_app().await, false).await,
-        ),
+        )
+        .over("serve_router+full-router"),
         Rung::harness(
             "serve_router+full-router+observed-source-no-nodelay",
             EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, false).await,
-        ),
+        )
+        .over("serve_router+full-router+observed-source"),
     ];
     for rung in &rungs {
         download(rung.addr, &path).await;
@@ -243,12 +257,24 @@ async fn layers(downloads: usize, runs: usize) {
         }
     }
     let bare = median(&mut medians[0].clone()).as_secs_f64();
-    for (rung, m) in medians.iter_mut().enumerate() {
+    let rung_medians: Vec<f64> = medians
+        .iter_mut()
+        .map(|m| median(m).as_secs_f64())
+        .collect();
+    for (rung, m) in medians.iter().enumerate() {
         let min = m.iter().min().copied().unwrap_or_default().as_secs_f64();
         let max = m.iter().max().copied().unwrap_or_default().as_secs_f64();
-        let med = median(m).as_secs_f64();
+        let med = rung_medians[rung];
+        let step = match baseline_index(&rungs, rung) {
+            Some(b) => format!(
+                " baseline=\"{}\" throughput_vs_baseline={:.3}",
+                rungs[b].name,
+                rung_medians[b] / med
+            ),
+            None => String::new(),
+        };
         record(&format!(
-            "RESULT layers rung=\"{}\" median_of_run_medians_ms={:.2} run_min_ms={:.2} run_max_ms={:.2} throughput_vs_bare_default={:.3}",
+            "RESULT layers rung=\"{}\" median_of_run_medians_ms={:.2} run_min_ms={:.2} run_max_ms={:.2} throughput_vs_bare_default={:.3}{step}",
             rungs[rung].name,
             med * 1e3,
             min * 1e3,

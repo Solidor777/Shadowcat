@@ -210,11 +210,15 @@ pub fn bulk_path() -> String {
     format!("/bulk?bytes={BODY_BYTES}")
 }
 
-/// A server in the ladder: its name, the layer it adds over the variant it is compared with, and
-/// its address. Holds what keeps the server alive.
+/// A server in the ladder: its name, the name of the rung it is compared with (none for the
+/// root), and its address. The ladder is a tree, not a line: each rung names its own baseline, so
+/// the difference between the two is the layer the rung adds, or the option it turns off. Holds
+/// what keeps the server alive.
 pub struct Rung {
     /// The variant's name.
     pub name: &'static str,
+    /// The name of the rung this one is compared with; it must precede this rung in the ladder.
+    pub baseline: Option<&'static str>,
     /// The address downloads go to.
     pub addr: SocketAddr,
     /// Keeps a production serve loop or harness server alive.
@@ -226,15 +230,23 @@ impl Rung {
     pub fn bare(name: &'static str, addr: SocketAddr) -> Self {
         Self {
             name,
+            baseline: None,
             addr,
             _keep: None,
         }
+    }
+
+    /// This rung compared with the rung named `baseline`.
+    pub fn over(mut self, baseline: &'static str) -> Self {
+        self.baseline = Some(baseline);
+        self
     }
 
     /// A rung over a production serve loop.
     pub fn served(name: &'static str, server: Served) -> Self {
         Self {
             name,
+            baseline: None,
             addr: server.addr,
             _keep: Some(Box::new(server)),
         }
@@ -244,11 +256,37 @@ impl Rung {
     pub fn harness(name: &'static str, server: EgressServer) -> Self {
         Self {
             name,
+            baseline: None,
             addr: server.addr,
             _keep: Some(Box::new(server)),
         }
     }
 }
+
+/// The index in `rungs` of the baseline of the rung at `at`, `None` for a root rung. Panics when
+/// the named baseline is not in the ladder or does not precede the rung, so a mistyped or
+/// misordered baseline cannot silently print no comparison.
+pub fn baseline_index(rungs: &[Rung], at: usize) -> Option<usize> {
+    let name = rungs[at].baseline?;
+    let index = rungs
+        .iter()
+        .position(|r| r.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "rung {:?} has no rung named {name:?} to compare with",
+                rungs[at].name
+            )
+        });
+    assert!(
+        index < at,
+        "the baseline {name:?} of rung {:?} does not precede it in the ladder",
+        rungs[at].name
+    );
+    Some(index)
+}
+
+#[cfg(test)]
+mod tests;
 
 /// The send buffer the production serve loop sets, which every bare rung but the first uses.
 pub const PRODUCTION_SEND_BUF: usize = H2_SEND_BUF_BYTES;
