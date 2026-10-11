@@ -203,6 +203,13 @@ impl ConnSource for TcpListener {
 /// hold back small writes to coalesce them. Every production accept path calls this once per
 /// socket (`impl ConnSource for TcpListener` and `SniffListener`'s accept task), and the
 /// test-support sources that model the listener call it too, so the decision exists in one place.
+///
+/// Measured effect of the option: a 24 MiB download over HTTP/2 against a bare hyper server with a
+/// 64 KiB send buffer, on Windows loopback in a release build (`egress_measure`'s `layers 150 5`,
+/// rungs `bare-64k` and `bare-64k-no-nodelay`), median of five run medians: 11.71 ms with the
+/// option and 16.93 ms without (run medians 15.81 to 19.79 ms without). Other operating systems
+/// and non-loopback links are not measured.
+///
 /// A failure to set the option is logged at debug level naming `peer`, and the connection proceeds
 /// with the system default.
 ///
