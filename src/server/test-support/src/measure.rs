@@ -1,3 +1,5 @@
+//! Paced-read measurement runs and the record sink for measured-but-unasserted values.
+//!
 //! Measurement support: paced reads against a server with a given no-progress window, and the
 //! record sink for values a test measures but does not yet assert on.
 //!

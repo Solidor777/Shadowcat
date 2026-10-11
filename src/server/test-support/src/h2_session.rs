@@ -1,3 +1,5 @@
+//! Fixtures for opening a WebSocket inside an HTTP/2 connection.
+//!
 //! Fixtures for tests that open a WebSocket inside an HTTP/2 connection: an application state with
 //! one user owning one world, and the login that yields the session cookie the handshake needs.
 

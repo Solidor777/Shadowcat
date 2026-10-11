@@ -1,3 +1,5 @@
+//! A serve-loop source that records when the server drops each connection.
+//!
 //! A serve-loop source whose connections record the instant the server side drops them. A test that
 //! needs to know WHEN the server ended a connection cannot learn it from the peer without reading,
 //! and reading from a peer that has stopped reading is exactly what changes the outcome; the

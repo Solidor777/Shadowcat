@@ -1,7 +1,9 @@
+//! Loopback download throughput, and the ladder of servers that separates the production path's layers.
+//!
 //! Loopback download throughput of an HTTP/2 server, and the ladder of servers that separates the
 //! production path's layers from a bare hyper server.
 //!
-//! One download is a fresh connection fetching [`BODY_BYTES`](crate::throughput::BODY_BYTES) with a
+//! One download is a fresh connection fetching [`BODY_BYTES`] with a
 //! 6 MiB stream window and a 15 MiB connection window, so the client never limits the server. Every variant answers
 //! `/bulk?bytes=N` with the same bytes, so a difference between two variants is the layer the
 //! variant adds.

@@ -12,21 +12,13 @@
 
 /// The HTTP/2 implementation the client helpers use, re-exported so tests name one version.
 pub use h2;
-/// A serve loop with routes that stall in controlled ways, and a paced HTTP/2 client.
 pub mod egress;
-/// Fixtures for opening a WebSocket inside an HTTP/2 connection.
 pub mod h2_session;
-/// HTTP/2 with prior knowledge over plain TCP: a serve-loop source and a client.
 pub mod h2c;
-/// Log capture for tests that assert on what the server logs.
 pub mod logs;
-/// Paced-read measurement runs and the record sink for measured-but-unasserted values.
 pub mod measure;
-/// A serve-loop source that records when the server drops each connection.
 pub mod observed;
-/// Loopback download throughput, and the ladder of servers that separates the production path's layers.
 pub mod throughput;
-/// TLS client helpers.
 pub mod tls;
 
 use std::sync::atomic::AtomicBool;
