@@ -1,6 +1,8 @@
-//! The server-owned combat clock: loads a `CombatSnapshot`, runs a pure
-//! transition (`transition`), and hands ONE command's ops to `Room`. The `effects` module holds the
-//! effect-lifecycle helpers, of which `collect_effects` is re-exported here.
+//! The server-owned combat clock.
+//!
+//! It loads a `CombatSnapshot`, runs a pure transition (`transition`), and hands ONE command's ops
+//! to `Room`. The `effects` module holds the effect-lifecycle helpers, of which `collect_effects`
+//! is re-exported here.
 //!
 //! INVARIANT: every formula a transition acts on is evaluated HERE, through
 //! `crate::formula` over the combatant's formula host (`eval`); an

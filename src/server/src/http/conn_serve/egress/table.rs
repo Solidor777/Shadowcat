@@ -1,6 +1,8 @@
-//! The per-connection table of live HTTP/2 client streams: one state machine per client stream id,
-//! created when the request's HEADERS frame is parsed off the wire and removed only on wire
-//! evidence that the stream ended, or when the connection (and with it the table) ends.
+//! The per-connection table of live HTTP/2 client streams.
+//!
+//! It holds one state machine per client stream id, created when the request's HEADERS frame is
+//! parsed off the wire and removed only on wire evidence that the stream ended, or when the
+//! connection (and with it the table) ends.
 //!
 //! WHY a table at all: once a response body has ended on the server's side, hyper's stream task
 //! completes and the body (with its lease and marker) is dropped, yet up to one chunk of DATA can

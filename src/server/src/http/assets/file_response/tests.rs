@@ -1,6 +1,7 @@
-//! `serve_file` and `not_modified` over real files: the two I/O edges (GET and HEAD) agree on
-//! status and headers for every range outcome, bodies are byte-exact, and a file that shrinks
-//! under a response aborts it.
+//! `serve_file` and `not_modified` over real files.
+//!
+//! The two I/O edges (GET and HEAD) agree on status and headers for every range outcome, bodies are
+//! byte-exact, and a file that shrinks under a response aborts it.
 
 use super::*;
 use axum::body::to_bytes;

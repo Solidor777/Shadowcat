@@ -1,5 +1,7 @@
-//! CLI-level integration tests for `shadowcat audio-monitor`, spawning the actual compiled
-//! binary (mirrors `backup_cli.rs`'s `CARGO_BIN_EXE_shadowcat` pattern).
+//! CLI-level integration tests for `shadowcat audio-monitor`.
+//!
+//! They spawn the actual compiled binary (mirrors the `backup_cli` test's `CARGO_BIN_EXE_shadowcat`
+//! pattern).
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};

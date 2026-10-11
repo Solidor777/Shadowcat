@@ -1,6 +1,7 @@
-//! Asset query filters and ordering — the data-layer vocabulary
-//! `SqliteRepository::query_assets` accepts (the HTTP layer parses query
-//! strings into these; regex matching stays above the repository).
+//! Asset query filters and ordering.
+//!
+//! They are the data-layer vocabulary `SqliteRepository::query_assets` accepts (the HTTP layer
+//! parses query strings into these; regex matching stays above the repository).
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

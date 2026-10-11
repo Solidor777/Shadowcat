@@ -1,6 +1,7 @@
-//! Per-peer and global connection slots: the ONE definition of how a peer is keyed, how a cap is
-//! counted and how a cap-exempt peer (`Config::is_cap_exempt`: a trusted proxy or a loopback peer)
-//! is exempted.
+//! Per-peer and global connection slots.
+//!
+//! This module is the ONE definition of how a peer is keyed, how a cap is counted and how a
+//! cap-exempt peer (`Config::is_cap_exempt`: a trusted proxy or a loopback peer) is exempted.
 //!
 //! The pre-hand-off admission caps (`crate::tls::listener::SniffListener`) and the post-hand-off
 //! live-connection caps (`crate::http::conn_serve::serve_router`) each own a [`PeerSlots`] with

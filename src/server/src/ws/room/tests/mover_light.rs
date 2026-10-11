@@ -1,6 +1,7 @@
-//! `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`): present exactly
-//! when the mover carries an enabled emission in an environment-lit scene, sampled at the
-//! position samples' own instants, and absent — with no raycast — otherwise.
+//! `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`).
+//!
+//! It is present exactly when the mover carries an enabled emission in an environment-lit scene,
+//! sampled at the position samples' own instants, and absent — with no raycast — otherwise.
 
 use super::*;
 use serde_json::json;

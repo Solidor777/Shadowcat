@@ -1,5 +1,6 @@
-//! Shared WS integration-test harness for the scene tests: a real WS client
-//! against an ephemeral in-process server whose single seeded user owns the
+//! Shared WS integration-test harness for the scene tests.
+//!
+//! It is a real WS client against an ephemeral in-process server whose single seeded user owns the
 //! world (GM), so its intents are authorized.
 //!
 //! A library crate rather than a shared module included by each integration-test binary: such a

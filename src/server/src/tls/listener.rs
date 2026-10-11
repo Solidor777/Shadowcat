@@ -1,6 +1,8 @@
-//! The sniffing listener: ONE port serves plain HTTP and TLS. The first byte of each connection
-//! decides (`0x16`, the TLS handshake record type, means TLS; anything else is plain HTTP), so
-//! `http://host:port` and `https://host:port` both serve the full app and nothing is redirected.
+//! The sniffing listener: ONE port serves plain HTTP and TLS.
+//!
+//! The first byte of each connection decides (`0x16`, the TLS handshake record type, means TLS;
+//! anything else is plain HTTP), so `http://host:port` and `https://host:port` both serve the full
+//! app and nothing is redirected.
 //!
 //! Accept path guarantees:
 //! - one 10 s deadline bounds sniffing AND the whole TLS handshake (a peer that stalls

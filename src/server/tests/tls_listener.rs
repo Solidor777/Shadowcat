@@ -1,6 +1,7 @@
-//! The sniffing listener over real sockets: first-byte dispatch, deadlines, admission caps,
-//! accept-error continuation and shutdown. The two-phase handshake's hot-swap race is a unit
-//! test beside `negotiate_with`.
+//! The sniffing listener over real sockets.
+//!
+//! The tests cover first-byte dispatch, deadlines, admission caps, accept-error continuation and
+//! shutdown. The two-phase handshake's hot-swap race is a unit test beside `negotiate_with`.
 
 use std::io;
 use std::net::SocketAddr;

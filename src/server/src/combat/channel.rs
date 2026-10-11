@@ -1,6 +1,8 @@
-//! The `"combat"` derived channel: server-resolved resource numbers and movement budgets for
-//! every combat/combatant `ctx` may read, computed through the SAME `combat::eval` derivations
-//! the transitions and the movement-budget gate use. The client evaluates and stores nothing.
+//! The `"combat"` derived channel: server-resolved resource numbers and movement budgets.
+//!
+//! They are resolved for every combat/combatant `ctx` may read, computed through the SAME
+//! `combat::eval` derivations the transitions and the movement-budget gate use. The client
+//! evaluates and stores nothing.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

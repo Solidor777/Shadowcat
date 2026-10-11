@@ -1,6 +1,7 @@
-//! Tests for the merge engine: unit tests per source unit plus the
-//! conformance runner that pins this implementation against the corpus
-//! generated from the client engine.
+//! Tests for the merge engine.
+//!
+//! They are unit tests per source unit plus the conformance runner that pins this implementation
+//! against the corpus generated from the client engine.
 
 mod bands;
 mod conformance;

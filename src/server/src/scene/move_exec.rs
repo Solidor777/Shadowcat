@@ -1,4 +1,6 @@
-//! Pure, lock-free per-path move executor. Server-authoritative movement, engine-agnostic.
+//! Pure, lock-free per-path move executor.
+//!
+//! Server-authoritative movement, engine-agnostic.
 //!
 //! `execute_move` is built on `gate_walk`, which subdivides ANY input polyline — grid A*
 //! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —

@@ -1,5 +1,7 @@
-//! Measurement support: paced reads against a server with a given no-progress window, and the
-//! record sink for values a test measures but does not yet assert on.
+//! Measurement support.
+//!
+//! It provides paced reads against a server with a given no-progress window, and the record sink
+//! for values a test measures but does not yet assert on.
 //!
 //! A measured value that is only empirical (a scheduling overshoot, a throughput ratio) is
 //! recorded, not asserted, until every operating system's value has been recorded; the sink

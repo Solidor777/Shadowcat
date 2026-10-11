@@ -1,6 +1,7 @@
-//! Note-tree parent placement: the `note` half of `sqlite.rs`'s
-//! `check_parent_placement`, in a sibling `impl` block the same way
-//! `assets.rs` holds `check_asset_folder_parent`.
+//! Note-tree parent placement.
+//!
+//! It is the `note` half of `check_parent_placement` in the `sqlite` module, in a sibling `impl`
+//! block the same way the `assets` submodule holds `check_asset_folder_parent`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

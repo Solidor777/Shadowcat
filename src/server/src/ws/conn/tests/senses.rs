@@ -1,6 +1,8 @@
 //! Creature senses in the per-recipient `MoveStream` clip (`clip_move_stream` →
-//! `InstantSight::sees_token`): a tremorsense observer is streamed a grounded token it cannot
-//! see, through the SAME reach decision `player_perceived_tokens` makes for that token at rest.
+//! `InstantSight::sees_token`).
+//!
+//! A tremorsense observer is streamed a grounded token it cannot see, through the SAME reach
+//! decision `player_perceived_tokens` makes for that token at rest.
 
 use super::*;
 use crate::ws::protocol::PosSample;

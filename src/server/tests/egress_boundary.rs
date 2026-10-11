@@ -1,6 +1,7 @@
-//! Where the HTTP/2 stream unit starts cutting a paced reader. A pending chunk waits for send
-//! credit; a reader that returns credit slower than the chunk's wait allows is cut once the wait
-//! reaches `ConnLimits::egress_window`.
+//! Where the HTTP/2 stream unit starts cutting a paced reader.
+//!
+//! A pending chunk waits for send credit; a reader that returns credit slower than the chunk's wait
+//! allows is cut once the wait reaches `ConnLimits::egress_window`.
 //!
 //! The measurement's `hypothesis_Bps` column is `min(W / 2, EGRESS_CHUNK_BYTES) / egress_window`
 //! (`measure::hypothesis`), the rate at which one 16 KiB chunk's wait equals the window; it is

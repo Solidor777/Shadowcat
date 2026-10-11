@@ -1,4 +1,6 @@
-//! The wasmi host: compiles a validator module once (`CompiledValidator`, held by
+//! The wasmi host.
+//!
+//! It compiles a validator module once (`CompiledValidator`, held by
 //! `super::registry::ValidatorRegistry`) and runs it per call on a fresh `Store` with hard
 //! fuel/memory/instance/table limits and no imports beyond `env.log`.
 #![deny(missing_docs)]

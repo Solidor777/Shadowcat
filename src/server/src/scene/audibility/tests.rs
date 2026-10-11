@@ -1,5 +1,7 @@
-//! Tests for `scene::audibility` — the falloff/pan/occlusion primitives, overlay resolution,
-//! carried-emission precedence, listener selection, and the resolved per-scene slice.
+//! Tests for `scene::audibility`.
+//!
+//! They cover the falloff/pan/occlusion primitives, overlay resolution, carried-emission
+//! precedence, listener selection, and the resolved per-scene slice.
 
 use super::*;
 use crate::data::command::Operation;

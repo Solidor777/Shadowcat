@@ -1,6 +1,7 @@
-//! `handle_reset_explored_fog`'s authorization gate (uniform generic refusal for a non-GM and
-//! for a scene outside this room's world) and its happy-path effect (rows deleted, broadcast
-//! observable on a second subscriber).
+//! `handle_reset_explored_fog`'s authorization gate and happy-path effect.
+//!
+//! The gate gives a uniform generic refusal for a non-GM and for a scene outside this room's world;
+//! the happy path deletes rows and the broadcast is observable on a second subscriber.
 
 use super::*;
 

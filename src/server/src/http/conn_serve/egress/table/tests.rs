@@ -1,4 +1,6 @@
-//! The stream table: creation at parse time, removal only on wire evidence, the GOAWAY filter and
+//! The stream table's lifecycle.
+//!
+//! The tests cover creation at parse time, removal only on wire evidence, the GOAWAY filter and
 //! purge, the fail-closed cap, and the Final and Queued states with the stream's own progress.
 
 use super::*;

@@ -1,6 +1,7 @@
-//! Merge band types and snapshot builders: the `MergeBase` stored on a
-//! stamped document, the `MergeBands` a merge produces, the synthetic
-//! name/engine/system tree adapters, and the placement exclusion set.
+//! Merge band types and snapshot builders.
+//!
+//! They are the `MergeBase` stored on a stamped document, the `MergeBands` a merge produces, the
+//! synthetic name/engine/system tree adapters, and the placement exclusion set.
 
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;

@@ -1,6 +1,8 @@
-//! Fixtures for the egress no-progress tests: a serve loop over the real router plus routes that
-//! stall in controlled ways, and an HTTP/2 client whose receive windows and read pace the test
-//! sets, so a stall is driven by the credit the client returns rather than by a sleep.
+//! Fixtures for the egress no-progress tests.
+//!
+//! They are a serve loop over the real router plus routes that stall in controlled ways, and an
+//! HTTP/2 client whose receive windows and read pace the test sets, so a stall is driven by the
+//! credit the client returns rather than by a sleep.
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;

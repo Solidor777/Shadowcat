@@ -1,6 +1,7 @@
-//! Unit tests for the single-tree primitives (the corpus covers their
-//! behaviour inside full merges; these pin the edges the corpus cannot
-//! express, like `f64` number equality across JSON's int/float spellings).
+//! Unit tests for the single-tree primitives.
+//!
+//! The corpus covers their behaviour inside full merges; these pin the edges the corpus cannot
+//! express, like `f64` number equality across JSON's int/float spellings.
 
 use serde_json::json;
 

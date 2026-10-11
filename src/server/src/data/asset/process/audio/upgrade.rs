@@ -1,6 +1,7 @@
-//! The blocking half of the derivative upgrade sweep: decides, for one stored audio asset, which
-//! of its Opus siblings were written by an encoder or muxer older than the current one, stages the
-//! replacement files beside them and swaps them in.
+//! The blocking half of the derivative upgrade sweep.
+//!
+//! For one stored audio asset it decides which of its Opus siblings were written by an encoder or
+//! muxer older than the current one, stages the replacement files beside them and swaps them in.
 //!
 //! Two defects separate an old sibling from a current one. Every `.opus.webm` written before the
 //! current muxer lacks `Duration`, `SeekHead`, `Cues` and `DiscardPadding`; it carries no

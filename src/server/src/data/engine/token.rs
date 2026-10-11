@@ -1,5 +1,6 @@
-//! `token`/`actor` engine bands. Field shapes mirror the
-//! client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
+//! `token`/`actor` engine bands.
+//!
+//! Field shapes mirror the client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
 //! lives on the envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by

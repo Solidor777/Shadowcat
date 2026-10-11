@@ -1,6 +1,7 @@
-//! Throughput gate for the HTTP/2 send buffer the server sets ([`H2_SEND_BUF_BYTES`], 64 KiB): the
-//! keep criterion is at least 90 percent of the median loopback download throughput of an HTTP/2
-//! server at the library's default send buffer (400 KiB).
+//! Throughput gate for the HTTP/2 send buffer the server sets ([`H2_SEND_BUF_BYTES`], 64 KiB).
+//!
+//! The keep criterion is at least 90 percent of the median loopback download throughput of an
+//! HTTP/2 server at the library's default send buffer (400 KiB).
 //!
 //! Two ratios are recorded per run, both against a bare hyper server at the library default. The
 //! buffer ratio serves a bare server with [`H2_SEND_BUF_BYTES`], so the send buffer is the only

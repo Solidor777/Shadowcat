@@ -1,6 +1,7 @@
-//! The character classes both grammars in this crate accept — the formula tokenizer (`lexer`) and
-//! the notation-template rewriter (`template`) — in ONE declaration, twin of the client package's
-//! `chars.ts`.
+//! The character classes both grammars in this crate accept, in ONE declaration.
+//!
+//! The two grammars are the formula tokenizer (`lexer`) and the notation-template rewriter
+//! (`template`). The declaration is the twin of the client package's `chars.ts`.
 //!
 //! The two grammars accept the same identifier characters, so a per-module copy is a forked
 //! decision; the grammars differ ABOVE this layer (what may follow an identifier, which words are

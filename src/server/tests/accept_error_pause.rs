@@ -1,5 +1,6 @@
-//! `accept_error_pause` logs exactly the errors that pause. Runs on the default current-thread
-//! runtime so the log capture sees the lines.
+//! `accept_error_pause` logs exactly the errors that pause.
+//!
+//! Runs on the default current-thread runtime so the log capture sees the lines.
 
 use std::io;
 

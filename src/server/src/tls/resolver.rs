@@ -1,5 +1,7 @@
-//! Certificate selection: the immutable [`Snapshot`], its swap cell [`CertResolver`], and the two
-//! free functions [`hello_phase`] / [`finish_phase`] that split one TLS accept into "read the
+//! Certificate selection.
+//!
+//! This module holds the immutable [`Snapshot`], its swap cell [`CertResolver`], and the two free
+//! functions [`hello_phase`] / [`finish_phase`] that split one TLS accept into "read the
 //! ClientHello and choose" and "complete the handshake with the chosen configuration".
 //!
 //! INVARIANT: the certificate presented, `ConnMeta.cert` and the HSTS decision all derive from ONE

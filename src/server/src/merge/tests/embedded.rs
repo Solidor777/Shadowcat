@@ -1,6 +1,7 @@
-//! Unit tests for the embedded-collection machinery not directly visible in
-//! the corpus's normalized ids (fresh-id minting, provenance version
-//! preservation, `base` clearing).
+//! Unit tests for the embedded-collection machinery.
+//!
+//! They cover what is not directly visible in the corpus's normalized ids (fresh-id minting,
+//! provenance version preservation, `base` clearing).
 
 use serde_json::json;
 

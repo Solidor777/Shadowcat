@@ -1,6 +1,7 @@
-//! The shutdown wait for WebSocket session tasks after the connection drain has returned. One
-//! deadline (`drain_timeout` after the drain hook ran) bounds the whole shutdown, and sessions are
-//! never given less than `SESSION_GRACE` even when the connection drain consumed the bound.
+//! The shutdown wait for WebSocket session tasks after the connection drain has returned.
+//!
+//! One deadline (`drain_timeout` after the drain hook ran) bounds the whole shutdown, and sessions
+//! are never given less than `SESSION_GRACE` even when the connection drain consumed the bound.
 //!
 //! A session task that has not ended is represented by a held `ConnectionGuard`, so the wait is
 //! driven without a socket. A connection that outlasts the drain is an HTTP/1.1 request whose body

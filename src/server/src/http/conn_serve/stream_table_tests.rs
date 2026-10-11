@@ -1,6 +1,8 @@
-//! The stream table against a real HTTP/2 server codec behind a connection whose reads and writes
-//! the test controls: a minimum-frame flood (the parse lag), the fail-closed cap, a drain flood
-//! after GOAWAY, and a request reset in the same write that carried it.
+//! The stream table against a real HTTP/2 server codec.
+//!
+//! The codec sits behind a connection whose reads and writes the test controls. The cases are a
+//! minimum-frame flood (the parse lag), the fail-closed cap, a drain flood after GOAWAY, and a
+//! request reset in the same write that carried it.
 //!
 //! Each test serves one connection through `spawn_connection` over a duplex pipe whose server end
 //! records the largest single read and can park its writer, so the premises of each derived bound

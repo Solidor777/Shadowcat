@@ -1,6 +1,8 @@
-//! The per-peer connection caps over the real accept path: a `SniffListener` decides the exemption
-//! (`Config::is_cap_exempt`) and `serve_router` applies the live caps with it. Peers are scripted
-//! through a `TcpAccept` source because a real loopback client cannot be anything but loopback.
+//! The per-peer connection caps over the real accept path.
+//!
+//! A `SniffListener` decides the exemption (`Config::is_cap_exempt`) and `serve_router` applies the
+//! live caps with it. Peers are scripted through a `TcpAccept` source because a real loopback
+//! client cannot be anything but loopback.
 
 use std::io;
 use std::net::SocketAddr;

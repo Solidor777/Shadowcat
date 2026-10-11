@@ -1,6 +1,8 @@
-//! `parse_fx_body`/`try_handle_fx` unit cases plus a full `handle_send_message`
-//! integration pass over a real `SqliteRepository` + `Room`: the success
-//! broadcast, the whispered failure notice, and the no-existence-oracle rule.
+//! Unit and integration cases for the `/fx` command.
+//!
+//! The cases are `parse_fx_body`/`try_handle_fx` unit cases plus a full `handle_send_message`
+//! integration pass over a real `SqliteRepository` + `Room`: the success broadcast, the whispered
+//! failure notice, and the no-existence-oracle rule.
 
 use super::*;
 use crate::auth::role::ServerRole;

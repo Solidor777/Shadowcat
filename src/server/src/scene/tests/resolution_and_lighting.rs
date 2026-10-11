@@ -1,4 +1,8 @@
-//! Scene-settings resolution (diagonal rule, movement restriction/model, bounds), lighting/environment-light occlusion, the movement-gate visibility mask, and the navmesh cache's invalidation/memoization.
+//! Scene-settings resolution, lighting, the movement-gate visibility mask and the navmesh cache.
+//!
+//! The tests cover diagonal rule, movement restriction/model and bounds resolution,
+//! lighting/environment-light occlusion, the movement-gate visibility mask, and the navmesh cache's
+//! invalidation/memoization.
 use super::*;
 
 #[test]

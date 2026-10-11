@@ -1,6 +1,8 @@
-//! Deterministic test-fixture UUIDs. Every server-generated document id is a v4 UUID
-//! (`data::validation::validate_document_id`), so a fixture built from a small integer must carry
-//! the same version/variant bits or every Create-path test fails identically at ingress.
+//! Deterministic test-fixture UUIDs.
+//!
+//! Every server-generated document id is a v4 UUID (`data::validation::validate_document_id`), so a
+//! fixture built from a small integer must carry the same version/variant bits or every Create-path
+//! test fails identically at ingress.
 
 /// Builds a UUID from `n`'s big-endian bytes with the version/variant nibbles forced to v4 /
 /// RFC4122, so two distinct small `n` values remain distinct while every fixture id passes

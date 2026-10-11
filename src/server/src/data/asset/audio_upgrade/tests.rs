@@ -1,5 +1,7 @@
-//! The sweep over stored assets: selection from the database, the swap under the write barrier,
-//! the counts it reports, and its one-file-at-a-time retry of a failed swap.
+//! The sweep over stored assets.
+//!
+//! The tests cover selection from the database, the swap under the write barrier, the counts it
+//! reports, and its one-file-at-a-time retry of a failed swap.
 
 use std::path::Path;
 use std::time::Duration;

@@ -1,5 +1,7 @@
-//! The persisted self-signed leaf certificate: attributes, SAN policy, reuse/regeneration rules,
-//! and the interface classifier that decides which local addresses it advertises.
+//! The persisted self-signed leaf certificate.
+//!
+//! This module holds its attributes, SAN policy, reuse/regeneration rules, and the interface
+//! classifier that decides which local addresses it advertises.
 //!
 //! Algorithm: ECDSA P-256 (`rcgen`'s default key algorithm under the ring backend). Validity
 //! window: `not_before = now - 1 day` (clock-skew tolerance), `not_after = now + 397 days` (the

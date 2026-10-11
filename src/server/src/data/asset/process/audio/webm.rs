@@ -1,5 +1,7 @@
-//! The WebM (EBML) muxer for the Opus derivative: a minimal single-audio-track file written from
-//! the encoded packets, plus the helpers the upgrade sweep uses to recognise the layout it wrote.
+//! The WebM (EBML) muxer for the Opus derivative.
+//!
+//! It writes a minimal single-audio-track file from the encoded packets, plus the helpers the
+//! upgrade sweep uses to recognise the layout it wrote.
 //!
 //! Layout: EBML header, then one Segment of KNOWN size holding, in this order, `SeekHead`, `Info`,
 //! `Tracks`, `Cues`, then the Clusters. Segment, Cluster and every other size is computed, never

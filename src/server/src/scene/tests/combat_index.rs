@@ -1,5 +1,7 @@
-//! `SceneEcs::active_combat_for_scene` / `SceneEcs::combatant_for_token`: the combat-family
-//! side-table hydration and the token→combatant lookup the movement-budget gate reads.
+//! The combat-family side-table hydration and the token-to-combatant lookup.
+//!
+//! The subjects are `SceneEcs::active_combat_for_scene` / `SceneEcs::combatant_for_token`, which
+//! the movement-budget gate reads.
 use super::*;
 use crate::data::document::{DocRole, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;

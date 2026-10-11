@@ -1,4 +1,6 @@
-//! `LeasedBody`: the chunk bound ([`EGRESS_CHUNK_BYTES`]), exact size hints, pass-through of
+//! `LeasedBody`.
+//!
+//! The tests cover the chunk bound ([`EGRESS_CHUNK_BYTES`]), exact size hints, pass-through of
 //! non-data frames, and the stream marker the stream unit scans.
 
 use std::collections::VecDeque;

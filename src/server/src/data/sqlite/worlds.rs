@@ -1,6 +1,7 @@
-//! World rows and per-world state: the `worlds` / `settings` / `explored_fog`
-//! half of `SqliteRepository`, in a sibling `impl` block so `sqlite.rs` stays
-//! under the file-size limit.
+//! World rows and per-world state in the SQLite repository.
+//!
+//! It is the `worlds` / `settings` / `explored_fog` half of `SqliteRepository`, in a sibling `impl`
+//! block so the `sqlite` module stays under the file-size limit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

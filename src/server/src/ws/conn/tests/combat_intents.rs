@@ -1,5 +1,7 @@
-//! `combat::handle_combat_intent`'s wire-dispatch layer: authz per variant, dice-context resolution
-//! for `CombatRoll`, and the one-server-authored-command commit via `Room::commit_combat`.
+//! `combat::handle_combat_intent`'s wire-dispatch layer.
+//!
+//! The tests cover authz per variant, dice-context resolution for `CombatRoll`, and the
+//! one-server-authored-command commit via `Room::commit_combat`.
 //!
 //! Fixture pattern mirrors `handle_move_request_broadcasts_move_stream_no_etx_on_success`'s harness
 //! construction.

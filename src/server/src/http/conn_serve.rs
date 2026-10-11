@@ -1,5 +1,7 @@
-//! The connection serve loop: accepts from a [`ConnSource`], hands every connection to hyper with
-//! the time bounds `axum::serve` cannot express, and drains on shutdown.
+//! The connection serve loop.
+//!
+//! It accepts from a [`ConnSource`], hands every connection to hyper with the time bounds
+//! `axum::serve` cannot express, and drains on shutdown.
 //!
 //! WHY this owns the loop instead of calling `axum::serve`: hyper's HTTP/1 header-read timeout and
 //! HTTP/2 keep-alive pings are inert without a timer, and `axum::serve` installs none. After the

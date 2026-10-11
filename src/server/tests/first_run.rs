@@ -1,5 +1,7 @@
-//! First-run behaviour of the storage bootstrap: server startup creates a missing database file,
-//! while one-shot tooling that opens a pool directly never does.
+//! First-run behaviour of the storage bootstrap.
+//!
+//! Server startup creates a missing database file, while one-shot tooling that opens a pool
+//! directly never does.
 
 use shadowcat::data::sqlite::SqliteRepository;
 

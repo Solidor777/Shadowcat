@@ -1,6 +1,7 @@
-//! Embeds the application icon (`assets/icon.ico`) into the Windows executable's
-//! Win32 resource section. Every other target is a no-op, so the Linux/macOS
-//! binaries are byte-for-byte unaffected.
+//! Embeds the application icon (`assets/icon.ico`) into the Windows executable's Win32 resource
+//! section.
+//!
+//! Every other target is a no-op, so the Linux/macOS binaries are byte-for-byte unaffected.
 //!
 //! The `#[cfg(windows)]` gate reflects the build *host* (build scripts run on
 //! the host); it matches the host-scoped `winresource` build-dependency, so the

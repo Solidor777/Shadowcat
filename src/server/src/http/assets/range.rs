@@ -1,5 +1,7 @@
-//! Byte-range policy for the whole-file asset responses: which responses are ranged at all
-//! (`classify`) and what a `Range` request selects from a file of known length (`decide`).
+//! Byte-range policy for the whole-file asset responses.
+//!
+//! It decides which responses are ranged at all (`classify`) and what a `Range` request selects
+//! from a file of known length (`decide`).
 //!
 //! Pure: no IO, no clock, no allocation beyond the parsed request. The serve sites and the
 //! compression predicate consume the one classification, so the ranged-versus-compressed decision

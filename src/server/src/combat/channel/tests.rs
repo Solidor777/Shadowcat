@@ -1,5 +1,7 @@
-//! Unit-level serde/tag checks for the combat channel wire types, independent of ECS behavior
-//! (see scene::tests::combat_index::resolved_combats for the derivation tests).
+//! Unit-level serde/tag checks for the combat channel wire types.
+//!
+//! They are independent of ECS behavior (see `scene::tests::combat_index::resolved_combats` for the
+//! derivation tests).
 use super::*;
 
 #[test]

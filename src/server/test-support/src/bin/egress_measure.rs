@@ -1,5 +1,7 @@
-//! Measurement program for the egress no-progress bounds. These are measurements, not tests: each
-//! prints `RESULT` lines and asserts nothing, and runs only when invoked.
+//! Measurement program for the egress no-progress bounds.
+//!
+//! These are measurements, not tests: each prints `RESULT` lines and asserts nothing, and runs only
+//! when invoked.
 //!
 //! ```text
 //! cargo run -p shadowcat-test-support --bin egress_measure -- <subcommand>

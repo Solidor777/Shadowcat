@@ -1,6 +1,8 @@
-//! Egress no-progress accounting: what a cut is counted as, the counters the serve loop owns, the
-//! connection unit's evidence (how many response bytes the socket accepted, and whether its writer
-//! is parked), and the wire-fed table of live HTTP/2 streams.
+//! Egress no-progress accounting.
+//!
+//! It covers what a cut is counted as, the counters the serve loop owns, the connection unit's
+//! evidence (how many response bytes the socket accepted, and whether its writer is parked), and
+//! the wire-fed table of live HTTP/2 streams.
 //!
 //! One definition of "no progress" is shared by every unit that cuts a response: a peer that
 //! returns no flow-control credit for a pending chunk (the stream unit), a socket that accepts

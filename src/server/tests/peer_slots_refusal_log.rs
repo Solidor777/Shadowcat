@@ -1,5 +1,7 @@
 //! A refused admission is visible in the log as one bounded summary, however many peers are
-//! refused. Runs on the default current-thread runtime so the log capture sees the lines.
+//! refused.
+//!
+//! Runs on the default current-thread runtime so the log capture sees the lines.
 
 use std::sync::Arc;
 

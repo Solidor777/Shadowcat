@@ -1,6 +1,7 @@
-//! Per-(scene, player) explored fog memory: a sparse set of visited grid cells,
-//! accumulated monotonically from each vision recompute. Engine-owned geometry,
-//! headless + pure (the DB round-trip lives in the repository). Clean-room.
+//! Per-(scene, player) explored fog memory.
+//!
+//! It is a sparse set of visited grid cells, accumulated monotonically from each vision recompute.
+//! Engine-owned geometry, headless + pure (the DB round-trip lives in the repository). Clean-room.
 //!
 //! A cell `(i, j)` covers world rect `[i*size, (i+1)*size) × [j*size, (j+1)*size)`. A vision
 //! recompute marks every cell whose CENTER lies inside any `visible` polygon (resolution = one

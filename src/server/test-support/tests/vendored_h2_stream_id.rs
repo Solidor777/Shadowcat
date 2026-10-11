@@ -1,5 +1,6 @@
-//! The vendored `h2` hands the stream id to the request as the public `h2::StreamId` extension,
-//! on the request an `h2` server accepts and on the request hyper passes to a service.
+//! The vendored `h2` hands the stream id to the request as the public `h2::StreamId` extension.
+//!
+//! It does so on the request an `h2` server accepts and on the request hyper passes to a service.
 //!
 //! Both tests run over `tokio::io::duplex` (no sockets) and in every profile.
 

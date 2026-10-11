@@ -1,6 +1,8 @@
-//! Tests for `compute_derived`'s `"audibility"` arm: the multi-scene payload shape, the
-//! per-scene `listen_as` independence, the scene-visibility gate shared with `"footprints"`,
-//! and the catch-all's indifference to the new channel.
+//! Tests for `compute_derived`'s `"audibility"` arm.
+//!
+//! They cover the multi-scene payload shape, the per-scene `listen_as` independence, the
+//! scene-visibility gate shared with `"footprints"`, and the catch-all's indifference to the new
+//! channel.
 
 use super::*;
 use crate::scene::audibility as audibility_channel;

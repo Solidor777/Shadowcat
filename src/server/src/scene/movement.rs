@@ -1,6 +1,7 @@
-//! Movement-segment rasterization for the movement-restriction gate. Pure, clean-room,
-//! headless. INVARIANT: `supercover_cells` is the SAME cell set the gate tests against the
-//! visibility mask, so the authoritative move gate and path preview agree.
+//! Movement-segment rasterization for the movement-restriction gate.
+//!
+//! Pure, clean-room, headless. INVARIANT: `supercover_cells` is the SAME cell set the gate tests
+//! against the visibility mask, so the authoritative move gate and path preview agree.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,6 +1,8 @@
-//! The HTTP surface over the real sniffing listener: per-scheme session cookies, logout removal,
-//! HSTS, `wss://` and HTTP/2 WebSocket round trips, `ClientIp`, the published TLS status and the
-//! admin fingerprint route, and plain-HTTP survival under every TLS degradation.
+//! The HTTP surface over the real sniffing listener.
+//!
+//! The tests cover per-scheme session cookies, logout removal, HSTS, `wss://` and HTTP/2 WebSocket
+//! round trips, `ClientIp`, the published TLS status and the admin fingerprint route, and
+//! plain-HTTP survival under every TLS degradation.
 
 use std::sync::Arc;
 use std::time::Duration;

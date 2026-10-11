@@ -1,6 +1,7 @@
 //! Certificate policy, selection, PEM handling, key-file protection and the degradation ladder.
-//! Pure over the public `shadowcat::tls` API; the real-socket behaviour lives in `tls_listener.rs`
-//! and `tls_http.rs`.
+//!
+//! The tests are pure over the public `shadowcat::tls` API; the real-socket behaviour lives in the
+//! `tls_listener` and `tls_http` tests.
 
 use std::net::IpAddr;
 use std::sync::Arc;

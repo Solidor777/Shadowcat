@@ -1,6 +1,7 @@
-//! Turn-history record/restore seam. `transition::advance`/`start` call
-//! through here so the rewind/redo transition lands as a body change to
-//! these two functions, never a call-site change in `transition`.
+//! Turn-history record/restore seam.
+//!
+//! `transition::advance`/`start` call through here so the rewind/redo transition lands as a body
+//! change to these two functions, never a call-site change in `transition`.
 //!
 //! `append_record`/`fast_forward` take `&CombatSnapshot` (the transition's
 //! PRE-transition state) rather than `transition::Working` (private to that

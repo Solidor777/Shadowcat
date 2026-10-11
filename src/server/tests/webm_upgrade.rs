@@ -1,6 +1,7 @@
-//! The derivative upgrade sweep as a client of the asset routes sees it: a rewritten Opus sibling
-//! is a new validator without a version change, so a cached copy, a conditional request and a
-//! resumed ranged read all notice, and the asset row is not touched.
+//! The derivative upgrade sweep as a client of the asset routes sees it.
+//!
+//! A rewritten Opus sibling is a new validator without a version change, so a cached copy, a
+//! conditional request and a resumed ranged read all notice, and the asset row is not touched.
 //!
 //! The unmarked-layout siblings are the committed output of the unmarked-layout muxer for a 48 kHz mono sine of
 //! `12 * 960 + residue` samples; 648 is outside the tail-loss range (the WebM is remuxed, the Ogg

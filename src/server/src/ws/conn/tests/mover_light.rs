@@ -1,6 +1,7 @@
-//! Per-recipient admission of the carried-light timeline (`MoveStream.mover_light`) in
-//! `clip_move_stream` and the own-move re-emit: full for the mover and a plain GM, disc-
-//! admitted per sample for an observer or a GM see-as, gone when nothing reaches.
+//! Per-recipient admission of the carried-light timeline (`MoveStream.mover_light`).
+//!
+//! `clip_move_stream` and the own-move re-emit admit it full for the mover and a plain GM,
+//! disc-admitted per sample for an observer or a GM see-as, and gone when nothing reaches.
 
 use super::*;
 use crate::ws::protocol::{LightSample, PosSample, VisionSample};

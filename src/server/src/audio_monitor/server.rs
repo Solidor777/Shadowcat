@@ -1,5 +1,7 @@
-//! The `shadowcat audio-monitor` localhost WebSocket server: origin-gated `/levels` upgrade,
-//! the `hello`/`levels`/`watch` frame protocol, and the 10 Hz broadcast loop.
+//! The `shadowcat audio-monitor` localhost WebSocket server.
+//!
+//! It has an origin-gated `/levels` upgrade, the `hello`/`levels`/`watch` frame protocol, and the
+//! 10 Hz broadcast loop.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};

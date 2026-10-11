@@ -1,6 +1,8 @@
-//! `validate_bounds` cap-by-cap truth table, and `vfx_permitted` over a stub
-//! `Repository` (canned doc + defaults, every other method unreachable) — the
-//! spectator short-circuit is pinned by a `get_document` call count.
+//! `validate_bounds` and `vfx_permitted` truth tables.
+//!
+//! `validate_bounds` is tested cap by cap, and `vfx_permitted` over a stub `Repository` (canned doc
+//! + defaults, every other method unreachable) — the spectator short-circuit is pinned by a
+//! `get_document` call count.
 
 use super::*;
 use crate::data::command::{Operation, UnsequencedCommand, WriteOrigin};

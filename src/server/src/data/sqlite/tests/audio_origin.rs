@@ -1,6 +1,7 @@
-//! `WriteOrigin::AudioTransport` is the only origin permitted to `Update`
-//! `audio-state`; Create/Delete of that singleton are reserved to
-//! `WriteOrigin::ConfigSeed` (the world-seed path creates it exactly once).
+//! `WriteOrigin::AudioTransport` is the only origin permitted to `Update` `audio-state`.
+//!
+//! Create/Delete of that singleton are reserved to `WriteOrigin::ConfigSeed` (the world-seed path
+//! creates it exactly once).
 
 use super::*;
 use crate::data::engine::{AudioStateEngine, AUDIO_STATE_DOC_TYPE};

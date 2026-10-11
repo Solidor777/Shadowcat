@@ -1,5 +1,7 @@
-//! Byte-range behaviour of the stored-file read sites of `GET /api/assets/{uuid}`: the Opus and
-//! WebM derivatives, the grid sheet, the canonical file and the `thumb`/`preview` derivatives.
+//! Byte-range behaviour of the stored-file read sites of `GET /api/assets/{uuid}`.
+//!
+//! The sites are the Opus and WebM derivatives, the grid sheet, the canonical file and the
+//! `thumb`/`preview` derivatives.
 //!
 //! Every site goes through one streaming path, so each assertion runs over the full site table and
 //! a divergence at one site fails with that site's label. Files are seeded directly (a row plus

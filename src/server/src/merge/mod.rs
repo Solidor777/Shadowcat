@@ -1,6 +1,7 @@
-//! The server-owned template merge engine: the 3-way merge (`merge3`, `compute_pull`,
-//! `compute_revert`, `plan_to_update`, `apply_resolutions`) behind the
-//! `MergePull`/`MergePush`/`MergeRevert` intents.
+//! The server-owned template merge engine.
+//!
+//! It is the 3-way merge (`merge3`, `compute_pull`, `compute_revert`, `plan_to_update`,
+//! `apply_resolutions`) behind the `MergePull`/`MergePush`/`MergeRevert` intents.
 //!
 //! It is the exact behavioural twin of the client `@shadowcat/core` 3-way merge. Its behaviour is
 //! pinned by one conformance corpus (`src/client/core/src/__fixtures__/merge-conformance.json`,

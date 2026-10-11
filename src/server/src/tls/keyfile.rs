@@ -1,5 +1,7 @@
-//! Owner-only private key files: mode 0600 on Unix, a protected owner-only DACL on Windows, in a
-//! directory restricted the same way WHEN this module created it.
+//! Owner-only private key files.
+//!
+//! They have mode 0600 on Unix and a protected owner-only DACL on Windows, in a directory
+//! restricted the same way WHEN this module created it.
 //!
 //! INVARIANTS:
 //! 1. A key file is never written unprotected: [`write_private`] restricts the still-empty

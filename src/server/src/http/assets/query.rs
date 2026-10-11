@@ -1,6 +1,6 @@
-//! `GET /api/worlds/{world}/assets` — the filtered, sorted, keyset-paginated
-//! asset query (and, with no query parameters at all, the bare listing the
-//! pre-pipeline clients read).
+//! `GET /api/worlds/{world}/assets`: the filtered, sorted, keyset-paginated asset query.
+//!
+//! With no query parameters at all it is the bare listing the pre-pipeline clients read.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

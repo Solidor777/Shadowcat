@@ -1,5 +1,7 @@
-//! The engine's formula language, server side: an exact behavioural twin of the client's
-//! `@shadowcat/formula` package (lexer → parser → evaluator → dependency graph).
+//! The engine's formula language, server side.
+//!
+//! It is an exact behavioural twin of the client's `@shadowcat/formula` package (lexer → parser →
+//! evaluator → dependency graph).
 //!
 //! The two implementations are pinned together by one conformance corpus
 //! (`src/client/formula/src/__fixtures__/conformance.json`) that both test suites read, so a

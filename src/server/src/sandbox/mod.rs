@@ -1,5 +1,7 @@
-//! Sandboxed third-party server-side validators: opt-in, per-world, per-module WASM code run inside
-//! `wasmi` over the `system` band only, after the engine's own validation.
+//! Sandboxed third-party server-side validators.
+//!
+//! They are opt-in, per-world, per-module WASM code run inside `wasmi` over the `system` band only,
+//! after the engine's own validation.
 //!
 //! A validator can refuse a write (a structured reason) and nothing else — see `runtime` for the
 //! host, `registry` for the compiled-module cache. Every validator call is

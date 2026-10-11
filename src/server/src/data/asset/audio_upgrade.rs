@@ -1,5 +1,6 @@
-//! The background sweep that upgrades stored Opus derivatives written by an older encoder or
-//! muxer (see `process::audio::upgrade` for what makes a file old and how each is repaired).
+//! The background sweep that upgrades stored Opus derivatives written by an older encoder or muxer.
+//!
+//! See `process::audio::upgrade` for what makes a file old and how each is repaired.
 //!
 //! The sweep runs once per server start, after the listener is bound, one asset at a time: the
 //! decode and mux work of an asset runs on the blocking pool without any lock, and only the swap

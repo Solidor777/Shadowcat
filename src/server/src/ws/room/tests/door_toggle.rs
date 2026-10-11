@@ -1,6 +1,7 @@
-//! `Room::toggle_door` — the positional reach + visibility gate behind
-//! `ClientMsg::ToggleDoor`, its GM bypass, its `Locked` state machine, and the
-//! role-conditioned refusal-wording discipline (`door_toggle_wire_message`).
+//! `Room::toggle_door`, the gate behind `ClientMsg::ToggleDoor`.
+//!
+//! The tests cover the positional reach + visibility gate, its GM bypass, its `Locked` state
+//! machine, and the role-conditioned refusal-wording discipline (`door_toggle_wire_message`).
 //!
 //! Geometry conventions (square grid, cell size 100): the token stands at
 //! (50,50) beside a light at (50,50) (bright 1.5 / dim 3.0 cells, environment

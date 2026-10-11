@@ -1,6 +1,8 @@
-//! Illumination field + gradation banding. Pure, engine-owned, server-authoritative.
-//! Clean-room: standard radial light falloff plus threshold banding of a
-//! continuous `[0,1]` illumination field. No proprietary VTT/engine source consulted.
+//! Illumination field + gradation banding.
+//!
+//! Pure, engine-owned, server-authoritative. Clean-room: standard radial light falloff plus
+//! threshold banding of a continuous `[0,1]` illumination field. No proprietary VTT/engine source
+//! consulted.
 //!
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs` module; the server
 //! stays structural-only (callers parse documents and pass these plain structs).

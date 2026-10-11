@@ -1,5 +1,7 @@
-//! `Validator::OfFile`: the validator is derived from the opened file's bytes, so a validator hit
-//! on that arm is answered after the open, under a permit, and a rewrite of the file changes it.
+//! `Validator::OfFile`: the validator is derived from the opened file's bytes.
+//!
+//! A validator hit on that arm is therefore answered after the open, under a permit, and a rewrite
+//! of the file changes the validator.
 
 use std::sync::Arc;
 use std::time::Duration;
