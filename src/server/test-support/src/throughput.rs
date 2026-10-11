@@ -1,11 +1,12 @@
 //! Loopback download throughput of an HTTP/2 server, and the ladder of servers that separates the
 //! production path's layers from a bare hyper server.
 //!
-//! One download is a fresh connection fetching [`BODY_BYTES`](crate::throughput::BODY_BYTES) with a 6 MiB stream window and a
-//! 15 MiB connection window, so the client never limits the server. Every variant answers
+//! One download is a fresh connection fetching [`BODY_BYTES`](crate::throughput::BODY_BYTES) with a
+//! 6 MiB stream window and a 15 MiB connection window, so the client never limits the server. Every variant answers
 //! `/bulk?bytes=N` with the same bytes, so a difference between two variants is the layer the
 //! variant adds.
 
+use std::any::Any;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::Query;
 use axum::routing::get;
 use axum::Router;
+use futures_util::future::BoxFuture;
 use h2::client::Builder;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -24,7 +26,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::egress::{bulk_body, get_path, EgressServer};
+use crate::egress::{bulk_body, get_path, EgressServer, Protocol};
 use crate::h2_session::seeded_state;
 use crate::h2c::{h2c_connect, H2cSource};
 
@@ -242,23 +244,72 @@ impl Rung {
         self
     }
 
-    /// A rung over a production serve loop.
-    pub fn served(name: &'static str, server: Served) -> Self {
+    /// A rung named `name` over `server`, compared with the rung named `baseline` (none for the
+    /// root).
+    fn from_server(name: &'static str, baseline: Option<&'static str>, server: RungServer) -> Self {
         Self {
             name,
-            baseline: None,
+            baseline,
             addr: server.addr,
-            _keep: Some(Box::new(server)),
+            _keep: server.keep,
+        }
+    }
+}
+
+/// A started ladder server: the address downloads go to and whatever keeps it alive.
+pub struct RungServer {
+    /// The address downloads go to.
+    addr: SocketAddr,
+    /// Keeps a production serve loop or harness server alive.
+    keep: Option<Box<dyn Any + Send>>,
+}
+
+impl RungServer {
+    /// A bare server or any address that needs no handle.
+    pub fn bare(addr: SocketAddr) -> Self {
+        Self { addr, keep: None }
+    }
+
+    /// A production serve loop.
+    pub fn served(server: Served) -> Self {
+        Self {
+            addr: server.addr,
+            keep: Some(Box::new(server)),
         }
     }
 
-    /// A rung over the egress harness's server (the production router behind its observed source).
-    pub fn harness(name: &'static str, server: EgressServer) -> Self {
+    /// The egress harness's server (the production router behind its observed source).
+    pub fn harness(server: EgressServer) -> Self {
+        Self {
+            addr: server.addr,
+            keep: Some(Box::new(server)),
+        }
+    }
+}
+
+/// A rung that is not started yet: its name, the name of the rung it is compared with, and an
+/// async constructor that runs only when the rung is selected, so an unselected rung allocates and
+/// binds nothing.
+pub struct RungSpec {
+    /// The variant's name.
+    name: &'static str,
+    /// The name of the rung this one is compared with; it must precede this rung in the ladder.
+    baseline: Option<&'static str>,
+    /// Starts the server.
+    build: Box<dyn FnOnce() -> BoxFuture<'static, RungServer> + Send>,
+}
+
+impl RungSpec {
+    /// A spec whose server is started by `build`.
+    pub fn new<F, Fut>(name: &'static str, baseline: Option<&'static str>, build: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = RungServer> + Send + 'static,
+    {
         Self {
             name,
-            baseline: None,
-            addr: server.addr,
-            _keep: Some(Box::new(server)),
+            baseline,
+            build: Box::new(move || Box::pin(build())),
         }
     }
 }
@@ -309,6 +360,34 @@ pub fn parse_worker_count(arg: Option<&str>) -> Result<usize, String> {
     }
 }
 
+/// The baseline each entry of `chain` (name, baseline) has once only `names` are selected: its
+/// nearest selected ancestor along the baseline chain, or none when no ancestor is selected.
+/// Panics on a name no entry has, so a mistyped selection cannot silently drop a rung.
+fn selected_baselines(
+    chain: &[(&'static str, Option<&'static str>)],
+    names: &[&str],
+) -> Vec<Option<&'static str>> {
+    for name in names {
+        assert!(
+            chain.iter().any(|(n, _)| n == name),
+            "no rung named {name:?} to select"
+        );
+    }
+    chain
+        .iter()
+        .map(|(_, baseline)| {
+            let mut ancestor = *baseline;
+            while let Some(a) = ancestor {
+                if names.contains(&a) {
+                    break;
+                }
+                ancestor = chain.iter().find(|(n, _)| *n == a).and_then(|(_, b)| *b);
+            }
+            ancestor
+        })
+        .collect()
+}
+
 /// The rungs of `rungs` named in `names`, in ladder order. A selected rung whose baseline is not
 /// selected is compared with its nearest selected ancestor along the baseline chain, or with
 /// nothing when no ancestor is selected, so a subset still prints the step it can. Panics on a
@@ -328,29 +407,135 @@ pub fn parse_worker_count(arg: Option<&str>) -> Result<usize, String> {
 /// assert_eq!(picked[1].baseline, Some("root"));
 /// ```
 pub fn select_rungs(rungs: Vec<Rung>, names: &[&str]) -> Vec<Rung> {
-    for name in names {
-        assert!(
-            rungs.iter().any(|r| r.name == *name),
-            "no rung named {name:?} to select"
-        );
-    }
     let chain: Vec<(&'static str, Option<&'static str>)> =
         rungs.iter().map(|r| (r.name, r.baseline)).collect();
+    let resolved = selected_baselines(&chain, names);
     rungs
         .into_iter()
-        .filter(|r| names.contains(&r.name))
-        .map(|mut r| {
-            let mut ancestor = r.baseline;
-            while let Some(a) = ancestor {
-                if names.contains(&a) {
-                    break;
-                }
-                ancestor = chain.iter().find(|(n, _)| *n == a).and_then(|(_, b)| *b);
-            }
-            r.baseline = ancestor;
+        .zip(resolved)
+        .filter(|(r, _)| names.contains(&r.name))
+        .map(|(mut r, baseline)| {
+            r.baseline = baseline;
             r
         })
         .collect()
+}
+
+/// Starts the rungs of `specs` named in `names` (all of them when `names` is `None`), in ladder
+/// order, with the baselines [`select_rungs`] gives them. `names` is validated against the ladder
+/// before any constructor runs, and a constructor of an unselected rung never runs.
+///
+/// ```
+/// use shadowcat_test_support::throughput::{build_ladder, RungServer, RungSpec};
+///
+/// # #[tokio::main] async fn main() {
+/// let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+/// let specs = vec![
+///     RungSpec::new("root", None, move || async move { RungServer::bare(addr) }),
+///     RungSpec::new("leaf", Some("root"), move || async move { RungServer::bare(addr) }),
+/// ];
+/// let rungs = build_ladder(specs, Some(&["leaf"])).await;
+/// assert_eq!(rungs.len(), 1);
+/// assert_eq!(rungs[0].baseline, None);
+/// # }
+/// ```
+pub async fn build_ladder(specs: Vec<RungSpec>, names: Option<&[&str]>) -> Vec<Rung> {
+    let chain: Vec<(&'static str, Option<&'static str>)> =
+        specs.iter().map(|s| (s.name, s.baseline)).collect();
+    let all: Vec<&str> = chain.iter().map(|(n, _)| *n).collect();
+    let resolved = selected_baselines(&chain, names.unwrap_or(&all));
+    let mut rungs = Vec::new();
+    for (spec, baseline) in specs.into_iter().zip(resolved) {
+        if names.is_some_and(|names| !names.contains(&spec.name)) {
+            continue;
+        }
+        let server = (spec.build)().await;
+        rungs.push(Rung::from_server(spec.name, baseline, server));
+    }
+    rungs
+}
+
+/// The ladder `egress_measure layers` measures: bare hyper servers, the router, the application's
+/// middleware, the production serve loop and the harness's observed source, with a
+/// body-producer control and `TCP_NODELAY` off as controls. Each rung names the rung its step is
+/// read against, so a step is one layer (or, for a `-no-nodelay` rung, the option turned off) and
+/// never a comparison across several. Every rung but the three marked `-no-nodelay` sets
+/// `TCP_NODELAY` the way `impl ConnSource for TcpListener` and `SniffListener` do
+/// (`set_accepted_nodelay`).
+pub fn ladder() -> Vec<RungSpec> {
+    vec![
+        RungSpec::new("bare-default-buf", None, || async {
+            RungServer::bare(bare_server(None, true, BareApp::Chunks).await)
+        }),
+        RungSpec::new("bare-64k", Some("bare-default-buf"), || async {
+            RungServer::bare(bare_server(Some(PRODUCTION_SEND_BUF), true, BareApp::Chunks).await)
+        }),
+        RungSpec::new("bare-64k-onebuffer-producer", Some("bare-64k"), || async {
+            RungServer::bare(
+                bare_server(Some(PRODUCTION_SEND_BUF), true, BareApp::one_buffer()).await,
+            )
+        }),
+        RungSpec::new("bare-64k+minimal-router", Some("bare-64k"), || async {
+            RungServer::bare(
+                bare_server(
+                    Some(PRODUCTION_SEND_BUF),
+                    true,
+                    BareApp::Router(minimal_app()),
+                )
+                .await,
+            )
+        }),
+        RungSpec::new(
+            "bare-64k+full-router",
+            Some("bare-64k+minimal-router"),
+            || async {
+                RungServer::bare(
+                    bare_server(
+                        Some(PRODUCTION_SEND_BUF),
+                        true,
+                        BareApp::Router(full_app().await),
+                    )
+                    .await,
+                )
+            },
+        ),
+        RungSpec::new(
+            "serve_router+minimal-router",
+            Some("bare-64k+minimal-router"),
+            || async { RungServer::served(served(minimal_app(), true).await) },
+        ),
+        RungSpec::new(
+            "serve_router+full-router",
+            Some("bare-64k+full-router"),
+            || async { RungServer::served(served(full_app().await, true).await) },
+        ),
+        RungSpec::new(
+            "serve_router+full-router+observed-source",
+            Some("serve_router+full-router"),
+            || async {
+                RungServer::harness(
+                    EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, true).await,
+                )
+            },
+        ),
+        RungSpec::new("bare-64k-no-nodelay", Some("bare-64k"), || async {
+            RungServer::bare(bare_server(Some(PRODUCTION_SEND_BUF), false, BareApp::Chunks).await)
+        }),
+        RungSpec::new(
+            "serve_router+full-router-no-nodelay",
+            Some("serve_router+full-router"),
+            || async { RungServer::served(served(full_app().await, false).await) },
+        ),
+        RungSpec::new(
+            "serve_router+full-router+observed-source-no-nodelay",
+            Some("serve_router+full-router+observed-source"),
+            || async {
+                RungServer::harness(
+                    EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, false).await,
+                )
+            },
+        ),
+    ]
 }
 
 #[cfg(test)]

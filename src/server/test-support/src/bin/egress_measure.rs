@@ -28,7 +28,8 @@
 //!   `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's
 //!   worker thread count (default `DEFAULT_WORKERS`); `rungs` is a comma-separated list of rung
 //!   names that restricts the ladder to those rungs (a rung whose baseline is not listed is compared
-//!   with its nearest listed ancestor).
+//!   with its nearest listed ancestor). Only the listed rungs are started: a name no rung has
+//!   stops the program before any server starts, and an unlisted rung allocates and binds nothing.
 //!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
@@ -176,77 +177,12 @@ async fn grid() {
 /// within a run so no rung always follows the same neighbour.
 async fn layers(downloads: usize, runs: usize, only: Option<&str>) {
     use shadowcat_test_support::throughput::{
-        bare_server, baseline_index, bulk_path, download, full_app, median, minimal_app,
-        select_rungs, served, BareApp, Rung, PRODUCTION_SEND_BUF,
+        baseline_index, build_ladder, bulk_path, download, ladder, median,
     };
     let workers = tokio::runtime::Handle::current().metrics().num_workers();
     let path = bulk_path();
-    let default_buf = None;
-    let sixty_four = Some(PRODUCTION_SEND_BUF);
-    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY the way `impl ConnSource for
-    // TcpListener` and `SniffListener` do (`set_accepted_nodelay`). Each rung's `over` names the
-    // rung its step is read against, so a step is one layer (or, for a no-nodelay rung, the option
-    // turned off) and never a comparison across several.
-    let rungs: Vec<Rung> = vec![
-        Rung::bare(
-            "bare-default-buf",
-            bare_server(default_buf, true, BareApp::Chunks).await,
-        ),
-        Rung::bare(
-            "bare-64k",
-            bare_server(sixty_four, true, BareApp::Chunks).await,
-        )
-        .over("bare-default-buf"),
-        Rung::bare(
-            "bare-64k-onebuffer-producer",
-            bare_server(sixty_four, true, BareApp::one_buffer()).await,
-        )
-        .over("bare-64k"),
-        Rung::bare(
-            "bare-64k+minimal-router",
-            bare_server(sixty_four, true, BareApp::Router(minimal_app())).await,
-        )
-        .over("bare-64k"),
-        Rung::bare(
-            "bare-64k+full-router",
-            bare_server(sixty_four, true, BareApp::Router(full_app().await)).await,
-        )
-        .over("bare-64k+minimal-router"),
-        Rung::served(
-            "serve_router+minimal-router",
-            served(minimal_app(), true).await,
-        )
-        .over("bare-64k+minimal-router"),
-        Rung::served(
-            "serve_router+full-router",
-            served(full_app().await, true).await,
-        )
-        .over("bare-64k+full-router"),
-        Rung::harness(
-            "serve_router+full-router+observed-source",
-            EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, true).await,
-        )
-        .over("serve_router+full-router"),
-        Rung::bare(
-            "bare-64k-no-nodelay",
-            bare_server(sixty_four, false, BareApp::Chunks).await,
-        )
-        .over("bare-64k"),
-        Rung::served(
-            "serve_router+full-router-no-nodelay",
-            served(full_app().await, false).await,
-        )
-        .over("serve_router+full-router"),
-        Rung::harness(
-            "serve_router+full-router+observed-source-no-nodelay",
-            EgressServer::start_tuned(ConnLimits::default(), Protocol::H2, false).await,
-        )
-        .over("serve_router+full-router+observed-source"),
-    ];
-    let rungs = match only {
-        Some(list) => select_rungs(rungs, &list.split(',').collect::<Vec<_>>()),
-        None => rungs,
-    };
+    let names: Option<Vec<&str>> = only.map(|list| list.split(',').collect());
+    let rungs = build_ladder(ladder(), names.as_deref()).await;
     for rung in &rungs {
         download(rung.addr, &path).await;
     }

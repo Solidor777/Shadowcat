@@ -1,6 +1,7 @@
-//! Baseline resolution of the throughput ladder.
+//! Baseline resolution and lazy construction of the throughput ladder.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 
@@ -94,4 +95,58 @@ fn a_selected_rung_with_no_selected_ancestor_has_no_baseline() {
 #[should_panic(expected = "no rung named")]
 fn selecting_an_unknown_rung_panics() {
     select_rungs(ladder(), &["roott"]);
+}
+
+/// A spec list shaped like `ladder()` whose constructors record their name in `started`.
+fn recording_specs(started: &Arc<Mutex<Vec<&'static str>>>) -> Vec<RungSpec> {
+    let spec = |name: &'static str, baseline: Option<&'static str>| {
+        let started = Arc::clone(started);
+        RungSpec::new(name, baseline, move || async move {
+            started.lock().unwrap().push(name);
+            RungServer::bare(addr())
+        })
+    };
+    vec![
+        spec("root", None),
+        spec("child", Some("root")),
+        spec("grandchild", Some("child")),
+        spec("sibling", Some("root")),
+    ]
+}
+
+#[tokio::test]
+async fn only_the_selected_rungs_are_started_and_an_unselected_baseline_is_never_built() {
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let rungs = build_ladder(recording_specs(&started), Some(&["grandchild", "root"])).await;
+    assert_eq!(*started.lock().unwrap(), ["root", "grandchild"]);
+    let names: Vec<_> = rungs.iter().map(|r| r.name).collect();
+    assert_eq!(names, ["root", "grandchild"]);
+    assert_eq!(rungs[1].baseline, Some("root"));
+}
+
+#[tokio::test]
+async fn no_selection_starts_every_rung_in_ladder_order() {
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let rungs = build_ladder(recording_specs(&started), None).await;
+    assert_eq!(
+        *started.lock().unwrap(),
+        ["root", "child", "grandchild", "sibling"]
+    );
+    assert_eq!(rungs[2].baseline, Some("child"));
+}
+
+#[tokio::test]
+async fn an_unknown_rung_name_fails_before_any_constructor_runs() {
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let specs = recording_specs(&started);
+    let outcome =
+        tokio::spawn(async move { build_ladder(specs, Some(&["root", "roott"])).await }).await;
+    let join_error = outcome
+        .err()
+        .expect("an unknown rung name did not stop the build");
+    assert!(join_error.is_panic(), "{join_error:?}");
+    assert!(
+        started.lock().unwrap().is_empty(),
+        "a constructor ran before the selection was validated"
+    );
 }
