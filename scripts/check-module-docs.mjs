@@ -9,12 +9,12 @@
 //
 // Telling code from comment is shared with the other gates through comment-span.mjs: an outer doc
 // is a comment SPAN that opens a line with `///` or `/**`; inside a block comment the span is the
-// whole line, so a triple-slash there is prose, and a plain block comment between a doc and its item
-// leaves the doc attached. A doc sets a pending state that survives blank lines, comments and further attributes;
-// leading `#[...]` groups are stripped from a code line (a `#[doc = "..."]` group is itself a doc)
-// and the remainder is tested for a `mod` item, which consumes the pending state whether or not it
-// reports. Bound: no string state crosses a line, so a triple-slash line inside a multi-line raw
-// string literal is read as a doc.
+// whole line, so a triple-slash there is prose, and a plain block comment between a doc and its
+// item leaves the doc attached. A doc sets a pending state that survives blank lines, comments and
+// further attributes; leading `#[...]` groups are stripped from a code line (a `#[doc = "..."]`
+// group is itself a doc) and the remainder is tested for a `mod` item, which consumes the pending
+// state whether or not it reports. Bound: no string state crosses a line, so a triple-slash line
+// inside a multi-line raw string literal is read as a doc.
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -28,9 +28,11 @@ const MOD_ITEM = /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*
 const DOC_ATTR_BODY = /^\s*doc\b/;
 
 /**
- * Whether the comment span of a line that opens with a comment is an OUTER doc: `///` (the span
- * after `//` begins with one more `/`, not two) or `/**` (the span after `/*` begins with one `*`,
- * not two; the empty `/**` + `/` pair has an empty span and is not a doc).
+ * Whether a line that opens with a comment opens an OUTER doc, by the rustc rule on the comment
+ * text: `///` is an outer doc when the span after `//` begins with one more `/`, not two; `/**` is
+ * an outer doc when the character after the opener is neither `*` nor `/`, and the end of the line
+ * counts as a doc (so a multi-line `/**` opener alone on its line is one). An opener followed by a
+ * star or a slash is a plain comment.
  * @param line The source line.
  * @param comment The comment span `splitLine` returned for the line.
  * @returns Whether the line opens an outer doc.
@@ -38,7 +40,7 @@ const DOC_ATTR_BODY = /^\s*doc\b/;
 function opensOuterDoc(line, comment) {
   const lead = line.trimStart();
   if (lead.startsWith("//")) return comment.startsWith("/") && !comment.startsWith("//");
-  if (lead.startsWith("/*")) return comment.startsWith("*") && !comment.startsWith("**");
+  if (lead.startsWith("/**")) return !/^[*/]/.test(lead.slice(3));
   return false;
 }
 

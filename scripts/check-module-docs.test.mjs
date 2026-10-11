@@ -72,6 +72,8 @@ test("an outer block doc followed by code on its closing line is a violation", (
 
 test("a block comment that opens with more than two stars is not a doc", () => {
   expect(scanModuleDocs("/*** banner ***/\nmod a;\n")).toEqual([]);
+  expect(scanModuleDocs("/***/\nmod a;\n")).toEqual([]);
+  expect(scanModuleDocs("/****/\nmod a;\n")).toEqual([]);
 });
 
 test("stated bound: a triple-slash line inside a multi-line raw string is read as a doc", () => {
