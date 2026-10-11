@@ -109,7 +109,10 @@ interface PositionAnchor {
  * preferring the Ogg derivative). The streaming path routes an `<audio>` element through a
  * `MediaElementAudioSourceNode` (never decoded to RAM — appropriate for long music). Both
  * modes keep in sync with the server-authoritative `PlayingTrack.startedAt`/`pausedAt` via
- * `sync`, called on every `audio-state` change and on a periodic drift-correction tick. */
+ * `sync`, which `AudioEngine.applyState` calls on every `audio-state` change and on every
+ * `SYNC_TICK_MS` tick over the latest state. A buffered source's position is measured on the
+ * audio context clock (`PositionAnchor`); a streaming element's on its own `currentTime`; both
+ * decide seek versus rate nudge through `SYNC_SEEK_THRESHOLD_SECS` and `rateForDrift`. */
 export class TrackPlayer {
   /** The mixer graph's `AudioContextLike`. */
   #context: AudioContextLike;
@@ -318,9 +321,10 @@ export class TrackPlayer {
           this.#bufferSource = null;
           this.#anchor = null;
         }
-        // Every paused sync refreshes the frozen position from the authoritative entry (a
-        // Seek while paused would otherwise be lost until the next drift tick — and the two
-        // agree when no seek happened, so refreshing is always safe).
+        // Every paused sync refreshes the frozen position from the authoritative entry: the
+        // resume path starts the source at `#frozen`, so a Seek while paused would otherwise
+        // resume at the pre-seek position. Without a seek the two agree, so refreshing is
+        // always safe.
         this.#frozen = targetSecs;
         return;
       }
