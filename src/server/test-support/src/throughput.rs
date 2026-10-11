@@ -309,6 +309,50 @@ pub fn parse_worker_count(arg: Option<&str>) -> Result<usize, String> {
     }
 }
 
+/// The rungs of `rungs` named in `names`, in ladder order. A selected rung whose baseline is not
+/// selected is compared with its nearest selected ancestor along the baseline chain, or with
+/// nothing when no ancestor is selected, so a subset still prints the step it can. Panics on a
+/// name no rung has, so a mistyped selection cannot silently drop a rung.
+///
+/// ```
+/// use shadowcat_test_support::throughput::{select_rungs, Rung};
+///
+/// let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+/// let ladder = vec![
+///     Rung::bare("root", addr),
+///     Rung::bare("middle", addr).over("root"),
+///     Rung::bare("leaf", addr).over("middle"),
+/// ];
+/// let picked = select_rungs(ladder, &["root", "leaf"]);
+/// assert_eq!(picked.len(), 2);
+/// assert_eq!(picked[1].baseline, Some("root"));
+/// ```
+pub fn select_rungs(rungs: Vec<Rung>, names: &[&str]) -> Vec<Rung> {
+    for name in names {
+        assert!(
+            rungs.iter().any(|r| r.name == *name),
+            "no rung named {name:?} to select"
+        );
+    }
+    let chain: Vec<(&'static str, Option<&'static str>)> =
+        rungs.iter().map(|r| (r.name, r.baseline)).collect();
+    rungs
+        .into_iter()
+        .filter(|r| names.contains(&r.name))
+        .map(|mut r| {
+            let mut ancestor = r.baseline;
+            while let Some(a) = ancestor {
+                if names.contains(&a) {
+                    break;
+                }
+                ancestor = chain.iter().find(|(n, _)| *n == a).and_then(|(_, b)| *b);
+            }
+            r.baseline = ancestor;
+            r
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;
 

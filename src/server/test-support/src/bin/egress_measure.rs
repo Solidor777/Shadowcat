@@ -18,7 +18,7 @@
 //!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
 //!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
 //!
-//! - `layers [downloads [runs [workers]]]`: loopback download throughput of a ladder of servers over a bare
+//! - `layers [downloads [runs [workers [rungs]]]]`: loopback download throughput of a ladder of servers over a bare
 //!   hyper server (the router, the application's middleware, the serve loop, the harness's
 //!   observed source), with a body-producer control and TCP_NODELAY off as controls. The ladder is
 //!   a tree: each rung names the rung it is compared with, and the three `-no-nodelay` rungs
@@ -26,7 +26,9 @@
 //!   `RECORD layers` line per run and per rung and a `RESULT layers` summary of the median over
 //!   runs, where every rung but the root also prints its `baseline` and
 //!   `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's
-//!   worker thread count (default `DEFAULT_WORKERS`).
+//!   worker thread count (default `DEFAULT_WORKERS`); `rungs` is a comma-separated list of rung
+//!   names that restricts the ladder to those rungs (a rung whose baseline is not listed is compared
+//!   with its nearest listed ancestor).
 //!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
@@ -77,7 +79,8 @@ fn main() {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(200usize);
             let runs = rest.get(1).and_then(|v| v.parse().ok()).unwrap_or(5usize);
-            runtime.block_on(layers(downloads, runs));
+            let only = rest.get(3).map(String::as_str);
+            runtime.block_on(layers(downloads, runs, only));
         }
         "socket-grants" => {
             let nums: Vec<u32> = rest.iter().filter_map(|v| v.parse().ok()).collect();
@@ -171,10 +174,10 @@ async fn grid() {
 
 /// The `layers` subcommand: `downloads` per rung per run, `runs` runs, the rungs' order rotating
 /// within a run so no rung always follows the same neighbour.
-async fn layers(downloads: usize, runs: usize) {
+async fn layers(downloads: usize, runs: usize, only: Option<&str>) {
     use shadowcat_test_support::throughput::{
-        bare_server, baseline_index, bulk_path, download, full_app, median, minimal_app, served,
-        BareApp, Rung, PRODUCTION_SEND_BUF,
+        bare_server, baseline_index, bulk_path, download, full_app, median, minimal_app,
+        select_rungs, served, BareApp, Rung, PRODUCTION_SEND_BUF,
     };
     let workers = tokio::runtime::Handle::current().metrics().num_workers();
     let path = bulk_path();
@@ -240,6 +243,10 @@ async fn layers(downloads: usize, runs: usize) {
         )
         .over("serve_router+full-router+observed-source"),
     ];
+    let rungs = match only {
+        Some(list) => select_rungs(rungs, &list.split(',').collect::<Vec<_>>()),
+        None => rungs,
+    };
     for rung in &rungs {
         download(rung.addr, &path).await;
     }
@@ -269,6 +276,8 @@ async fn layers(downloads: usize, runs: usize) {
         }
     }
     let bare = median(&mut medians[0].clone()).as_secs_f64();
+    // The default-buffer comparison exists only while the first rung is the default-buffer root.
+    let has_default_root = rungs[0].name == "bare-default-buf";
     let rung_medians: Vec<f64> = medians
         .iter_mut()
         .map(|m| median(m).as_secs_f64())
@@ -277,6 +286,11 @@ async fn layers(downloads: usize, runs: usize) {
         let min = m.iter().min().copied().unwrap_or_default().as_secs_f64();
         let max = m.iter().max().copied().unwrap_or_default().as_secs_f64();
         let med = rung_medians[rung];
+        let vs_default = if has_default_root {
+            format!(" throughput_vs_bare_default={:.3}", bare / med)
+        } else {
+            String::new()
+        };
         let step = match baseline_index(&rungs, rung) {
             Some(b) => format!(
                 " baseline=\"{}\" throughput_vs_baseline={:.3}",
@@ -286,12 +300,11 @@ async fn layers(downloads: usize, runs: usize) {
             None => String::new(),
         };
         record(&format!(
-            "RESULT layers rung=\"{}\" median_of_run_medians_ms={:.2} run_min_ms={:.2} run_max_ms={:.2} throughput_vs_bare_default={:.3}{step}",
+            "RESULT layers rung=\"{}\" median_of_run_medians_ms={:.2} run_min_ms={:.2} run_max_ms={:.2}{vs_default}{step}",
             rungs[rung].name,
             med * 1e3,
             min * 1e3,
             max * 1e3,
-            bare / med,
         ));
     }
 }

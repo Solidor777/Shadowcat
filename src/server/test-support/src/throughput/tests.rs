@@ -68,3 +68,30 @@ fn a_zero_or_non_numeric_worker_count_is_rejected() {
         assert!(parse_worker_count(Some(bad)).is_err(), "{bad:?} accepted");
     }
 }
+
+#[test]
+fn a_selection_keeps_ladder_order_and_reroutes_a_missing_baseline_to_its_nearest_selected_ancestor()
+{
+    let picked = select_rungs(ladder(), &["grandchild", "root"]);
+    let names: Vec<_> = picked.iter().map(|r| r.name).collect();
+    assert_eq!(names, ["root", "grandchild"]);
+    assert_eq!(picked[1].baseline, Some("root"));
+}
+
+#[test]
+fn a_selected_rung_whose_baseline_is_selected_keeps_it() {
+    let picked = select_rungs(ladder(), &["root", "child", "grandchild"]);
+    assert_eq!(picked[2].baseline, Some("child"));
+}
+
+#[test]
+fn a_selected_rung_with_no_selected_ancestor_has_no_baseline() {
+    let picked = select_rungs(ladder(), &["grandchild"]);
+    assert_eq!(picked[0].baseline, None);
+}
+
+#[test]
+#[should_panic(expected = "no rung named")]
+fn selecting_an_unknown_rung_panics() {
+    select_rungs(ladder(), &["roott"]);
+}
