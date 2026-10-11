@@ -164,16 +164,19 @@ export function applyRenameAll(name, style) {
 }
 
 /**
- * Derives the full module-path segments a `.rs` file's OWN declarations sit under, from
- * `src/server/src` (the crate root) down: each intervening directory name is one segment, and
- * the file's own basename is the final segment — except a `mod.rs` file, which contributes no
- * segment of its own (it names its parent directory's module). `main.rs`/`lib.rs` at the crate
- * root are not real Rust path segments (the crate root has no name from outside the crate), but
- * this repo's own skill prose still writes `main::run_backup` as a doc-convention shorthand for
- * "declared in `main.rs`" — the same non-literal-Rust-syntax latitude already extended to a
- * struct field's `::`/`.` separator choice — so `main` (not `lib`, which no skill cites this way)
- * is kept as a one-segment path rather than `[]`.
- * @param {string} rustRoot - absolute path to `src/server/src`.
+ * Derives the full module-path segments a `.rs` file's OWN declarations sit under, from the root
+ * of the one indexed Rust tree the file belongs to (each of the four roots `buildSymbolIndex`
+ * walks: the server's `src`, the test-support crate's `src` and `tests`, and the server's `tests`)
+ * down: each intervening directory name is one segment, and the file's own basename is the final
+ * segment — except a `mod.rs` file, which contributes no segment of its own (it names its parent
+ * directory's module). `main.rs`/`lib.rs` directly under a root are not real Rust path segments
+ * (a crate root has no name from outside the crate), so under every root `lib.rs` maps to `[]`;
+ * `main.rs` maps to the one-segment path `main`, because this repo's own skill prose writes
+ * `main::run_backup` as a doc-convention shorthand for "declared in `main.rs`" — the same
+ * non-literal-Rust-syntax latitude already extended to a struct field's `::`/`.` separator
+ * choice. No skill cites a `lib` path that way.
+ * @param {string} rustRoot - absolute path to the root of the indexed Rust tree `filePath` is
+ *   in (one of the four roots `buildSymbolIndex` walks).
  * @param {string} filePath - absolute path to a `.rs` file under `rustRoot`.
  * @returns {string[]} module path segments, root-to-leaf.
  */
