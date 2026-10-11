@@ -388,6 +388,11 @@ describe("rustModulePath", () => {
     expect(rustModulePath("/repo/src", "/repo/src/main.rs")).toEqual(["main"]);
   });
 
+  it("maps lib.rs and main.rs specially only directly under a root; a nested one is an ordinary module", () => {
+    expect(rustModulePath("/repo/src", "/repo/src/foo/lib.rs")).toEqual(["foo", "lib"]);
+    expect(rustModulePath("/repo/src", "/repo/src/foo/main.rs")).toEqual(["foo", "main"]);
+  });
+
   it("contributes no segment of its own for a mod.rs, but does for a plain file", () => {
     expect(rustModulePath("/repo/src", "/repo/src/chat/mod.rs")).toEqual(["chat"]);
     expect(rustModulePath("/repo/src", "/repo/src/data/sqlite.rs")).toEqual(["data", "sqlite"]);

@@ -479,8 +479,8 @@ async fn drain_without_credit(body: &mut h2::RecvStream) -> u64 {
 /// entry was not refreshed by traffic that must not count is established by the tests that drive
 /// such traffic: from the order of events they cause, or, for the partly drained tail, from a
 /// bound derived from the window with its premises asserted (see
-/// `a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`). The tick restated
-/// here is the sampler period `ConnLimits::egress_window` yields, `egress_tick(window)`.
+/// `a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`). The tick is
+/// `egress_tick(window)`, the sampler period `ConnLimits::egress_window` yields.
 fn assert_tail_cut_timing(cut_at: Instant, since: Instant, window: Duration, what: &str) {
     let elapsed = cut_at.duration_since(since);
     assert!(

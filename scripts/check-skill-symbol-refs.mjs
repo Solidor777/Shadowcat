@@ -171,6 +171,7 @@ export function applyRenameAll(name, style) {
  * segment — except a `mod.rs` file, which contributes no segment of its own (it names its parent
  * directory's module). `main.rs`/`lib.rs` directly under a root are not real Rust path segments
  * (a crate root has no name from outside the crate), so under every root `lib.rs` maps to `[]`;
+ * a nested `foo/lib.rs` or `foo/main.rs` is an ordinary module (`foo::lib`, `foo::main`);
  * `main.rs` maps to the one-segment path `main`, because this repo's own skill prose writes
  * `main::run_backup` as a doc-convention shorthand for "declared in `main.rs`" — the same
  * non-literal-Rust-syntax latitude already extended to a struct field's `::`/`.` separator
@@ -185,8 +186,8 @@ export function rustModulePath(rustRoot, filePath) {
   const segs = rel.split("/");
   const file = segs.pop();
   const stem = file.replace(/\.rs$/, "");
-  if (stem === "lib") return [];
-  if (stem === "main") return ["main"];
+  if (stem === "lib" && segs.length === 0) return [];
+  if (stem === "main" && segs.length === 0) return ["main"];
   if (stem !== "mod") segs.push(stem);
   return segs;
 }

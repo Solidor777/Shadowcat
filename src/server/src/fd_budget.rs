@@ -4,7 +4,8 @@
 //! the connection caps inside what remains.
 //!
 //! WHY: every admitted connection holds one descriptor, and both connection caps
-//! ([`Limits::global_cap`](crate::tls::listener::Limits::global_cap) before hand-off, [`ConnLimits::max_live`](crate::http::conn_serve::ConnLimits::max_live) after it) are chosen
+//! ([`Limits::global_cap`](crate::tls::listener::Limits::global_cap) before hand-off,
+//! [`ConnLimits::max_live`](crate::http::conn_serve::ConnLimits::max_live) after it) are chosen
 //! bounds, not measured capacities. A soft limit below their sum (the common Unix default is 1024)
 //! lets a flood exhaust descriptors, after which `accept` fails and the server cannot open its
 //! database, assets or outbound fetches either. The budget makes the caps structurally unable to
