@@ -1563,9 +1563,8 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // allowlist setter).
   "url_schemes",
   // A tooling option this repo cites while explaining another tool's behaviour but never sets
-  // itself (TypeDoc's per-package option map), the plugin-cache state keys of the agent harness
-  // (a file outside this repo), and the TypeScript config concept named as a whole.
-  "packageOptions", "lastUpdated", "installedAt", "tsconfig",
+  // itself (TypeDoc's per-package option map), and the TypeScript config concept named as a whole.
+  "packageOptions", "tsconfig",
   // A derived quantity the implementation names only in its own explanatory comment - no binding
   // carries the name, so prose and code agree on a term the index cannot hold.
   "minConsecutiveDelta",
