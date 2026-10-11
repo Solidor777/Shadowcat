@@ -51,17 +51,14 @@ mod table;
 /// The length of an HTTP/2 frame header, the smallest frame (RFC 9113 section 4.1).
 pub(super) const FRAME_HEADER_BYTES: usize = parser::FRAME_HEADER_LEN;
 
-/// The capacity of the codec's framed reader buffer before it has read a frame header: the number
-/// of bytes its ordinary reads can return. `tokio_util::codec::FramedRead` allocates 8 KiB and
-/// reserves one byte per read, so it does not grow on its own.
+/// The initial capacity of the codec's framed reader buffer: the allocation
+/// `tokio_util::codec::FramedRead` makes before it has read anything.
 pub(super) const CODEC_INITIAL_READ_BYTES: usize = 8 * 1024;
 
-/// The most bytes one read of the codec's framed reader can return. Once the reader has read a
-/// frame's header it reserves room for the rest of that frame, so the read that follows can be as
-/// large as the frame's remaining payload, at most [`H2_MAX_FRAME_BYTES`] (the receive limit the
-/// connection advertises); otherwise a read is at most [`CODEC_INITIAL_READ_BYTES`]. The stream
-/// table's lag test measures this bound: a read of the full frame length follows a frame header
-/// read alone.
+/// The most bytes one read of the codec's framed reader returns, as the stream table's lag test
+/// asserts it: no read exceeds this bound, and a read made after a full-size frame's header exceeds
+/// [`CODEC_INITIAL_READ_BYTES`]. The value is the larger of [`H2_MAX_FRAME_BYTES`] (the receive
+/// limit the connection advertises) and [`CODEC_INITIAL_READ_BYTES`].
 pub(super) const CODEC_READ_MAX_BYTES: usize =
     if H2_MAX_FRAME_BYTES as usize > CODEC_INITIAL_READ_BYTES {
         H2_MAX_FRAME_BYTES as usize
