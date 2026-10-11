@@ -32,7 +32,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   slow regime: default-buffer over 64 KiB 1.21 to 1.30 per file (per-run 1.02 to 1.41, nine runs),
   while the gate in the same state read `buffer_ratio` 0.946 to 1.309 per run across nine runs. No
   fast-regime equal-worker comparison exists. The instruments also differ in downloads per run
-  (gate 100, ladder 150 in the fast-regime record) and in interleaved versus blocked rung order.
+  (gate 100, ladder 150 in the fast-regime record).
   Whether to measure it is the owner's decision. Host observation, not a blocker and
   with no diagnosed cause: a 2-worker process of these servers runs about 11.5 ms per download,
   then 29 to 39 ms after sustained load on the author's host. Then, in the
