@@ -32,12 +32,15 @@ const DOC_ATTR_BODY = /^\s*doc\b/;
  * text: `///` is an outer doc when the span after `//` begins with one more `/`, not two; `/**` is
  * an outer doc when the character after the opener is neither `*` nor `/`, and the end of the line
  * counts as a doc (so a multi-line `/**` opener alone on its line is one). An opener followed by a
- * star or a slash is a plain comment.
+ * star or a slash is a plain comment. A line that begins inside a plain block comment opens
+ * nothing: the opener there is comment text.
  * @param line The source line.
  * @param comment The comment span `splitLine` returned for the line.
+ * @param startsInBlock Whether the line begins inside a block comment.
  * @returns Whether the line opens an outer doc.
  */
-function opensOuterDoc(line, comment) {
+function opensOuterDoc(line, comment, startsInBlock) {
+  if (startsInBlock) return false;
   const lead = line.trimStart();
   if (lead.startsWith("//")) return comment.startsWith("/") && !comment.startsWith("//");
   if (lead.startsWith("/**")) return !/^[*/]/.test(lead.slice(3));
@@ -90,9 +93,10 @@ export function scanModuleDocs(text) {
   let attrDepth = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const startsInBlock = state.inBlock;
     const split = splitLine(line, state);
     state = split.state;
-    if (attrDepth === 0 && opensOuterDoc(line, split.comment)) {
+    if (attrDepth === 0 && opensOuterDoc(line, split.comment, startsInBlock)) {
       if (line.trimStart().startsWith("//")) pending = true;
       else docBlock = true;
     }

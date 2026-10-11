@@ -65,6 +65,12 @@ test("a triple-slash line inside a plain block comment is not a doc", () => {
   expect(scanModuleDocs("/* /// not a doc */\nmod a;\n")).toEqual([]);
 });
 
+test("a block-doc opener inside a plain block comment is not a doc", () => {
+  expect(scanModuleDocs("/*\n/** x */\nmod a;\n*/\n")).toEqual([]);
+  expect(scanModuleDocs("/*\n/** x */\n*/\nmod a;\n")).toEqual([]);
+  expect(scanModuleDocs("/*\n/** x\n*/\nmod a;\n")).toEqual([]);
+});
+
 test("an outer block doc followed by code on its closing line is a violation", () => {
   expect(scanModuleDocs("/** Summary. */ mod a;\n")).toEqual([{ line: 1, module: "a", inline: false }]);
   expect(scanModuleDocs("/**/\nmod a;\n")).toEqual([]);
