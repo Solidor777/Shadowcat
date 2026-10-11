@@ -159,9 +159,10 @@ pub fn dacl_sddl(path: &Path) -> std::io::Result<String> {
     win::dacl_sddl(path)
 }
 
-/// Windows ACL plumbing over the `windows` crate.
 #[cfg(windows)]
 mod win {
+    //! Windows ACL plumbing over the `windows` crate.
+
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 

@@ -1,3 +1,6 @@
+//! The server-owned combat clock: snapshot loading, pure transitions, and
+//! effect-lifecycle helpers.
+//!
 //! The server-owned combat clock: loads a `CombatSnapshot`, runs a pure
 //! transition (`transition`), and hands ONE command's ops to `Room`.
 //! INVARIANT: every formula a transition acts on is evaluated HERE, through

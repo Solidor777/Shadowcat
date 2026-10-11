@@ -1,3 +1,6 @@
+//! Server-side rollable-table draws (`ClientMsg::DrawTable` -> a posted
+//! `Segment::TableDraw` chat message).
+//!
 //! Server-side rollable-table draws: `handle_draw_table` resolves one or
 //! more draws from a `table` document and posts the result to chat as ONE
 //! `MessageKind::Roll` message, through the exact same `build_message_doc` +

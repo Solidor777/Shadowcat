@@ -7,54 +7,28 @@
 //! running inside a fuel/memory-limited `wasmi` interpreter with no host
 //! imports beyond a rate-limited debug log.
 
-/// Server-side audio: the pure transport-state engine (`audio::state::apply`)
-/// and the GM-only `AudioTransport` handler (`audio::transport`).
 pub mod audio;
-/// `shadowcat audio-monitor`: the OS audio-session-level subcommand (Windows WASAPI / macOS
-/// Core Audio process tap / Linux PipeWire) serving a localhost WebSocket.
 pub mod audio_monitor;
-/// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
 pub mod backup;
 pub mod chat;
-/// The server-owned combat clock: snapshot loading, pure transitions, and
-/// effect-lifecycle helpers.
 pub mod combat;
-/// CLI/env/TOML config layering (`Cli` > `SHADOWCAT_*` > TOML > default).
 pub mod config;
-/// Documents, permissions, engine-band validation, search, and SQLite persistence.
 pub mod data;
-/// SQLite pool bootstrap (deliberately single-connection).
 pub mod db;
 pub mod dice;
-/// Open-descriptor budget: raising `RLIMIT_NOFILE` and fitting the connection caps to it.
 pub mod fd_budget;
-/// The engine's formula language (server twin of `@shadowcat/formula`).
 pub mod formula;
-/// Liveness probe endpoint plumbing.
 pub mod health;
-/// Axum router: REST surface, asset serving, module serving, embedded client.
 pub mod http;
-/// The server-owned template merge engine: the exact behavioural twin of the
-/// client `@shadowcat/core` 3-way merge, corpus-pinned against it.
 pub mod merge;
-/// Installed community-module discovery + the engine-compat semver gate.
 pub mod modules;
-/// Sandboxed third-party server-side validators (opt-in, per-world, WASM).
 pub mod sandbox;
 pub mod scene;
-/// Server-side rollable-table draws (`ClientMsg::DrawTable` -> a posted
-/// `Segment::TableDraw` chat message).
 pub mod tables;
 pub mod tls;
-/// Per-world export/import: builds/reads the `.tar` bundle format (see
-/// `data::world_bundle` for the row/manifest types, `http::world_bundle` for
-/// the HTTP routes).
 pub mod world_bundle;
 pub mod ws;
 
-/// Deterministic test-fixture UUIDs. Every server-generated document id is a v4 UUID
-/// (`data::validation::validate_document_id`), so a fixture built from a small integer must carry
-/// the same version/variant bits or every Create-path test fails identically at ingress.
 #[cfg(test)]
 pub(crate) mod test_ids;

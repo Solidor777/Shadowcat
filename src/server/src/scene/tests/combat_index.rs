@@ -276,13 +276,14 @@ fn combatant_lookup_falls_back_to_an_instanced_tokens_embedded_actor_copy() {
     assert!(access.has(cap::READ));
 }
 
-/// SceneEcs::resolved_combats: GM sees every combatant with resolved numbers; a player sees
-/// only their own combatant numbers and the hidden NPC is absent entirely; an unparseable
-/// formula surfaces as error: Some(..) with current/max both None; a materialized stored
-/// value is honored; Spaces yields movement_cells == current; a missing grid.distance under
-/// PerCell yields movement_cells: None; a paused combat is still reported; two computations
-/// over the same ECS state are equal (fingerprint stability).
 mod resolved_combats {
+    //! SceneEcs::resolved_combats: GM sees every combatant with resolved numbers; a player sees
+    //! only their own combatant numbers and the hidden NPC is absent entirely; an unparseable
+    //! formula surfaces as error: Some(..) with current/max both None; a materialized stored
+    //! value is honored; Spaces yields movement_cells == current; a missing grid.distance under
+    //! PerCell yields movement_cells: None; a paused combat is still reported; two computations
+    //! over the same ECS state are equal (fingerprint stability).
+
     use super::*;
 
     /// A registry with a Tracked movement resource (max: "speed", PerCell scale) and a

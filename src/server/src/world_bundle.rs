@@ -1,3 +1,7 @@
+//! Per-world export/import: builds/reads the `.tar` bundle format (see
+//! `data::world_bundle` for the row/manifest types, `http::world_bundle` for
+//! the HTTP routes).
+//!
 //! Per-world export/import bundle I/O: builds/reads the uncompressed `.tar`
 //! format (`manifest.json` + `rows/<table>.jsonl` + `assets/<asset_id>`).
 //! Pure file/tar I/O — no `SqliteRepository` dependency, mirroring `backup`'s
