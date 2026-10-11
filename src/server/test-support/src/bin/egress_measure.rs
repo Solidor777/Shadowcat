@@ -18,14 +18,15 @@
 //!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
 //!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
 //!
-//! - `layers [downloads [runs]]`: loopback download throughput of a ladder of servers over a bare
+//! - `layers [downloads [runs [workers]]]`: loopback download throughput of a ladder of servers over a bare
 //!   hyper server (the router, the application's middleware, the serve loop, the harness's
 //!   observed source), with a body-producer control and TCP_NODELAY off as controls. The ladder is
 //!   a tree: each rung names the rung it is compared with, and the three `-no-nodelay` rungs
 //!   repeat a nodelay rung with the option off. Run it in a release build. Prints one
 //!   `RECORD layers` line per run and per rung and a `RESULT layers` summary of the median over
 //!   runs, where every rung but the root also prints its `baseline` and
-//!   `throughput_vs_baseline` (the baseline's median over the rung's).
+//!   `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's
+//!   worker thread count (default `DEFAULT_WORKERS`).
 //!
 //! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
 //! client over loopback, so a browser's own window and credit batching are not covered.
@@ -36,6 +37,7 @@ use std::time::Duration;
 use shadowcat::http::conn_serve::ConnLimits;
 use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::measure::{hypothesis, read_at, record, Run};
+use shadowcat_test_support::throughput::{parse_worker_count, DEFAULT_WORKERS};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 
@@ -44,7 +46,16 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let sub = args.next().unwrap_or_default();
     let rest: Vec<String> = args.collect();
-    let workers = if sub == "grid" { 8 } else { 2 };
+    let workers = if sub == "grid" {
+        8
+    } else if sub == "layers" {
+        parse_worker_count(rest.get(2).map(String::as_str)).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2)
+        })
+    } else {
+        DEFAULT_WORKERS
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()
@@ -165,6 +176,7 @@ async fn layers(downloads: usize, runs: usize) {
         bare_server, baseline_index, bulk_path, download, full_app, median, minimal_app, served,
         BareApp, Rung, PRODUCTION_SEND_BUF,
     };
+    let workers = tokio::runtime::Handle::current().metrics().num_workers();
     let path = bulk_path();
     let default_buf = None;
     let sixty_four = Some(PRODUCTION_SEND_BUF);
@@ -247,7 +259,7 @@ async fn layers(downloads: usize, runs: usize) {
         for (rung, s) in samples.iter_mut().enumerate() {
             let m = median(s);
             record(&format!(
-                "RECORD layers os={} profile={} run={run} downloads={downloads} rung=\"{}\" median_ms={:.2}",
+                "RECORD layers os={} profile={} workers={workers} run={run} downloads={downloads} rung=\"{}\" median_ms={:.2}",
                 std::env::consts::OS,
                 if cfg!(debug_assertions) { "debug" } else { "release" },
                 rungs[rung].name,

@@ -285,6 +285,30 @@ pub fn baseline_index(rungs: &[Rung], at: usize) -> Option<usize> {
     Some(index)
 }
 
+/// The runtime worker count the `egress_measure` subcommands other than `grid` use when none is given.
+pub const DEFAULT_WORKERS: usize = 2;
+
+/// Parses the optional worker-count argument of `egress_measure layers`: absent means
+/// [`DEFAULT_WORKERS`]; a present value must be a positive integer (a runtime with zero workers
+/// cannot be built, and a non-number is a typing error that must not fall back to the default).
+///
+/// ```
+/// use shadowcat_test_support::throughput::{parse_worker_count, DEFAULT_WORKERS};
+///
+/// assert_eq!(parse_worker_count(None), Ok(DEFAULT_WORKERS));
+/// assert_eq!(parse_worker_count(Some("4")), Ok(4));
+/// assert!(parse_worker_count(Some("0")).is_err());
+/// ```
+pub fn parse_worker_count(arg: Option<&str>) -> Result<usize, String> {
+    match arg {
+        None => Ok(DEFAULT_WORKERS),
+        Some(text) => match text.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(format!("worker count {text:?} is not a positive integer")),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

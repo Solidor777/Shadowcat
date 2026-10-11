@@ -49,3 +49,22 @@ fn a_baseline_that_comes_later_in_the_ladder_panics() {
     ];
     baseline_index(&rungs, 0);
 }
+
+#[test]
+fn an_absent_worker_count_is_the_default() {
+    assert_eq!(parse_worker_count(None), Ok(DEFAULT_WORKERS));
+    assert_eq!(DEFAULT_WORKERS, 2);
+}
+
+#[test]
+fn an_explicit_worker_count_is_used() {
+    assert_eq!(parse_worker_count(Some("4")), Ok(4));
+    assert_eq!(parse_worker_count(Some("1")), Ok(1));
+}
+
+#[test]
+fn a_zero_or_non_numeric_worker_count_is_rejected() {
+    for bad in ["0", "four", "", "-1", "2.5"] {
+        assert!(parse_worker_count(Some(bad)).is_err(), "{bad:?} accepted");
+    }
+}
