@@ -1,3 +1,5 @@
+//! Notation templates → plain dice notation (references substituted).
+//!
 //! Notation-template rewriting: a template such as `1d20 + str` — a mix of
 //! dice-notation atoms (numbers, the dice operator, `NOTATION_KEYWORDS`
 //! modifiers, bracketed label spans) and dotted identifier references — is

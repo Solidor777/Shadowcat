@@ -1,3 +1,5 @@
+//! Memoized, cycle-guarded resolution over a named dependency graph.
+//!
 //! Memoized lazy resolution over named nodes. Twin of the client package's
 //! `graph.ts`. Dependencies are discovered dynamically: `eval_node` calls the
 //! injected `get` for each dependency, and a cycle is detected on the active

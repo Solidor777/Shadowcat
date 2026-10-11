@@ -1,3 +1,5 @@
+//! Failure values, the value type and the DoS caps.
+//!
 //! Failure values, the value type and the DoS caps of the formula language.
 //! Twin of the client package's `types.ts`; the tag spellings and cap values
 //! are asserted equal by the conformance corpus and by `types/tests.rs`.

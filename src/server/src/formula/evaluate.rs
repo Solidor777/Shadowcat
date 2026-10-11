@@ -1,3 +1,5 @@
+//! Structural recursion over a parsed expression.
+//!
 //! Structural recursion over `Expr`. Twin of the client package's
 //! `evaluate.ts`: operands evaluate left-to-right and the FIRST error wins;
 //! `/` is float division, `%` truncated remainder, `round` ties toward +∞;

@@ -1,3 +1,5 @@
+//! The engine's formula language (server twin of `@shadowcat/formula`).
+//!
 //! The engine's formula language, server side: an exact behavioural twin of
 //! the client's `@shadowcat/formula` package (lexer → parser → evaluator →
 //! dependency graph). The two implementations are pinned together by one
@@ -12,21 +14,13 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// The character classes both grammars accept, in one declaration.
 pub(crate) mod chars;
-/// Structural recursion over a parsed expression.
 pub mod evaluate;
-/// Memoized, cycle-guarded resolution over a named dependency graph.
 pub mod graph;
-/// Source text → tokens.
 pub mod lexer;
-/// Tokens → `Expr`.
 pub mod parser;
-/// The engine's default reference resolver over a document's `system` band.
 pub mod resolver;
-/// Notation templates → plain dice notation (references substituted).
 pub mod template;
-/// Failure values, the value type and the DoS caps.
 pub mod types;
 
 #[cfg(test)]

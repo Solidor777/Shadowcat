@@ -1,3 +1,5 @@
+//! Tokens → `Expr`.
+//!
 //! Tokens → `Expr`. Twin of the client package's `parser.ts`: the same
 //! recursive-descent grammar, node cap, depth cap and `detail` wording.
 //! Grammar: `additive := multiplicative (('+'|'-') multiplicative)*`;

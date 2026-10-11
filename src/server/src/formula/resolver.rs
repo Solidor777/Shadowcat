@@ -1,3 +1,5 @@
+//! The engine's default reference resolver over a document's `system` band.
+//!
 //! The engine's default reference resolver: a dotted path is read LITERALLY
 //! from a document's `system` band (`a.b.c` → `/system/a/b/c`). No vocabulary
 //! is baked in — where a system keeps its variables (e.g. `system.stats`) is
