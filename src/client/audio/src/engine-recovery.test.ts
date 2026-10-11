@@ -140,9 +140,12 @@ describe("AudioEngine interruption and suspension recovery", () => {
     ctx.resumeMode = "pend";
     ctx.setState("suspended");
     await settle();
-    visibility.set(false);
     const resumes = ctx.resumeCalls;
     const reads = clock.reads;
+    visibility.set(false);
+    await settle();
+    expect(ctx.resumeCalls - resumes).toBe(0);
+    expect(clock.reads - reads).toBe(0);
     visibility.set(true);
     await settle();
     expect(ctx.resumeCalls - resumes).toBe(1);
