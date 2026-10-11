@@ -73,7 +73,7 @@ pub struct H2cSource {
     /// Fires when the source should report that it has ended.
     end: oneshot::Receiver<()>,
     /// Whether accepted sockets get `TCP_NODELAY` through `set_accepted_nodelay`, the function
-    /// every production accept path calls.
+    /// `impl ConnSource for TcpListener` and `SniffListener`'s accept task call.
     nodelay: bool,
 }
 

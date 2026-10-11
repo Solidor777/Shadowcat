@@ -59,8 +59,8 @@ const PROFILE: &str = if cfg!(debug_assertions) {
 async fn the_production_send_buffer_keeps_loopback_throughput_against_the_library_default() {
     let production = EgressServer::start(ConnLimits::default()).await;
     let production_addr = production.addr;
-    // Both bare servers set TCP_NODELAY, as the production listener does on every accepted socket
-    // and the harness's source does on its.
+    // Both bare servers set TCP_NODELAY, as `impl ConnSource for TcpListener` and `SniffListener`
+    // do on the sockets they accept and the harness's source does on its.
     let default_addr = bare_server(None, true, BareApp::Chunks).await;
     let buffer_addr = bare_server(Some(H2_SEND_BUF_BYTES), true, BareApp::Chunks).await;
     let path = bulk_path();

@@ -2270,3 +2270,18 @@ async fn a_plain_tcp_listener_source_sets_tcp_nodelay_on_accepted_connections() 
     );
     drop(client);
 }
+
+#[tokio::test]
+async fn a_nodelay_listener_sets_tcp_nodelay_on_the_socket_it_accepts() {
+    use axum::serve::Listener;
+
+    let mut listener = NodelayListener::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
+    let addr = listener.local_addr().unwrap();
+    let client = TcpStream::connect(addr).await.unwrap();
+    let (accepted, peer) = listener.accept().await;
+    assert_eq!(peer, client.local_addr().unwrap());
+    assert!(
+        accepted.nodelay().unwrap(),
+        "an accepted socket has Nagle's algorithm on"
+    );
+}

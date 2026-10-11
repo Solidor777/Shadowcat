@@ -131,7 +131,7 @@ pub struct ObservedSource {
     /// Shared with every connection the source hands out.
     stats: Arc<WriteStats>,
     /// Whether accepted sockets get `TCP_NODELAY` through `set_accepted_nodelay`, the function
-    /// every production accept path calls.
+    /// `impl ConnSource for TcpListener` and `SniffListener`'s accept task call.
     nodelay: bool,
 }
 

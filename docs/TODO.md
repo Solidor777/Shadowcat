@@ -16,7 +16,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   it record-only until every operating system's value is recorded. Trigger: one CI run in which the
   "Send-buffer throughput gate (release, record-only)" step has printed `profile=release` records
   on ubuntu, macos and windows. Records must come from the current harness (the production send buffer and
-  TCP_NODELAY set on every accepted socket); Windows loopback in release read `buffer_ratio` 0.958,
+  TCP_NODELAY set on the accepted sockets, as the production listeners do); Windows loopback in release read `buffer_ratio` 0.958,
   0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs). The same servers under `egress_measure
   layers`, which defaults to 2 workers, read the bare 64 KiB buffer at 0.994 of the default buffer
   and the production path 3.1% slower than bare 64 KiB; the gate reads the production path 4.9% to

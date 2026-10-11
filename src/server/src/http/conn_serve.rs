@@ -170,9 +170,11 @@ pub trait ConnSource: Send + 'static {
     /// The next connection with its metadata, `Ok(None)` when the source is finished, or the
     /// accept error. CONTRACT: the future is cancel-safe (dropping it between polls loses no
     /// connection, because [`serve_router`] drops it on every reaped task), and it returns errors
-    /// instead of sleeping on them: the pause is the caller's, see [`accept_error_pause`]. An
-    /// implementation that hands out a plain TCP socket configures it through
-    /// [`set_accepted_nodelay`] before returning it, so every source applies one socket policy.
+    /// instead of sleeping on them: the pause is the caller's, see [`accept_error_pause`]. A
+    /// production implementation that hands out a plain TCP socket (`impl ConnSource for
+    /// TcpListener`, `SniffListener`'s accept task) and a source that models the production
+    /// listener's throughput path configure the socket through [`set_accepted_nodelay`] before
+    /// returning it; a source that only carries test traffic needs no socket policy.
     ///
     /// # Examples
     ///
@@ -200,9 +202,10 @@ impl ConnSource for TcpListener {
 }
 
 /// What the server configures on an accepted TCP socket: `TCP_NODELAY`, so the kernel does not
-/// hold back small writes to coalesce them. Every production accept path calls this once per
-/// socket (`impl ConnSource for TcpListener` and `SniffListener`'s accept task), and the
-/// test-support sources that model the listener call it too, so the decision exists in one place.
+/// hold back small writes to coalesce them. This function is the one definition of that policy.
+/// Its callers are `impl ConnSource for TcpListener`, `SniffListener`'s accept task and
+/// [`NodelayListener`] (the listener the audio-monitor server hands to `axum::serve`), each once
+/// per accepted socket; the test-support sources that model the production listener call it too.
 ///
 /// Measured effect of the option: a 24 MiB download over HTTP/2 against a bare hyper server with a
 /// 64 KiB send buffer, on Windows loopback in a release build (`egress_measure`'s `layers 150 5`,
@@ -231,6 +234,61 @@ impl ConnSource for TcpListener {
 pub fn set_accepted_nodelay(sock: &TcpStream, peer: SocketAddr) {
     if let Err(e) = sock.set_nodelay(true) {
         tracing::debug!("could not set TCP_NODELAY on a connection from {peer}: {e}");
+    }
+}
+
+/// A [`TcpListener`] for `axum::serve` whose accepted sockets get `TCP_NODELAY` through
+/// [`set_accepted_nodelay`] with the real peer address. `axum::serve::ListenerExt::tap_io` hands
+/// its closure only the stream, so it cannot call the helper; this wrapper is the `axum::serve`
+/// counterpart of `impl ConnSource for TcpListener`. Accept errors are handled by axum's own
+/// `Listener` implementation for [`TcpListener`] (logged, retried with a pause).
+///
+/// # Examples
+///
+/// ```
+/// use axum::serve::Listener;
+/// use shadowcat::http::conn_serve::NodelayListener;
+///
+/// # #[tokio::main] async fn main() {
+/// let mut listener = NodelayListener::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+/// let addr = listener.local_addr().unwrap();
+/// let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+/// let (accepted, _peer) = listener.accept().await;
+/// assert!(accepted.nodelay().unwrap());
+/// drop(client);
+/// # }
+/// ```
+pub struct NodelayListener(TcpListener);
+
+impl NodelayListener {
+    /// Wraps `listener`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::conn_serve::NodelayListener;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let _listener = NodelayListener::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
+    /// # }
+    /// ```
+    pub fn new(listener: TcpListener) -> Self {
+        Self(listener)
+    }
+}
+
+impl axum::serve::Listener for NodelayListener {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (TcpStream, SocketAddr) {
+        let (sock, peer) = <TcpListener as axum::serve::Listener>::accept(&mut self.0).await;
+        set_accepted_nodelay(&sock, peer);
+        (sock, peer)
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.0.local_addr()
     }
 }
 

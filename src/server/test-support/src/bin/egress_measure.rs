@@ -183,10 +183,10 @@ async fn layers(downloads: usize, runs: usize, only: Option<&str>) {
     let path = bulk_path();
     let default_buf = None;
     let sixty_four = Some(PRODUCTION_SEND_BUF);
-    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY, as every production accept
-    // path does. Each rung's `over` names the rung its step is read against, so a step is one
-    // layer (or, for a no-nodelay rung, the option turned off) and never a comparison across
-    // several.
+    // Every rung but the three marked "no-nodelay" sets TCP_NODELAY the way `impl ConnSource for
+    // TcpListener` and `SniffListener` do (`set_accepted_nodelay`). Each rung's `over` names the
+    // rung its step is read against, so a step is one layer (or, for a no-nodelay rung, the option
+    // turned off) and never a comparison across several.
     let rungs: Vec<Rung> = vec![
         Rung::bare(
             "bare-default-buf",

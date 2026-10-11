@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{filter_for_watch_list, platform_monitor, MonitorError, SessionLevel, SessionMonitor};
 use crate::config::AudioMonitorArgs;
+use crate::http::conn_serve::NodelayListener;
 
 /// How often the loop polls the backend and broadcasts a `levels` frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -232,7 +233,7 @@ pub(super) async fn run_with_monitor(
         "shadowcat audio-monitor listening on 127.0.0.1:{}",
         bound.port()
     );
-    axum::serve(listener, app).await?;
+    axum::serve(NodelayListener::new(listener), app).await?;
     Ok(())
 }
 
