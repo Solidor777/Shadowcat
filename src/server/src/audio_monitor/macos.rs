@@ -1,3 +1,5 @@
+//! macOS backend (Core Audio process tap, macOS 14.2+).
+//!
 //! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in
 //! macOS 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so
 //! this file binds the small entry-point surface it needs directly via `extern "C"`, linked

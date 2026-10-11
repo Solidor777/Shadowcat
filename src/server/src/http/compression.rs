@@ -1,3 +1,5 @@
+//! The `CompressionLayer` response predicate `router` installs globally.
+//!
 //! Response predicate for `tower_http::compression::CompressionLayer`, applied globally in
 //! `crate::http::router`.
 #![deny(missing_docs)]

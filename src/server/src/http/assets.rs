@@ -1,3 +1,5 @@
+//! Asset upload/serve routes + the upload rate limiter.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

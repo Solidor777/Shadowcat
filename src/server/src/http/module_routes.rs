@@ -1,3 +1,5 @@
+//! Installed-module discovery + path-guarded static serving.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

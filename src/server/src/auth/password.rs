@@ -1,3 +1,5 @@
+//! Argon2id password hashing + verification.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

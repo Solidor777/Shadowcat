@@ -1,5 +1,5 @@
-//! Server-side audio: the pure transport-state engine (`state::apply`) and the
-//! `AudioTransport` WS handler (`transport`).
+//! Server-side audio: the pure transport-state engine (`state::apply`) and the GM-only
+//! `AudioTransport` handler (`transport`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

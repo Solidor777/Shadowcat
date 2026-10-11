@@ -1,12 +1,14 @@
+//! Shared per-peer and global slot counting behind every connection cap.
+//!
 //! Per-peer and global connection slots: the ONE definition of how a peer is keyed, how a cap is
 //! counted and how a cap-exempt peer (`Config::is_cap_exempt`: a trusted proxy or a loopback peer)
 //! is exempted. The pre-hand-off admission caps
 //! (`crate::tls::listener::SniffListener`) and the post-hand-off live-connection caps
-//! (`crate::http::conn_serve::serve_router`) each own a [`PeerSlots`](crate::http::peer_slots::PeerSlots) with their own limits and
+//! (`crate::http::conn_serve::serve_router`) each own a [`PeerSlots`] with their own limits and
 //! share everything else, so the two phases cannot disagree on who counts as one peer.
 //!
-//! INVARIANT: a refused admission is logged by [`PeerSlots::admit`](crate::http::peer_slots::PeerSlots::admit) itself, through one bounded
-//! summary ([`REFUSAL_WARN_INTERVAL`](crate::http::peer_slots::REFUSAL_WARN_INTERVAL)): a counter and the most recent refused key, never a map
+//! INVARIANT: a refused admission is logged by [`PeerSlots::admit`] itself, through one bounded
+//! summary ([`REFUSAL_WARN_INTERVAL`]): a counter and the most recent refused key, never a map
 //! keyed by peer, because the peer is attacker-chosen and a map of refused peers is unbounded
 //! memory. Both phases get the same visibility because both call `admit`.
 

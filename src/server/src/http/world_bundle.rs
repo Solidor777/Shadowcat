@@ -1,3 +1,5 @@
+//! Per-world export/import bundle routes.
+//!
 //! `POST /api/worlds/{id}/export` and `POST /api/worlds/import` — per-world
 //! bundle export/import. The bundle format itself (`manifest.json` +
 //! `rows/<table>.jsonl` + `assets/<asset_id>`, with `manifest.json` always

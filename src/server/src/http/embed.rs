@@ -1,3 +1,5 @@
+//! The rust-embedded client bundle (`dist/`) served as the SPA.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

@@ -1,4 +1,4 @@
-//! World-invite bearer codes.
+//! Invite-code mint/verify (selector + Argon2-hashed verifier halves).
 //!
 //! A code is `<invite-id>.<secret>`: a public **selector** (the invite row's
 //! UUID, used for the lookup and for the GM's revoke route) and a secret

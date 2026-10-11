@@ -1,3 +1,5 @@
+//! Linux backend (PipeWire).
+//!
 //! Linux backend: enumerates PipeWire output-audio stream nodes and reads each one's peak
 //! level. PipeWire's API is event-loop driven, so this backend runs its own
 //! dedicated OS thread owning a `pipewire::main_loop::MainLoop` for its entire lifetime and

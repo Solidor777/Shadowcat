@@ -1,3 +1,6 @@
+//! Guarded first-admin creation (concurrent-safe insert; token policy lives
+//! in the `/api/setup` route).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

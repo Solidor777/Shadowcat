@@ -1,3 +1,5 @@
+//! Login/invite sliding-window throttles.
+//!
 //! Shared sliding-window throttle for the two Argon2-verifying auth endpoints
 //! (`/api/login`, `/api/invites/accept`). Keys are opaque strings composed by
 //! the callers (`login:u:<username>`, `login:ip:<ip>`, `invite:u:<uuid>`,

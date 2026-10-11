@@ -1,29 +1,21 @@
+//! Axum router: REST surface, asset serving, module serving, embedded client.
+//!
 //! The HTTP surface: REST routes, asset serving, module serving, the
 //! embedded SPA, error mapping, and auth throttles.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Asset upload/serve routes + the upload rate limiter.
 pub mod assets;
-/// The `CompressionLayer` response predicate `router` installs globally.
 pub mod compression;
-/// The connection serve loop with header-read and keep-alive bounds.
 pub mod conn_serve;
-/// The rust-embedded client bundle (`dist/`) served as the SPA.
 pub mod embed;
-/// `AppError` and its status-code mapping.
 pub mod error;
-/// Installed-module discovery + path-guarded static serving.
 pub mod module_routes;
-/// Shared per-peer and global slot counting behind every connection cap.
 pub mod peer_slots;
-/// All REST route handlers.
 pub mod routes;
 pub mod scheme;
-/// Login/invite sliding-window throttles.
 pub mod throttle;
-/// Per-world export/import bundle routes.
 pub mod world_bundle;
 
 use std::sync::atomic::AtomicBool;

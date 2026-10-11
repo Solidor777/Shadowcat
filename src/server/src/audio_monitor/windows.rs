@@ -1,3 +1,5 @@
+//! Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
+//!
 //! Windows backend: `IAudioSessionManager2`/`IAudioMeterInformation` over the default render
 //! endpoint. COM is apartment-threaded, so this backend spawns its OWN dedicated OS thread at
 //! construction, initializes COM as multithreaded (MTA) exactly once there, and keeps that

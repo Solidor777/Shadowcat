@@ -1,3 +1,6 @@
+//! `shadowcat audio-monitor`: the OS audio-session-level subcommand (Windows WASAPI / macOS
+//! Core Audio process tap / Linux PipeWire) serving a localhost WebSocket.
+//!
 //! `shadowcat audio-monitor`: a localhost-only subcommand serving the peak audio level of
 //! watched OS processes (Discord, any voice app) to the ducking module's `OsMonitorSource`
 //! over a WebSocket. Never a second executable — a `CliCommand::AudioMonitor` branch of the
@@ -8,18 +11,13 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// A scripted in-memory backend for tests — never compiled into the release binary.
 #[cfg(test)]
 pub mod fake;
-/// Linux backend (PipeWire).
 #[cfg(target_os = "linux")]
 pub mod linux;
-/// macOS backend (Core Audio process tap, macOS 14.2+).
 #[cfg(target_os = "macos")]
 pub mod macos;
-/// The localhost WebSocket server: origin allowlist, hello/levels/watch frames, the 10 Hz loop.
 pub mod server;
-/// Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
 #[cfg(target_os = "windows")]
 pub mod windows;
 

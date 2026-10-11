@@ -1,4 +1,6 @@
-//! The connection serve loop: accepts from a [`ConnSource`](crate::http::conn_serve::ConnSource), hands every connection to hyper with
+//! The connection serve loop with header-read and keep-alive bounds.
+//!
+//! The connection serve loop: accepts from a [`ConnSource`], hands every connection to hyper with
 //! the time bounds `axum::serve` cannot express, and drains on shutdown.
 //!
 //! WHY this owns the loop instead of calling `axum::serve`: hyper's HTTP/1 header-read timeout and
@@ -6,10 +8,10 @@
 //! listener's hand-off nothing would then bound how long a peer may trickle request headers or sit
 //! idle on a kept-alive connection, so a peer past the accept-time caps ([`crate::tls::listener`])
 //! could hold a connection indefinitely at no cost. Here every connection is built with a
-//! `TokioTimer` and the bounds in [`ConnLimits`](crate::http::conn_serve::ConnLimits).
+//! `TokioTimer` and the bounds in [`ConnLimits`].
 //!
 //! INVARIANTS:
-//! 1. The HTTP version is chosen from the negotiated ALPN protocol ([`ServeIo::is_h2`](crate::http::conn_serve::ServeIo::is_h2)), never by
+//! 1. The HTTP version is chosen from the negotiated ALPN protocol ([`ServeIo::is_h2`]), never by
 //!    reading the connection, and each version's hyper builder is used directly: hyper-util's auto
 //!    builder reads a 24-byte preface before any timer exists (and ignores its `http1_only` /
 //!    `http2_only` under `serve_connection_with_upgrades`), so a peer sending a partial first line
@@ -22,18 +24,18 @@
 //!    [`super::scheme::into_service`](crate::http::scheme::into_service) (for `axum::serve` transports) and nowhere else.
 //! 3. Graceful shutdown mirrors `axum::serve`: a watch channel tells every connection task to call
 //!    `graceful_shutdown`, and the loop returns once every task has ended. A source that ends
-//!    drains the same way and the loop returns [`ServeEnd::SourceEnded`](crate::http::conn_serve::ServeEnd::SourceEnded). Both causes first run
+//!    drains the same way and the loop returns [`ServeEnd::SourceEnded`]. Both causes first run
 //!    the caller's `on_drain` hook, which is where sessions hyper cannot see (WebSockets) are told
 //!    to close: an HTTP/2 connection resolves only when its streams end, and a WebSocket is a
 //!    stream, so draining without telling the sessions would wait on them. The drain itself is
 //!    bounded by [`ConnLimits::drain_timeout`](crate::http::conn_serve::ConnLimits::drain_timeout): connections still open past it have their IO
-//!    failed (the `kill` module) and `drive` drops one that has not ended [`KILL_GRACE`](crate::http::conn_serve::KILL_GRACE) later
-//!    ([`DrainReport::dropped`](crate::http::conn_serve::DrainReport::dropped)); a task still running [`ABORT_WAIT`](crate::http::conn_serve::ABORT_WAIT) after the IO failed (one not
+//!    failed (the `kill` module) and `drive` drops one that has not ended [`KILL_GRACE`] later
+//!    ([`DrainReport::dropped`](crate::http::conn_serve::DrainReport::dropped)); a task still running [`ABORT_WAIT`] after the IO failed (one not
 //!    in `drive`, or one `drive` could not run) is aborted and reported in
 //!    [`DrainReport::aborted`](crate::http::conn_serve::DrainReport::aborted). A connection task ends when its IO errors, so each is a defect.
 //! 4. Every live connection is bounded, not only the half-open ones. [`ConnLimits::max_live`](crate::http::conn_serve::ConnLimits::max_live) and
 //!    [`ConnLimits::max_live_per_peer`](crate::http::conn_serve::ConnLimits::max_live_per_peer) cap connections from hand-off until the connection task
-//!    AND every [`ConnLease`](crate::http::conn_serve::ConnLease) taken from its requests have ended, keyed and exempted exactly like
+//!    AND every [`ConnLease`] taken from its requests have ended, keyed and exempted exactly like
 //!    the accept-time caps ([`crate::http::peer_slots::PeerSlots`], `ConnMeta::cap_exempt`, decided
 //!    once by `Config::is_cap_exempt`); a
 //!    connection over a cap is closed unread. [`ConnLimits::h2_idle`](crate::http::conn_serve::ConnLimits::h2_idle) closes an HTTP/2 connection
@@ -41,10 +43,10 @@
 //!    released when the session ends, and a session whose peer has stopped reading ends at the
 //!    per-send stall bound ([`crate::ws::bounded_sink::BoundedSink::for_config`]), so a lease cannot
 //!    pin a slot for longer than that bound past the peer's last read.
-//! 5. The pause after an accept error is decided in [`serve_router`](crate::http::conn_serve::serve_router), never inside a
-//!    [`ConnSource::accept`](crate::http::conn_serve::ConnSource::accept) future: the loop drops that future on every reaped connection task, so
+//! 5. The pause after an accept error is decided in [`serve_router`], never inside a
+//!    [`ConnSource::accept`] future: the loop drops that future on every reaped connection task, so
 //!    a pause held inside it would be cut short by the next reap. A source returns the error and
-//!    [`accept_error_pause`](crate::http::conn_serve::accept_error_pause) is the one policy every caller (this loop and `SniffListener`'s
+//!    [`accept_error_pause`] is the one policy every caller (this loop and `SniffListener`'s
 //!    acceptor task) consults.
 //! 6. A response that makes no progress for [`ConnLimits::egress_window`](crate::http::conn_serve::ConnLimits::egress_window) is cut, by exactly one of
 //!    three units that share one definition of no progress. The stream unit resets one HTTP/2
@@ -67,10 +69,10 @@
 //!    [`DrainReport::stream_table_peak`](crate::http::conn_serve::DrainReport::stream_table_peak).
 //! 8. A WebSocket inside an HTTP/2 stream has no response body for the stream unit to watch, and
 //!    hyper's tunnel task hands every write to h2 whether or not the peer has granted credit, so a
-//!    session's own sends never go pending. [`TunnelProbe`](crate::http::conn_serve::TunnelProbe), which the connection's lease service
+//!    session's own sends never go pending. [`TunnelProbe`], which the connection's lease service
 //!    puts in every HTTP/2 request's extensions, reports the DATA payload bytes the writer
 //!    accepted for the session's stream; `ws::tunnel_gate::TunnelGate` stops the session writing
-//!    while it is more than [`H2_SEND_BUF_BYTES`](crate::http::conn_serve::H2_SEND_BUF_BYTES) ahead of that, which makes the send pending and
+//!    while it is more than [`H2_SEND_BUF_BYTES`] ahead of that, which makes the send pending and
 //!    starts the per-send stall bound.
 //!
 //! Timeout semantics measured against hyper 1.x: the HTTP/1 header-read timeout is armed on every

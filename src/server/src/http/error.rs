@@ -1,3 +1,5 @@
+//! `AppError` and its status-code mapping.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
