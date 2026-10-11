@@ -1,7 +1,7 @@
 //! `Document.base` server ownership at the write path.
 //!
 //! It covers Create-time derivation (`merge::bands::derive_create_base`), the client `/base` write
-//! rejection, `WriteOrigin::TemplateMerge`'s apply-level gating, and legacy-row read tolerance
+//! rejection, `WriteOrigin::TemplateMerge`'s apply-level gating, and read tolerance of a stored `base` with a stale schema
 //! (validation is ingest-time only).
 
 use super::*;

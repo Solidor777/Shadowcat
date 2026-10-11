@@ -1,6 +1,6 @@
 //! `GET /api/worlds/{world}/assets`: the filtered, sorted, keyset-paginated asset query.
 //!
-//! With no query parameters at all it is the bare listing the pre-pipeline clients read.
+//! With no query parameters at all the response is the bare array listing.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -261,8 +261,8 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 }
 
 /// `GET /api/worlds/{world}/assets` — membership-gated. With no query
-/// parameters: the bare `Asset[]` listing (the contract every pre-query
-/// consumer reads). With any parameter: an `AssetPage`. The SQL filters
+/// parameters: the bare `Asset[]` listing (the contract of a request
+/// that names no filter). With any parameter: an `AssetPage`. The SQL filters
 /// narrow first; `name_regex` is then applied in Rust to the rows the SQL
 /// selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the
 /// page fills — `next_cursor` always marks the last row EXAMINED, so a

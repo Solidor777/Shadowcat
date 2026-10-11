@@ -28,7 +28,7 @@
 //!   format `usize` values), so a coercing reading is never needed.
 //! - **Base correlation stringifies `Uuid` canonically**
 //!   (`embedded::merge3_embedded`'s `base_by_source` keys). A non-canonical
-//!   legacy `sourceId` (uppercase hex, braces, …) correlates as
+//!   `sourceId` (uppercase hex, braces, …) correlates as
 //!   instance-added — the keep direction, never the drop direction.
 //!
 //! One deliberate delta from the corpus generator's engine is recorded in
