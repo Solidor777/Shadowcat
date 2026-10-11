@@ -1,12 +1,10 @@
-//! The character classes both grammars accept, in one declaration.
+//! The character classes both grammars in this crate accept — the formula tokenizer (`lexer`) and
+//! the notation-template rewriter (`template`) — in ONE declaration, twin of the client package's
+//! `chars.ts`.
 //!
-//! The character classes both grammars in this crate accept — the formula
-//! tokenizer (`lexer`) and the notation-template rewriter (`template`) — in
-//! ONE declaration, twin of the client package's `chars.ts`. The two grammars
-//! accept the same identifier characters, so a per-module copy is a forked
-//! decision; the grammars differ ABOVE this layer (what may follow an
-//! identifier, which words are reserved, how a malformed reference fails), and
-//! nothing here encodes any of that.
+//! The two grammars accept the same identifier characters, so a per-module copy is a forked
+//! decision; the grammars differ ABOVE this layer (what may follow an identifier, which words are
+//! reserved, how a malformed reference fails), and nothing here encodes any of that.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

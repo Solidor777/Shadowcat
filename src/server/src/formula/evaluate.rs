@@ -1,11 +1,9 @@
-//! Structural recursion over a parsed expression.
+//! Structural recursion over `Expr`.
 //!
-//! Structural recursion over `Expr`. Twin of the client package's
-//! `evaluate.ts`: operands evaluate left-to-right and the FIRST error wins;
-//! `/` is float division, `%` truncated remainder, `round` ties toward +∞;
-//! every arithmetic result passes `finite`, so no infinity or NaN escapes.
-//! Recursion depth is bounded by `MAX_AST_NODES` (one frame per node on a
-//! left-deep chain), not `MAX_PARSE_DEPTH`.
+//! Twin of the client package's `evaluate.ts`: operands evaluate left-to-right and the FIRST error
+//! wins; `/` is float division, `%` truncated remainder, `round` ties toward +∞; every arithmetic
+//! result passes `finite`, so no infinity or NaN escapes. Recursion depth is bounded by
+//! `MAX_AST_NODES` (one frame per node on a left-deep chain), not `MAX_PARSE_DEPTH`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
