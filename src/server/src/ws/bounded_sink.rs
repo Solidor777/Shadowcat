@@ -1,3 +1,5 @@
+//! Bounded-send `Sink` adapter: a session whose peer stopped reading ends instead of hanging.
+//!
 //! A `Sink` adapter that bounds how long one send may stay pending.
 //!
 //! WHY: a peer that has stopped reading (a zero flow-control window, a full socket buffer) leaves
@@ -18,9 +20,9 @@
 //! is what starts this bound's timer.
 //!
 //! INVARIANTS:
-//! 1. A send that has been pending for `stall_timeout` fails with [`BoundedSendError::Stalled`](crate::ws::bounded_sink::BoundedSendError::Stalled);
+//! 1. A send that has been pending for `stall_timeout` fails with [`BoundedSendError::Stalled`];
 //!    callers treat any send error as the end of the session.
-//! 2. Once the shutdown signal is set, a pending send is given at most [`CLOSE_SEND_TIMEOUT`](crate::ws::bounded_sink::CLOSE_SEND_TIMEOUT)
+//! 2. Once the shutdown signal is set, a pending send is given at most [`CLOSE_SEND_TIMEOUT`]
 //!    from the moment the signal is observed (or from its start, if later): shutdown must not wait
 //!    a whole `stall_timeout` for a peer that is not reading.
 //! 3. The timer runs only while a poll returned `Pending`; progress (any `Ready`) disarms it.

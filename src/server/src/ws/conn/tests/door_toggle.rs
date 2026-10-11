@@ -1,3 +1,5 @@
+//! `handle_toggle_door`'s reply shape (asymmetric success / correlated uniform refusal).
+//!
 //! `handle_toggle_door`'s reply shape: `None` on success (the broadcast `Event` echo is the
 //! confirmation — the chat-ops asymmetric pattern), a correlated `DoorToggleError` to the
 //! originating connection only on refusal, with the role-conditioned wording applied at THIS

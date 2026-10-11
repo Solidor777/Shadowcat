@@ -1,3 +1,5 @@
+//! GM audio-transport handling and the activeScene ambience swap.
+
 use super::*;
 use crate::audio::transport::{handle_transport, TransportError};
 use crate::data::command::{FieldChange, Operation, WriteOrigin};

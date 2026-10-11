@@ -1,3 +1,5 @@
+//! Shared-ruler ingress bounds and unclipped delivery.
+//!
 //! Shared live ruler: the ingress payload bounds and the rate budget. The wire-level relay
 //! (rate, scene authorization, sender stamping, unclipped delivery) is exercised end to end in
 //! `tests/ws_convergence.rs`.

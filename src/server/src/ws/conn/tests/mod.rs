@@ -9,22 +9,14 @@ use tokio::sync::Semaphore;
 // shared with `ws::room`'s test module.
 use crate::ws::test_support::{token_engine, ws_engine};
 
-/// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
 mod combat_intents;
-/// `handle_toggle_door`'s reply shape (asymmetric success / correlated uniform refusal).
 mod door_toggle;
-/// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
 mod mover_light;
-/// `handle_reset_explored_fog`'s GM-only gate + happy-path effect.
 mod reset_explored_fog;
-/// Shared-ruler ingress bounds and unclipped delivery.
 mod ruler;
 mod senses;
-/// `egress_loop`'s Close send is bounded when the peer has stopped reading.
 mod shutdown_bound;
 
-/// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
-/// push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.
 mod merge_intents;
 
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are

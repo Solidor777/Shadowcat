@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
-/// Bounded-send `Sink` adapter: a session whose peer stopped reading ends instead of hanging.
 pub mod bounded_sink;
 pub mod conn;
 pub(crate) mod move_clip;

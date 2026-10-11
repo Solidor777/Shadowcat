@@ -1,3 +1,5 @@
+//! `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
+//!
 //! Per-recipient admission of the carried-light timeline (`MoveStream.mover_light`) in
 //! `clip_move_stream` and the own-move re-emit: full for the mover and a plain GM, disc-
 //! admitted per sample for an observer or a GM see-as, gone when nothing reaches.

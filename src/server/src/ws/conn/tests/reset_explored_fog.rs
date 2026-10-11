@@ -1,3 +1,5 @@
+//! `handle_reset_explored_fog`'s GM-only gate + happy-path effect.
+//!
 //! `handle_reset_explored_fog`'s authorization gate (uniform generic refusal for a non-GM and
 //! for a scene outside this room's world) and its happy-path effect (rows deleted, broadcast
 //! observable on a second subscriber).

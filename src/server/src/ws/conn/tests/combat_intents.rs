@@ -1,3 +1,5 @@
+//! `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
+//!
 //! `combat::handle_combat_intent`'s wire-dispatch layer: authz per variant, dice-context
 //! resolution for `CombatRoll`, and the one-server-authored-command commit via
 //! `Room::commit_combat`. Fixture pattern mirrors

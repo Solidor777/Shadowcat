@@ -1,3 +1,6 @@
+//! `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
+//! push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.
+//!
 //! `conn::merge_intents`'s wire-dispatch layer: the stateless two-call flow, the
 //! owner-or-GM and per-path authorization derivations, push's per-instance
 //! visibility/capability outcomes, and the `WriteOrigin::TemplateMerge` commit's
