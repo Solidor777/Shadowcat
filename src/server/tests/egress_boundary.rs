@@ -6,11 +6,12 @@
 //! (`measure::hypothesis`), the rate at which one 16 KiB chunk's wait equals the window; it is
 //! 16384 B/s at a 1 s window for every stream window `W` from 32 KiB up. The measurements follow it
 //! at the extremes only, and where the extremes sit depends on `W`. At a 1 s window and stream
-//! windows of 1 MiB and 6 MiB (six runs per cell) a reader at 20480 B/s or below was cut in every
-//! run and one at 40960 B/s or above in none; 24576 to 32768 B/s was cut in some runs and not in
-//! others. At a 32 KiB stream window (three runs per cell, two from 40960 B/s) every rate up to
-//! 24576 B/s was cut and 32768 B/s and above was not. The numbers are measured with the `h2` crate
-//! client over loopback, so a browser's own window and credit batching are not covered.
+//! windows of 1 MiB and 6 MiB (six runs per cell) a reader at 8192 to 20480 B/s was cut in every
+//! run and one at 40960 B/s or above in none; 24576 and 28672 B/s were cut in some runs and not in
+//! others at both windows, and 32768 B/s was cut in one of six runs at 1 MiB and in none at 6 MiB.
+//! At a 32 KiB stream window (three runs per cell up to 32768 B/s, two from 40960 B/s) every rate
+//! up to 24576 B/s was cut and 32768 B/s and above was not. The numbers are measured with the `h2`
+//! crate client over loopback, so a browser's own window and credit batching are not covered.
 //!
 //! The blocking test runs at a pinned window and two rates, each inside a zone the measurements
 //! found always cut or never cut. The measurements themselves are not tests: the `egress_measure`
@@ -41,8 +42,8 @@ fn always_cut_bps() -> u64 {
 /// `STREAM_WINDOW`). The 1 MiB and 6 MiB grids stop at 49152 B/s, so 65536 B/s is not measured
 /// there. Between the two rates the outcome at `STREAM_WINDOW` is cut at 18432 and 24576 B/s and
 /// not cut at 32768 B/s; at larger stream windows the outcome varies from run to run at 24576 B/s
-/// (64 KiB, 256 KiB) and up to 32768 B/s (1 MiB, 6 MiB), which is why neither blocking assertion
-/// sits between the rates.
+/// (64 KiB, 256 KiB) and up to 28672 B/s (6 MiB) and 32768 B/s (1 MiB), which is why neither
+/// blocking assertion sits between the rates.
 fn never_cut_bps() -> u64 {
     (hypothesis(WINDOW, STREAM_WINDOW) * 4.0) as u64
 }

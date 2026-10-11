@@ -398,15 +398,16 @@ task paces its own accept errors.
       slow networks raise `egress_window_secs`.
     - Measured stream-unit boundary (the `h2` crate as client, loopback, a paced reader returning
       credit as it reads, `/endless` body): at a 1 s window and stream windows of 1 MiB and 6 MiB
-      (six runs per rate) a reader at or below 20 KiB/s was cut in every run, one at or above
-      40 KiB/s in none, and 24 to 32 KiB/s was cut in some runs and not in others; at a 32 KiB
-      stream window (three runs per rate) every rate up to 24 KiB/s was cut and 32 KiB/s and above
-      was not. At a 3 s window, at stream windows of 64 KiB and 1 MiB (six runs per rate), rates of
-      2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not. One 16 KiB chunk per window works out
-      to 5.3 KiB/s at 3 s, and 10.7 KiB/s is two chunks per window; those two figures are derived
-      from the chunk size, not measured. The default 60 s window was not measured, and neither was
-      a browser's window or credit batching; raising `egress_window_secs` lowers the rate that is
-      cut.
+      (six runs per rate) a reader at 8 to 20 KiB/s was cut in every run and one at 40 KiB/s or
+      above in none. At 24 and 28 KiB/s it was cut in some runs and not in others at both windows;
+      at 32 KiB/s it was cut in one of six runs at 1 MiB and in none at 6 MiB. At a 32 KiB stream
+      window (three runs per rate up to 32 KiB/s, two runs from 40 KiB/s) every rate up to 24 KiB/s
+      was cut and 32 KiB/s and above was not. At a 3 s window, at stream windows of 64 KiB and 1 MiB
+      (six runs per rate), rates of 2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not. One
+      16 KiB chunk per window works out to 5.3 KiB/s at 3 s, a figure derived from the chunk size
+      and not run; 10.7 KiB/s was run, and reading it as two chunks per window is derived. The
+      default 60 s window was not measured, and neither was a browser's window or credit batching;
+      raising `egress_window_secs` lowers the rate that is cut.
     - Consequences: a reader that returns credit for less than about one chunk per window is cut; a
       cut `export_world` download restarts from zero (it has no length and no `Range`).
     - Memory per stalled stream: `H2_SEND_BUF_BYTES` (64 KiB, hyper's default is 400 KiB) bounds the
