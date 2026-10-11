@@ -1,5 +1,3 @@
-//! Loopback download throughput, and the ladder of servers that separates the production path's layers.
-//!
 //! Loopback download throughput of an HTTP/2 server, and the ladder of servers that separates the
 //! production path's layers from a bare hyper server.
 //!

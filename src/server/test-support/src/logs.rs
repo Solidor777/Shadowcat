@@ -1,5 +1,3 @@
-//! Log capture for tests that assert on what the server logs.
-//!
 //! Capturing the tracing output a piece of code emits, for tests that assert on log content.
 
 use std::cell::RefCell;

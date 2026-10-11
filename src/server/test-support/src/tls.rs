@@ -1,5 +1,3 @@
-//! TLS client helpers.
-//!
 //! TLS client helpers for the integration suites: rustls clients under the explicit ring provider
 //! that either trust exactly the server's own certificate (so the SAN, validity and
 //! key-usage checks run for real) or accept any certificate (to READ whatever the server presents).
