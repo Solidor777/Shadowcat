@@ -3,8 +3,8 @@
 //! Loopback download throughput of an HTTP/2 server, and the ladder of servers that separates the
 //! production path's layers from a bare hyper server.
 //!
-//! One download is a fresh connection fetching [`BODY_BYTES`] with a
-//! 6 MiB stream window and a 15 MiB connection window, so the client never limits the server. Every variant answers
+//! One download is a fresh connection fetching [`BODY_BYTES`] with a 6 MiB stream window and a
+//! 15 MiB connection window, so the client never limits the server. Every variant answers
 //! `/bulk?bytes=N` with the same bytes, so a difference between two variants is the layer the
 //! variant adds.
 
@@ -230,22 +230,6 @@ pub struct Rung {
 }
 
 impl Rung {
-    /// A rung over a bare server or any address that needs no handle.
-    pub fn bare(name: &'static str, addr: SocketAddr) -> Self {
-        Self {
-            name,
-            baseline: None,
-            addr,
-            _keep: None,
-        }
-    }
-
-    /// This rung compared with the rung named `baseline`.
-    pub fn over(mut self, baseline: &'static str) -> Self {
-        self.baseline = Some(baseline);
-        self
-    }
-
     /// A rung named `name` over `server`, compared with the rung named `baseline` (none for the
     /// root).
     fn from_server(name: &'static str, baseline: Option<&'static str>, server: RungServer) -> Self {
@@ -316,26 +300,11 @@ impl RungSpec {
     }
 }
 
-/// The index in `rungs` of the baseline of the rung at `at`, `None` for a root rung. Panics when
-/// the named baseline is not in the ladder or does not precede the rung, so a mistyped or
-/// misordered baseline cannot silently print no comparison.
+/// The index in `rungs` of the baseline of the rung at `at`, `None` for a root rung. A ladder from
+/// [`build_ladder`] has validated every baseline, so the lookup cannot miss.
 pub fn baseline_index(rungs: &[Rung], at: usize) -> Option<usize> {
     let name = rungs[at].baseline?;
-    let index = rungs
-        .iter()
-        .position(|r| r.name == name)
-        .unwrap_or_else(|| {
-            panic!(
-                "rung {:?} has no rung named {name:?} to compare with",
-                rungs[at].name
-            )
-        });
-    assert!(
-        index < at,
-        "the baseline {name:?} of rung {:?} does not precede it in the ladder",
-        rungs[at].name
-    );
-    Some(index)
+    rungs.iter().position(|r| r.name == name)
 }
 
 /// The runtime worker count the `egress_measure` subcommands other than `grid` use when none is given.
@@ -364,11 +333,24 @@ pub fn parse_worker_count(arg: Option<&str>) -> Result<usize, String> {
 
 /// The baseline each entry of `chain` (name, baseline) has once only `names` are selected: its
 /// nearest selected ancestor along the baseline chain, or none when no ancestor is selected.
-/// Panics on a name no entry has, so a mistyped selection cannot silently drop a rung.
+/// Panics before anything is resolved when a declared baseline names no earlier entry (a mistyped
+/// or misordered baseline would otherwise print no comparison) or when `names` holds a name no
+/// entry has (a mistyped selection would otherwise silently drop a rung).
 fn selected_baselines(
     chain: &[(&'static str, Option<&'static str>)],
     names: &[&str],
 ) -> Vec<Option<&'static str>> {
+    for (at, (name, baseline)) in chain.iter().enumerate() {
+        let Some(baseline) = baseline else { continue };
+        assert!(
+            chain.iter().any(|(n, _)| n == baseline),
+            "rung {name:?} has no rung named {baseline:?} to compare with"
+        );
+        assert!(
+            chain[..at].iter().any(|(n, _)| n == baseline),
+            "the baseline {baseline:?} of rung {name:?} does not precede it in the ladder"
+        );
+    }
     for name in names {
         assert!(
             chain.iter().any(|(n, _)| n == name),
@@ -390,42 +372,12 @@ fn selected_baselines(
         .collect()
 }
 
-/// The rungs of `rungs` named in `names`, in ladder order. A selected rung whose baseline is not
-/// selected is compared with its nearest selected ancestor along the baseline chain, or with
-/// nothing when no ancestor is selected, so a subset still prints the step it can. Panics on a
-/// name no rung has, so a mistyped selection cannot silently drop a rung.
-///
-/// ```
-/// use shadowcat_test_support::throughput::{select_rungs, Rung};
-///
-/// let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-/// let ladder = vec![
-///     Rung::bare("root", addr),
-///     Rung::bare("middle", addr).over("root"),
-///     Rung::bare("leaf", addr).over("middle"),
-/// ];
-/// let picked = select_rungs(ladder, &["root", "leaf"]);
-/// assert_eq!(picked.len(), 2);
-/// assert_eq!(picked[1].baseline, Some("root"));
-/// ```
-pub fn select_rungs(rungs: Vec<Rung>, names: &[&str]) -> Vec<Rung> {
-    let chain: Vec<(&'static str, Option<&'static str>)> =
-        rungs.iter().map(|r| (r.name, r.baseline)).collect();
-    let resolved = selected_baselines(&chain, names);
-    rungs
-        .into_iter()
-        .zip(resolved)
-        .filter(|(r, _)| names.contains(&r.name))
-        .map(|(mut r, baseline)| {
-            r.baseline = baseline;
-            r
-        })
-        .collect()
-}
-
 /// Starts the rungs of `specs` named in `names` (all of them when `names` is `None`), in ladder
-/// order, with the baselines [`select_rungs`] gives them. `names` is validated against the ladder
-/// before any constructor runs, and a constructor of an unselected rung never runs.
+/// order. A selected rung whose baseline is not selected is compared with its nearest selected
+/// ancestor along the baseline chain, or with nothing when no ancestor is selected, so a subset
+/// still prints the step it can. The baselines and `names` are validated against the ladder before
+/// any constructor runs (a mistyped or misordered baseline, or a name no rung has, panics), and a
+/// constructor of an unselected rung never runs.
 ///
 /// ```
 /// use shadowcat_test_support::throughput::{build_ladder, RungServer, RungSpec};

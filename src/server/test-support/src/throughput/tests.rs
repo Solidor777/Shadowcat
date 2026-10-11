@@ -9,46 +9,77 @@ fn addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 0))
 }
 
-fn ladder() -> Vec<Rung> {
+/// A spec list whose constructors record their name in `started`; the baselines form a tree.
+fn recording_specs(started: &Arc<Mutex<Vec<&'static str>>>) -> Vec<RungSpec> {
+    let spec = |name: &'static str, baseline: Option<&'static str>| {
+        let started = Arc::clone(started);
+        RungSpec::new(name, baseline, move || async move {
+            started.lock().unwrap().push(name);
+            RungServer::bare(addr())
+        })
+    };
     vec![
-        Rung::bare("root", addr()),
-        Rung::bare("child", addr()).over("root"),
-        Rung::bare("grandchild", addr()).over("child"),
-        Rung::bare("sibling", addr()).over("root"),
+        spec("root", None),
+        spec("child", Some("root")),
+        spec("grandchild", Some("child")),
+        spec("sibling", Some("root")),
     ]
 }
 
-#[test]
-fn a_root_rung_has_no_baseline() {
-    assert_eq!(baseline_index(&ladder(), 0), None);
+async fn built(names: Option<&[&str]>) -> Vec<Rung> {
+    build_ladder(recording_specs(&Arc::default()), names).await
 }
 
-#[test]
-fn a_named_baseline_resolves_to_its_index() {
-    let rungs = ladder();
+#[tokio::test]
+async fn a_root_rung_has_no_baseline() {
+    assert_eq!(baseline_index(&built(None).await, 0), None);
+}
+
+#[tokio::test]
+async fn a_named_baseline_resolves_to_its_index() {
+    let rungs = built(None).await;
     assert_eq!(baseline_index(&rungs, 1), Some(0));
     assert_eq!(baseline_index(&rungs, 2), Some(1));
     assert_eq!(baseline_index(&rungs, 3), Some(0));
 }
 
-#[test]
-#[should_panic(expected = "no rung named")]
-fn an_unknown_baseline_name_panics() {
-    let rungs = vec![
-        Rung::bare("root", addr()),
-        Rung::bare("child", addr()).over("roott"),
+#[tokio::test]
+#[should_panic(expected = "no rung named \"roott\" to compare with")]
+async fn an_unknown_baseline_name_panics() {
+    let specs = vec![
+        RungSpec::new("root", None, || async { RungServer::bare(addr()) }),
+        RungSpec::new("child", Some("roott"), || async {
+            RungServer::bare(addr())
+        }),
     ];
-    baseline_index(&rungs, 1);
+    build_ladder(specs, None).await;
 }
 
-#[test]
+#[tokio::test]
 #[should_panic(expected = "does not precede")]
-fn a_baseline_that_comes_later_in_the_ladder_panics() {
-    let rungs = vec![
-        Rung::bare("first", addr()).over("second"),
-        Rung::bare("second", addr()),
+async fn a_baseline_that_comes_later_in_the_ladder_panics() {
+    let specs = vec![
+        RungSpec::new("first", Some("second"), || async {
+            RungServer::bare(addr())
+        }),
+        RungSpec::new("second", None, || async { RungServer::bare(addr()) }),
     ];
-    baseline_index(&rungs, 0);
+    build_ladder(specs, None).await;
+}
+
+#[tokio::test]
+async fn a_mistyped_baseline_fails_before_any_constructor_runs_even_when_its_rung_is_unselected() {
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let mut specs = recording_specs(&started);
+    specs.push(RungSpec::new("stray", Some("roott"), || async {
+        RungServer::bare(addr())
+    }));
+    let outcome = tokio::spawn(async move { build_ladder(specs, Some(&["root"])).await }).await;
+    assert!(outcome
+        .err()
+        .expect("a mistyped baseline was accepted")
+        .is_panic());
+    assert!(started.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -70,48 +101,31 @@ fn a_zero_or_non_numeric_worker_count_is_rejected() {
     }
 }
 
-#[test]
-fn a_selection_keeps_ladder_order_and_reroutes_a_missing_baseline_to_its_nearest_selected_ancestor()
-{
-    let picked = select_rungs(ladder(), &["grandchild", "root"]);
+#[tokio::test]
+async fn a_selection_keeps_ladder_order_and_reroutes_a_missing_baseline_to_its_nearest_selected_ancestor(
+) {
+    let picked = built(Some(&["grandchild", "root"])).await;
     let names: Vec<_> = picked.iter().map(|r| r.name).collect();
     assert_eq!(names, ["root", "grandchild"]);
     assert_eq!(picked[1].baseline, Some("root"));
 }
 
-#[test]
-fn a_selected_rung_whose_baseline_is_selected_keeps_it() {
-    let picked = select_rungs(ladder(), &["root", "child", "grandchild"]);
+#[tokio::test]
+async fn a_selected_rung_whose_baseline_is_selected_keeps_it() {
+    let picked = built(Some(&["root", "child", "grandchild"])).await;
     assert_eq!(picked[2].baseline, Some("child"));
 }
 
-#[test]
-fn a_selected_rung_with_no_selected_ancestor_has_no_baseline() {
-    let picked = select_rungs(ladder(), &["grandchild"]);
+#[tokio::test]
+async fn a_selected_rung_with_no_selected_ancestor_has_no_baseline() {
+    let picked = built(Some(&["grandchild"])).await;
     assert_eq!(picked[0].baseline, None);
 }
 
-#[test]
+#[tokio::test]
 #[should_panic(expected = "no rung named")]
-fn selecting_an_unknown_rung_panics() {
-    select_rungs(ladder(), &["roott"]);
-}
-
-/// A spec list shaped like `ladder()` whose constructors record their name in `started`.
-fn recording_specs(started: &Arc<Mutex<Vec<&'static str>>>) -> Vec<RungSpec> {
-    let spec = |name: &'static str, baseline: Option<&'static str>| {
-        let started = Arc::clone(started);
-        RungSpec::new(name, baseline, move || async move {
-            started.lock().unwrap().push(name);
-            RungServer::bare(addr())
-        })
-    };
-    vec![
-        spec("root", None),
-        spec("child", Some("root")),
-        spec("grandchild", Some("child")),
-        spec("sibling", Some("root")),
-    ]
+async fn selecting_an_unknown_rung_panics() {
+    built(Some(&["roott"])).await;
 }
 
 #[tokio::test]
