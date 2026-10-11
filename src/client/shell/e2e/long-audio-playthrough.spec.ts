@@ -23,8 +23,8 @@ import {
 // element leaves between its read-ahead bursts, so a response left open across a real gap is cut
 // and the run fails if the element's requests are not completed or recovered through `Range`.
 // The position code embedded in the track (one semitone per 10-second slot) is read from the
-// page's mixed output once per slot for the whole run, so every gap between asset requests holds
-// at least one reading. Runs under the `long-audio-playthrough-*` projects, one per protocol and
+// page's mixed output once per slot for the whole run, so every gap between asset requests that
+// the egress window could cut holds at least one reading. Runs under the `long-audio-playthrough-*` projects, one per protocol and
 // each its own CI job.
 
 /** The fixture track played in full: the one whose served sizes were measured. */
@@ -41,8 +41,15 @@ function expectedProtocol(projectName: string): string {
   return projectName.includes("-https-") ? "h2" : "http/1.1";
 }
 
-/** The longest span, in milliseconds, between two consecutive asset requests that holds no
- * reading, over the request log and the reading times.
+/** The egress window, in milliseconds, of the server the play-through projects run against
+ * (`MEDIA_RANGE_EGRESS_WINDOW_SECS` in `playwright.config.ts`): a response left open across a gap
+ * at least this long is cut, so only such a gap can expose a cut the readings must cover. The
+ * first reading exists no earlier than the middle of slot 0 (`READ_PHASE_SECS`), so the start-up
+ * requests, which are all closer together than the window, cannot hold one. */
+const EGRESS_WINDOW_MS = 3_000;
+
+/** The gaps, in milliseconds, between two consecutive asset requests that last at least
+ * `EGRESS_WINDOW_MS` and hold no reading, over the request log and the reading times.
  * @param requests - The request events, in arrival order.
  * @param readings - The times of the readings, in milliseconds since recording began.
  * @returns The gaps with no reading inside, as `[from, to]` pairs.
@@ -56,7 +63,7 @@ function gapsWithoutReading(requests: TrafficEvent[], readings: number[]): [numb
   const empty: [number, number][] = [];
   for (let i = 1; i < times.length; i++) {
     const [from, to] = [times[i - 1], times[i]];
-    if (!readings.some((t) => t > from && t < to)) empty.push([from, to]);
+    if (to - from >= EGRESS_WINDOW_MS && !readings.some((t) => t > from && t < to)) empty.push([from, to]);
   }
   return empty;
 }
