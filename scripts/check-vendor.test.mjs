@@ -485,6 +485,42 @@ test("a failed download is reported as a lint:vendor line and exit code 1, not t
   expect(errors.some((m) => m === "lint:vendor: could not download the upstream archive: getaddrinfo ENOTFOUND static.crates.io")).toBe(true);
 });
 
+test("a failed download beside an offline defect prints both", async () => {
+  const { vendored } = fixture();
+  const sameInputs = () => inputs(vendored, { extraPaths: ["vendor/notes.rs"] });
+  const offline = checkVendor(sameInputs());
+  expect(offline.length).toBeGreaterThan(0);
+  const { paths, readFile, rootCargoToml, cargoLock } = sameInputs();
+  const errors = [];
+  const code = await runGate({
+    listFiles: () => ({ ok: true, paths }),
+    readFile: (p) => (p === "Cargo.toml" ? Buffer.from(rootCargoToml) : p === "Cargo.lock" ? Buffer.from(cargoLock) : readFile(p)),
+    upstream: true,
+    fetchCrate: () => Promise.reject(new Error("getaddrinfo ENOTFOUND static.crates.io")),
+    log: () => {},
+    error: (m) => errors.push(m),
+  });
+  expect(code).toBe(1);
+  for (const line of offline) expect(errors).toContain(`lint:vendor: ${line}`);
+  expect(errors).toContain("lint:vendor: could not download the upstream archive: getaddrinfo ENOTFOUND static.crates.io");
+  expect(errors.length).toBe(offline.length + 1);
+});
+
+test("a redirect with a malformed Location rejects with a message instead of throwing", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(302, { location: "http://[::1" });
+    res.end();
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const { port } = server.address();
+    await expect(download(`http://127.0.0.1:${port}/h2.crate`, { request: httpGet })).rejects.toThrow(/Location/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
 test("a server that never answers ends the download at its deadline", async () => {
   const server = createServer(() => {});
   await new Promise((done) => server.listen(0, "127.0.0.1", done));

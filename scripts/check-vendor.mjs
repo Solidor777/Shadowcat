@@ -442,7 +442,13 @@ export function download(url, { deadlineMs = DOWNLOAD_DEADLINE_MS, request = get
         const { statusCode, headers } = response;
         if (statusCode >= 300 && statusCode < 400 && headers.location && redirects > 0) {
           response.resume();
-          const next = new URL(headers.location, from);
+          let next;
+          try {
+            next = new URL(headers.location, from);
+          } catch {
+            fail(new Error(`${from} answered a redirect with a malformed Location header: ${headers.location}`));
+            return;
+          }
           if (next.protocol !== "https:") {
             fail(new Error(`${from} redirected to ${next.href}, which is not HTTPS`));
             return;
@@ -488,14 +494,15 @@ export async function runGate({ listFiles, readFile, upstream, fetchCrate, log, 
     cargoLock: readFile("Cargo.lock").toString("utf8"),
   });
   if (upstream) {
-    let crateBytes;
+    let crateBytes = null;
     try {
       crateBytes = await fetchCrate();
     } catch (cause) {
-      error(`lint:vendor: could not download the upstream archive: ${cause instanceof Error ? cause.message : cause}`);
-      return 1;
+      errors.push(`could not download the upstream archive: ${cause instanceof Error ? cause.message : cause}`);
     }
-    errors.push(...checkUpstream({ crateBytes, readFile }));
+    if (crateBytes !== null) {
+      errors.push(...checkUpstream({ crateBytes, readFile }));
+    }
   }
   if (errors.length > 0) {
     for (const e of errors) error(`lint:vendor: ${e}`);
