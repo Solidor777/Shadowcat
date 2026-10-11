@@ -1,6 +1,3 @@
-//! `Room::toggle_door` — the door-toggle gate, its GM bypass, and the
-//! role-conditioned refusal-wording discipline.
-//!
 //! `Room::toggle_door` — the positional reach + visibility gate behind
 //! `ClientMsg::ToggleDoor`, its GM bypass, its `Locked` state machine, and the
 //! role-conditioned refusal-wording discipline (`door_toggle_wire_message`).

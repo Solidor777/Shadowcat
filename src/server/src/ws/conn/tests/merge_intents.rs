@@ -1,11 +1,8 @@
-//! `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
-//! push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.
+//! `conn::merge_intents`'s wire-dispatch layer: the stateless two-call flow, the owner-or-GM and
+//! per-path authorization derivations, push's per-instance visibility/capability outcomes, and the
+//! `WriteOrigin::TemplateMerge` commit's broadcast/redaction behaviour.
 //!
-//! `conn::merge_intents`'s wire-dispatch layer: the stateless two-call flow, the
-//! owner-or-GM and per-path authorization derivations, push's per-instance
-//! visibility/capability outcomes, and the `WriteOrigin::TemplateMerge` commit's
-//! broadcast/redaction behaviour. Fixture pattern mirrors `combat_intents`'s
-//! harness construction.
+//! Fixture pattern mirrors `combat_intents`'s harness construction.
 
 use super::*;
 use crate::auth::role::ServerRole;
