@@ -1,6 +1,7 @@
 //! Server-side world-config seeding: the ops-builder that creates absent config singletons with
 //! their engine-defined default bodies and keeps the `system-defaults` singleton mirroring the
-//! enabled system package's manifest declaration.
+//! enabled system package's manifest declaration. `enabled_system_defaults` and `seed_author` derive
+//! the enabled-system defaults and the author its callers commit under `WriteOrigin::ConfigSeed`.
 //!
 //! The DECISION of what to seed lives here alone; callers commit the returned ops under
 //! `WriteOrigin::ConfigSeed` through their own channel — `Repository::apply_intent` where no room

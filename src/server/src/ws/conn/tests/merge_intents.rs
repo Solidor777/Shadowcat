@@ -1,6 +1,7 @@
-//! `conn::merge_intents`'s wire-dispatch layer: the stateless two-call flow, the owner-or-GM and
-//! per-path authorization derivations, push's per-instance visibility/capability outcomes, and the
-//! `WriteOrigin::TemplateMerge` commit's broadcast/redaction behaviour.
+//! `conn::merge_intents`'s wire-dispatch layer (`merge_intents::handle_merge_intent`): the
+//! stateless two-call flow, the owner-or-GM and per-path authorization derivations, push's
+//! per-instance visibility/capability outcomes, and the `WriteOrigin::TemplateMerge` commit's
+//! broadcast/redaction behaviour.
 //!
 //! Fixture pattern mirrors `combat_intents`'s harness construction.
 

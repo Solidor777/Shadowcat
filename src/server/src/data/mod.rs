@@ -1,5 +1,5 @@
 //! The data layer: the document model, per-recipient permissions/redaction,
-//! command application, validation, search, assets, and SQLite persistence.
+//! command application, engine-band validation, search, assets, and SQLite persistence.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
