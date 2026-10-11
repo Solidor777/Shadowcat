@@ -1,3 +1,5 @@
+//! The per-document visibility oracle the merge consults by identity.
+//!
 //! The requester's view of what each document hides, consulted by the merge
 //! at EVERY recursion level by document IDENTITY — the correlated
 //! `(template child, instance child)` pair the merge is currently inside —

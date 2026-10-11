@@ -1,3 +1,6 @@
+//! The server-owned template merge engine: the exact behavioural twin of the
+//! client `@shadowcat/core` 3-way merge, corpus-pinned against it.
+//!
 //! The server-owned template merge engine: the 3-way merge (`merge3`,
 //! `compute_pull`, `compute_revert`, `plan_to_update`, `apply_resolutions`)
 //! behind the `MergePull`/`MergePush`/`MergeRevert` intents. Its behaviour is
@@ -37,16 +40,10 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// `MergeBase`/`MergeBands`, the snapshot builders and the placement
-/// exclusion set.
 pub mod bands;
-/// Embedded-collection merge/revert and subtree restamping.
 pub(crate) mod embedded;
-/// `merge3`, the pull/revert computations, and update-plan emission.
 pub mod plan;
-/// Single-tree diff/merge primitives and JSON-pointer helpers.
 pub(crate) mod tree;
-/// The per-document visibility oracle the merge consults by identity.
 pub mod visibility;
 
 #[cfg(test)]
