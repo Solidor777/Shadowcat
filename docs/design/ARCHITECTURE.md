@@ -175,3 +175,9 @@ Rendering and visibility techniques (raycast visibility polygons, fog of war, il
 **Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1. Multi-level maps are elevation-banded, not a separate scene-per-floor model: a scene declares `SceneEngine.levels` (each an `[bottom, top)` elevation band), `scene::elevation::band_contains`/`level_of` resolve band-shaped documents (walls/regions/drawings/templates) and point-elevation documents (tokens/lights) to a floor identically client- and server-side, and portals between floors (same-scene or cross-scene) are a region-trigger effect (`TriggerEffect::Teleport`) rather than a bespoke door/stair primitive — see `docs/HISTORY.md`'s M25 entry for the full delivered shape.
 
 - **Per-milestone feature boundaries** are finalized in implementation plans, not here.
+
+## 9. Code style: Rust module documentation
+
+A Rust module is documented only by the `//!` block inside its own file (or inside the braces of an inline `mod x { }`); no `mod` item, file-backed or inline, carries an outer `///` (or `/** */`, or `#[doc]`). The first `//!` paragraph is the one-sentence summary rustdoc shows in the parent's module index.
+
+Why: rustdoc merges an outer doc with the module's inner docs and resolves the merged text in the **parent's** scope. A relative intra-doc link that is correct inside the module (``[`snapshot`]`` naming a child module) therefore fails with "no item named `snapshot` in scope" as soon as the declaration also carries an outer doc, and the same words end up written in two places that can disagree. `pnpm lint:module-docs` (`scripts/check-module-docs.mjs`) fails any `mod` item with an outer doc in `src/**/*.rs`.

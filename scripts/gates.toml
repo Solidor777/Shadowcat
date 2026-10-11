@@ -347,6 +347,12 @@ tier = "commit"
 [[gate]]
 workflow = "ci.yml"
 job = "docs"
+command = "pnpm lint:module-docs"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
 command = "pnpm lint:secure-context"
 tier = "commit"
 

@@ -28,6 +28,7 @@
     "lint:allowances": "node scripts/check-lint-allowances.mjs",
     "lint:file-size": "node scripts/check-file-lines.mjs",
     "lint:inline-tests": "node scripts/check-inline-tests.mjs",
+    "lint:module-docs": "node scripts/check-module-docs.mjs",
     "lint:secure-context": "node scripts/check-secure-context-apis.mjs",
     "lint:crypto-backend": "node scripts/check-crypto-backend.mjs",
     "lint:vendor": "node scripts/check-vendor.mjs",

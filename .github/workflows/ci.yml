@@ -423,6 +423,8 @@ jobs:
         run: pnpm lint:file-size
       - name: No inline Rust test-module bodies
         run: pnpm lint:inline-tests
+      - name: No outer doc on a Rust mod item (module docs live in the module's own //! block)
+        run: pnpm lint:module-docs
       - name: No secure-context-only APIs (LAN plain-HTTP play)
         run: pnpm lint:secure-context
       - name: No second TLS crypto backend (ring only)
