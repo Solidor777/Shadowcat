@@ -171,11 +171,11 @@ export function applyRenameAll(name, style) {
  * segment — except a `mod.rs` file, which contributes no segment of its own (it names its parent
  * directory's module). `main.rs`/`lib.rs` directly under a root are not real Rust path segments
  * (a crate root has no name from outside the crate), so under every root `lib.rs` maps to `[]`;
- * a nested `foo/lib.rs` or `foo/main.rs` is an ordinary module (`foo::lib`, `foo::main`);
- * `main.rs` maps to the one-segment path `main`, because this repo's own skill prose writes
- * `main::run_backup` as a doc-convention shorthand for "declared in `main.rs`" — the same
- * non-literal-Rust-syntax latitude already extended to a struct field's `::`/`.` separator
- * choice. No skill cites a `lib` path that way.
+ * `main.rs` directly under a root maps to the one-segment path `main`, because this repo's own
+ * skill prose writes `main::run_backup` as a doc-convention shorthand for "declared in `main.rs`"
+ * — the same non-literal-Rust-syntax latitude already extended to a struct field's `::`/`.`
+ * separator choice. No skill cites a `lib` path that way. A nested `foo/lib.rs` or `foo/main.rs`
+ * is an ordinary module (`foo::lib`, `foo::main`).
  * @param {string} rustRoot - absolute path to the root of the indexed Rust tree `filePath` is
  *   in (one of the four roots `buildSymbolIndex` walks).
  * @param {string} filePath - absolute path to a `.rs` file under `rustRoot`.
