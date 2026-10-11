@@ -3,7 +3,7 @@
 //! `merge3_embedded` correlates instance and template children by `source.id` (never by index)
 //! against the `base` snapshot's membership records; `revert_embedded` resets collections against
 //! the CURRENT template with no snapshot consulted. `restamp_subtree` deep-clones a template child
-//! into a fresh instance subtree, and the merge pass uses it for template-added children.
+//! into a fresh instance subtree, and the merge and revert passes use it for template-added children.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
