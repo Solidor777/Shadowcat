@@ -50,7 +50,7 @@ use tokio_rustls::LazyConfigAcceptor;
 use super::resolver::{finish_phase, hello_phase, CertResolver};
 use super::{ConnMeta, Selected, TlsRuntime};
 use crate::config::Config;
-use crate::http::conn_serve::{accept_error_pause, ConnSource, ServeIo};
+use crate::http::conn_serve::{accept_error_pause, set_accepted_nodelay, ConnSource, ServeIo};
 use crate::http::peer_slots::PeerSlots;
 
 /// Capacity of the hand-off queue between the acceptor task and [`SniffListener::accept`]. A
@@ -318,18 +318,7 @@ impl SniffListener {
                         let Some(permit) = adm.admit(peer.ip(), exempt) else {
                             continue;
                         };
-                        // TCP_NODELAY on every accepted socket, set here because this is the one
-                        // place the production path configures one. Loopback download of 24 MiB
-                        // over HTTP/2 against a bare hyper server (release build, medians of
-                        // 200 downloads in each of 5 runs): 11.9 ms with the option and 20.1 ms
-                        // without; the realtime WebSocket traffic is small frames the option stops
-                        // the kernel from holding back to coalesce. A failure to set it leaves
-                        // the connection working with the system default.
-                        if let Err(e) = sock.set_nodelay(true) {
-                            tracing::debug!(
-                                "could not set TCP_NODELAY on a connection from {peer}: {e}"
-                            );
-                        }
+                        set_accepted_nodelay(&sock, peer);
                         let runtime = runtime.clone();
                         let tx = tx.clone();
                         tokio::spawn(async move {

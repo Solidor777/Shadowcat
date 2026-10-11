@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use shadowcat::http::conn_serve::{ConnSource, ServeIo};
+use shadowcat::http::conn_serve::{set_accepted_nodelay, ConnSource, ServeIo};
 use shadowcat::tls::ConnMeta;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
@@ -130,8 +130,8 @@ pub struct ObservedSource {
     closed: ClosedLog,
     /// Shared with every connection the source hands out.
     stats: Arc<WriteStats>,
-    /// Whether accepted sockets get `TCP_NODELAY`, as `SniffListener` sets it on every socket the
-    /// production path accepts.
+    /// Whether accepted sockets get `TCP_NODELAY` through `set_accepted_nodelay`, the function
+    /// every production accept path calls.
     nodelay: bool,
 }
 
@@ -178,7 +178,7 @@ impl ConnSource for ObservedSource {
             accepted = self.listener.accept() => {
                 let (sock, peer): (TcpStream, SocketAddr) = accepted?;
                 if self.nodelay {
-                    sock.set_nodelay(true)?;
+                    set_accepted_nodelay(&sock, peer);
                 }
                 Ok(Some((
                     ObservedStream {

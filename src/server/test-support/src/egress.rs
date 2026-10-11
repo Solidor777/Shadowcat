@@ -99,7 +99,7 @@ impl EgressServer {
     }
 
     /// Serves `protocol` with `limits`, setting `TCP_NODELAY` on accepted sockets when `nodelay`
-    /// (what the production listener does; the throughput ladder serves without it as a control).
+    /// (through `set_accepted_nodelay`, as every production accept path does; the throughput ladder serves without it as a control).
     pub async fn start_tuned(limits: ConnLimits, protocol: Protocol, nodelay: bool) -> Self {
         let (state, world) = seeded_state().await;
         Self::start_over(state, world, limits, protocol, nodelay).await

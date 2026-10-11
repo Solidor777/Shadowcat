@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use shadowcat::http::conn_serve::{ConnSource, ServeIo};
+use shadowcat::http::conn_serve::{set_accepted_nodelay, ConnSource, ServeIo};
 use shadowcat::tls::ConnMeta;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
@@ -72,8 +72,8 @@ pub struct H2cSource {
     listener: TcpListener,
     /// Fires when the source should report that it has ended.
     end: oneshot::Receiver<()>,
-    /// Whether accepted sockets get `TCP_NODELAY`, as `SniffListener` sets it on every socket the
-    /// production path accepts.
+    /// Whether accepted sockets get `TCP_NODELAY` through `set_accepted_nodelay`, the function
+    /// every production accept path calls.
     nodelay: bool,
 }
 
@@ -117,7 +117,7 @@ impl ConnSource for H2cSource {
             accepted = self.listener.accept() => {
                 let (sock, peer) = accepted?;
                 if self.nodelay {
-                    sock.set_nodelay(true)?;
+                    set_accepted_nodelay(&sock, peer);
                 }
                 Ok(Some((H2cStream(sock), ConnMeta::plain(peer))))
             }

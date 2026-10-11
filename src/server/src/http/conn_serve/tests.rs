@@ -2253,3 +2253,20 @@ async fn serve_router_rejects_a_window_whose_sampler_period_is_zero() {
         assert!(err.is_panic(), "{ns} ns: {err:?}");
     }
 }
+
+#[tokio::test]
+async fn a_plain_tcp_listener_source_sets_tcp_nodelay_on_accepted_connections() {
+    let mut listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (accepted, _meta) = ConnSource::accept(&mut listener)
+        .await
+        .unwrap()
+        .expect("a bound listener never reports the end of the source");
+    assert!(
+        accepted.nodelay().unwrap(),
+        "a socket accepted through the ConnSource impl for TcpListener lacks TCP_NODELAY"
+    );
+    drop(client);
+}

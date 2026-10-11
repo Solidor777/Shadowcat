@@ -87,6 +87,7 @@ mod stream_exec;
 
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::pin::{pin, Pin};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -169,7 +170,9 @@ pub trait ConnSource: Send + 'static {
     /// The next connection with its metadata, `Ok(None)` when the source is finished, or the
     /// accept error. CONTRACT: the future is cancel-safe (dropping it between polls loses no
     /// connection, because [`serve_router`] drops it on every reaped task), and it returns errors
-    /// instead of sleeping on them: the pause is the caller's, see [`accept_error_pause`].
+    /// instead of sleeping on them: the pause is the caller's, see [`accept_error_pause`]. An
+    /// implementation that hands out a plain TCP socket configures it through
+    /// [`set_accepted_nodelay`] before returning it, so every source applies one socket policy.
     ///
     /// # Examples
     ///
@@ -185,12 +188,42 @@ pub trait ConnSource: Send + 'static {
     fn accept(&mut self) -> impl Future<Output = io::Result<Option<(Self::Io, ConnMeta)>>> + Send;
 }
 
+/// A bare listener sets `TCP_NODELAY` on every socket it accepts through [`set_accepted_nodelay`].
 impl ConnSource for TcpListener {
     type Io = TcpStream;
 
     async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
         let (sock, peer) = TcpListener::accept(self).await?;
+        set_accepted_nodelay(&sock, peer);
         Ok(Some((sock, ConnMeta::plain(peer))))
+    }
+}
+
+/// What the server configures on an accepted TCP socket: `TCP_NODELAY`, so the kernel does not
+/// hold back small writes to coalesce them. Every production accept path calls this once per
+/// socket (`impl ConnSource for TcpListener` and `SniffListener`'s accept task), and the
+/// test-support sources that model the listener call it too, so the decision exists in one place.
+/// A failure to set the option is logged at debug level naming `peer`, and the connection proceeds
+/// with the system default.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::conn_serve::set_accepted_nodelay;
+///
+/// # #[tokio::main] async fn main() {
+/// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+/// let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+/// let (accepted, peer) = listener.accept().await.unwrap();
+/// assert!(!accepted.nodelay().unwrap());
+/// set_accepted_nodelay(&accepted, peer);
+/// assert!(accepted.nodelay().unwrap());
+/// drop(client);
+/// # }
+/// ```
+pub fn set_accepted_nodelay(sock: &TcpStream, peer: SocketAddr) {
+    if let Err(e) = sock.set_nodelay(true) {
+        tracing::debug!("could not set TCP_NODELAY on a connection from {peer}: {e}");
     }
 }
 
