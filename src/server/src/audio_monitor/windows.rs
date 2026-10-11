@@ -1,11 +1,11 @@
-//! Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
-//!
 //! Windows backend: `IAudioSessionManager2`/`IAudioMeterInformation` over the default render
-//! endpoint. COM is apartment-threaded, so this backend spawns its OWN dedicated OS thread at
-//! construction, initializes COM as multithreaded (MTA) exactly once there, and keeps that
-//! thread alive for the process's lifetime — `SessionMonitor::poll` never cares which thread
-//! its own caller runs on, since it only reads state the dedicated thread publishes (the same
-//! shape as the Linux/PipeWire backend).
+//! endpoint.
+//!
+//! COM is apartment-threaded, so this backend spawns its OWN dedicated OS thread at construction,
+//! initializes COM as multithreaded (MTA) exactly once there, and keeps that thread alive for the
+//! process's lifetime — `SessionMonitor::poll` never cares which thread its own caller runs on,
+//! since it only reads state the dedicated thread publishes (the same shape as the Linux/PipeWire
+//! backend).
 //!
 //! Verification note: checked against the resolved `windows` crate's published 0.58 sources —
 //! the session-control interfaces (`IAudioSessionManager2`, `IAudioSessionControl`,

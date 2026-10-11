@@ -1,5 +1,3 @@
-//! The blocking half of the derivative upgrade sweep.
-//!
 //! The blocking half of the derivative upgrade sweep: decides, for one stored audio asset, which
 //! of its Opus siblings were written by an encoder or muxer older than the current one, stages the
 //! replacement files beside them and swaps them in.

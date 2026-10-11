@@ -1,5 +1,3 @@
-//! The localhost WebSocket server: origin allowlist, hello/levels/watch frames, the 10 Hz loop.
-//!
 //! The `shadowcat audio-monitor` localhost WebSocket server: origin-gated `/levels` upgrade,
 //! the `hello`/`levels`/`watch` frame protocol, and the 10 Hz broadcast loop.
 

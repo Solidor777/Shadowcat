@@ -1,5 +1,3 @@
-//! The WebM muxer and the layout checks the upgrade sweep reads.
-//!
 //! The WebM (EBML) muxer for the Opus derivative: a minimal single-audio-track file written from
 //! the encoded packets, plus the helpers the upgrade sweep uses to recognise the layout it wrote.
 //!

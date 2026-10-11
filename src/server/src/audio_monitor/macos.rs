@@ -1,17 +1,16 @@
-//! macOS backend (Core Audio process tap, macOS 14.2+).
-//!
-//! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in
-//! macOS 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so
-//! this file binds the small entry-point surface it needs directly via `extern "C"`, linked
-//! against the `CoreAudio` framework (`#[link(name = "CoreAudio", kind = "framework")]` on the
-//! `extern "C"` block declaring these entry points — every symbol this file calls lives in
+//! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in macOS
+//! 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so this file
+//! binds the small entry-point surface it needs directly via `extern "C"`, linked against the
+//! `CoreAudio` framework (`#[link(name = "CoreAudio", kind = "framework")]` on the `extern "C"`
+//! block declaring these entry points — every symbol this file calls lives in
 //! `CoreAudio.framework`; the Objective-C runtime symbols (`objc_getClass`, `sel_registerName`,
 //! `class_respondsToSelector`, `objc_msgSend`) and `proc_pidpath` resolve via the platform's
 //! always-linked `libSystem`/`libobjc`, needing no framework directive of their own), using
-//! `core-foundation` only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling. On macOS
-//! < 14.2 (detected by
-//! `macos_at_least_14_2`'s Darwin-kernel version probe), `MacosMonitor::new` returns
-//! `MonitorError::Unsupported("macOS 14.2 or newer")` — the hello frame says so verbatim.
+//! `core-foundation` only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling.
+//!
+//! On macOS < 14.2 (detected by `macos_at_least_14_2`'s Darwin-kernel version probe),
+//! `MacosMonitor::new` returns `MonitorError::Unsupported("macOS 14.2 or newer")` — the hello frame
+//! says so verbatim.
 //!
 //! Requires the user to grant the "System Audio Recording" permission on first run (the OS's
 //! own prompt).

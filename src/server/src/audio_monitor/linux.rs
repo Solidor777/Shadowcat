@@ -1,10 +1,9 @@
-//! Linux backend (PipeWire).
+//! Linux backend: enumerates PipeWire output-audio stream nodes and reads each one's peak level.
 //!
-//! Linux backend: enumerates PipeWire output-audio stream nodes and reads each one's peak
-//! level. PipeWire's API is event-loop driven, so this backend runs its own
-//! dedicated OS thread owning a `pipewire::main_loop::MainLoop` for its entire lifetime and
-//! publishes the latest per-node peak into shared state; `poll` only reads that state, so it
-//! stays synchronous and non-blocking like every other backend (`SessionMonitor`'s doc).
+//! PipeWire's API is event-loop driven, so this backend runs its own dedicated OS thread owning a
+//! `pipewire::main_loop::MainLoop` for its entire lifetime and publishes the latest per-node peak
+//! into shared state; `poll` only reads that state, so it stays synchronous and non-blocking like
+//! every other backend (`SessionMonitor`'s doc).
 //!
 //! Node discovery: nodes whose `media.class` property is `"Stream/Output/Audio"` are
 //! considered, named from their `application.process.binary` property (reduced to a basename

@@ -1,8 +1,8 @@
-//! A scripted in-memory backend for tests — never compiled into the release binary.
+//! Scripted `SessionMonitor` for tests — a fixed sequence of poll results, replayed once each and
+//! then repeating the last entry.
 //!
-//! Scripted `SessionMonitor` for tests — a fixed sequence of poll results, replayed once
-//! each and then repeating the last entry. Never compiled into the release binary
-//! (`#[cfg(test)]` at the `mod fake;` declaration in `mod.rs`).
+//! Never compiled into the release binary (`#[cfg(test)]` at the `mod fake;` declaration in
+//! `mod.rs`).
 
 use super::{MonitorError, SessionLevel, SessionMonitor};
 

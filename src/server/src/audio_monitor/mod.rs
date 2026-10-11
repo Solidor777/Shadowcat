@@ -1,10 +1,10 @@
-//! `shadowcat audio-monitor`: the OS audio-session-level subcommand (Windows WASAPI / macOS
-//! Core Audio process tap / Linux PipeWire) serving a localhost WebSocket.
+//! `shadowcat audio-monitor`: a localhost-only subcommand serving the peak audio level of watched
+//! OS processes (Discord, any voice app) to the ducking module's `OsMonitorSource` over a
+//! WebSocket.
 //!
-//! `shadowcat audio-monitor`: a localhost-only subcommand serving the peak audio level of
-//! watched OS processes (Discord, any voice app) to the ducking module's `OsMonitorSource`
-//! over a WebSocket. Never a second executable — a `CliCommand::AudioMonitor` branch of the
-//! single `shadowcat` binary.
+//! The levels are read from the OS audio sessions (Windows WASAPI, macOS Core Audio process tap,
+//! Linux PipeWire). Never a second executable — a `CliCommand::AudioMonitor` branch of the single
+//! `shadowcat` binary.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
