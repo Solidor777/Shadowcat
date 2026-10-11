@@ -4,7 +4,7 @@
 //! content sanitizer before persisting — `/me` yields `MessageKind::Emote`, `/w @name` resolves a
 //! real member's username to their uuid and builds `Audience::Whisper` (rejecting the whole send if
 //! the name is unknown), and the world's `chat-settings` policy governs whether the stored content
-//! is a literal `Segment::Text` or a sanitized `Segment::Html` run. Drives `handle_send_message`
+//! is a literal `Segment::Text` or a sanitized `Segment::Html` run. The tests drive `handle_send_message`
 //! directly (repo + room + ctx), mirroring `chat`'s own `handle_send_message_*` unit-test harness
 //! rather than the full WS transport used by `chat_audience`.
 

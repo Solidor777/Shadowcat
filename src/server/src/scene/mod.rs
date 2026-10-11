@@ -1,7 +1,8 @@
 //! Per-world derived scene ECS.
 //!
-//! Hydrated from documents; never persisted, never authoritative. Holds one hecs entity per
-//! scene-entity document so engine-owned systems (vision, pathfinding) can query spatial state.
+//! The ECS is hydrated from documents; never persisted, never authoritative. It holds one hecs
+//! entity per scene-entity document so engine-owned systems (vision, pathfinding) can query spatial
+//! state.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

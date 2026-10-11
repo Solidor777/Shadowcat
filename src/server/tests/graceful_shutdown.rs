@@ -2,10 +2,10 @@
 //!
 //! `axum::serve(..) .with_graceful_shutdown(..)` resolves once ordinary HTTP connections drain, NOT
 //! once a live WebSocket connection's task has finished exiting -- `WebSocketUpgrade::on_upgrade`
-//! spawns that task detached from the hyper connection future that produced the 101 handshake.
-//! Drives `shadowcat::http::serve` (the testable wrapper that adds a post-`axum::serve` drain of
-//! live WebSocket tasks) over a REAL `TcpListener` with a REAL `tokio_tungstenite` client, so this
-//! observes the actual wire behavior rather than an in-process mock.
+//! spawns that task detached from the hyper connection future that produced the 101 handshake. The
+//! test drives `shadowcat::http::serve` (the testable wrapper that adds a post-`axum::serve` drain
+//! of live WebSocket tasks) over a REAL `TcpListener` with a REAL `tokio_tungstenite` client, so
+//! this observes the actual wire behavior rather than an in-process mock.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

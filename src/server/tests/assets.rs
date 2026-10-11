@@ -7,7 +7,7 @@
 //! authorization, `304` revalidation, per-user rate limiting, and the broadcasts that replacement
 //! and deletion emit.
 //!
-//! Exercises the HTTP surface rather than `data::repository` directly, so a change that leaves the
+//! The tests exercise the HTTP surface rather than `data::repository` directly, so a change that leaves the
 //! repository correct while breaking the route still fails here. A rejected upload is asserted not
 //! to consume rate quota, which couples the validation order to the quota accounting: validation
 //! must run first, and testing that through the route is the only way to observe the ordering.

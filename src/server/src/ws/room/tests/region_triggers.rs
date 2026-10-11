@@ -1,6 +1,6 @@
 //! `Room`'s region-trigger fire sites.
 //!
-//! The sites are move execution (`Room::execute_move`'s post-commit call into
+//! The tests cover the two sites, move execution (`Room::execute_move`'s post-commit call into
 //! `fire_region_triggers`) and placement/teleport (`Room::publish`'s candidate scan into
 //! `fire_placement_triggers`), the per-effect-kind application semantics, and the secrecy forcing
 //! rule for regions not visible to every world member.

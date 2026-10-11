@@ -1,6 +1,6 @@
 //! GM placement mutation over the live HTTP surface.
 //!
-//! Covered: `PATCH` rename / move / retag with the `moved` notice, the bulk route's single
+//! The tests cover `PATCH` rename / move / retag with the `moved` notice, the bulk route's single
 //! transaction, the `created` notice on upload, folder delete with the reparent default and the
 //! purge option, and the folder-rename → derived-tag refresh.
 

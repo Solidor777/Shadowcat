@@ -1,5 +1,5 @@
 //! `WriteOrigin::CombatTransition`'s capability exemption and the one-active-combat-per-scene batch
-//! fix.
+//! rule.
 //!
 //! A same-batch deactivate+activate swap, in either op ordering, is accepted while a genuine
 //! two-activation batch is still rejected.

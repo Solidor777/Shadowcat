@@ -1,8 +1,8 @@
 //! The sandboxed-validator chokepoint.
 //!
-//! `apply_intent`'s pre-transaction pass over the `system` band (opt-in per world per module), its
-//! interaction with the structural validators and the OCC pre-image check, and the `apply_command`
-//! exemption.
+//! The tests cover `apply_intent`'s pre-transaction pass over the `system` band (opt-in per world
+//! per module), its interaction with the structural validators and the OCC pre-image check, and the
+//! `apply_command` exemption.
 
 use super::*;
 

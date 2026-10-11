@@ -25,7 +25,7 @@
 //!   (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
 //!   regardless of what the mover's own pathfind preview could see.
 //!
-//! Returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
+//! The executor returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
 //! when the move stops before `path.last()` for any reason (wall, mask, region-impassable,
 //! region-arrest, or an exhausted movement `MoveGateInputs::budget`), including a region-arrest
 //! on the final path step.

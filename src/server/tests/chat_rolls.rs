@@ -2,7 +2,7 @@
 //!
 //! The stage actually executes dice notation at ingest, authors a `MessageKind::System` whisper
 //! notice on failure instead of the intended message, interleaves inline rolls/buttons with
-//! sanitized text, and never re-executes a roll on edit. Drives
+//! sanitized text, and never re-executes a roll on edit. The test drives
 //! `handle_send_message`/`handle_edit_message` directly, mirroring `chat_content`'s fixture shape.
 
 use shadowcat::chat::{

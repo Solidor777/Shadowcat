@@ -4,8 +4,8 @@
 //! threshold banding of a continuous `[0,1]` illumination field. No proprietary VTT/engine source
 //! consulted.
 //!
-//! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs` module; the server
-//! stays structural-only (callers parse documents and pass these plain structs).
+//! The structs mirror the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs`
+//! module; the server stays structural-only (callers parse documents and pass these plain structs).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

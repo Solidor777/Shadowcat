@@ -1,6 +1,6 @@
 //! The visibility oracle: the requester's view of what each document hides, consulted by the merge.
 //!
-//! The merge consults it at EVERY recursion level by document IDENTITY — the correlated
+//! The oracle is consulted at EVERY recursion level by document IDENTITY — the correlated
 //! `(template child, instance child)` pair the merge is currently inside — never by array index.
 //!
 //! Two index spaces exist around an embedded merge: the LIVE document's child positions (which

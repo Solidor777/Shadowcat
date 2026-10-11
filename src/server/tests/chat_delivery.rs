@@ -1,8 +1,8 @@
 //! Proof: a server-authored `message` document rides the existing create -> sequence -> broadcast
 //! path over a real two-client WS connection.
 //!
-//! No message-specific transport code is involved. Mirrors the `ws_convergence` harness
-//! (spawn/login/connect/add_member).
+//! No message-specific transport code is involved. The test mirrors the `ws_convergence`
+//! harness (spawn/login/connect/add_member).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

@@ -1,11 +1,11 @@
 //! Movement-type tags and the reserved-semantics predicate the terrain-cost sites share.
 //!
-//! This module resolves a token's effective tag set and the ONE reserved-semantics predicate the
-//! terrain-cost sites share. Tags themselves are inert vocabulary carried on
-//! `eng::ActorEngine::movement` / `eng::Faction::movement` / `eng::TokenOverrides::movement`; only
-//! the two engine-reserved tags in `TERRAIN_EXEMPT_TAGS` carry engine meaning, and that meaning is
-//! narrow: difficult terrain costs nothing extra — walls, impassable regions, arrest regions and
-//! the visibility mask all still gate, exactly as they do for any other mover.
+//! The module resolves a token's effective tag set and defines that predicate. Tags themselves are
+//! inert vocabulary carried on `eng::ActorEngine::movement` / `eng::Faction::movement` /
+//! `eng::TokenOverrides::movement`; only the two engine-reserved tags in `TERRAIN_EXEMPT_TAGS`
+//! carry engine meaning, and that meaning is narrow: difficult terrain costs nothing extra — walls,
+//! impassable regions, arrest regions and the visibility mask all still gate, exactly as they do
+//! for any other mover.
 
 use std::collections::BTreeSet;
 

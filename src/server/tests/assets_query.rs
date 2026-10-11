@@ -1,8 +1,8 @@
 //! The asset query endpoint over the live HTTP surface.
 //!
-//! Covered: folder scope (root / direct / recursive), all-of tags, kind, the trigger-maintained
-//! `assets_fts` full-text `q` filter, size-capped regex, sorting, keyset pagination followed to the
-//! end — and the bare listing contract (no parameters ⇒ a plain array).
+//! The tests cover folder scope (root / direct / recursive), all-of tags, kind, the
+//! trigger-maintained `assets_fts` full-text `q` filter, size-capped regex, sorting, keyset
+//! pagination followed to the end — and the bare listing contract (no parameters ⇒ a plain array).
 
 use common::{spawn, Harness};
 use shadowcat::data::asset::{Asset, AssetMeta};

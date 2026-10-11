@@ -2,7 +2,7 @@
 //!
 //! It drives `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`, but
 //! against a real stub `axum` target on `127.0.0.1` — the same `build_client_allow_loopback` seam
-//! `link_preview`'s own fetcher tests use. Kept as its own `mod` (not folded into `chat::tests`)
+//! `link_preview`'s own fetcher tests use. It is its own `mod` (not folded into `chat::tests`)
 //! because every test here needs `hyperlinks: true` and a stub server, unlike the tests in
 //! `chat::tests`.
 

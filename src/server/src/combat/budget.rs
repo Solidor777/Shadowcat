@@ -1,7 +1,7 @@
 //! The ONE resolution of "this combatant's movement budget, in cells".
 //!
-//! Read by the movement-budget gate (`ws::room::resolve_budget`, and through it the route-preview
-//! clamp `ws::conn::handle_pathfind`) and by the `"combat"` derived channel
+//! The resolution is read by the movement-budget gate (`ws::room::resolve_budget`, and through it
+//! the route-preview clamp `ws::conn::handle_pathfind`) and by the `"combat"` derived channel
 //! (`SceneEcs::resolved_combats`). A second derivation at any of those sites is the forked-decision
 //! class: one copy gating on `ResourceBinding::Tracked` while the other prices a `Mirror` binding
 //! as a number leaves a GM who names a Mirror-bound key as `movement.resource` seeing a budget in

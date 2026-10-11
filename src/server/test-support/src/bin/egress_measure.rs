@@ -24,7 +24,7 @@
 //!   hyper server (the router, the application's middleware, the serve loop, the harness's
 //!   observed source), with a body-producer control and TCP_NODELAY off as controls. The ladder is
 //!   a tree: each rung names the rung it is compared with, and the three `-no-nodelay` rungs
-//!   repeat a nodelay rung with the option off. Run it in a release build. Prints one
+//!   repeat a nodelay rung with the option off. Run it in a release build. It prints one
 //!   `RECORD layers` line per run and per rung and a `RESULT layers` summary of the median over
 //!   runs, where every rung but the root also prints its `baseline` and
 //!   `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's

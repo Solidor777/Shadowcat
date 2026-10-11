@@ -1,7 +1,7 @@
 //! Streamed whole-file responses with byte-range support.
 //!
-//! They are shared by every asset site that serves a stored file, so the validator order, the range
-//! decision and the response framing cannot differ between sites.
+//! The helpers are shared by every asset site that serves a stored file, so the validator order,
+//! the range decision and the response framing cannot differ between sites.
 //!
 //! The file is read in `FILE_READ_CHUNK` pieces as the connection pulls them; no response holds a
 //! file's bytes in memory. `http::conn_serve`'s `LeasedBody` re-chunks every response body to the
