@@ -19,10 +19,16 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   TCP_NODELAY set on the accepted sockets, as the production listeners do); Windows loopback in release read `buffer_ratio` 0.958,
   0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs). Two instruments read the production
   path against bare hyper at 64 KiB: `egress_measure layers` (2 workers by default) reads the production
-  path 3.1% slower, and the gate reads it 4.9% to 6.2% slower. The owner ruled that difference noise:
-  there is no open reconciliation and nothing to rerun. Host observation, not a blocker and with no
-  diagnosed cause: a 2-worker process of these servers runs about 11.5 ms per download, then 29 to
-  39 ms after sustained load on the author's host. Then, in the
+  path 3.1% slower, and the gate reads it 4.9% to 6.2% slower. The owner ruled that production-path
+  difference noise: there is no open reconciliation and nothing to rerun. The ruling does not cover
+  the buffer-ratio difference: the gate reads `buffer_ratio` 0.954 to 0.958 and the ladder reads the
+  same quantity (default-buffer median over 64 KiB median) 0.996. That difference is an unexplained
+  observation. Its named confound is the worker count: `egress_measure layers` defaults to 2
+  workers and the gate runs 4, and `layers` accepts a worker argument. It is not measured on this
+  host, where in its slow regime the gate's `buffer_ratio` readings spread 0.946 to 1.309 across
+  nine runs; whether to measure it is the owner's decision. Host observation, not a blocker and
+  with no diagnosed cause: a 2-worker process of these servers runs about 11.5 ms per download,
+  then 29 to 39 ms after sustained load on the author's host. Then, in the
   same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
   set below the worst of the three legs by a stated headroom and the three recorded values written
   beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
