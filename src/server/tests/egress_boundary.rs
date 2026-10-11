@@ -3,11 +3,14 @@
 //! reaches `ConnLimits::egress_window`.
 //!
 //! The measurement's `hypothesis_Bps` column is `min(W / 2, EGRESS_CHUNK_BYTES) / egress_window`
-//! (`measure::hypothesis`), the rate at which one 16 KiB chunk's wait equals the window. The measurements follow it at the extremes
-//! only: a reader well below it is always cut and one far above it never is, but a band around and
-//! above it (up to about twice the column's value) is cut in some runs and not in others. The
-//! numbers are measured with the `h2` crate client over loopback, so a browser's own window and
-//! credit batching are not covered.
+//! (`measure::hypothesis`), the rate at which one 16 KiB chunk's wait equals the window; it is
+//! 16384 B/s at a 1 s window for every stream window `W` from 32 KiB up. The measurements follow it
+//! at the extremes only, and where the extremes sit depends on `W`. At a 1 s window and stream
+//! windows of 1 MiB and 6 MiB (six runs per cell) a reader at 20480 B/s or below was cut in every
+//! run and one at 40960 B/s or above in none; 24576 to 32768 B/s was cut in some runs and not in
+//! others. At a 32 KiB stream window (three runs per cell, two from 40960 B/s) every rate up to
+//! 24576 B/s was cut and 32768 B/s and above was not. The numbers are measured with the `h2` crate
+//! client over loopback, so a browser's own window and credit batching are not covered.
 //!
 //! The blocking test runs at a pinned window and two rates, each inside a zone the measurements
 //! found always cut or never cut. The measurements themselves are not tests: the `egress_measure`
@@ -27,16 +30,19 @@ const WINDOW: Duration = Duration::from_secs(1);
 /// The stream window the test runs at.
 const STREAM_WINDOW: u32 = 32 * 1024;
 
-/// A reader rate the unit has cut in every measured run at stream windows from 32 KiB up, 1 s
-/// window: half the hypothesis's threshold.
+/// A reader rate the unit cut in every measured run at stream windows of 32 KiB, 64 KiB, 256 KiB,
+/// 1 MiB and 6 MiB, 1 s window: half the hypothesis's threshold (8192 B/s at `STREAM_WINDOW`).
 fn always_cut_bps() -> u64 {
     (hypothesis(WINDOW, STREAM_WINDOW) / 2.0) as u64
 }
 
-/// A reader rate the unit has not cut in any measured run at stream windows from 32 KiB up, 1 s
-/// window: four times the hypothesis's threshold. Between the two rates the outcome varies from
-/// run to run (rates from about 18 KiB/s to 33 KiB/s were cut in some runs and not in others),
-/// which is why neither blocking assertion sits there.
+/// A reader rate the unit did not cut in any measured run at stream windows of 32 KiB, 64 KiB and
+/// 256 KiB (two runs per cell), 1 s window: four times the hypothesis's threshold (65536 B/s at
+/// `STREAM_WINDOW`). The 1 MiB and 6 MiB grids stop at 49152 B/s, so 65536 B/s is not measured
+/// there. Between the two rates the outcome at `STREAM_WINDOW` is cut at 18432 and 24576 B/s and
+/// not cut at 32768 B/s; at larger stream windows the outcome varies from run to run at 24576 B/s
+/// (64 KiB, 256 KiB) and up to 32768 B/s (1 MiB, 6 MiB), which is why neither blocking assertion
+/// sits between the rates.
 fn never_cut_bps() -> u64 {
     (hypothesis(WINDOW, STREAM_WINDOW) * 4.0) as u64
 }
