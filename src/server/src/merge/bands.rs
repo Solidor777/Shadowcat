@@ -1,6 +1,3 @@
-//! `MergeBase`/`MergeBands`, the snapshot builders and the placement
-//! exclusion set.
-//!
 //! Merge band types and snapshot builders: the `MergeBase` stored on a
 //! stamped document, the `MergeBands` a merge produces, the synthetic
 //! name/engine/system tree adapters, and the placement exclusion set.

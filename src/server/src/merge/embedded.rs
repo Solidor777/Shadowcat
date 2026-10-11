@@ -1,5 +1,3 @@
-//! Embedded-collection merge/revert and subtree restamping.
-//!
 //! Embedded-collection merge and revert: `merge3_embedded` correlates
 //! instance and template children by `source.id` (never by index) against
 //! the `base` snapshot's membership records; `revert_embedded` resets

@@ -1,5 +1,3 @@
-//! `merge3`, the pull/revert computations, and update-plan emission.
-//!
 //! The merge entry points: `merge3` over the mergeable bands (the
 //! `name`+`engine`+`system` synthetic tree, plus `embedded`), the
 //! pull/revert computations, and the emission of merged bands as one

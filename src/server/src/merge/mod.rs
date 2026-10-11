@@ -1,16 +1,13 @@
-//! The server-owned template merge engine: the exact behavioural twin of the
-//! client `@shadowcat/core` 3-way merge, corpus-pinned against it.
+//! The server-owned template merge engine: the 3-way merge (`merge3`, `compute_pull`,
+//! `compute_revert`, `plan_to_update`, `apply_resolutions`) behind the
+//! `MergePull`/`MergePush`/`MergeRevert` intents.
 //!
-//! The server-owned template merge engine: the 3-way merge (`merge3`,
-//! `compute_pull`, `compute_revert`, `plan_to_update`, `apply_resolutions`)
-//! behind the `MergePull`/`MergePush`/`MergeRevert` intents. Its behaviour is
-//! pinned by one conformance corpus
-//! (`src/client/core/src/__fixtures__/merge-conformance.json`, whose
-//! generation transcript is `scripts/merge-corpus-generation.log`); the test
-//! suite asserts value-identical results for every case, so a behavioural
-//! change fails the corpus rather than drifting silently. Every cross-tree
-//! value is cloned at its crossing point (owned values, never aliases), which
-//! the corpus's aliasing-sensitive cases pin behaviourally.
+//! It is the exact behavioural twin of the client `@shadowcat/core` 3-way merge. Its behaviour is
+//! pinned by one conformance corpus (`src/client/core/src/__fixtures__/merge-conformance.json`,
+//! whose generation transcript is `scripts/merge-corpus-generation.log`); the test suite asserts
+//! value-identical results for every case, so a behavioural change fails the corpus rather than
+//! drifting silently. Every cross-tree value is cloned at its crossing point (owned values, never
+//! aliases), which the corpus's aliasing-sensitive cases pin behaviourally.
 //!
 //! # Properties the corpus does not pin
 //!

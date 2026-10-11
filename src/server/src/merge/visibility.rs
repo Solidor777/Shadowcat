@@ -1,17 +1,13 @@
-//! The per-document visibility oracle the merge consults by identity.
+//! The requester's view of what each document hides, consulted by the merge at EVERY recursion
+//! level by document IDENTITY — the correlated `(template child, instance child)` pair the merge is
+//! currently inside — never by array index.
 //!
-//! The requester's view of what each document hides, consulted by the merge
-//! at EVERY recursion level by document IDENTITY — the correlated
-//! `(template child, instance child)` pair the merge is currently inside —
-//! never by array index. Two index spaces exist around an embedded merge:
-//! the LIVE document's child positions (which `permission::collect_overrides`
-//! addresses) and the merged OUTPUT's child positions (which
-//! `embedded::prefix_conflicts` addresses); a dropped preceding sibling or a
-//! template-side reorder makes them disagree, so a hidden-pointer set
-//! expressed in one space can never be compared against a conflict path
-//! expressed in the other. Asking the oracle per document, with pointers
-//! relative to that document's own root, removes the index from the
-//! question entirely.
+//! Two index spaces exist around an embedded merge: the LIVE document's child positions (which
+//! `permission::collect_overrides` addresses) and the merged OUTPUT's child positions (which
+//! `embedded::prefix_conflicts` addresses); a dropped preceding sibling or a template-side reorder
+//! makes them disagree, so a hidden-pointer set expressed in one space can never be compared
+//! against a conflict path expressed in the other. Asking the oracle per document, with pointers
+//! relative to that document's own root, removes the index from the question entirely.
 
 use crate::data::document::Document;
 use crate::data::permission::{hidden_own_pointers, Access};
