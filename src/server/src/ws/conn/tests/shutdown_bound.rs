@@ -1,7 +1,5 @@
-//! `egress_loop`'s Close send is bounded when the peer has stopped reading.
-//!
-//! A session whose peer has stopped reading must still end: in steady state, after shutdown, and
-//! while a join is being refused.
+//! A session whose peer has stopped reading still ends, in steady state, after shutdown, and while
+//! a join is being refused, because `egress_loop`'s frame and Close sends are bounded.
 
 use std::time::Duration;
 
