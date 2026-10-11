@@ -53,7 +53,7 @@ const SLICE: usize = 2 * 1024 * 1024;
 const MEDIA_LEN: usize = 6 * SLICE;
 
 /// Slack added to a cut's expected time for scheduling.
-const SLACK: Duration = Duration::from_millis(1500);
+const SLACK: Duration = Duration::from_millis(1000);
 
 /// Bytes whose value depends on the offset, so a wrongly placed slice is visible.
 fn pattern(len: usize) -> Vec<u8> {
@@ -957,7 +957,7 @@ async fn a_cut_export_releases_the_barrier_and_the_permit() {
     // The client reads nothing: the connection is cut, the dropped receiver ends the producing
     // thread, and the task that held both resources returns them.
     assert!(
-        wait_for(WINDOW + tick() + SLACK + Duration::from_secs(5), || {
+        wait_for(WINDOW + tick() + SLACK, || {
             state.file_permits.held() == 0
         })
         .await,
