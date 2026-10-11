@@ -510,7 +510,7 @@ pub async fn raw_h2_request(addr: SocketAddr, path: &str) -> tokio::net::TcpStre
     stream
 }
 
-/// How a [`ScriptedBody`] ends.
+/// How the scripted response body (`ScriptedBody`, private to this module) ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyEnd {
     /// END_STREAM rides the last data frame (the body reports `is_end_stream` after it).
