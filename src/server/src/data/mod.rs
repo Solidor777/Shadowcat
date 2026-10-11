@@ -1,5 +1,3 @@
-//! Documents, permissions, engine-band validation, search, and SQLite persistence.
-//!
 //! The data layer: the document model, per-recipient permissions/redaction,
 //! command application, validation, search, assets, and SQLite persistence.
 

@@ -1,12 +1,10 @@
-//! Commit-time redaction snapshot types (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`) —
-//! server-internal transport, never serialized to the wire.
+//! Commit-time redaction snapshot: `StoredCommand`, `CommandSnapshot`, `OpSnapshot`.
 //!
-//! Commit-time redaction snapshot: `StoredCommand`, `CommandSnapshot`, `OpSnapshot`. Carries
-//! the policy in force AT COMMIT alongside a `Command`, so replay redaction can compute the
+//! Carries the policy in force AT COMMIT alongside a `Command`, so replay redaction can compute the
 //! recipient's hidden set as `hidden_current ∪ hidden_commit` instead of re-deriving
-//! `hidden_commit` from today's (wrong) policy. Server-internal only: never serialized to the
-//! wire — `Operation`/`Command`/`ClientMsg`/`ServerMsg` and their ts-rs/Zod mirrors are
-//! untouched by this module's existence.
+//! `hidden_commit` from today's (wrong) policy. Server-internal only: never serialized to the wire
+//! — `Operation`/`Command`/`ClientMsg`/`ServerMsg` and their ts-rs/Zod mirrors are untouched by
+//! this module's existence.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

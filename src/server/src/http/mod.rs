@@ -1,5 +1,3 @@
-//! Axum router: REST surface, asset serving, module serving, embedded client.
-//!
 //! The HTTP surface: REST routes, asset serving, module serving, the
 //! embedded SPA, error mapping, and auth throttles.
 

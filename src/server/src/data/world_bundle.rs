@@ -1,13 +1,11 @@
-//! Per-world export/import bundle row/manifest DTOs (see `crate::world_bundle`
-//! for the tar file-format I/O built from them).
+//! Per-world export/import row DTOs — the on-disk-bundle-portable shape of the five FK-scoped
+//! tables `SqliteRepository::delete_world` already walks (read instead of deleted), the FK-less
+//! `explored_fog` table it purges via an explicit `DELETE`, plus the world's five keyed `settings`
+//! rows.
 //!
-//! Per-world export/import row DTOs — the on-disk-bundle-portable shape of the
-//! five FK-scoped tables `SqliteRepository::delete_world` already walks (read
-//! instead of deleted), the FK-less `explored_fog` table it purges via an
-//! explicit `DELETE`, plus the world's five keyed `settings` rows. A
-//! `users(id)` reference is exported as a portable username string, never a
-//! raw id (source and target servers do not share a `users` table) — resolved
-//! back to a target-local id (or degraded to `NULL`/row-drop when
+//! `crate::world_bundle` builds the tar file-format I/O from them. A `users(id)` reference is
+//! exported as a portable username string, never a raw id (source and target servers do not share a
+//! `users` table) — resolved back to a target-local id (or degraded to `NULL`/row-drop when
 //! unresolved) only at import time, in `SqliteRepository::import_world`.
 //!
 //! Search state is rebuilt from a document's/asset's own content, never

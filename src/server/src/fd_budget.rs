@@ -1,5 +1,3 @@
-//! Open-descriptor budget: raising `RLIMIT_NOFILE` and fitting the connection caps to it.
-//!
 //! The process's open-descriptor budget: raising the soft `RLIMIT_NOFILE` at startup and fitting
 //! the connection caps inside what remains.
 //!

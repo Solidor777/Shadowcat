@@ -1,5 +1,3 @@
-//! Accounts, sessions, password hashing, and the first-run setup flow.
-//!
 //! Accounts and access: password hashing, sessions, server roles, invites,
 //! and the first-run setup flow.
 

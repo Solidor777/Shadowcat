@@ -1,27 +1,20 @@
-//! Per-world export/import bundle routes.
+//! `POST /api/worlds/{id}/export` and `POST /api/worlds/import` — per-world bundle export/import.
 //!
-//! `POST /api/worlds/{id}/export` and `POST /api/worlds/import` — per-world
-//! bundle export/import. The bundle format itself (`manifest.json` +
-//! `rows/<table>.jsonl` + `assets/<asset_id>`, with `manifest.json` always
-//! the tar's first entry) is `crate::world_bundle`'s concern; this module is
-//! the HTTP boundary around it. BOTH routes are server-admin-only
-//! (`AdminUser`): export is not GM-gated, because `export_world_rows`
-//! (`data::sqlite`) selects every `documents` row for the world verbatim
-//! with no `gm_role`-based redaction — a world's own GM could otherwise
-//! export and read whisper content (`Audience::Whisper` sets
-//! `permissions.gm_role: Some(DocRole::None)` specifically so the GM
-//! does not get unconditional access) that the live API denies them, and
-//! `world_events.command_json` carries the same unfiltered content. Import
-//! is server-admin-only for a second, independent reason: a bulk
-//! multi-table insert that bypasses every capability/schema/OCC gate the
-//! live write paths enforce (the same trusted-substrate posture
-//! `apply_command`'s replay path already has) — a materially more
-//! privileged operation than ordinary world CREATION (`POST /api/worlds`,
-//! open to any authenticated user) or GM-level world management. Export and
-//! import are a full-fidelity data-migration primitive, the same category as
-//! `backup`/`restore` (already admin-only and unredacted) — not a live-view
-//! read surface, so redacting content at export time would make bundles
-//! lossy instead.
+//! The bundle format itself (`manifest.json` + `rows/<table>.jsonl` + `assets/<asset_id>`, with
+//! `manifest.json` always the tar's first entry) is `crate::world_bundle`'s concern; this module is
+//! the HTTP boundary around it. BOTH routes are server-admin-only (`AdminUser`): export is not
+//! GM-gated, because `export_world_rows` (`data::sqlite`) selects every `documents` row for the
+//! world verbatim with no `gm_role`-based redaction — a world's own GM could otherwise export and
+//! read whisper content (`Audience::Whisper` sets `permissions.gm_role: Some(DocRole::None)`
+//! specifically so the GM does not get unconditional access) that the live API denies them, and
+//! `world_events.command_json` carries the same unfiltered content. Import is server-admin-only for
+//! a second, independent reason: a bulk multi-table insert that bypasses every
+//! capability/schema/OCC gate the live write paths enforce (the same trusted-substrate posture
+//! `apply_command`'s replay path already has) — a materially more privileged operation than
+//! ordinary world CREATION (`POST /api/worlds`, open to any authenticated user) or GM-level world
+//! management. Export and import are a full-fidelity data-migration primitive, the same category as
+//! `backup`/`restore` (already admin-only and unredacted) — not a live-view read surface, so
+//! redacting content at export time would make bundles lossy instead.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

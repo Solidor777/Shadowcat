@@ -1,5 +1,3 @@
-//! The connection serve loop with header-read and keep-alive bounds.
-//!
 //! The connection serve loop: accepts from a [`ConnSource`], hands every connection to hyper with
 //! the time bounds `axum::serve` cannot express, and drains on shutdown.
 //!

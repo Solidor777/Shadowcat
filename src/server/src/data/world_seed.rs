@@ -1,15 +1,11 @@
-//! Server-side world-config seeding: the config-singleton ops-builder plus
-//! the enabled-system defaults/author derivations its callers commit under
-//! `WriteOrigin::ConfigSeed`.
+//! Server-side world-config seeding: the ops-builder that creates absent config singletons with
+//! their engine-defined default bodies and keeps the `system-defaults` singleton mirroring the
+//! enabled system package's manifest declaration.
 //!
-//! Server-side world-config seeding: the ops-builder that creates absent
-//! config singletons with their engine-defined default bodies and keeps the
-//! `system-defaults` singleton mirroring the enabled system package's
-//! manifest declaration. The DECISION of what to seed lives here alone;
-//! callers commit the returned ops under `WriteOrigin::ConfigSeed` through
-//! their own channel — `Repository::apply_intent` where no room exists,
-//! `Room::publish` where one does (publish wraps the same `apply_intent`
-//! plus broadcast, so the transport split is not a forked decision).
+//! The DECISION of what to seed lives here alone; callers commit the returned ops under
+//! `WriteOrigin::ConfigSeed` through their own channel — `Repository::apply_intent` where no room
+//! exists, `Room::publish` where one does (publish wraps the same `apply_intent` plus broadcast, so
+//! the transport split is not a forked decision).
 
 use std::collections::BTreeSet;
 use std::path::Path;

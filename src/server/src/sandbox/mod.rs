@@ -1,11 +1,11 @@
-//! Sandboxed third-party server-side validators (opt-in, per-world, WASM).
+//! Sandboxed third-party server-side validators: opt-in, per-world, per-module WASM code run inside
+//! `wasmi` over the `system` band only, after the engine's own validation.
 //!
-//! Sandboxed third-party server-side validators: opt-in, per-world, per-module WASM code run
-//! inside `wasmi` over the `system` band only, after the engine's own validation. A validator
-//! can refuse a write (a structured reason) and nothing else — see `runtime` for the host,
-//! `registry` for the compiled-module cache. Every validator call is fuel/memory/instance-capped
-//! and has no host imports beyond a rate-limited `env.log`; `VALIDATOR_FAULT_LIMIT` bounds how
-//! many consecutive technical failures a module gets before a caller auto-disables it.
+//! A validator can refuse a write (a structured reason) and nothing else — see `runtime` for the
+//! host, `registry` for the compiled-module cache. Every validator call is
+//! fuel/memory/instance-capped and has no host imports beyond a rate-limited `env.log`;
+//! `VALIDATOR_FAULT_LIMIT` bounds how many consecutive technical failures a module gets before a
+//! caller auto-disables it.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

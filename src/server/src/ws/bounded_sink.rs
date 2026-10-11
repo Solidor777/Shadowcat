@@ -1,7 +1,5 @@
 //! Bounded-send `Sink` adapter: a session whose peer stopped reading ends instead of hanging.
 //!
-//! A `Sink` adapter that bounds how long one send may stay pending.
-//!
 //! WHY: a peer that has stopped reading (a zero flow-control window, a full socket buffer) leaves
 //! `poll_ready` / `poll_flush` of the WebSocket sink pending forever, and a session blocked inside
 //! a send never reaches its heartbeat or shutdown arms, so `PING_TIMEOUT` never fires and the

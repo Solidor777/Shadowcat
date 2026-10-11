@@ -1,8 +1,6 @@
-//! The server-owned combat clock: snapshot loading, pure transitions, and
-//! effect-lifecycle helpers.
-//!
 //! The server-owned combat clock: loads a `CombatSnapshot`, runs a pure
 //! transition (`transition`), and hands ONE command's ops to `Room`.
+//!
 //! INVARIANT: every formula a transition acts on is evaluated HERE, through
 //! `crate::formula` over the combatant's formula host (`eval`); an
 //! evaluation failure skips its one write and surfaces as a GM-only chat

@@ -1,11 +1,10 @@
-//! Invite-code mint/verify (selector + Argon2-hashed verifier halves).
+//! Invite-code mint/verify.
 //!
-//! A code is `<invite-id>.<secret>`: a public **selector** (the invite row's
-//! UUID, used for the lookup and for the GM's revoke route) and a secret
-//! **verifier** the server stores only as an Argon2id PHC hash, mirroring
-//! `users.password_hash`. The database therefore never holds a value that can
-//! be replayed as a credential, and the row lookup keys on a non-secret
-//! column — no secret is ever compared by SQLite's index machinery.
+//! A code is `<invite-id>.<secret>`: a public **selector** (the invite row's UUID, used for the
+//! lookup and for the GM's revoke route) and a secret **verifier** the server stores only as an
+//! Argon2id PHC hash, mirroring `users.password_hash`. The database therefore never holds a value
+//! that can be replayed as a credential, and the row lookup keys on a non-secret column — no secret
+//! is ever compared by SQLite's index machinery.
 //!
 //! Entropy: the verifier is `SECRET_BYTES` = 16 CSPRNG bytes = 128 bits, so a
 //! blind guess succeeds with probability 2^-128 per attempt. Even at an absurd

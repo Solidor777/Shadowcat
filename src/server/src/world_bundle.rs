@@ -1,13 +1,10 @@
-//! Per-world export/import: builds/reads the `.tar` bundle format (see
-//! `data::world_bundle` for the row/manifest types, `http::world_bundle` for
-//! the HTTP routes).
+//! Per-world export/import bundle I/O: builds/reads the uncompressed `.tar` format (`manifest.json`
+//! + `rows/<table>.jsonl` + `assets/<asset_id>`).
 //!
-//! Per-world export/import bundle I/O: builds/reads the uncompressed `.tar`
-//! format (`manifest.json` + `rows/<table>.jsonl` + `assets/<asset_id>`).
-//! Pure file/tar I/O — no `SqliteRepository` dependency, mirroring `backup`'s
-//! separation between row-fetching (data layer) and file format (this
-//! module). Synchronous (the `tar` crate has no async API); every call in
-//! this module is CPU/disk-bound and must run inside
+//! See `data::world_bundle` for the row/manifest types and `http::world_bundle` for the HTTP
+//! routes. Pure file/tar I/O — no `SqliteRepository` dependency, mirroring `backup`'s separation
+//! between row-fetching (data layer) and file format (this module). Synchronous (the `tar` crate
+//! has no async API); every call in this module is CPU/disk-bound and must run inside
 //! `tokio::task::spawn_blocking` from async callers.
 
 #![deny(missing_docs)]

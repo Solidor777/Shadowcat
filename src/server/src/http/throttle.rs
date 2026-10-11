@@ -1,12 +1,10 @@
-//! Login/invite sliding-window throttles.
+//! Shared sliding-window throttle for the two Argon2-verifying auth endpoints (`/api/login`,
+//! `/api/invites/accept`).
 //!
-//! Shared sliding-window throttle for the two Argon2-verifying auth endpoints
-//! (`/api/login`, `/api/invites/accept`). Keys are opaque strings composed by
-//! the callers (`login:u:<username>`, `login:ip:<ip>`, `invite:u:<uuid>`,
-//! `invite:ip:<ip>`). INVARIANT (no enumeration oracle): identity keys count
-//! attempts against unknown identities exactly like known ones, and callers
-//! return one uniform 429 — the throttle must never behave differently for an
-//! identity that exists.
+//! Keys are opaque strings composed by the callers (`login:u:<username>`, `login:ip:<ip>`,
+//! `invite:u:<uuid>`, `invite:ip:<ip>`). INVARIANT (no enumeration oracle): identity keys count
+//! attempts against unknown identities exactly like known ones, and callers return one uniform 429
+//! — the throttle must never behave differently for an identity that exists.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
