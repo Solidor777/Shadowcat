@@ -427,11 +427,11 @@ pub struct ConnLimits {
     /// and tunnels are untouched); a connection whose socket accepts less than
     /// [`ConnLimits::egress_floor`] response bytes while its writer is parked is closed; a
     /// connection whose finished response still has DATA queued that its own stream does not write
-    /// at the rate [`ConnLimits::egress_floor`] states is closed. Checked four times per window,
-    /// so a cut lands between the window and the window plus one tick after the last progress.
-    /// At least four nanoseconds: the sampler period is a quarter of the window and must be
-    /// nonzero, so [`serve_router`] panics on a smaller window (the configuration admits 1 to 3600
-    /// seconds).
+    /// at the rate [`ConnLimits::egress_floor`] states is closed. Checked [`EGRESS_TICKS_PER_WINDOW`]
+    /// times per window, so a cut lands between the window and the window plus one tick after the
+    /// last progress. At least [`EGRESS_TICKS_PER_WINDOW`] nanoseconds: the sampler period is the
+    /// window divided by that count and must be nonzero, so [`serve_router`] panics on a smaller
+    /// window (the configuration admits 1 to 3600 seconds).
     pub egress_window: Duration,
     /// How many response bytes a socket must accept per [`ConnLimits::egress_window`] to count as
     /// making progress while its writer is parked. A connection whose writer has been parked for a
@@ -610,12 +610,35 @@ pub const KILL_GRACE: Duration = Duration::from_secs(2);
 /// completion being observed by the serve loop's join. Chosen, not measured.
 const ABORT_MARGIN: Duration = Duration::from_secs(1);
 
-/// The egress sampler's period for `window`: a quarter of it. Four ticks per window bound how
-/// late a cut can land past the window to one tick. The quotient is zero for a window under four
-/// nanoseconds, which `tokio::time::interval` rejects, so [`serve_router`] checks that the period
-/// is nonzero before serving.
-fn egress_tick(window: Duration) -> Duration {
-    window / 4
+/// How many sampler ticks the egress sampler takes per [`ConnLimits::egress_window`]. The ticks
+/// bound how late a cut can land past the window to one tick (a window divided by this count), so
+/// every reader of the sampler period, tests included, derives it from this count and not from a
+/// copy of the quotient.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::conn_serve::EGRESS_TICKS_PER_WINDOW;
+///
+/// assert_eq!(EGRESS_TICKS_PER_WINDOW, 4);
+/// ```
+pub const EGRESS_TICKS_PER_WINDOW: u32 = 4;
+
+/// The egress sampler's period for `window`: `window` divided by [`EGRESS_TICKS_PER_WINDOW`]. The
+/// quotient is zero for a window under that many nanoseconds, which `tokio::time::interval`
+/// rejects, so [`serve_router`] checks that the period is nonzero before serving.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use shadowcat::http::conn_serve::{egress_tick, EGRESS_TICKS_PER_WINDOW};
+///
+/// let window = Duration::from_secs(8);
+/// assert_eq!(egress_tick(window) * EGRESS_TICKS_PER_WINDOW, window);
+/// ```
+pub fn egress_tick(window: Duration) -> Duration {
+    window / EGRESS_TICKS_PER_WINDOW
 }
 
 /// Records the result of reaping one connection task: a panic is an error-level event, and a
@@ -707,7 +730,7 @@ where
 {
     assert!(
         !egress_tick(limits.egress_window).is_zero(),
-        "ConnLimits::egress_window must give a nonzero sampler period (at least four nanoseconds)"
+        "ConnLimits::egress_window must give a nonzero sampler period (at least {EGRESS_TICKS_PER_WINDOW} nanoseconds)"
     );
     // `signal_tx.closed()` resolves once the only receiver is dropped: by the watcher task when
     // `shutdown` resolves, or by aborting it when the source ends. Every connection task waits on

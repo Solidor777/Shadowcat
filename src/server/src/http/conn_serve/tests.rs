@@ -1327,15 +1327,10 @@ fn the_pause_decision_table_ignores_only_the_connection_level_kinds() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn the_sampler_period_is_a_quarter_of_the_window() {
-    assert_eq!(
-        egress_tick(Duration::from_secs(1)),
-        Duration::from_millis(250)
-    );
-    assert_eq!(
-        egress_tick(Duration::from_secs(60)),
-        Duration::from_secs(15)
-    );
+fn the_sampler_period_is_the_window_over_the_ticks_per_window() {
+    for window in [Duration::from_secs(1), Duration::from_secs(60)] {
+        assert_eq!(egress_tick(window) * EGRESS_TICKS_PER_WINDOW, window);
+    }
 }
 
 #[tokio::test]
@@ -2120,10 +2115,14 @@ async fn the_tail_rule_and_the_connection_sampler_read_the_one_configured_floor(
     // 30 bytes of a 64-byte tail are written late in the first window: progress against a floor of
     // 20, a stall against 5,000 (the threshold is min(floor, remaining) = 64). The same
     // `Watch::egress_floor` feeds the sampler, so a private constant in the tail rule would not move
-    // with it. Ticks fall every `window / 4`; the write lands between the third and fourth.
+    // with it. Ticks fall every `egress_tick(window)`; the write lands between the third and fourth, which the premise assertion below names.
     for (floor, cut) in [(20usize, false), (5_000, true)] {
         let window = Duration::from_secs(8);
         let tick = egress_tick(window);
+        assert_eq!(
+            EGRESS_TICKS_PER_WINDOW, 4,
+            "the write offsets below place the write between the third and fourth of four ticks"
+        );
         let kill = ConnKill::new();
         let mut watch = watch_for(kill.clone(), window);
         watch.egress_floor = floor;
@@ -2218,15 +2217,16 @@ async fn each_cut_site_moves_exactly_its_own_counter_by_one() {
 }
 
 #[test]
-fn the_sampler_period_is_nonzero_from_four_nanoseconds_up() {
-    for ns in [1u64, 2, 3] {
+fn the_sampler_period_is_nonzero_from_the_tick_count_in_nanoseconds_up() {
+    let ticks = u64::from(EGRESS_TICKS_PER_WINDOW);
+    for ns in 1..ticks {
         assert!(
             egress_tick(Duration::from_nanos(ns)).is_zero(),
             "{ns} ns quantises to a zero period"
         );
     }
     assert_eq!(
-        egress_tick(Duration::from_nanos(4)),
+        egress_tick(Duration::from_nanos(ticks)),
         Duration::from_nanos(1)
     );
 }

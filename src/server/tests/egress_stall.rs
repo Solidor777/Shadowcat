@@ -11,7 +11,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use shadowcat::http::conn_serve::{ConnLimits, StallCuts, ABORT_WAIT};
+use shadowcat::http::conn_serve::{egress_tick, ConnLimits, StallCuts, ABORT_WAIT};
 use shadowcat_test_support::egress::{first_close, wait_until_flat, EgressServer, Protocol};
 use shadowcat_test_support::measure::record_cut_overshoot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,8 +21,10 @@ use tokio::time::Instant;
 /// The no-progress window the tests run at.
 const WINDOW: Duration = Duration::from_secs(1);
 
-/// The sampler period at [`WINDOW`]: a quarter of it.
-const TICK: Duration = Duration::from_millis(250);
+/// The sampler period at [`WINDOW`].
+fn tick() -> Duration {
+    egress_tick(WINDOW)
+}
 
 /// How often the producer's progress is sampled.
 const POLL: Duration = Duration::from_millis(50);
@@ -84,7 +86,7 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
     record_cut_overshoot(
         "h1 connection cut after the producer went quiet",
         closed_at.duration_since(quiet),
-        WINDOW + TICK,
+        WINDOW + tick(),
     );
 
     // The peer sees the connection end once it has drained what the kernel buffered.

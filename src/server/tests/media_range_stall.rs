@@ -23,7 +23,7 @@ use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
 use shadowcat::data::asset::{Asset, AssetMeta};
 use shadowcat::http::assets::permits::StreamedFilePermits;
-use shadowcat::http::conn_serve::{ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
+use shadowcat::http::conn_serve::{egress_tick, ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
 use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::h2_session::{login, seeded_state};
 use shadowcat_test_support::tls::H2Client;
@@ -35,8 +35,10 @@ use uuid::Uuid;
 /// The no-progress window the tests run at.
 const WINDOW: Duration = Duration::from_secs(1);
 
-/// The sampler period at [`WINDOW`]: a quarter of it.
-const TICK: Duration = Duration::from_millis(250);
+/// The sampler period at [`WINDOW`].
+fn tick() -> Duration {
+    egress_tick(WINDOW)
+}
 
 /// The drain bound the tests run at.
 const DRAIN: Duration = Duration::from_millis(500);
@@ -563,7 +565,7 @@ per_protocol!(
 
         // The peer reads nothing; the response is cut and both resources come back.
         assert!(
-            wait_for(WINDOW + TICK + SLACK, || media.permits().held() == 0).await,
+            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
             "{protocol:?}: the cut never released the permit"
         );
         assert!(
@@ -653,7 +655,7 @@ per_protocol!(
         let mut reply = media.get(&url, &[]).await;
         assert_eq!(reply.status(), 200, "{protocol:?}");
         let mut received = reply.read_at_least(SLICE / 2).await.unwrap();
-        tokio::time::sleep(WINDOW + TICK + SLACK).await;
+        tokio::time::sleep(WINDOW + tick() + SLACK).await;
         // Whatever the kernel and h2 had buffered still arrives; the rest never does.
         let cut = loop {
             match reply.read_some().await {
@@ -713,7 +715,7 @@ per_protocol!(
             "{protocol:?}: the response holds no permit while it streams"
         );
         assert!(
-            wait_for(WINDOW + TICK + SLACK, || media.permits().held() == 0).await,
+            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
             "{protocol:?}: the stalled compressed response was never cut"
         );
         drop(reply);
@@ -837,7 +839,7 @@ per_protocol!(
 
         // After they are cut the pool serves again.
         assert!(
-            wait_for(WINDOW + TICK + SLACK, || media.permits().held() == 0).await,
+            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
             "{protocol:?}"
         );
         let mut again = media.get(&url, &[("range", "bytes=0-9".into())]).await;
@@ -955,7 +957,7 @@ async fn a_cut_export_releases_the_barrier_and_the_permit() {
     // The client reads nothing: the connection is cut, the dropped receiver ends the producing
     // thread, and the task that held both resources returns them.
     assert!(
-        wait_for(WINDOW + TICK + SLACK + Duration::from_secs(5), || {
+        wait_for(WINDOW + tick() + SLACK + Duration::from_secs(5), || {
             state.file_permits.held() == 0
         })
         .await,

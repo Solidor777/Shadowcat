@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use h2::Reason;
-use shadowcat::http::conn_serve::{ConnLimits, StallCuts};
+use shadowcat::http::conn_serve::{egress_tick, ConnLimits, StallCuts, EGRESS_TICKS_PER_WINDOW};
 use shadowcat_test_support::egress::{
     first_close, get_path, paced_read, ping_frame, raw_h2_request, read_unreleased, send_scripted,
     wait_until_flat, BodyEnd, EgressServer, PacedEnd, RawPeer,
@@ -27,8 +27,10 @@ use tokio::time::Instant;
 /// The no-progress window the tests run at.
 const WINDOW: Duration = Duration::from_secs(1);
 
-/// The sampler period at [`WINDOW`]: a quarter of it.
-const TICK: Duration = Duration::from_millis(250);
+/// The sampler period at [`WINDOW`].
+fn tick() -> Duration {
+    egress_tick(WINDOW)
+}
 
 /// The no-progress window of the partly drained tail's test. The test's margins on each side are
 /// three eighths of the window, so this is the one dial for them: 1.5 s at 4 s.
@@ -62,7 +64,7 @@ fn assert_cut_timing(elapsed: Duration, what: &str) {
         elapsed >= WINDOW,
         "{what}: cut after {elapsed:?}, before the {WINDOW:?} window"
     );
-    record_cut_overshoot(what, elapsed, WINDOW + TICK);
+    record_cut_overshoot(what, elapsed, WINDOW + tick());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -320,7 +322,7 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
     record_cut_overshoot(
         "h2 connection cut after the producer went quiet",
         closed_at.duration_since(quiet),
-        WINDOW + TICK,
+        WINDOW + tick(),
     );
 
     drop(client);
@@ -379,7 +381,7 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
     record_cut_overshoot(
         "h2 connection cut under a ping flood after the producer went quiet",
         closed_at.duration_since(quiet),
-        WINDOW + TICK,
+        WINDOW + tick(),
     );
     flood.abort();
     let drain = server.finish().await;
@@ -477,14 +479,14 @@ async fn drain_without_credit(body: &mut h2::RecvStream) -> u64 {
 /// such traffic: from the order of events they cause, or, for the partly drained tail, from a
 /// bound derived from the window with its premises asserted (see
 /// `a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`). The tick restated
-/// here is the sampler period `ConnLimits::egress_window` yields, a quarter of the window.
+/// here is the sampler period `ConnLimits::egress_window` yields, `egress_tick(window)`.
 fn assert_tail_cut_timing(cut_at: Instant, since: Instant, window: Duration, what: &str) {
     let elapsed = cut_at.duration_since(since);
     assert!(
         elapsed >= window,
         "{what}: cut {elapsed:?} after the body dropped, before the {window:?} window"
     );
-    record_cut_overshoot(what, elapsed, window + window / 4);
+    record_cut_overshoot(what, elapsed, window + egress_tick(window));
 }
 
 /// The drain report's cut counts for `ended_unflushed` only.
@@ -663,6 +665,10 @@ async fn a_tail_the_reader_drains_inside_the_window_is_not_cut() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window() {
     let window = PARTIAL_TAIL_WINDOW;
+    assert_eq!(
+        EGRESS_TICKS_PER_WINDOW, 4,
+        "the release at five eighths of a window leaves three eighths on each side of the cut interval only while the sampler takes four ticks per window"
+    );
     for size in [8192usize, 16 * 1024] {
         let server = serve_at(window).await;
         let mut client = server.connect(SMALL_WINDOW, 1 << 20).await;
@@ -684,7 +690,7 @@ async fn a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window()
         // Taken before the release: the server cannot write the second KiB earlier, so an entry
         // that the progress refreshed is cut no earlier than a whole window after this instant.
         let released_at = Instant::now();
-        // Margins, with the sampler period `window / 4` (the period `ConnLimits::egress_window`
+        // Margins, with the sampler period `egress_tick(window)` (the period `ConnLimits::egress_window`
         // yields): an entry not refreshed is cut in `[dropped_at + window, dropped_at + 1.25 *
         // window]` plus scheduling lateness. The release at five eighths of a window leaves
         // three eighths of a window on each side: before the earliest unrefreshed cut, and
