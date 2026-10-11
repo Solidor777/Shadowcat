@@ -36,10 +36,19 @@ pub const BODY_BYTES: usize = 24 << 20;
 pub enum BareApp {
     /// [`bulk_body`]: 16 KiB chunks from a stream.
     Chunks,
-    /// One buffer of the whole body: no per-chunk producer work at all.
-    OneBuffer,
+    /// One buffer of the whole body: no per-chunk producer work at all. Build it with
+    /// [`BareApp::one_buffer`].
+    OneBuffer(Bytes),
     /// An axum router served through `TowerToHyperService`.
     Router(Router),
+}
+
+impl BareApp {
+    /// The single-buffer variant holding [`BODY_BYTES`] of filler. The variant owns the buffer, so
+    /// `Chunks` and `Router` servers allocate none.
+    pub fn one_buffer() -> Self {
+        Self::OneBuffer(Bytes::from(vec![1u8; BODY_BYTES]))
+    }
 }
 
 /// A bare hyper HTTP/2 server on the loopback with `send_buf` as its send buffer (the library's
@@ -48,7 +57,6 @@ pub enum BareApp {
 pub async fn bare_server(send_buf: Option<usize>, nodelay: bool, app: BareApp) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let whole = Bytes::from(vec![1u8; BODY_BYTES]);
     tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
@@ -58,7 +66,6 @@ pub async fn bare_server(send_buf: Option<usize>, nodelay: bool, app: BareApp) -
                 socket.set_nodelay(true).unwrap();
             }
             let app = app.clone();
-            let whole = whole.clone();
             tokio::spawn(async move {
                 let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
                 if let Some(bytes) = send_buf {
@@ -80,7 +87,7 @@ pub async fn bare_server(send_buf: Option<usize>, nodelay: bool, app: BareApp) -
                             });
                         builder.serve_connection(io, service).await
                     }
-                    BareApp::OneBuffer => {
+                    BareApp::OneBuffer(whole) => {
                         let service =
                             service_fn(move |_req: axum::http::Request<hyper::body::Incoming>| {
                                 let whole = whole.clone();

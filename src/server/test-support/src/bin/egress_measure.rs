@@ -179,7 +179,7 @@ async fn layers(downloads: usize, runs: usize) {
         ),
         Rung::bare(
             "bare-64k-onebuffer-producer",
-            bare_server(sixty_four, true, BareApp::OneBuffer).await,
+            bare_server(sixty_four, true, BareApp::one_buffer()).await,
         ),
         Rung::bare(
             "bare-64k+minimal-router",
