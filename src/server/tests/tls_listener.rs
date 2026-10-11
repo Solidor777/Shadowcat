@@ -92,8 +92,8 @@ async fn first_byte_dispatches_plain_http_versus_tls() {
     assert_eq!(presented.alpn.as_deref(), Some(&b"http/1.1"[..]));
 }
 
-/// Every accepted connection, plain or TLS, has `TCP_NODELAY` set: the listener is the one place
-/// the production path configures an accepted socket.
+/// Every accepted connection, plain or TLS, has `TCP_NODELAY` set through `set_accepted_nodelay`;
+/// this test covers the `SniffListener` path.
 #[tokio::test]
 async fn an_accepted_connection_has_tcp_nodelay_set_plain_and_tls() {
     let (mut l, addr) = listener_with(memory_config(), Limits::default()).await;
