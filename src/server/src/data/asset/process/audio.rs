@@ -1,3 +1,6 @@
+//! The audio transcode (Opus sibling derivatives), dispatched from
+//! `process_staged` before the image branch.
+//!
 //! Audio transcode: sniffs the real container/codec via `symphonia`'s probe (never trusting
 //! the client-declared `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes
 //! Opus (VBR) via `opus`, and muxes the encoded frames into the container(s) the import
@@ -46,10 +49,8 @@ const OPUS_FRAME_SAMPLES: u64 = OPUS_TARGET_SAMPLE_RATE as u64 * OPUS_FRAME_MS a
 /// sweep reads it to tell a file written with the lookahead flush from one written without it.
 pub(crate) const OPUS_VENDOR_MARKER: &str = "shadowcat-opus/2";
 
-/// The WebM muxer and the layout checks the upgrade sweep reads.
 pub(super) mod webm;
 
-/// The blocking half of the derivative upgrade sweep.
 pub(crate) mod upgrade;
 
 /// Which Opus derivative container(s) an audio import emits. Selected at import time

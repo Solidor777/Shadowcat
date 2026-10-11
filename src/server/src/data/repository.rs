@@ -1,3 +1,5 @@
+//! The storage seam (`Repository` trait) the HTTP/WS layers program against.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]

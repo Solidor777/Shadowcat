@@ -1,3 +1,5 @@
+//! The authz/redaction core: access resolution + per-recipient filtering.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]
@@ -17,10 +19,11 @@ use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 use crate::merge::bands::{EmbeddedBaseChild, MergeBase, StoredBase};
 
-/// Built-in, server-understood capabilities. Modules may grant additional
-/// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
-/// tokens and enforces only possession (Phase 2 gates custom actions).
 pub mod cap {
+    //! Built-in, server-understood capabilities. Modules may grant additional
+    //! namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
+    //! tokens and enforces only possession (Phase 2 gates custom actions).
+
     /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";
     /// Write `/name`, `/engine/…`, `/system/…` field paths.

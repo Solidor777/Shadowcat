@@ -1,3 +1,6 @@
+//! Commit-time redaction snapshot types (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`) —
+//! server-internal transport, never serialized to the wire.
+//!
 //! Commit-time redaction snapshot: `StoredCommand`, `CommandSnapshot`, `OpSnapshot`. Carries
 //! the policy in force AT COMMIT alongside a `Command`, so replay redaction can compute the
 //! recipient's hidden set as `hidden_current ∪ hidden_commit` instead of re-deriving

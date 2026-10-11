@@ -1,3 +1,5 @@
+//! Commands/operations/field changes + the shared JSON-pointer mutation ops.
+
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
 #![deny(missing_docs)]

@@ -7,8 +7,6 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// The audio transcode (Opus sibling derivatives), dispatched from
-/// `process_staged` before the image branch.
 pub mod audio;
 
 use super::AssetMeta;

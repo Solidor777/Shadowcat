@@ -1,3 +1,6 @@
+//! Per-world export/import bundle row/manifest DTOs (see `crate::world_bundle`
+//! for the tar file-format I/O built from them).
+//!
 //! Per-world export/import row DTOs — the on-disk-bundle-portable shape of the
 //! five FK-scoped tables `SqliteRepository::delete_world` already walks (read
 //! instead of deleted), the FK-less `explored_fog` table it purges via an
