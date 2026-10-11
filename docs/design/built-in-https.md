@@ -366,8 +366,9 @@ task paces its own accept errors.
     contract: **a response is cut when its peer returns no flow-control credit for a pending chunk,
     or the socket accepts nothing, for the window, or a finished response's own stream makes less
     than `min(egress_floor, bytes still queued)` of progress over the window.** A cut lands between
-    the window and the window plus one sampler tick (a quarter window) after the last progress: within
-    75 s at the default. Connections with nothing in flight are never cut by these units, and
+    the window and the window plus one sampler tick (`egress_tick`: a window divided by
+    `EGRESS_TICKS_PER_WINDOW`, 4, so a quarter window) after the last progress: within 75 s at the
+    default. Connections with nothing in flight are never cut by these units, and
     `h2_idle` and keep-alive are unchanged.
     - Stream unit: a response body is sliced into frames of at most `EGRESS_CHUNK_BYTES` (16 KiB,
       one HTTP/2 frame), so a stalled peer is visible at a frame boundary. A stream whose pending
