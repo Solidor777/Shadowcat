@@ -397,11 +397,12 @@ task paces its own accept errors.
       network paths are unmeasured; their steps are expected to be finer. Operators on extremely
       slow networks raise `egress_window_secs`.
     - Measured stream-unit boundary (the `h2` crate as client, loopback, a paced reader returning
-      credit as it reads, `/endless` body): at a 1 s window a reader at or below about 18 KiB/s was
+      credit as it reads, `/endless` body): at a 1 s window a reader at or below about 20 KiB/s was
       always cut and one at or above about 40 KiB/s never was, with stream windows of 1 MiB and
-      above (32 KiB/s from 32 KiB windows); between, the outcome differed run to run. At a 3 s
-      window rates of 2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not, consistent with one
-      16 KiB chunk per window (5.3 KiB/s at 3 s; 10.7 KiB/s is two chunks per window). The default 60 s window was not measured, and neither was a browser's
+      above (32 KiB/s from 32 KiB windows); between 24 and 32 KiB/s the outcome differed run to
+      run. At a 3 s window rates of 2.7 and 4 KiB/s were cut and 8 and 10.7 KiB/s were not,
+      consistent with one 16 KiB chunk per window (5.3 KiB/s at 3 s; 10.7 KiB/s is two chunks per
+      window). The default 60 s window was not measured, and neither was a browser's
       window or credit batching; raising `egress_window_secs` lowers the rate that is cut.
     - Consequences: a reader that returns credit for less than about one chunk per window is cut; a
       cut `export_world` download restarts from zero (it has no length and no `Range`).
