@@ -24,7 +24,13 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   and buffer sign differ from the gate's records on that host, so the worker count is not
   established as the cause of the 3.1% versus 5% gap. A later host state that reproduces the
   gate's 12 ms regime would settle it: run `egress_measure layers 100 3 4
-  bare-default-buf,bare-64k,serve_router+full-router+observed-source` next to the gate. Then, in the
+  bare-default-buf,bare-64k,serve_router+full-router+observed-source` next to the gate. Three gate
+  processes and three of those `layers` processes run alternately on one host (release, otherwise
+  idle desktop) did not reproduce the regime: every median read 25.8 to 49.6 ms, and in that state
+  both instruments read the 64 KiB buffer faster than the library default (gate `buffer_ratio` 0.946
+  to 1.309, median 1.180 over nine runs; `layers` default over 64 KiB 1.209, 1.210, 1.297) and the
+  production path 1.03 to 1.10 times bare 64 KiB under `layers` (gate 0.989 to 1.204, median 1.027),
+  so the 0.954 to 0.958 records and the 3.1% versus 5% gap are not reconciled. Then, in the
   same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
   set below the worst of the three legs by a stated headroom and the three recorded values written
   beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
