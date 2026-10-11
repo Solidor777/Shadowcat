@@ -61,6 +61,12 @@ export const norm = (p) => p.split("\\").join("/");
 // wrong.
 export const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
 
+/** Whether `path` is a Rust source file under `src` — the corpus the Rust source gates cover. */
+export function isRustSource(path) {
+  const p = norm(path);
+  return under(p, "src") && p.endsWith(".rs");
+}
+
 /** Recursively collects paths matching `exts` under `dir`; called once per entry in a roots list.
  * @param {string} dir - directory to walk.
  * @param {string[]} exts - file extensions to keep.

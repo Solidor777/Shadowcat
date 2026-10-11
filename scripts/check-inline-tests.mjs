@@ -16,18 +16,12 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { norm, under } from "./lib/gate-corpus.mjs";
+import { isRustSource, norm } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
 
 const ATTR = /^\s*#\[cfg\(test\)\]\s*$/;
 const ANY_ATTR = /^\s*#\[/;
 const MOD_BODY = /^\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
-
-/** Whether `path` is a Rust source file the gate covers. */
-export function isRustSource(path) {
-  const p = norm(path);
-  return under(p, "src") && p.endsWith(".rs");
-}
 
 /** Every `#[cfg(test)]` attribute followed (past blanks, comments, other attributes) by a braced `mod`. */
 export function scanInlineTests(text) {

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { scanModuleDocs, isRustSource, runGate } from "./check-module-docs.mjs";
+import { scanModuleDocs, runGate } from "./check-module-docs.mjs";
 
 test("a documented file-backed mod is a violation", () => {
   expect(scanModuleDocs("/// Summary.\npub mod audio;\n")).toEqual([{ line: 2, module: "audio", inline: false }]);
@@ -39,11 +39,43 @@ test("a mod keyword inside an identifier is not a mod item", () => {
   expect(scanModuleDocs("/// Doc.\nfn module() {}\n")).toEqual([]);
 });
 
-test("only Rust files under src are covered", () => {
-  expect(isRustSource("src/server/src/lib.rs")).toBe(true);
-  expect(isRustSource(String.raw`src\server\src\lib.rs`)).toBe(true);
-  expect(isRustSource("src/client/core/src/a.ts")).toBe(false);
-  expect(isRustSource("scripts/x.rs")).toBe(false);
+test("a doc followed by a one-line attribute-plus-mod is a violation and is consumed there", () => {
+  expect(scanModuleDocs("/// Summary.\n#[cfg(test)] mod t;\n")).toEqual([{ line: 2, module: "t", inline: false }]);
+  expect(scanModuleDocs("/// Summary.\n#[cfg(test)] mod t {\n}\n")).toEqual([{ line: 2, module: "t", inline: true }]);
+});
+
+test("a pending doc is not carried past a one-line attribute-plus-mod to a later undocumented mod", () => {
+  expect(scanModuleDocs("/// Summary.\n#[cfg(test)] mod t;\nmod later;\n")).toEqual([{ line: 2, module: "t", inline: false }]);
+  expect(scanModuleDocs("/// A struct.\n#[derive(Debug)] struct S;\nmod later;\n")).toEqual([]);
+});
+
+test("a one-line doc attribute on the mod line is a violation", () => {
+  expect(scanModuleDocs('#[doc = "Summary."] mod a;\n')).toEqual([{ line: 1, module: "a", inline: false }]);
+  expect(scanModuleDocs('#[doc = "has ] in it"]\nmod a;\n')).toEqual([{ line: 2, module: "a", inline: false }]);
+  expect(scanModuleDocs("#[cfg(test)] mod a;\n")).toEqual([]);
+});
+
+test("a plain block comment between a doc and its mod does not clear the doc", () => {
+  expect(scanModuleDocs("/// Summary.\n/* plain */\nmod a;\n")).toEqual([{ line: 3, module: "a", inline: false }]);
+  expect(scanModuleDocs("/// Summary.\n/* plain\n   more */\nmod a;\n")).toEqual([{ line: 4, module: "a", inline: false }]);
+});
+
+test("a triple-slash line inside a plain block comment is not a doc", () => {
+  expect(scanModuleDocs("/*\n/// not a doc\n*/\nmod a;\n")).toEqual([]);
+  expect(scanModuleDocs("/* /// not a doc */\nmod a;\n")).toEqual([]);
+});
+
+test("an outer block doc followed by code on its closing line is a violation", () => {
+  expect(scanModuleDocs("/** Summary. */ mod a;\n")).toEqual([{ line: 1, module: "a", inline: false }]);
+  expect(scanModuleDocs("/**/\nmod a;\n")).toEqual([]);
+});
+
+test("a block comment that opens with more than two stars is not a doc", () => {
+  expect(scanModuleDocs("/*** banner ***/\nmod a;\n")).toEqual([]);
+});
+
+test("stated bound: a triple-slash line inside a multi-line raw string is read as a doc", () => {
+  expect(scanModuleDocs('let s = r#"\n/// text\nmod a;\n"#;\n')).toEqual([{ line: 3, module: "a", inline: false }]);
 });
 
 function gate(files, listOk = true) {

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { test, expect } from "vitest";
-import { EXAMPLE_EXEMPT, defaultSkillsRoot, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
+import { EXAMPLE_EXEMPT, defaultSkillsRoot, isRustSource, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
 import { scrubGitEnv } from "./run-git.mjs";
 
 const COMMENT_GATE = "scripts/check-comment-refs.mjs";
@@ -135,3 +135,13 @@ test.skipIf(!existsSync(SKILLS_ROOT))(
     }
   },
 );
+
+test("isRustSource covers tracked .rs under src only", () => {
+  expect(isRustSource("src/server/src/lib.rs")).toBe(true);
+  expect(isRustSource(String.raw`src\server\src\lib.rs`)).toBe(true);
+  expect(isRustSource(String.raw`src\server\build.rs`)).toBe(true);
+  expect(isRustSource("src/client/core/src/a.ts")).toBe(false);
+  expect(isRustSource("scripts/x.rs")).toBe(false);
+  expect(isRustSource("scripts/x.mjs")).toBe(false);
+  expect(isRustSource("target/debug/build/x.rs")).toBe(false);
+});

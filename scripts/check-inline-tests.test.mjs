@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { scanInlineTests, isRustSource } from "./check-inline-tests.mjs";
+import { scanInlineTests } from "./check-inline-tests.mjs";
 
 test("a braced test module body is a violation", () => {
   const src = "fn a() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n";
@@ -35,11 +35,4 @@ test("blank lines, comments and further attributes between the attribute and the
 test("two modules in one file are both reported", () => {
   const src = "#[cfg(test)]\nmod a {\n}\n\n#[cfg(test)]\nmod b {\n}\n";
   expect(scanInlineTests(src).map((v) => v.module)).toEqual(["a", "b"]);
-});
-
-test("isRustSource covers tracked .rs under src only", () => {
-  expect(isRustSource("src/server/src/lib.rs")).toBe(true);
-  expect(isRustSource("src\\server\\build.rs")).toBe(true);
-  expect(isRustSource("scripts/x.mjs")).toBe(false);
-  expect(isRustSource("target/debug/build/x.rs")).toBe(false);
 });
