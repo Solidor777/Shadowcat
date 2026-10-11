@@ -1,6 +1,6 @@
 //! Chunked upload sessions over the live HTTP surface.
 //!
-//! The run pushes a 16 MiB + 1 byte pass-through blob pushed in three chunks, the
+//! The tests push a 16 MiB + 1 byte pass-through blob in three chunks and cover the
 //! offset/ownership/size gates around it, completion into a real asset (folder + explicit tags
 //! echoed, derived tags present), abort, and the rate-slot refund on abort.
 

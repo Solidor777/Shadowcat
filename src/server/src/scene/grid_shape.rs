@@ -1,6 +1,6 @@
 //! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs.
 //!
-//! So square and hex scenes share one code path rather than each caller branching on grid kind.
+//! Square and hex scenes share one code path through it rather than each caller branching on grid kind.
 //! `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top axial
 //! implementation mirroring the client's `Grid` class exactly.
 //!

@@ -10,8 +10,8 @@
 //! The flow is STATELESS: there is no server-side merge session. A resolutions
 //! call recomputes the merge from live documents and rejects resolution paths
 //! that no longer match, or that name a conflict whose template side cannot be
-//! applied to the current merged shape (`MergeErrorKind::StaleResolutions`/
-//! `UnknownResolution`/`Unresolvable`, each carrying the fresh outcome so the
+//! applied to the current merged shape
+//! (`MergeErrorKind::StaleResolutions`/`UnknownResolution`/`Unresolvable`, each carrying the fresh outcome so the
 //! client re-opens its modal without a round trip). Authorization lives HERE, not in the write path: `TemplateMerge` waives
 //! `apply_intent`'s per-op capability gates, so `update_authorized` — which reads
 //! the same `required_cap_for_path`/`declared_caps_for_path` predicates that arm

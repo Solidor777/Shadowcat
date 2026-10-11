@@ -1,6 +1,6 @@
 //! Integration-style tests for the audio-monitor WS server.
 //!
-//! They spawn `run_with_monitor` on an ephemeral port against a `FakeMonitor`, then drives it with
+//! Each test spawns `run_with_monitor` on an ephemeral port against a `FakeMonitor`, then drives it with
 //! a real `tokio_tungstenite` client (mirroring `shadowcat_test_support`'s spawn-then-connect shape
 //! for the main `/ws` server).
 

@@ -15,8 +15,8 @@
 //! (Updates carry no `doc_type`, so they cannot be classified by
 //! `ops_target_message` and must be blocked against the authoritative stored
 //! document instead), exempting ONLY `WriteOrigin::ServerMessageRevision` — a
-//! marker no wire frame can set, produced solely by `handle_edit_message`/
-//! `handle_delete_message` after their own owner-or-GM check — and granting it a
+//! marker no wire frame can set, produced solely by
+//! `handle_edit_message`/`handle_delete_message` after their own owner-or-GM check — and granting it a
 //! scoped `Access` (`READ`+`WRITE_FIELDS` only, plus an exact-path admission in
 //! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a
 //! message doc under this origin -- see `handle_recalc_roll` -- never any

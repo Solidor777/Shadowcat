@@ -1,7 +1,7 @@
 //! The shutdown drain deadline against HTTP/2 connections that cannot end on their own.
 //!
-//! They are a live WebSocket tunnel, a peer that has stopped reading a stream, and a peer that has
-//! stopped reading the socket. The deadline closes the connection by failing its IO, and the
+//! The connections under test are a live WebSocket tunnel, a peer that has stopped reading a stream,
+//! and a peer that has stopped reading the socket. The deadline closes the connection by failing its IO, and the
 //! connection must end through that failure: `DrainReport::aborted == 0` (no task was cancelled)
 //! and `DrainReport::dropped == 0` (`drive` did not have to drop the connection) are what show the
 //! IO failure, and not a last resort, ended it.
