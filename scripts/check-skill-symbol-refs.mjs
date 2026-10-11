@@ -947,7 +947,8 @@ export function moduleNameOf(filePath) {
 
 /**
  * Builds the full code-symbol index this checker resolves citations against: every Rust item,
- * impl/trait method, field, variant and serde wire name under `src/server/src`; every table,
+ * impl/trait method, field, variant and serde wire name under `src/server/src`, the test-harness
+ * crate (`src/server/test-support`) and the server's integration tests (`src/server/tests`); every table,
  * index and column the SQL baseline declares; every TS/JS declaration, member, re-export, import
  * and literal-type value under `src/client`, `src/modules`, `src/types` (excluding
  * `GENERATED_ROOT`) and `scripts`; and every `.svelte` file's component name (its basename) plus
@@ -975,6 +976,14 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
   // Product roots carry wire values a document really holds; `scripts` carries a gate's own
   // configuration. Both are indexed for their DECLARATIONS, only the former for its value sets.
   const PRODUCT_ROOTS = ["src/client", "src/modules", "src/types"];
+  // The server crate, plus the measurement and test-harness crate and the server's integration
+  // tests: a skill documenting the connection lifecycle cites the harness that exercises it.
+  const RUST_ROOTS = [
+    "src/server/src",
+    "src/server/test-support/src",
+    "src/server/test-support/tests",
+    "src/server/tests",
+  ];
   /**
    * One JSON document's keys: a dependency name is a REFERENCE, every other key a declaration.
    *
@@ -989,16 +998,18 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     for (const key of extractJsonKeys(text)) (isDependency(key) ? referenced : declared).add(key);
   };
 
-  const rustRoot = join(repoRoot, "src", "server", "src");
-  for (const file of sources(rustRoot, [".rs"])) {
-    filesIndexed += 1;
-    const text = readFileSync(file, "utf8");
-    const modulePath = rustModulePath(rustRoot, file);
-    for (const name of extractRustSymbols(text, modulePath)) declared.add(name);
-    // The module a file IS, under every suffix of its path: a binary target under `bin/` is never
-    // reached by a `mod` declaration, so `bin::test_server` and `test_server` are otherwise names
-    // the tree carries and the index cannot see.
-    for (let i = 0; i < modulePath.length; i += 1) declared.add(modulePath.slice(i).join("::"));
+  for (const rustRoot of RUST_ROOTS.map((root) => join(repoRoot, ...root.split("/")))) {
+    for (const file of sources(rustRoot, [".rs"])) {
+      filesIndexed += 1;
+      const text = readFileSync(file, "utf8");
+      const modulePath = rustModulePath(rustRoot, file);
+      for (const name of extractRustSymbols(text, modulePath)) declared.add(name);
+      // The module a file IS, under every suffix of its path: a binary target under `bin/` or an
+      // integration-test target is never reached by a `mod` declaration, so `bin::test_server`,
+      // `test_server` and a test target's own name are otherwise names the tree carries and the
+      // index cannot see.
+      for (let i = 0; i < modulePath.length; i += 1) declared.add(modulePath.slice(i).join("::"));
+    }
   }
 
   // Cargo's manifests name every crate this repo depends on, and skill prose names those crates

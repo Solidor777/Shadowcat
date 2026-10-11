@@ -220,6 +220,9 @@ describe("the CLI process itself", () => {
     const repoRoot = FIXTURE_ROOT;
     mkdirSync(join(repoRoot, "src", "server", "src"), { recursive: true });
     mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
+    for (const dir of ["test-support/src", "test-support/tests", "tests"]) {
+      mkdirSync(join(repoRoot, "src", "server", ...dir.split("/")), { recursive: true });
+    }
     for (const dir of ["client", "modules", "types"])
       mkdirSync(join(repoRoot, "src", dir), { recursive: true });
     mkdirSync(join(repoRoot, "scripts"), { recursive: true });

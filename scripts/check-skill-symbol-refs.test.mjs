@@ -469,6 +469,22 @@ describe("a manifest dependency is a reference in BOTH its spellings", () => {
   );
 });
 
+// A skill documenting the connection lifecycle cites the harness that exercises it, so the index
+// reads the test-harness crate and the server's integration tests as well as the crate itself.
+describe("the Rust index covers the harness crate and the integration tests", () => {
+  it(
+    "declares a harness item, a harness method and an integration-test target",
+    () => {
+      const { declared } = buildSymbolIndex(REPO_ROOT);
+      expect(declared.has("BareApp::one_buffer")).toBe(true);
+      expect(declared.has("throughput::Rung")).toBe(true);
+      expect(declared.has("egress_stall_h2")).toBe(true);
+      expect(declared.has("serve_router")).toBe(true);
+    },
+    20_000,
+  );
+});
+
 describe("moduleNameOf", () => {
   it("strips every extension, and rejects a non-identifier stem", () => {
     expect(moduleNameOf("/a/b/sheetsController.svelte.ts")).toBe("sheetsController");
@@ -1010,6 +1026,9 @@ describe("checkSkillSymbolRefs", () => {
 
   mkdirSync(join(repoRoot, "src", "server", "src", "scene"), { recursive: true });
   mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
+  for (const dir of ["test-support/src", "test-support/tests", "tests"]) {
+    mkdirSync(join(repoRoot, "src", "server", ...dir.split("/")), { recursive: true });
+  }
   writeFileSync(
     join(repoRoot, "src", "server", "src", "scene", "regions.rs"),
     "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n",
