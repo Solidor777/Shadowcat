@@ -2,7 +2,7 @@
 //!
 //! They spawn the actual compiled binary via Cargo's built-in `CARGO_BIN_EXE_<name>` env var (no
 //! `assert_cmd` dependency needed — the package's default bin is named `shadowcat`, matching
-//! `[package] name` in `Cargo.toml`).
+//! `[package] name` in the server crate's manifest).
 
 use std::process::Command;
 

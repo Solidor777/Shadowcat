@@ -1,6 +1,6 @@
 //! Tokens → `Expr`.
 //!
-//! Twin of the client package's `parser.ts`: the same recursive-descent grammar, node cap, depth
+//! Twin of the client package's `parser` module: the same recursive-descent grammar, node cap, depth
 //! cap and `detail` wording. Grammar: `additive := multiplicative (('+'|'-') multiplicative)*`;
 //! `multiplicative := unary (('*'|'/'|'%') unary)*`; `unary := '-' unary | primary`; `primary :=
 //! num | '(' additive ')' | word ('(' args ')')? ('.' word)*`. A word immediately followed by `(`

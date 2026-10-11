@@ -2,7 +2,7 @@
 //! replayed once each and then repeating the last entry.
 //!
 //! Never compiled into the release binary (`#[cfg(test)]` at the `mod fake;` declaration in
-//! `mod.rs`).
+//! the `audio_monitor` module).
 
 use super::{MonitorError, SessionLevel, SessionMonitor};
 

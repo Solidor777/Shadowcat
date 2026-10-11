@@ -2,7 +2,7 @@
 //! replay from seq 1.
 //!
 //! Exercises the HTTP surface directly (not `data::repository`) so a redaction or seq-reporting
-//! regression at the route itself is caught here, mirroring `assets.rs`'s rationale for testing
+//! regression at the route itself is caught here, mirroring the `assets` integration test's rationale for testing
 //! through the route rather than the repository.
 
 use shadowcat_test_support as common;

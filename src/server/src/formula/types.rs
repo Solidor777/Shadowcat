@@ -1,7 +1,7 @@
 //! Failure values, the value type and the DoS caps of the formula language.
 //!
-//! Twin of the client package's `types.ts`; the tag spellings and cap values
-//! are asserted equal by the conformance corpus and by `types/tests.rs`.
+//! Twin of the client package's `types` module; the tag spellings and cap values
+//! are asserted equal by the conformance corpus and by the `types` test module.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

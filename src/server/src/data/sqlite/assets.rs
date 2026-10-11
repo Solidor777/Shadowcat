@@ -1,5 +1,5 @@
 //! Asset rows + tags: the `assets` / `asset_tags` half of `SqliteRepository`,
-//! in a sibling `impl` block so `sqlite.rs` stays under the file-size limit.
+//! in a sibling `impl` block so the `sqlite` module stays under the file-size limit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

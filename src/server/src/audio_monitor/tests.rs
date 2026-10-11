@@ -1,9 +1,9 @@
 //! Pure-helper tests for `audio_monitor`'s wire-safety functions.
 //!
 //! They cover basename reduction, truncation, clamping, watch-list matching, and the combined
-//! filter pipeline. The per-backend enumeration smoke test lives beside each backend
-//! (`windows/tests.rs`, `macos/tests.rs`, `linux/tests.rs`) so it only compiles (and runs) on its
-//! own OS.
+//! filter pipeline. The per-backend enumeration smoke test lives beside each backend, in the
+//! `windows`, `macos` and `linux` backends' test modules, so it only compiles (and runs) on its own
+//! OS.
 
 use super::*;
 

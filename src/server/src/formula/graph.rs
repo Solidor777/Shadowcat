@@ -1,6 +1,6 @@
 //! Memoized, cycle-guarded resolution over a named dependency graph.
 //!
-//! Twin of the client package's `graph.ts`. Dependencies are discovered dynamically: `eval_node`
+//! Twin of the client package's `graph` module. Dependencies are discovered dynamically: `eval_node`
 //! calls the injected `get` for each dependency, and a cycle is detected on the active path.
 //! INVARIANT: the result is a pure function of the key SET — roots iterate in sorted order so the
 //! traversal (and therefore which member of a short-circuitable cycle reports `Cycle`) never

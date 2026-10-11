@@ -22,7 +22,7 @@
 //! `TimerSource::update_timer`, `spa::param::audio::AudioInfoRaw`,
 //! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
 //! the resolved crate's own vendored source (`~/.cargo/registry/src/…/pipewire-0.8.0` and
-//! `libspa-0.8.0`) and its `examples/audio-capture.rs`/`src/channel.rs`, not merely against
+//! `libspa-0.8.0`) and its `audio-capture` example and `channel` module, not merely against
 //! documentation.
 
 use std::cell::RefCell;
