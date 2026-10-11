@@ -1,7 +1,9 @@
 //! Shutdown of `http::serve_with` while a WebSocket lives inside an HTTP/2 connection (RFC 8441
-//! extended CONNECT). Such a session is a stream of its connection, not a detached upgrade as
-//! over HTTP/1.1, so a drain that waits on connections must first tell sessions to close, and
-//! must not wait forever on a peer that has stopped reading.
+//! extended CONNECT).
+//!
+//! Such a session is a stream of its connection, not a detached upgrade as over HTTP/1.1, so a
+//! drain that waits on connections must first tell sessions to close, and must not wait forever on
+//! a peer that has stopped reading.
 
 use std::time::Duration;
 

@@ -1,9 +1,10 @@
-//! The per-document visibility oracle, exercised where the two index spaces
-//! around an embedded merge disagree: a dropped preceding sibling on the
-//! instance side, a reorder on the template side, nested depths, and both
-//! sides at once. Every case would leak (or wrongly withhold) under a
-//! positional hidden-pointer set compared against output-indexed conflict
-//! paths; by identity the answer is index-free.
+//! The per-document visibility oracle, exercised where the two index spaces around an embedded
+//! merge disagree.
+//!
+//! The cases are a dropped preceding sibling on the instance side, a reorder on the template side,
+//! nested depths, and both sides at once. Every case would leak (or wrongly withhold) under a
+//! positional hidden-pointer set compared against output-indexed conflict paths; by identity the
+//! answer is index-free.
 
 use std::collections::{BTreeMap, HashMap};
 

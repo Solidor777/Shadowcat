@@ -1,7 +1,8 @@
-//! Unit tests for the merge entry points: the fail-closed corrupt-base rule
-//! and the legitimate base-less fallback on `compute_pull`, and the pieces
-//! of update emission the corpus's placeholder-id normalization cannot show
-//! (real-uuid `doc_id`, the unconditional `/base` refresh).
+//! Unit tests for the merge entry points.
+//!
+//! They cover the fail-closed corrupt-base rule and the legitimate base-less fallback on
+//! `compute_pull`, and the pieces of update emission the corpus's placeholder-id normalization
+//! cannot show (real-uuid `doc_id`, the unconditional `/base` refresh).
 
 use std::collections::BTreeSet;
 

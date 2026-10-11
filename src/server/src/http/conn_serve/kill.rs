@@ -1,8 +1,10 @@
-//! The kill switch: how a connection's IO is failed on purpose, once and for every task that
-//! polls it. A [`KillSignal`] (one per serve loop) hands each connection a [`ConnKill`]; firing
-//! the signal fires every live connection's [`ConnKill`], and a connection's own [`ConnKill`] can
-//! be fired alone, so "make this connection's IO fail" is ONE mechanism for the drain deadline and
-//! for any per-connection close.
+//! The kill switch: how a connection's IO is failed on purpose, once and for every task that polls
+//! it.
+//!
+//! A [`KillSignal`] (one per serve loop) hands each connection a [`ConnKill`]; firing the signal
+//! fires every live connection's [`ConnKill`], and a connection's own [`ConnKill`] can be fired
+//! alone, so "make this connection's IO fail" is ONE mechanism for the drain deadline and for any
+//! per-connection close.
 //!
 //! WHY the end is delivered as an IO error and not by aborting the connection task: an HTTP/2
 //! extended-CONNECT tunnel (a WebSocket) runs as a task hyper detaches from its connection, and

@@ -1,8 +1,9 @@
-//! Document rows: the `documents` / `documents_fts_gm` / `documents_fts_public`
-//! half of `SqliteRepository` — row load/upsert/delete with FTS reindex,
-//! parent placement and move-cycle checks, and the commit-time `OpSnapshot`
-//! builder — in a sibling `impl` block so `sqlite.rs` stays under the
-//! file-size limit.
+//! Document rows: the `documents` / `documents_fts_gm` / `documents_fts_public` half of
+//! `SqliteRepository`.
+//!
+//! It covers row load/upsert/delete with FTS reindex, parent placement and move-cycle checks, and
+//! the commit-time `OpSnapshot` builder — in a sibling `impl` block so the `sqlite` module stays
+//! under the file-size limit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

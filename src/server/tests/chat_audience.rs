@@ -1,8 +1,9 @@
-//! Integration proof: a restricted-audience message (`Audience::Whisper`
-//! / `Audience::GmOnly`) is invisible to anyone outside its audience on every
-//! egress path — broadcast, HTTP resync/load, and full-text search — and the
-//! GM's usual unconditional access is itself gated by that audience. Harness
-//! mirrors `chat_delivery`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
+//! Integration proof: a restricted-audience message (`Audience::Whisper` / `Audience::GmOnly`) is
+//! invisible to anyone outside its audience.
+//!
+//! That holds on every egress path — broadcast, HTTP resync/load, and full-text search — and the
+//! GM's usual unconditional access is itself gated by that audience. Harness mirrors
+//! `chat_delivery`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

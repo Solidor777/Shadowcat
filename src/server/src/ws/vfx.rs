@@ -1,7 +1,8 @@
-//! Shared `PlayVfx` validation + authorization, reused by BOTH the raw `ClientMsg::PlayVfx`
-//! handler (`ws::conn`) and the `/fx` chat command (`chat::fx`) — both call sites must agree
-//! on validation and authorization, since a chat-issued effect and a raw frame carry
-//! identical trust.
+//! Shared `PlayVfx` validation + authorization.
+//!
+//! It is reused by BOTH the raw `ClientMsg::PlayVfx` handler (`ws::conn`) and the `/fx` chat
+//! command (`chat::fx`) — both call sites must agree on validation and authorization, since a
+//! chat-issued effect and a raw frame carry identical trust.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

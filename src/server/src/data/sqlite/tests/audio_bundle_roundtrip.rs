@@ -1,7 +1,7 @@
-//! A world bundle carries `playlist` documents and the `audio-state` singleton
-//! generically: `export_world_rows`/`import_world` operate over the whole
-//! `documents` table with no `doc_type` filter, so both ride the same bulk
-//! path every other document does — proven here end to end.
+//! A world bundle carries `playlist` documents and the `audio-state` singleton generically.
+//!
+//! `export_world_rows`/`import_world` operate over the whole `documents` table with no `doc_type`
+//! filter, so both ride the same bulk path every other document does — proven here end to end.
 use super::*;
 use crate::data::document::PermissionSet;
 use crate::data::engine::{

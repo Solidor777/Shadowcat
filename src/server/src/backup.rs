@@ -1,7 +1,8 @@
-//! Whole-server backup/restore: SQLite `VACUUM INTO` snapshot + assets-directory
-//! copy + a `manifest.json` for round-trip sanity checks. Pure file I/O plus one
-//! SQL statement — no dependency on `AppState`/`SqliteRepository`, so a fresh
-//! short-lived connection is opened directly against the caller-resolved db path.
+//! Whole-server backup/restore: SQLite `VACUUM INTO` snapshot + assets-directory copy + a
+//! `manifest.json` for round-trip sanity checks.
+//!
+//! Pure file I/O plus one SQL statement — no dependency on `AppState`/`SqliteRepository`, so a
+//! fresh short-lived connection is opened directly against the caller-resolved db path.
 //!
 //! INVARIANT: the DB snapshot (`VACUUM INTO`) always completes before the assets
 //! copy starts. Asset uploads write bytes to disk BEFORE inserting the

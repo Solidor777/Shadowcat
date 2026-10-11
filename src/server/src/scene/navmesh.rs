@@ -1,7 +1,8 @@
-//! Continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
-//! `polyanya::Mesh` from a scene's bounds + `blocksMove` wall segments, and queries any-angle
-//! routes over it. Engine-owned geometry, mirroring the grid A*
-//! router's fail-closed discipline (`pathfinding::find`) — the mesh itself carries WALLS ONLY;
+//! Continuous (navmesh) pathfinding adapter.
+//!
+//! Pure geometry: builds a footprint-inflated `polyanya::Mesh` from a scene's bounds + `blocksMove`
+//! wall segments, and queries any-angle routes over it. Engine-owned geometry, mirroring the grid
+//! A* router's fail-closed discipline (`pathfinding::find`) — the mesh itself carries WALLS ONLY;
 //! impassable/terrain region weighting is handled separately, via `SceneEcs::pathfind`'s dispatch
 //! to the weighted grid A* plus this module's `los_smooth`/`truncate_at_arrest`, never baked into
 //! the mesh.

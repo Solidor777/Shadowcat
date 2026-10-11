@@ -1,7 +1,9 @@
-//! The HTTP/2 frame walker the egress bounds read the wire with. One [`FrameParser`] type, two
-//! instances per HTTP/2 connection: the WRITE instance walks what the writer accepted (counting
-//! DATA payload for the connection unit and reporting which frames ended which streams), and the
-//! READ instance walks what the codec is handed (reporting request HEADERS and RST_STREAM).
+//! The HTTP/2 frame walker the egress bounds read the wire with.
+//!
+//! One [`FrameParser`] type, two instances per HTTP/2 connection: the WRITE instance walks what the
+//! writer accepted (counting DATA payload for the connection unit and reporting which frames ended
+//! which streams), and the READ instance walks what the codec is handed (reporting request HEADERS
+//! and RST_STREAM).
 //!
 //! A frame is `9` header bytes (24-bit length, type, flags, 31-bit stream id) and a payload; the
 //! walker collects a header in whatever pieces the bytes arrive (split across writes and across

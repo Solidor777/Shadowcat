@@ -1,8 +1,9 @@
-//! `ClientMsg::Intent.ops.len()` admission cap: `WS_MAX_MESSAGE_BYTES` derives its frame-size
-//! budget from `MAX_INTENT_DOCS` on the invariant that no admitted intent carries more ops than
-//! that -- this pins the enforcement side of that invariant end-to-end over a real socket, so
-//! the two caps cannot silently drift back apart (a frame under the byte cap carrying an
-//! unbounded `ops.len()` of tiny documents).
+//! `ClientMsg::Intent.ops.len()` admission cap.
+//!
+//! `WS_MAX_MESSAGE_BYTES` derives its frame-size budget from `MAX_INTENT_DOCS` on the invariant
+//! that no admitted intent carries more ops than that -- this pins the enforcement side of that
+//! invariant end-to-end over a real socket, so the two caps cannot silently drift back apart (a
+//! frame under the byte cap carrying an unbounded `ops.len()` of tiny documents).
 
 use futures_util::{SinkExt, StreamExt};
 use shadowcat::data::repository::Repository;

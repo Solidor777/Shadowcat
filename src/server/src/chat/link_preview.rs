@@ -1,7 +1,8 @@
-//! SSRF-guarded outbound HTTP fetcher for chat link previews — the server's
-//! FIRST outbound HTTP surface, so every guard here is load-bearing. The
-//! client never fetches link previews itself; ONLY the server fetches, behind
-//! this module's address guard, and stores the result.
+//! SSRF-guarded outbound HTTP fetcher for chat link previews — the server's FIRST outbound HTTP
+//! surface, so every guard here is load-bearing.
+//!
+//! The client never fetches link previews itself; ONLY the server fetches, behind this module's
+//! address guard, and stores the result.
 //!
 //! Guard order (each a hard fail-closed reject): URL validation (scheme +
 //! userinfo + host; a literal-IP host is checked against the blocked ranges

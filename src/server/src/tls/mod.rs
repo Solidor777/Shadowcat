@@ -1,8 +1,9 @@
 //! Built-in HTTPS: one port answers both plain HTTP and TLS, chosen per connection by the first
-//! byte ([`listener::SniffListener`]). Certificates come from an operator PEM
-//! ([`pem`]), a persisted self-signed leaf ([`selfsigned`]) or an in-memory self-signed leaf; the
-//! degradation ladder in [`TlsRuntime::start`] guarantees a TLS-side failure never prevents plain
-//! HTTP from serving.
+//! byte ([`listener::SniffListener`]).
+//!
+//! Certificates come from an operator PEM ([`pem`]), a persisted self-signed leaf ([`selfsigned`])
+//! or an in-memory self-signed leaf; the degradation ladder in [`TlsRuntime::start`] guarantees a
+//! TLS-side failure never prevents plain HTTP from serving.
 //!
 //! INVARIANTS:
 //! 1. A TLS-side failure of any kind (certificate, key file, handshake) never stops plain HTTP.

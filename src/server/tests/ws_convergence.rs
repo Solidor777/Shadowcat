@@ -1,7 +1,7 @@
-//! Desync-convergence harness: real WS clients against an ephemeral in-process
-//! server. Faults are induced by client behavior (stop reading -> Lagged,
-//! ignore frames, disconnect+reconnect). Convergence is asserted against the
-//! authoritative `world_events` log.
+//! Desync-convergence harness: real WS clients against an ephemeral in-process server.
+//!
+//! Faults are induced by client behavior (stop reading -> Lagged, ignore frames,
+//! disconnect+reconnect). Convergence is asserted against the authoritative `world_events` log.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

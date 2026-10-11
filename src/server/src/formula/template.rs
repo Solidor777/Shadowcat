@@ -1,7 +1,9 @@
-//! Notation-template rewriting: a template such as `1d20 + str` — a mix of dice-notation atoms
-//! (numbers, the dice operator, `NOTATION_KEYWORDS` modifiers, bracketed label spans) and dotted
-//! identifier references — is rewritten into plain dice notation by substituting each reference
-//! with its resolved value as a labeled constant (`1d20 + 3[str]`).
+//! Notation-template rewriting into plain dice notation.
+//!
+//! A template such as `1d20 + str` — a mix of dice-notation atoms (numbers, the dice operator,
+//! `NOTATION_KEYWORDS` modifiers, bracketed label spans) and dotted identifier references — is
+//! rewritten into plain dice notation by substituting each reference with its resolved value as a
+//! labeled constant (`1d20 + 3[str]`).
 //!
 //! Twin of the client package's `template` module's rewrite half; the two are pinned together by
 //! the `templates` section of the shared conformance corpus. The client module's `checkNotationKey`

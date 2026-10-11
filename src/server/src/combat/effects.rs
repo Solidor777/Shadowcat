@@ -1,10 +1,10 @@
-//! Effect discovery and clock-driven mutation: which effects belong to a
-//! combatant, and how a boundary tick or a lifecycle-policy expiry writes
-//! them. Lifecycle flags and duration amounts are evaluated server-side at
-//! the moment of use (`eval::lifecycle_flags`/`eval::duration_amount`) over
-//! the document hosting the effect; an evaluation failure skips that one
-//! effect and is reported to the caller — never guessed around, and never a
-//! stopped clock.
+//! Effect discovery and clock-driven mutation.
+//!
+//! It decides which effects belong to a combatant, and how a boundary tick or a lifecycle-policy
+//! expiry writes them. Lifecycle flags and duration amounts are evaluated server-side at the moment
+//! of use (`eval::lifecycle_flags`/`eval::duration_amount`) over the document hosting the effect;
+//! an evaluation failure skips that one effect and is reported to the caller — never guessed
+//! around, and never a stopped clock.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

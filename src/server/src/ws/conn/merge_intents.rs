@@ -1,11 +1,11 @@
 //! The wire-dispatch layer for the three template-merge intents
-//! (`ClientMsg::MergePull`/`MergePush`/`MergeRevert`): loads the live documents,
-//! computes the `MergePlan` through the server merge engine (`crate::merge`),
-//! derives authorization against the ACTUAL computed `Operation::Update`, commits
-//! through `Room::publish` under `WriteOrigin::TemplateMerge` — the one write
-//! path, so broadcast, redaction and event-log behaviour match a
-//! client-dispatched merge — and replies to the originator with
-//! `ServerMsg::MergeResult`/`MergeError`.
+//! (`ClientMsg::MergePull`/`MergePush`/`MergeRevert`).
+//!
+//! It loads the live documents, computes the `MergePlan` through the server merge engine
+//! (`crate::merge`), derives authorization against the ACTUAL computed `Operation::Update`, commits
+//! through `Room::publish` under `WriteOrigin::TemplateMerge` — the one write path, so broadcast,
+//! redaction and event-log behaviour match a client-dispatched merge — and replies to the
+//! originator with `ServerMsg::MergeResult`/`MergeError`.
 //!
 //! The flow is STATELESS: there is no server-side merge session. A resolutions
 //! call recomputes the merge from live documents and rejects resolution paths

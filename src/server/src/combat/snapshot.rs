@@ -1,7 +1,8 @@
-//! Loads a `CombatSnapshot`: one combat document, its combatants, their
-//! hosts, optional history/registry, sibling active combats on the scene,
-//! and the resolved-rules override chain — everything a pure `transition`
-//! needs, gathered in one read.
+//! Loads a `CombatSnapshot` in one read.
+//!
+//! The snapshot holds one combat document, its combatants, their hosts, optional history/registry,
+//! sibling active combats on the scene, and the resolved-rules override chain — everything a pure
+//! `transition` needs, gathered in one read.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

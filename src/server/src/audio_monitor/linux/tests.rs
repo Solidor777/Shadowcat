@@ -1,9 +1,9 @@
-//! Linux-only enumeration smoke test (run on the Linux matrix leg):
-//! `platform_monitor` never panics, and returns either a working monitor whose
-//! first `poll()` succeeds, or `MonitorError::Unsupported` on a PipeWire-less runner — GitHub
-//! Actions' `ubuntu-latest` images do not run a PipeWire session daemon, so CI is expected to
-//! exercise the `Unsupported` arm; a developer machine with PipeWire running exercises the
-//! `Ok` arm.
+//! Linux-only enumeration smoke test, run on the Linux matrix leg.
+//!
+//! `platform_monitor` never panics, and returns either a working monitor whose first `poll()`
+//! succeeds, or `MonitorError::Unsupported` on a PipeWire-less runner — GitHub Actions'
+//! `ubuntu-latest` images do not run a PipeWire session daemon, so CI is expected to exercise the
+//! `Unsupported` arm; a developer machine with PipeWire running exercises the `Ok` arm.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

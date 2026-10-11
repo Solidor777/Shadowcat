@@ -1,7 +1,8 @@
-//! `Document.base` server ownership at the write path: Create-time
-//! derivation (`merge::bands::derive_create_base`), the client `/base`
-//! write rejection, `WriteOrigin::TemplateMerge`'s apply-level gating, and
-//! legacy-row read tolerance (validation is ingest-time only).
+//! `Document.base` server ownership at the write path.
+//!
+//! It covers Create-time derivation (`merge::bands::derive_create_base`), the client `/base` write
+//! rejection, `WriteOrigin::TemplateMerge`'s apply-level gating, and legacy-row read tolerance
+//! (validation is ingest-time only).
 
 use super::*;
 use crate::data::membership::PermissionContext;

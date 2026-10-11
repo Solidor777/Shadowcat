@@ -1,7 +1,9 @@
-//! `handle_toggle_door`'s reply shape: `None` on success (the broadcast `Event` echo is the
-//! confirmation — the chat-ops asymmetric pattern), a correlated `DoorToggleError` to the
-//! originating connection only on refusal, with the role-conditioned wording applied at THIS
-//! layer (`door_toggle_wire_message` against the caller's role).
+//! `handle_toggle_door`'s reply shape.
+//!
+//! The reply is `None` on success (the broadcast `Event` echo is the confirmation — the chat-ops
+//! asymmetric pattern), a correlated `DoorToggleError` to the originating connection only on
+//! refusal, with the role-conditioned wording applied at THIS layer (`door_toggle_wire_message`
+//! against the caller's role).
 
 use super::*;
 

@@ -1,10 +1,10 @@
-//! Post-publish background enrichment: image fetches deferred until AFTER a
-//! message's synchronous send/edit already returned and broadcast -- never
-//! on the request path. The one entry point here re-publishes via
+//! Post-publish background enrichment: image fetches deferred until AFTER a message's synchronous
+//! send/edit already returned and broadcast.
+//!
+//! They never run on the request path. The one entry point here re-publishes via
 //! `WriteOrigin::ServerMessageRevision`, the SAME chokepoint
-//! `handle_edit_message`/`handle_delete_message` use for their own message
-//! revisions (this is the third caller of that origin, after edit and
-//! delete).
+//! `handle_edit_message`/`handle_delete_message` use for their own message revisions (this is the
+//! third caller of that origin, after edit and delete).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

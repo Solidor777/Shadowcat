@@ -1,10 +1,9 @@
-//! `wall`, `region`, `drawing`, `template` engine bands. The
-//! wall/region shapes match what `SceneEcs::engine_as_cached::<WallEngine>`/
-//! `<RegionEngine>` read (the client has no separately-declared wall/region
-//! type to mirror); the drawing/template shapes mirror the client's
-//! re-exported `DrawingEngine`/`TemplateEngine` — the only authoritative
-//! shapes today; scene-tools writers must round-trip byte-identically
-//! against these.
+//! `wall`, `region`, `drawing`, `template` engine bands.
+//!
+//! The wall/region shapes match what `SceneEcs::engine_as_cached::<WallEngine>`/ `<RegionEngine>`
+//! read (the client has no separately-declared wall/region type to mirror); the drawing/template
+//! shapes mirror the client's re-exported `DrawingEngine`/`TemplateEngine` — the only authoritative
+//! shapes today; scene-tools writers must round-trip byte-identically against these.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

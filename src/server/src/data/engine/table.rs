@@ -1,7 +1,8 @@
-//! Engine body for a rollable table (`TABLE_DOC_TYPE`): a set of weighted or
-//! formula-ranged rows a `DrawTable` frame draws from server-side (see
-//! `crate::tables`). Envelope `name` is the table's display name; this module
-//! owns only the stored shape and its ingress validation.
+//! Engine body for a rollable table (`TABLE_DOC_TYPE`).
+//!
+//! A table is a set of weighted or formula-ranged rows a `DrawTable` frame draws from server-side
+//! (see `crate::tables`). Envelope `name` is the table's display name; this module owns only the
+//! stored shape and its ingress validation.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

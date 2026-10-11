@@ -1,8 +1,9 @@
-//! Server-authoritative grid A* pathfinder. Pure + headless: callers pass parsed inputs
-//! (walls, mask, cell size, grid shape, footprint); this module owns no I/O and borrows no ECS. The
-//! `GridShape` (square/hex) is the single source of the diagonal rule — it owns both the step-cost
-//! and the admissible heuristic, so `find` takes no separate rule argument.
-//! Engine-owned geometry; clean-room A* (Hart, Nilsson & Raphael 1968).
+//! Server-authoritative grid A* pathfinder.
+//!
+//! Pure + headless: callers pass parsed inputs (walls, mask, cell size, grid shape, footprint);
+//! this module owns no I/O and borrows no ECS. The `GridShape` (square/hex) is the single source of
+//! the diagonal rule — it owns both the step-cost and the admissible heuristic, so `find` takes no
+//! separate rule argument. Engine-owned geometry; clean-room A* (Hart, Nilsson & Raphael 1968).
 //!
 //! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the
 //! movement gate uses — the route can never thread the unknown nor leak hidden geometry.

@@ -1,7 +1,10 @@
-//! The upgrade of stored Opus siblings written by an encoder and muxer that carry no version marker. The fixtures are
-//! the output of the unmarked muxer (no marker, Duration, SeekHead, Cues or DiscardPadding) for a 48 kHz mono sine of `12 * 960 + residue` valid samples,
-//! `residue` being the remainder of the valid count modulo one 960-sample frame: 0, 649 and 959 are
-//! the loss range of a 312-sample lookahead, 648 the last residue outside it.
+//! The upgrade of stored Opus siblings written by an encoder and muxer that carry no version
+//! marker.
+//!
+//! The fixtures are the output of the unmarked muxer (no marker, Duration, SeekHead, Cues or
+//! DiscardPadding) for a 48 kHz mono sine of `12 * 960 + residue` valid samples, `residue` being
+//! the remainder of the valid count modulo one 960-sample frame: 0, 649 and 959 are the loss range
+//! of a 312-sample lookahead, 648 the last residue outside it.
 
 use std::path::{Path, PathBuf};
 

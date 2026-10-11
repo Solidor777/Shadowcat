@@ -1,7 +1,8 @@
-//! A WebSocket tunnel inside an HTTP/2 stream under the tunnel gate (`ws::tunnel_gate`): a reader
-//! that takes everything receives everything, a reader that takes a frame in less than the window
-//! keeps its session across many windows, and a reader that stops takes its session down at the
-//! window.
+//! A WebSocket tunnel inside an HTTP/2 stream under the tunnel gate (`ws::tunnel_gate`).
+//!
+//! A reader that takes everything receives everything, a reader that takes a frame in less than the
+//! window keeps its session across many windows, and a reader that stops takes its session down at
+//! the window.
 //!
 //! Every test drives the condition it needs (frames are broadcast until a send is observed
 //! pending), never a fixed byte count: how many frames fit before the gate engages depends on the

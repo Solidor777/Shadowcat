@@ -1,7 +1,8 @@
-//! Message-content sanitizer: the single security boundary between raw user
-//! input and a stored `Segment::Html` run. `sanitize` is the ONLY producer of
-//! `Segment::Html` (see `Segment`'s doc comment) — every enrichment path
-//! (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
+//! Message-content sanitizer: the single security boundary between raw user input and a stored
+//! `Segment::Html` run.
+//!
+//! `sanitize` is the ONLY producer of `Segment::Html` (see `Segment`'s doc comment) — every
+//! enrichment path (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
 //! `clean()` call here before anything is persisted or broadcast.
 //!
 //! INVARIANT: an `<img>` carrying a `src` never survives `sanitize` — chat

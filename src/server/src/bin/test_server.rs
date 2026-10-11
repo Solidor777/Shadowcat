@@ -1,8 +1,8 @@
-//! Throwaway WS server for manual/external clients and the Node<->Rust e2e
-//! harness. In-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one
-//! world, a player-owned document, and a declarative capability requirement on
-//! `/engine/vision`. Prints the bind address and a machine-readable
-//! `e2e-fixture:` JSON line the harness parses.
+//! Throwaway WS server for manual/external clients and the Node<->Rust e2e harness.
+//!
+//! In-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one world, a player-owned document,
+//! and a declarative capability requirement on `/engine/vision`. Prints the bind address and a
+//! machine-readable `e2e-fixture:` JSON line the harness parses.
 //!
 //! The fixture credentials are fixed and public, so `--bind` accepts only a specific interface
 //! address (loopback or one assigned to this machine); a wildcard address (`0.0.0.0`, `::`) is

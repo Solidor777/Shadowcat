@@ -1,9 +1,9 @@
-//! Image processing for the asset pipeline: WebP conversion of a staged
-//! upload (original retained beside it when configured) plus thumb/preview
-//! derivatives, and the audio transcode in the `audio` submodule (a sibling
-//! derivative off the untouched canonical). Every function here is BLOCKING
-//! (`image` decode/encode is CPU-bound) — callers run it under
-//! `tokio::task::spawn_blocking`.
+//! Image processing for the asset pipeline.
+//!
+//! It covers WebP conversion of a staged upload (original retained beside it when configured) plus
+//! thumb/preview derivatives, and the audio transcode in the `audio` submodule (a sibling
+//! derivative off the untouched canonical). Every function here is BLOCKING (`image` decode/encode
+//! is CPU-bound) — callers run it under `tokio::task::spawn_blocking`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

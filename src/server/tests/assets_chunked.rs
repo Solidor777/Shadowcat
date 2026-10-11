@@ -1,7 +1,8 @@
-//! Chunked upload sessions over the live HTTP surface: a 16 MiB + 1 byte
-//! pass-through blob pushed in three chunks, the offset/ownership/size gates
-//! around it, completion into a real asset (folder + explicit tags echoed,
-//! derived tags present), abort, and the rate-slot refund on abort.
+//! Chunked upload sessions over the live HTTP surface.
+//!
+//! The run pushes a 16 MiB + 1 byte pass-through blob pushed in three chunks, the
+//! offset/ownership/size gates around it, completion into a real asset (folder + explicit tags
+//! echoed, derived tags present), abort, and the rate-slot refund on abort.
 
 use common::{spawn_with, Harness, PNG_1X1};
 use shadowcat_test_support as common;

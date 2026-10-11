@@ -1,7 +1,7 @@
-//! Field-path `Operation`/`FieldChange` construction shared by every
-//! transition: reading a document's own current value as the OCC pre-image,
-//! the same convention `data::command`'s doc comment on `FieldChange`
-//! establishes for the whole repository.
+//! Field-path `Operation`/`FieldChange` construction shared by every transition.
+//!
+//! It reads a document's own current value as the OCC pre-image, the same convention
+//! `data::command`'s doc comment on `FieldChange` establishes for the whole repository.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

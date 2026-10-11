@@ -1,10 +1,10 @@
-//! `:shortcode:` → unicode emoji, applied to raw chat input BEFORE any
-//! markdown/html processing (`chat::sanitize` pre-pass) so stored content is final
-//! and identical under every content policy. Always-on typing sugar — output is
-//! plain unicode text with no security surface. A `:name:` span is skipped when its
-//! opening `:` falls inside a markdown inline code span (`code_span_ranges`); this is
-//! still pre-parse relative to full markdown/HTML rendering, and it is not a full
-//! CommonMark parser — only the backtick-run/code-span rule is implemented.
+//! `:shortcode:` → unicode emoji, applied to raw chat input BEFORE any markdown/html processing.
+//!
+//! It runs as the `chat::sanitize` pre-pass so stored content is final and identical under every
+//! content policy. Always-on typing sugar — output is plain unicode text with no security surface.
+//! A `:name:` span is skipped when its opening `:` falls inside a markdown inline code span
+//! (`code_span_ranges`); this is still pre-parse relative to full markdown/HTML rendering, and it
+//! is not a full CommonMark parser — only the backtick-run/code-span rule is implemented.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

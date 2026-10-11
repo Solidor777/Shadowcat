@@ -1,8 +1,8 @@
-//! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation`
-//! engine bands. Field shapes mirror the client's re-exported
-//! `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
-//! `VisionMode`, and `GradationBand` (minus `name`, which lives on the
-//! envelope instead).
+//! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation` engine bands.
+//!
+//! Field shapes mirror the client's re-exported `SceneEngine`, `WorldSceneDefaults`,
+//! `WorldSettingsEngine`, `LightEngine`, `VisionMode`, and `GradationBand` (minus `name`, which
+//! lives on the envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

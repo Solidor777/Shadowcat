@@ -1,6 +1,8 @@
 //! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in macOS
-//! 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so this file
-//! binds the small entry-point surface it needs directly via `extern "C"`, linked against the
+//! 14.2.
+//!
+//! The API is new enough that `coreaudio-sys` does not wrap it in the resolved version, so this
+//! file binds the small entry-point surface it needs directly via `extern "C"`, linked against the
 //! `CoreAudio` framework (`#[link(name = "CoreAudio", kind = "framework")]` on the `extern "C"`
 //! block declaring these entry points — every symbol this file calls lives in
 //! `CoreAudio.framework`; the Objective-C runtime symbols (`objc_getClass`, `sel_registerName`,

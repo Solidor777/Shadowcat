@@ -1,12 +1,12 @@
-//! The elevation model (2.5D): tokens and lights carry an elevation above the
-//! ground plane (0 = grounded), a wall optionally carries the elevation band its
-//! occlusion applies to, and a scene optionally declares `SceneEngine::levels` —
-//! named elevation bands (`SceneLevel`) a token's floor is derived from via
-//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light/sound
-//! source — the star-shaped raycast pipeline itself is untouched, and
-//! sight/light ranges stay 2D (horizontal). Environment ambient light is the one
-//! exception: it keeps the full wall set at every elevation (walls always shadow
-//! sky-light, or daylight would flood interiors).
+//! The elevation model (2.5D).
+//!
+//! Tokens and lights carry an elevation above the ground plane (0 = grounded), a wall optionally
+//! carries the elevation band its occlusion applies to, and a scene optionally declares
+//! `SceneEngine::levels` — named elevation bands (`SceneLevel`) a token's floor is derived from via
+//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light/sound source — the
+//! star-shaped raycast pipeline itself is untouched, and sight/light ranges stay 2D (horizontal).
+//! Environment ambient light is the one exception: it keeps the full wall set at every elevation
+//! (walls always shadow sky-light, or daylight would flood interiors).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

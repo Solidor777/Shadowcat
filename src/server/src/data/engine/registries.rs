@@ -1,8 +1,9 @@
-//! Singleton config-document engine bands: `channel-registry`,
-//! `faction-registry`, `condition-registry`, `chat-settings`, `dice-settings`.
-//! Field shapes mirror the client's re-exported `Channel`, `FactionStance`,
-//! `Faction`, `Condition`, `ChatSettingsEngine`, `DiceSettingsEngine`, and
-//! `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value type).
+//! Singleton config-document engine bands: `channel-registry`, `faction-registry`,
+//! `condition-registry`, `chat-settings`, `dice-settings`.
+//!
+//! Field shapes mirror the client's re-exported `Channel`, `FactionStance`, `Faction`, `Condition`,
+//! `ChatSettingsEngine`, `DiceSettingsEngine`, and `ChannelDiceOverride`
+//! (`DiceSettingsEngine.channel_overrides`'s value type).
 //!
 //! `chat::settings::ChatContentPolicy` is a type alias onto
 //! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`

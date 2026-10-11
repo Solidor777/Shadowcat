@@ -1,7 +1,8 @@
-//! Integration-style tests for the audio-monitor WS server: spawns `run_with_monitor` on an
-//! ephemeral port against a `FakeMonitor`, then drives it with a real `tokio_tungstenite`
-//! client (mirroring `shadowcat_test_support`'s spawn-then-connect shape for the main `/ws`
-//! server).
+//! Integration-style tests for the audio-monitor WS server.
+//!
+//! They spawn `run_with_monitor` on an ephemeral port against a `FakeMonitor`, then drives it with
+//! a real `tokio_tungstenite` client (mirroring `shadowcat_test_support`'s spawn-then-connect shape
+//! for the main `/ws` server).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

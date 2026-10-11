@@ -1,7 +1,8 @@
-//! Process-level tests of the compiled `shadowcat` binary's TLS behaviour: the one-shot
-//! `--tls-regenerate` mode and its exclusions, the retired-key boot error, boot errors for
-//! contradictory TLS configuration, and a real boot that serves plain HTTP and TLS on one port with
-//! a certificate that persists across restarts.
+//! Process-level tests of the compiled `shadowcat` binary's TLS behaviour.
+//!
+//! They cover the one-shot `--tls-regenerate` mode and its exclusions, the retired-key boot error,
+//! boot errors for contradictory TLS configuration, and a real boot that serves plain HTTP and TLS
+//! on one port with a certificate that persists across restarts.
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};

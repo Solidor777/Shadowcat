@@ -1,8 +1,10 @@
-//! Audio transcode: sniffs the real container/codec via `symphonia`'s probe (never trusting the
-//! client-declared `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes Opus (VBR)
-//! via `opus`, and muxes the encoded frames into the container(s) the import selected — Ogg pages
-//! via `ogg`, WebM via the `webm` submodule's own minimal EBML writer (no extra dependency for a
-//! fixed single-audio-track shape) — each written as a SIBLING derivative.
+//! Audio transcode: a stored upload becomes Opus sibling derivatives.
+//!
+//! It sniffs the real container/codec via `symphonia`'s probe (never trusting the client-declared
+//! `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes Opus (VBR) via `opus`, and
+//! muxes the encoded frames into the container(s) the import selected — Ogg pages via `ogg`, WebM
+//! via the `webm` submodule's own minimal EBML writer (no extra dependency for a fixed
+//! single-audio-track shape) — each written as a SIBLING derivative.
 //!
 //! It is dispatched from `process_staged` before the image branch. The canonical file is NEVER
 //! rewritten, unlike the image pipeline's canonical swap; the uploaded original stays every non-GM

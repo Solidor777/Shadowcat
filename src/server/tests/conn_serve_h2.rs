@@ -1,7 +1,8 @@
-//! `http::conn_serve` with HTTP/2 connections: the idle bound, the lease that keeps a connection
-//! busy, and a shutdown drain that is bounded and tells sessions to end first. Driven over plain
-//! TCP with prior-knowledge HTTP/2 (`shadowcat_test_support::h2c`), so the serve loop and hyper's
-//! HTTP/2 builder are the real ones.
+//! `http::conn_serve` with HTTP/2 connections.
+//!
+//! Covered: the idle bound, the lease that keeps a connection busy, and a shutdown drain that is
+//! bounded and tells sessions to end first. Driven over plain TCP with prior-knowledge HTTP/2
+//! (`shadowcat_test_support::h2c`), so the serve loop and hyper's HTTP/2 builder are the real ones.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

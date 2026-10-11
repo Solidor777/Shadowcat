@@ -1,7 +1,8 @@
-//! Engine band for `system-defaults`: the active system module's declared
-//! defaults for every world setting. Resolved as the innermost non-engine
-//! layer of every settings chain (engine literal → system → world → scene).
-//! Every leaf is optional; absent and `null` both mean "fall through".
+//! Engine band for `system-defaults`: the active system module's declared defaults for every world
+//! setting.
+//!
+//! Resolved as the innermost non-engine layer of every settings chain (engine literal → system →
+//! world → scene). Every leaf is optional; absent and `null` both mean "fall through".
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

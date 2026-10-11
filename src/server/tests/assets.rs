@@ -1,9 +1,11 @@
-//! End-to-end asset lifecycle against a live server: upload, retrieval, replacement, deletion and
-//! listing, each asserted on BOTH the database record and the file on disk, plus the gates around
-//! them — size-cap rejection, the sniffed-vs-declared content-type labeling (a false image claim
-//! is stored as octet-stream, never rejected), the WebP conversion with retained originals and
-//! derivatives, world-membership authorization, `304` revalidation, per-user rate limiting, and
-//! the broadcasts that replacement and deletion emit.
+//! End-to-end asset lifecycle against a live server.
+//!
+//! It covers upload, retrieval, replacement, deletion and listing, each asserted on BOTH the
+//! database record and the file on disk, plus the gates around them — size-cap rejection, the
+//! sniffed-vs-declared content-type labeling (a false image claim is stored as octet-stream, never
+//! rejected), the WebP conversion with retained originals and derivatives, world-membership
+//! authorization, `304` revalidation, per-user rate limiting, and the broadcasts that replacement
+//! and deletion emit.
 //!
 //! Exercises the HTTP surface rather than `data::repository` directly, so a change that leaves the
 //! repository correct while breaking the route still fails here. A rejected upload is asserted not

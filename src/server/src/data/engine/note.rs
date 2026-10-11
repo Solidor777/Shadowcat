@@ -1,11 +1,10 @@
-//! Engine body for a rich-text note (`NOTE_DOC_TYPE`): author markdown in
-//! `source`, rendered server-side at ingress into a sanitized `body` through
-//! the same chat sanitizer boundary chat messages use
-//! (`chat::body::compose_static` under the fixed `chat::NOTE_CONTENT_POLICY`).
-//! Envelope `name` is the note's title; this module owns only the stored
-//! shape and its ingress validation -- the tree/containment rules live in
-//! `data::validation::validate_containment` and
-//! `data::sqlite::notes::check_note_parent`.
+//! Engine body for a rich-text note (`NOTE_DOC_TYPE`).
+//!
+//! Author markdown lives in `source`, rendered server-side at ingress into a sanitized `body`
+//! through the same chat sanitizer boundary chat messages use (`chat::body::compose_static` under
+//! the fixed `chat::NOTE_CONTENT_POLICY`). Envelope `name` is the note's title; this module owns
+//! only the stored shape and its ingress validation -- the tree/containment rules live in
+//! `data::validation::validate_containment` and `data::sqlite::notes::check_note_parent`.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

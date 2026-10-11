@@ -1,12 +1,12 @@
-//! Pure combat-clock transitions: each public function takes a
-//! `CombatSnapshot` and returns the `Operation`s for ONE command. Nothing
-//! here touches a `Repository` or chooses a `WriteOrigin` — a later
-//! caller commits the returned ops. The one other thing a transition hands
-//! back is a RECORD, not an effect: `start_with_trigger_plan`/
-//! `advance_with_trigger_plan` also return the turn/round boundaries the
-//! walk crossed (`TurnRoundBoundary`), the firing plan the room applies
-//! turn/round-scoped region triggers from. Recording stays pure — region
-//! rows, membership, and effect application never reach this module.
+//! Pure combat-clock transitions: each public function takes a `CombatSnapshot` and returns the
+//! `Operation`s for ONE command.
+//!
+//! Nothing here touches a `Repository` or chooses a `WriteOrigin` — a later caller commits the
+//! returned ops. The one other thing a transition hands back is a RECORD, not an effect:
+//! `start_with_trigger_plan`/ `advance_with_trigger_plan` also return the turn/round boundaries the
+//! walk crossed (`TurnRoundBoundary`), the firing plan the room applies turn/round-scoped region
+//! triggers from. Recording stays pure — region rows, membership, and effect application never
+//! reach this module.
 //!
 //! `advance`/`start` share one core mechanism (`settle_turn`): entering a
 //! combatant runs its `turn_start` boundary; an `Event` combatant, or a

@@ -1,9 +1,11 @@
-//! The `"audibility"` derived channel's pure geometry: distance falloff, wall occlusion, stereo
-//! pan, and the per-token carried `SoundEmission` resolver. Mirrors `scene::emitters`'
-//! light-emitter shape exactly (`token_light_emission`/`scene_lights_excluding`) — a carried
-//! sound is the SAME kind of payload (an engine-band emission resolved at the token's live
-//! position), so the resolution precedence (linked actor + `overrides.sound` wholesale-replace,
-//! embedded actor, raw token = no emission) is copied verbatim rather than re-derived.
+//! The `"audibility"` derived channel's pure geometry.
+//!
+//! It covers distance falloff, wall occlusion, stereo pan, and the per-token carried
+//! `SoundEmission` resolver. Mirrors `scene::emitters`' light-emitter shape exactly
+//! (`token_light_emission`/`scene_lights_excluding`) — a carried sound is the SAME kind of payload
+//! (an engine-band emission resolved at the token's live position), so the resolution precedence
+//! (linked actor + `overrides.sound` wholesale-replace, embedded actor, raw token = no emission) is
+//! copied verbatim rather than re-derived.
 //!
 //! Occlusion reuses the EXACT primitives the movement gate and the sight raycaster already use
 //! (`segments_cross`, `elevation::wall_occludes`) — never a second geometry rule. `falloff`/`pan`

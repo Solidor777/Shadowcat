@@ -1,7 +1,7 @@
-//! Typed `engine` band structs + the doc_type registry: the engine band
-//! exists iff `doc_type` is engine-defined, and its stored JSON must
-//! deserialize into that doc_type's struct — a strict ingress gate rather
-//! than an opaque pointer-walked body.
+//! Typed `engine` band structs + the doc_type registry.
+//!
+//! The engine band exists iff `doc_type` is engine-defined, and its stored JSON must deserialize
+//! into that doc_type's struct — a strict ingress gate rather than an opaque pointer-walked body.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

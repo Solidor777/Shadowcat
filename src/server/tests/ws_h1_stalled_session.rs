@@ -1,7 +1,9 @@
-//! A WebSocket session over HTTP/1.1 whose peer has stopped reading. After the upgrade the
-//! connection task has ended, so the session's only bound is its `BoundedSink`; the sink's pending
-//! send is the signal `WsState::pending_sends` exposes, and a shutdown shortens that send to
-//! `CLOSE_SEND_TIMEOUT` so the session ends inside the shutdown envelope.
+//! A WebSocket session over HTTP/1.1 whose peer has stopped reading.
+//!
+//! After the upgrade the connection task has ended, so the session's only bound is its
+//! `BoundedSink`; the sink's pending send is the signal `WsState::pending_sends` exposes, and a
+//! shutdown shortens that send to `CLOSE_SEND_TIMEOUT` so the session ends inside the shutdown
+//! envelope.
 //!
 //! Every step drives the condition it needs: frames are broadcast until a send is observed
 //! pending, never for a fixed count, because the byte count that fills a socket differs per OS.

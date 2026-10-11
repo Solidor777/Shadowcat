@@ -1,7 +1,9 @@
-//! End-to-end sandbox validator lifecycle: builds `examples/validator-rust/` for real (never
-//! skips — a missing `wasm32-unknown-unknown` target fails loudly, naming the fix), installs it
-//! into a temp modules dir, has the GM enable the module and opt into validators, and asserts a
-//! negative-`hp` actor Create is refused with the reason while a non-negative one is accepted.
+//! End-to-end sandbox validator lifecycle.
+//!
+//! It builds `examples/validator-rust/` for real (never skips — a missing `wasm32-unknown-unknown`
+//! target fails loudly, naming the fix), installs it into a temp modules dir, has the GM enable the
+//! module and opt into validators, and asserts a negative-`hp` actor Create is refused with the
+//! reason while a non-negative one is accepted.
 use shadowcat_test_support as common;
 use std::path::PathBuf;
 

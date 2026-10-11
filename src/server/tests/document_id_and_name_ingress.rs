@@ -1,8 +1,9 @@
-//! Create-path ingress checks over a real WS socket: `Document.id` must carry a v4 or v7 UUID
-//! (`data::validation::validate_document_id`), and `Document.name` must not exceed
-//! `data::validation::MAX_DOCUMENT_NAME_BYTES` -- both enforced at `validate_system_size`'s single
-//! chokepoint inside `apply_intent`'s Create-op validation, so this pins the wire-visible
-//! rejection rather than only the unit-level validator.
+//! Create-path ingress checks over a real WS socket.
+//!
+//! `Document.id` must carry a v4 or v7 UUID (`data::validation::validate_document_id`), and
+//! `Document.name` must not exceed `data::validation::MAX_DOCUMENT_NAME_BYTES` -- both enforced at
+//! `validate_system_size`'s single chokepoint inside `apply_intent`'s Create-op validation, so this
+//! pins the wire-visible rejection rather than only the unit-level validator.
 
 use futures_util::{SinkExt, StreamExt};
 use shadowcat::data::repository::Repository;

@@ -1,7 +1,8 @@
-//! GM placement mutation over the live HTTP surface: `PATCH` rename / move /
-//! retag with the `moved` notice, the bulk route's single transaction, the
-//! `created` notice on upload, folder delete with the reparent default and
-//! the purge option, and the folder-rename → derived-tag refresh.
+//! GM placement mutation over the live HTTP surface.
+//!
+//! Covered: `PATCH` rename / move / retag with the `moved` notice, the bulk route's single
+//! transaction, the `created` notice on upload, folder delete with the reparent default and the
+//! purge option, and the folder-rename → derived-tag refresh.
 
 use common::{drain_until_type, spawn, Harness, PNG_1X1};
 use futures_util::StreamExt;

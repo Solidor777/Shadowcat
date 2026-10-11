@@ -1,8 +1,9 @@
-//! Role/capability gating on `apply_command`/`apply_intent`, command
-//! create/update/delete round trips and their commit-time snapshots, OCC
-//! conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/
-//! capability-gated Update, tier-2 system-schema enforcement, and the
-//! singleton-`doc_type` create-gate (cross-call and intra-batch).
+//! Command and intent application: role/capability gating on `apply_command`/`apply_intent`.
+//!
+//! Also covered: command create/update/delete round trips and their commit-time snapshots, OCC
+//! conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/capability-gated Update,
+//! tier-2 system-schema enforcement, and the singleton-`doc_type` create-gate (cross-call and
+//! intra-batch).
 
 use super::*;
 

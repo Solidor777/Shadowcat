@@ -1,7 +1,9 @@
-//! The connection unit over real sockets, HTTP/1: a response whose peer has stopped reading the
-//! socket parks the server's writer, and a connection whose writer stays parked with fewer than
-//! `ConnLimits::egress_floor` bytes accepted over `ConnLimits::egress_window` is closed. The only
-//! thing that wakes the connection while it is parked is the sampler tick.
+//! The connection unit of the egress bounds over real sockets, HTTP/1.
+//!
+//! A response whose peer has stopped reading the socket parks the server's writer, and a connection
+//! whose writer stays parked with fewer than `ConnLimits::egress_floor` bytes accepted over
+//! `ConnLimits::egress_window` is closed. The only thing that wakes the connection while it is
+//! parked is the sampler tick.
 //!
 //! The instant the server ended the connection is read from the server's own drop of the socket
 //! (`EgressServer::closed`), never from the peer: reading from a peer that has stopped reading is

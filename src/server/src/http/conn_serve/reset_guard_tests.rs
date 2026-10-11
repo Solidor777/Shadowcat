@@ -1,8 +1,9 @@
-//! The reset limits of [`h2_builder`] against a raw HTTP/2 client. Cancelled requests are never
-//! refused for queueing: the connection stops reading frames while [`H2_MAX_PENDING_ACCEPT_RESETS`]
-//! reset streams await accept, and resumes as hyper accepts them, so a burst of any size is served
-//! through. A connection that keeps resetting streams at a sustained rate far above any page's
-//! ends with GOAWAY(ENHANCE_YOUR_CALM).
+//! The reset limits of [`h2_builder`] against a raw HTTP/2 client.
+//!
+//! Cancelled requests are never refused for queueing: the connection stops reading frames while
+//! [`H2_MAX_PENDING_ACCEPT_RESETS`] reset streams await accept, and resumes as hyper accepts them,
+//! so a burst of any size is served through. A connection that keeps resetting streams at a
+//! sustained rate far above any page's ends with GOAWAY(ENHANCE_YOUR_CALM).
 //!
 //! Every burst is one write, so the server's codec holds all of it before hyper accepts any stream:
 //! the count of reset-but-unaccepted streams reaches the bound, the condition backpressure acts on.

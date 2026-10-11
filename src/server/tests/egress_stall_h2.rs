@@ -1,9 +1,10 @@
-//! The HTTP/2 stream unit of the egress bounds over real sockets: a response whose peer returns no
-//! flow-control credit for a pending chunk is reset (`RST_STREAM(CANCEL)`) after
-//! `ConnLimits::egress_window`, and nothing else on the connection is touched. And the
-//! ended-unflushed unit: a response whose body has ended but whose tail is still queued behind a
-//! stalled stream window has no handle left to reset, so its connection is cut when that stream's
-//! own DATA stops progressing for the window.
+//! The HTTP/2 stream unit of the egress bounds over real sockets.
+//!
+//! A response whose peer returns no flow-control credit for a pending chunk is reset
+//! (`RST_STREAM(CANCEL)`) after `ConnLimits::egress_window`, and nothing else on the connection is
+//! touched. And the ended-unflushed unit: a response whose body has ended but whose tail is still
+//! queued behind a stalled stream window has no handle left to reset, so its connection is cut when
+//! that stream's own DATA stops progressing for the window.
 //!
 //! Every window-sized wait asserts the cut did NOT happen before the window, from what the client
 //! observes (the time its stream was reset). How long after the window plus one sampler tick it

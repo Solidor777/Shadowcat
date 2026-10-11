@@ -1,9 +1,9 @@
-//! Integration proof: `handle_send_message`'s roll stage actually
-//! executes dice notation at ingest, authors a `MessageKind::System` whisper
-//! notice on failure instead of the intended message, interleaves inline
-//! rolls/buttons with sanitized text, and never re-executes a roll on edit.
-//! Drives `handle_send_message`/`handle_edit_message` directly, mirroring
-//! `chat_content`'s fixture shape.
+//! Integration proof of `handle_send_message`'s roll stage.
+//!
+//! The stage actually executes dice notation at ingest, authors a `MessageKind::System` whisper
+//! notice on failure instead of the intended message, interleaves inline rolls/buttons with
+//! sanitized text, and never re-executes a roll on edit. Drives
+//! `handle_send_message`/`handle_edit_message` directly, mirroring `chat_content`'s fixture shape.
 
 use shadowcat::chat::{
     build_link_preview_client, handle_edit_message, handle_send_message, Audience,

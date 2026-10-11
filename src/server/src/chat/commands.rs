@@ -1,7 +1,8 @@
-//! Leading chat-command parser: `/me`/`/em`/`/emote`, `/roll`|`/r`|`/NdM`
-//! shorthand, and `/w @user...` whisper-target extraction. Pure (no repo/
-//! async) — the async caller (`handle_send_message`) resolves `/w` usernames
-//! to member uuids and re-validates the resulting audience.
+//! Leading chat-command parser: `/me`/`/em`/`/emote`, `/roll`|`/r`|`/NdM` shorthand, and `/w
+//! @user...` whisper-target extraction.
+//!
+//! Pure (no repo/ async) — the async caller (`handle_send_message`) resolves `/w` usernames to
+//! member uuids and re-validates the resulting audience.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
