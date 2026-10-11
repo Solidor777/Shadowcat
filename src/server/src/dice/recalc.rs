@@ -1,3 +1,5 @@
+//! Targeted re-evaluation of an existing roll (reroll/replace/remove).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

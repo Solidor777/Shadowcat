@@ -1,3 +1,5 @@
+//! Wire/result types: raw naturals, per-die records, scored outcomes.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

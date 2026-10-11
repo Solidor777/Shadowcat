@@ -1,3 +1,5 @@
+//! Expertise-budget allocation (bounded knapsack DP).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

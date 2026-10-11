@@ -1,3 +1,5 @@
+//! Seeded noise-function RNG (the only randomness source).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

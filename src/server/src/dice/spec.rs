@@ -1,3 +1,5 @@
+//! The canonical roll-parameter types (AST, modes, crit/tier config).
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
