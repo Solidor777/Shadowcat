@@ -124,7 +124,7 @@ pub struct OEmbedResponse {
 /// "open on `<provider_name>`" link), never any provider markup.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub struct OEmbedSegment {
-    /// The URL as posted in the message.
+    /// The candidate URL `enrich` extracted from the message.
     pub url: String,
     /// This server's own fixed provider display name (`OEmbedProvider::name`).
     pub provider_name: String,

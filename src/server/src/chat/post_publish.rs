@@ -124,7 +124,7 @@ pub enum PendingEnrichment {
     /// was ever appended for this URL -- see `link_preview::enrich`'s
     /// mutually-exclusive routing).
     OEmbed {
-        /// The URL as posted in the message.
+        /// The candidate URL `enrich` extracted from the message.
         post_url: String,
         /// The allowlisted provider this URL matched.
         provider: OEmbedProvider,

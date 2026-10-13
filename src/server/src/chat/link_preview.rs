@@ -38,10 +38,11 @@ use super::{PendingEnrichment, Segment};
 /// `PendingEnrichment::PreviewImage` instead of storing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
-    /// The URL a fresh fetch ended on: `guarded_get` substitutes each redirect target (`url =
-    /// next`), so a preview from `fetch_preview`, and an in-memory cache hit on it, carries the
-    /// post-redirect address. A preview that `cached_or_fetch` builds from a persisted row
-    /// carries the URL as posted.
+    /// The address the preview describes. A preview from `fetch_preview` carries the address the
+    /// fetch ended on, because `guarded_get` substitutes each redirect target (`url = next`). A
+    /// preview that `cached_or_fetch` builds from a persisted row carries the candidate URL
+    /// `enrich` extracted from the message, and an in-memory cache entry holds whichever of the
+    /// two built it.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
@@ -49,16 +50,17 @@ pub struct LinkPreview {
     /// `MAX_DESCRIPTION_CHARS`; may be empty.
     pub description: String,
     /// A candidate `og:image`/canonical-image URL extracted (never fetched) by the fetch that
-    /// built this preview. A preview that `cached_or_fetch` builds from a persisted row has
-    /// `None` here and carries the asset id instead (see `image_asset_id`), while the
-    /// in-memory cache stores and returns the whole preview, `image_url` included. Never
-    /// persisted or serialized to any wire type — purely an in-process signal from `enrich` to
-    /// its `PendingEnrichment::PreviewImage` queue.
+    /// built this preview. `None` for a preview that `cached_or_fetch` builds from a persisted
+    /// row, whose image state is the row's `image_asset_id` instead, while the in-memory cache
+    /// stores and returns the whole preview, `image_url` included. Never persisted or serialized
+    /// to any wire type — purely an in-process signal from `enrich` to its
+    /// `PendingEnrichment::PreviewImage` queue.
     pub image_url: Option<String>,
     /// The already-known asset id for this URL's image, populated ONLY from
     /// a persisted-cache hit (`cached_or_fetch`) whose row already carries
     /// one — a fresh fetch never sets this (an image URL alone is not yet
-    /// an asset). Mutually exclusive with `image_url` by construction.
+    /// an asset). Never `Some` together with `image_url`: a fresh fetch leaves this `None` and a
+    /// persisted-row preview leaves `image_url` `None`.
     pub image_asset_id: Option<Uuid>,
 }
 

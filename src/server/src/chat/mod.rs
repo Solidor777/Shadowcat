@@ -370,16 +370,18 @@ pub enum Segment {
     /// after every other segment the send/edit pipeline produced (`enrich`
     /// never reorders or removes an existing segment).
     LinkPreview {
-        /// The previewed URL as posted.
+        /// The address of the preview this segment was built from; see `LinkPreview.url` for
+        /// which address each way of building the preview stores.
         url: String,
         /// Server-extracted title.
         title: String,
         /// Server-extracted description (may be empty).
         description: String,
-        /// The asset-ified `og:image`/canonical-image, once the post-publish
-        /// background pipeline (`chat::post_publish`) has resolved one.
-        /// Always `None` when `enrich` first appends this segment -- set
-        /// later ONLY via a `WriteOrigin::ServerMessageRevision` republish
+        /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when the persisted
+        /// `link_preview_cache` row that built the preview already carries an asset id, and
+        /// `None` otherwise. A `None` segment gets its id later, once the post-publish pipeline
+        /// (`chat::post_publish`) resolves the `PendingEnrichment::PreviewImage` job `enrich`
+        /// queued for it, ONLY via a `WriteOrigin::ServerMessageRevision` republish
         /// (`run_pending_enrichments`), the same chokepoint
         /// `handle_edit_message`/`handle_delete_message` use.
         /// `#[serde(default)]`: every `LinkPreview` segment persisted before
@@ -399,8 +401,8 @@ pub enum Segment {
     /// display label at authoring time (`label` is never re-resolved at render — only the
     /// fail-closed existence/visibility gate below re-checks `target`). Distinct from the
     /// actor-name header link, which is driven by `actor_owner` attribution, not body content.
-    /// Produced by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix branch — reuses the SAME
-    /// balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
+    /// Produced by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix branch — reuses the
+    /// SAME balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
     /// existence/visibility check runs against `target` at ingest: the CLIENT fails closed at
     /// render by checking `ctx.documents` presence for the target id (already redacted
     /// per-recipient by the normal document pipeline), the exact precedent the actor-name
@@ -1974,7 +1976,9 @@ pub async fn handle_edit_message(
 /// # Examples
 ///
 /// ```
-/// use shadowcat::chat::{build_message_doc, command_message_id, Audience, MessageDraft, MessageKind, Segment};
+/// use shadowcat::chat::{
+///     build_message_doc, command_message_id, Audience, MessageDraft, MessageKind, Segment,
+/// };
 /// use shadowcat::data::command::{Command, Operation};
 ///
 /// let doc = build_message_doc(
@@ -2171,7 +2175,14 @@ pub async fn handle_delete_message(
 /// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
 /// let rate = PingRateLimiter::new();
 ///
-/// let req = RecalcRollRequestCtx { room: &room, repo: &repo, ctx: &ctx, rate: &rate, now: 0, budget_per_min: 30 };
+/// let req = RecalcRollRequestCtx {
+///     room: &room,
+///     repo: &repo,
+///     ctx: &ctx,
+///     rate: &rate,
+///     now: 0,
+///     budget_per_min: 30,
+/// };
 /// assert_eq!(req.budget_per_min, 30);
 /// # }
 /// ```
@@ -2272,7 +2283,14 @@ pub struct RecalcRollRequestCtx<'a> {
 ///
 /// let recalc_rate = PingRateLimiter::new();
 /// let recalced = handle_recalc_roll(
-///     RecalcRollRequestCtx { room: &room, repo: &repo, ctx: &ctx, rate: &recalc_rate, now: 1, budget_per_min: 30 },
+///     RecalcRollRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &recalc_rate,
+///         now: 1,
+///         budget_per_min: 30,
+///     },
 ///     message_id,
 ///     *roll_id,
 ///     vec![shadowcat::dice::RecalcOp::RerollDice(vec![])],
