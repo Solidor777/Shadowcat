@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
         tls: tls.clone(),
     };
 
-    shadowcat::auth::session::spawn_session_sweep(&state.repo);
+    shadowcat::auth::session::spawn_housekeeping_sweep(&state.repo);
     shadowcat::http::assets::uploads::spawn_sweeper(
         state.uploads.clone(),
         state.upload_rate.clone(),

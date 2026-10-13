@@ -225,9 +225,8 @@ impl ExpiredDeletion for SqlxSqliteStore {
     }
 }
 
-/// Interval between session-table sweeps. Sessions expire on 7-day inactivity,
-/// so a daily sweep bounds table growth with ample margin.
-const SESSION_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
+/// Interval between housekeeping sweeps of the session, invite and link-preview cache tables.
+const HOUSEKEEPING_SWEEP_PERIOD: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 24);
 
 /// Retention past `expires_at` before a spent invite row is deleted. Consumed
 /// and revoked rows also age out through this: every row carries the 7-day
@@ -251,36 +250,34 @@ pub(crate) async fn sweep_spent_invites(
     Ok(res.rows_affected())
 }
 
-/// Spawn a background task that periodically deletes expired session rows,
-/// spent world-invite rows and expired link-preview cache rows. Housekeeping, not correctness:
-/// expired rows are already unloadable/unredeemable; the sweep bounds unbounded table growth.
-/// Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A failed sweep is logged and
-/// retried next tick — it never aborts the server.
+/// Spawns a background task that deletes expired session rows, spent world-invite rows and
+/// expired link-preview cache rows, bounding the growth of those tables. It sweeps once at startup,
+/// then every `HOUSEKEEPING_SWEEP_PERIOD`. A failed sweep is logged and retried next tick; it
+/// never aborts the server.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::auth::session::spawn_session_sweep;
+/// use shadowcat::auth::session::spawn_housekeeping_sweep;
 /// use shadowcat::data::sqlite::SqliteRepository;
 ///
 /// # #[tokio::main] async fn main() {
 /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
-/// spawn_session_sweep(&repo); // background task; does not block the caller
+/// spawn_housekeeping_sweep(&repo); // background task; does not block the caller
 ///
 /// // The async runtime keeps serving other work while the sweep task is live.
 /// repo.set_setting("probe", "ok").await.unwrap();
 /// assert_eq!(repo.get_setting("probe").await.unwrap().as_deref(), Some("ok"));
 /// # }
 /// ```
-pub fn spawn_session_sweep(repo: &SqliteRepository) {
-    // Synchronous fn (no `open_read_pool().await` available here) and this
-    // sweep only ever calls `delete_expired` (a write), never `load`/
-    // `id_exists` — the write pool suffices for both arguments; this is the
-    // one deliberate exception to "every caller passes a real read pool".
+pub fn spawn_housekeeping_sweep(repo: &SqliteRepository) {
+    // Synchronous fn (no `open_read_pool().await` available here) and the store is only used
+    // for `delete_expired` (a write), never `load`/`id_exists` — the write pool suffices for both
+    // arguments; this is the one deliberate exception to "every caller passes a real read pool".
     let store = SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone());
     let pool = repo.pool().clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SESSION_SWEEP_PERIOD);
+        let mut interval = tokio::time::interval(HOUSEKEEPING_SWEEP_PERIOD);
         loop {
             interval.tick().await; // first tick completes immediately
             if let Err(e) = store.delete_expired().await {
