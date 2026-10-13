@@ -1,5 +1,5 @@
-//! Embeds the application icon (`assets/icon.ico`) into the Windows executable's Win32 resource
-//! section.
+//! Embeds the application's Windows icon, the icon image kept in the repository's `assets`
+//! directory, into the Windows executable's Win32 resource section.
 //!
 //! Every other target is a no-op, so the Linux/macOS binaries are byte-for-byte unaffected.
 //!

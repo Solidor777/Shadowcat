@@ -4,8 +4,9 @@
 //! `apply_resolutions`) behind the `MergePull`/`MergePush`/`MergeRevert` intents.
 //!
 //! It is the exact behavioural twin of the client `@shadowcat/core` 3-way merge. Its behaviour is
-//! pinned by one conformance corpus (`src/client/core/src/__fixtures__/merge-conformance.json`,
-//! whose generation transcript is `scripts/merge-corpus-generation.log`); the test suite asserts
+//! pinned by one conformance corpus, the shared `merge-conformance` fixture that the client
+//! `@shadowcat/core` package carries (a transcript of its generation run is kept under the
+//! repository's scripts directory); the test suite asserts
 //! value-identical results for every case, so a behavioural change fails the corpus rather than
 //! drifting silently. Every cross-tree value is cloned at its crossing point (owned values, never
 //! aliases), which the corpus's aliasing-sensitive cases pin behaviourally.

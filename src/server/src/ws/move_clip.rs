@@ -13,8 +13,8 @@
 //! `chooseVisionSample` — greatest `t_ms <= elapsed`, first sample before
 //! that — so the viewpoint and glow this module composes at an instant are exactly the ones the
 //! recipient's sweeping fog and lighting show. It is ONE rule for every timed timeline (position,
-//! vision and carried light alike); the shared fixture
-//! `src/client/render/src/__fixtures__/chosen-vision-sample.json` is asserted by both sides.
+//! vision and carried light alike); both sides assert the shared `chosen-vision-sample` fixture
+//! that the client render package carries.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
