@@ -262,7 +262,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 
 /// `GET /api/worlds/{world}/assets` — membership-gated. With no query
 /// parameters: the bare `Asset[]` listing (the contract of a request
-/// that names no filter). With any parameter: an `AssetPage`. The SQL filters
+/// that carries no query parameter). With any parameter: an `AssetPage`. The SQL filters
 /// narrow first; `name_regex` is then applied in Rust to the rows the SQL
 /// selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the
 /// page fills — `next_cursor` always marks the last row EXAMINED, so a
