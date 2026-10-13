@@ -43,7 +43,8 @@ use crate::ws::room::Room;
 pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 
 /// Runs `f` while holding the lock of every distinct key in `keys`, get-or-inserting a fresh
-/// `Mutex` per key on first use and, on return, removing each entry no other caller holds.
+/// `Mutex` per key on first use and removing each entry no other caller holds once `f` returns,
+/// panics or the returned future is dropped.
 ///
 /// # Lock order
 ///
@@ -67,6 +68,9 @@ pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 /// clone it between the count read and the removal. Every `Arc` is cloned out of the map before
 /// any lock is awaited, so a holder other than this caller makes the count exceed 1 for as long
 /// as it holds or awaits the key.
+///
+/// `HeldPreviewLocks` runs that release from `Drop`, so a caller whose future is dropped while
+/// awaiting a lock or inside `f` (an aborted task) releases the same way a completed one does.
 async fn with_preview_url_locks<F, Fut, T>(locks: &PreviewFetchLocks, keys: &[String], f: F) -> T
 where
     F: FnOnce() -> Fut,
@@ -75,26 +79,48 @@ where
     let mut sorted: Vec<&String> = keys.iter().collect();
     sorted.sort();
     sorted.dedup();
-    let arcs: Vec<Arc<tokio::sync::Mutex<()>>> = sorted
-        .iter()
+    let entries = sorted
+        .into_iter()
         .map(|key| {
-            locks
-                .entry((*key).clone())
+            let arc = locks
+                .entry(key.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
+                .clone();
+            (key.clone(), arc)
         })
-        .collect();
-    let result = {
-        let mut guards = Vec::with_capacity(arcs.len());
-        for arc in &arcs {
-            guards.push(arc.clone().lock_owned().await);
-        }
-        f().await
+        .collect::<Vec<_>>();
+    let mut held = HeldPreviewLocks {
+        locks,
+        guards: Vec::with_capacity(entries.len()),
+        entries,
     };
-    for (key, arc) in sorted.into_iter().zip(arcs) {
-        release_preview_lock(locks, key.clone(), arc);
+    for index in 0..held.entries.len() {
+        let guard = held.entries[index].1.clone().lock_owned().await;
+        held.guards.push(guard);
     }
-    result
+    f().await
+}
+
+/// The registry entries one `with_preview_url_locks` call cloned out of the map and the guards it
+/// has acquired so far, released together when it is dropped.
+struct HeldPreviewLocks<'a> {
+    /// The registry the entries were cloned from.
+    locks: &'a PreviewFetchLocks,
+    /// Each distinct key with this caller's clone of its map entry, in ascending key order.
+    entries: Vec<(String, Arc<tokio::sync::Mutex<()>>)>,
+    /// The guards acquired so far, in `entries` order.
+    guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for HeldPreviewLocks<'_> {
+    /// Drops the guards first, because each guard owns an `Arc` clone that `release_preview_lock`'s
+    /// strong-count check would otherwise count as another holder.
+    fn drop(&mut self) {
+        self.guards.clear();
+        for (key, arc) in self.entries.drain(..) {
+            release_preview_lock(self.locks, key, arc);
+        }
+    }
 }
 
 /// Drops the caller's `arc` for `key` and removes the map entry when the map holds the only
@@ -123,8 +149,8 @@ pub enum PendingEnrichment {
     /// index -- this task's own OCC re-read may observe a `content` array a
     /// concurrent edit reordered) whose synchronous scrape found an image
     /// candidate not yet fetched. One job serves the message's candidate URLs whose previews
-    /// ended on the same `preview_url` and queued an image; the `image_url` of the first such
-    /// preview in message order is the one fetched.
+    /// ended on the same `preview_url`; the `image_url` fetched is the first such preview's in
+    /// message order that carries one.
     PreviewImage {
         /// The candidate URLs `enrich` extracted from the message, in message order, whose
         /// previews carry this job's `preview_url`: the keys of the persisted

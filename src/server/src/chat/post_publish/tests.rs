@@ -1480,29 +1480,67 @@ async fn with_preview_url_locks_duplicate_keys_lock_once_and_reclaim_the_entry()
     assert!(locks.is_empty(), "the single entry is reclaimed");
 }
 
-/// Releasing a key removes its entry exactly when the releaser is the last holder, in either
-/// release order: a releaser that still sees another holder leaves the entry, and the holder
-/// that releases afterwards removes it.
+/// Releasing a key removes its entry exactly when the releaser is the last holder: a releaser
+/// that still sees another holder leaves the entry, and the holder that releases afterwards
+/// removes it.
 #[tokio::test]
-async fn release_preview_lock_last_holder_removes_the_entry_in_either_order() {
-    for first_is_caller in [true, false] {
-        let locks = test_preview_fetch_locks();
-        let held = locks
-            .entry("a".to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        let other = locks.get("a").unwrap().clone();
-        let (first, second) = if first_is_caller {
-            (held, other)
-        } else {
-            (other, held)
-        };
-        release_preview_lock(&locks, "a".to_string(), first);
-        assert_eq!(locks.len(), 1, "another holder remains, so the entry stays");
-        release_preview_lock(&locks, "a".to_string(), second);
-        assert!(
-            locks.is_empty(),
-            "the last holder to release removes the entry"
-        );
-    }
+async fn release_preview_lock_removes_the_entry_only_for_the_last_holder() {
+    let locks = test_preview_fetch_locks();
+    let caller = locks
+        .entry("a".to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let other = locks.get("a").unwrap().clone();
+    release_preview_lock(&locks, "a".to_string(), caller);
+    assert_eq!(locks.len(), 1, "another holder remains, so the entry stays");
+    release_preview_lock(&locks, "a".to_string(), other);
+    assert!(
+        locks.is_empty(),
+        "the last holder to release removes the entry"
+    );
+}
+
+/// A caller whose future is dropped inside `f` releases its entry.
+#[tokio::test]
+async fn with_preview_url_locks_dropped_inside_f_reclaims_the_entry() {
+    let locks = test_preview_fetch_locks();
+    let keys: Vec<String> = vec!["a".into()];
+    let run = with_preview_url_locks(&locks, &keys, std::future::pending::<()>);
+    tokio::time::timeout(std::time::Duration::from_millis(50), run)
+        .await
+        .expect_err("f never completes, so the timeout drops the future");
+    assert!(locks.is_empty(), "the dropped caller's entry is reclaimed");
+}
+
+/// A caller whose future is dropped while it awaits a later key releases the keys it already
+/// holds, and the entry another caller still holds stays until that caller releases it.
+#[tokio::test]
+async fn with_preview_url_locks_dropped_while_awaiting_a_key_reclaims_the_held_keys() {
+    let locks = test_preview_fetch_locks();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let holder = {
+        let locks = locks.clone();
+        tokio::spawn(async move {
+            with_preview_url_locks(&locks, &["b".to_string()], || async {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+            })
+            .await;
+        })
+    };
+    entered_rx.await.unwrap();
+    let keys: Vec<String> = vec!["a".into(), "b".into()];
+    let waiter = with_preview_url_locks(&locks, &keys, || async {});
+    tokio::time::timeout(std::time::Duration::from_millis(50), waiter)
+        .await
+        .expect_err("key b is held, so the timeout drops the waiting future");
+    assert!(
+        !locks.contains_key("a"),
+        "the key the dropped caller held is reclaimed"
+    );
+    assert!(locks.contains_key("b"), "the other caller still holds b");
+    release_tx.send(()).unwrap();
+    holder.await.unwrap();
+    assert!(locks.is_empty(), "the remaining holder removes its entry");
 }

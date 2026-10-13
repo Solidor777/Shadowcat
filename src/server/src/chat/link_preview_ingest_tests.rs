@@ -1124,3 +1124,88 @@ async fn fresh_candidate_ending_on_a_persisted_imaged_address_reuses_its_asset()
         assert_eq!(row.image_asset_id, Some(asset_id));
     }
 }
+
+/// A preview cached in memory by an earlier message reads the asset a background job has since
+/// recorded on its persisted row: the later message carries the asset and queues no job.
+#[tokio::test]
+async fn memory_cached_preview_reads_an_asset_recorded_on_its_row_since() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let link = format!("http://stub.test:{addr}/");
+    let (_, first) = f.send_full(&format!("see [one]({link})"), 1).await.unwrap();
+    assert_eq!(first.len(), 1, "the fresh fetch queues the image job");
+    let asset_id = seed_imaged_row(&f, &link).await;
+    let (cmd, second) = f
+        .send_full(&format!("again [one]({link})"), 2)
+        .await
+        .unwrap();
+    assert!(
+        second.is_empty(),
+        "the row already holds the asset: {second:?}"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    assert!(
+        matches!(
+            sys.content.last(),
+            Some(Segment::LinkPreview { image_asset_id: Some(id), .. }) if *id == asset_id
+        ),
+        "the segment carries the recorded asset: {:?}",
+        sys.content
+    );
+}
+
+/// A persisted candidate without an asset and a fresh candidate ending on its address share one
+/// job whose `cache_urls` lists both candidates in message order, so the fetched asset lands on
+/// the persisted candidate's row too.
+#[tokio::test]
+async fn fresh_candidate_ending_on_a_persisted_unimaged_address_shares_its_job() {
+    for persisted_first in [true, false] {
+        let addr = spawn_stub(
+            Router::new()
+                .route(
+                    "/q",
+                    get(|| async { axum::response::Redirect::to("/final") }),
+                )
+                .route(
+                    "/final",
+                    get(|| async {
+                        axum::response::Html(
+                            r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                        )
+                    }),
+                ),
+        )
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let persisted = format!("http://stub.test:{addr}/final");
+        let fresh = format!("http://stub.test:{addr}/q");
+        f.repo
+            .upsert_link_preview_cache(&persisted, Some("Landed"), Some("D"), 0)
+            .await
+            .unwrap();
+        let body = if persisted_first {
+            format!("see [one]({persisted}) and [two]({fresh})")
+        } else {
+            format!("see [two]({fresh}) and [one]({persisted})")
+        };
+        let (_, pending) = f.send_full(&body, 1).await.unwrap();
+        assert_eq!(pending.len(), 1, "one shared job: {pending:?}");
+        let PendingEnrichment::PreviewImage { cache_urls, .. } = &pending[0] else {
+            panic!("expected a PreviewImage job, got {:?}", pending[0]);
+        };
+        let expected = if persisted_first {
+            vec![persisted.clone(), fresh.clone()]
+        } else {
+            vec![fresh.clone(), persisted.clone()]
+        };
+        assert_eq!(*cache_urls, expected);
+    }
+}

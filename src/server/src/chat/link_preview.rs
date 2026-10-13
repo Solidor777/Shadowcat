@@ -35,8 +35,8 @@ use super::{PendingEnrichment, Segment};
 
 /// A server-fetched link preview. `enrich` copies `url`, `title`, `description` and
 /// `image_asset_id` into a `Segment::LinkPreview`. `image_url` is never stored on the segment;
-/// `enrich` queues or joins a `PendingEnrichment::PreviewImage` job for it unless the address
-/// already has an asset id.
+/// `enrich` queues or joins a `PendingEnrichment::PreviewImage` job for it when `image_url` is
+/// `Some` and the address has no asset id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
     /// The address the preview describes. A preview from `fetch_preview` carries the address the
@@ -56,11 +56,10 @@ pub struct LinkPreview {
     /// to any wire type — purely an in-process signal from `enrich` to its
     /// `PendingEnrichment::PreviewImage` queue.
     pub image_url: Option<String>,
-    /// The already-known asset id for this URL's image, populated ONLY from
-    /// a persisted-cache hit (`cached_or_fetch`) whose row already carries
-    /// one — a fresh fetch never sets this (an image URL alone is not yet
-    /// an asset). Never `Some` together with `image_url`: a fresh fetch leaves this `None` and a
-    /// persisted-row preview leaves `image_url` `None`.
+    /// The asset id `cached_or_fetch` reads from the candidate's persisted `link_preview_cache`
+    /// row; `fetch_preview` leaves it `None`. `enrich` also sets it on a preview that ends on an
+    /// address another candidate's preview already has an asset id for, so it can be `Some`
+    /// together with `image_url`.
     pub image_asset_id: Option<Uuid>,
 }
 
@@ -159,15 +158,14 @@ pub struct EnrichDeps<'a> {
     pub fetch: LinkPreviewDeps<'a>,
 }
 
-/// Two-tier cache lookup for `url`: the in-memory `cache` (fast path, no
-/// await beyond a mutex) first, then the persisted `link_preview_cache`
-/// table (survives a restart) on a miss — checked BEFORE any network fetch
+/// Two-tier cache lookup for `url`: the in-memory `cache` first, then the persisted
+/// `link_preview_cache` table (survives a restart) on a miss — checked BEFORE any network fetch
 /// is attempted, so a cold-started process can reuse a still-fresh row
 /// rather than re-fetching every URL seen since the process last started.
 /// `None` return means BOTH tiers missed (or a persisted row expired past
-/// its TTL) and the caller must actually fetch. A persisted hit backfills
-/// the in-memory tier so a repeat within the same process's uptime skips
-/// the DB entirely.
+/// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
+/// memory hit whose preview has no asset id reads the persisted row's, which a background job may
+/// have recorded since.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
@@ -175,7 +173,13 @@ async fn cached_or_fetch(
     now: Instant,
     now_ms: i64,
 ) -> Option<Option<LinkPreview>> {
-    if let Some(hit) = cache.get(url, now) {
+    if let Some(mut hit) = cache.get(url, now) {
+        // A background job records an asset on the persisted row without updating this entry.
+        if let Some(preview) = hit.as_mut().filter(|p| p.image_asset_id.is_none()) {
+            if let Ok(Some(row)) = repo.get_link_preview_cache(url).await {
+                preview.image_asset_id = row.image_asset_id;
+            }
+        }
         return Some(hit);
     }
     let row = repo.get_link_preview_cache(url).await.ok().flatten()?;
@@ -222,14 +226,15 @@ async fn cached_or_fetch(
 /// each through `cached_or_fetch` (a hit reuses the cached outcome; a miss is
 /// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
 /// `JoinSet` so the total added latency is one fetch's worth, not N serial
-/// fetches. Each successful preview APPENDS one `Segment::LinkPreview` to the
-/// END of `segments` in the candidates' message order (existing segments are never reordered or
-/// removed). A candidate whose preview address another candidate's persisted row already has an
-/// asset id for reuses that id, recorded on its own cache row, and queues no job. A
-/// failure or a rate-limited URL degrades silently to no card (a failure is
-/// still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't
-/// re-fetch; a rate-limited miss is NOT cached, so a later minute may still
-/// succeed). `now_ms` drives the rate limiter's sliding window; `now` drives
+/// fetches. Each successful preview APPENDS one `Segment::LinkPreview` to the END of `segments`
+/// in the candidates' message order (existing segments are never reordered or removed). A
+/// candidate whose preview ends on an address for which another candidate's preview already holds
+/// an asset id reuses that id, records it on its own cache row, and queues no job. That write
+/// does not take `PreviewFetchLocks`, which would make the send wait on a background fetch, so a
+/// concurrent job for the same row can overwrite the id with another asset id. A failure or a
+/// rate-limited URL degrades silently to no card (a failure is still cached as a negative so a
+/// repeat within `NEGATIVE_TTL` doesn't re-fetch; a rate-limited miss is NOT cached, so a later
+/// minute may still succeed). `now_ms` drives the rate limiter's sliding window; `now` drives
 /// the cache's TTL — both must be consistent with the caller's clock but are
 /// deliberately separate types/precisions, matching each dependency's own
 /// clock source.
@@ -375,54 +380,59 @@ pub async fn enrich(
             known_assets.entry(preview.url.clone()).or_insert(asset_id);
         }
     }
-    for (_, cache_url, mut preview) in previews {
+    for (_, cache_url, preview) in &mut previews {
         if preview.image_asset_id.is_none() {
             if let Some(&asset_id) = known_assets.get(&preview.url) {
-                if let Err(e) = repo
-                    .set_link_preview_cache_image(&cache_url, asset_id)
-                    .await
-                {
+                if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {
                     tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
                 }
                 preview.image_asset_id = Some(asset_id);
             }
         }
-        if let Some(asset_id) = preview.image_asset_id {
-            segments.push(Segment::LinkPreview {
-                url: preview.url,
-                title: preview.title,
-                description: preview.description,
-                image_asset_id: Some(asset_id),
-            });
-        } else {
-            if let Some(image_url) = preview.image_url.clone() {
-                // Candidates whose previews ended on the same address share one job, so the
-                // image is fetched and asset-ified once and the asset id is recorded on each
-                // candidate's cache row.
-                let shared = pending.iter_mut().find_map(|p| match p {
-                    PendingEnrichment::PreviewImage {
-                        cache_urls,
-                        preview_url,
-                        ..
-                    } if *preview_url == preview.url => Some(cache_urls),
-                    _ => None,
-                });
-                match shared {
-                    Some(cache_urls) => cache_urls.push(cache_url),
-                    None => pending.push(PendingEnrichment::PreviewImage {
-                        cache_urls: vec![cache_url],
-                        preview_url: preview.url.clone(),
-                        image_url,
-                    }),
-                }
-            }
-            segments.push(Segment::LinkPreview {
-                url: preview.url,
-                title: preview.title,
-                description: preview.description,
-                image_asset_id: None,
+    }
+    // Candidates whose previews ended on the same address share one job, so the image is fetched
+    // and asset-ified once and the asset id is recorded on each of those candidates' cache rows,
+    // including a candidate whose own preview carried no image URL.
+    for (_, _, preview) in &previews {
+        let Some(image_url) = &preview.image_url else {
+            continue;
+        };
+        let queued = pending.iter().any(|p| {
+            matches!(p, PendingEnrichment::PreviewImage { preview_url, .. }
+                if *preview_url == preview.url)
+        });
+        if preview.image_asset_id.is_none() && !queued {
+            pending.push(PendingEnrichment::PreviewImage {
+                cache_urls: Vec::new(),
+                preview_url: preview.url.clone(),
+                image_url: image_url.clone(),
             });
         }
+    }
+    for (_, cache_url, preview) in &previews {
+        if preview.image_asset_id.is_some() {
+            continue;
+        }
+        for job in pending.iter_mut() {
+            if let PendingEnrichment::PreviewImage {
+                cache_urls,
+                preview_url,
+                ..
+            } = job
+            {
+                if *preview_url == preview.url {
+                    cache_urls.push(cache_url.clone());
+                }
+            }
+        }
+    }
+    for (_, _, preview) in previews {
+        segments.push(Segment::LinkPreview {
+            url: preview.url,
+            title: preview.title,
+            description: preview.description,
+            image_asset_id: preview.image_asset_id,
+        });
     }
 
     // Inline chat images: `image_urls` already passed `policy.images()` inside
