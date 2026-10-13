@@ -804,8 +804,7 @@ pub trait Repository: Send + Sync {
 
     /// Sets `image_asset_id` on an EXISTING `url` row that has none (a no-op if the row is
     /// absent, and a no-op if it already holds an id, so concurrent writers leave the first id in
-    /// place — an image is only ever attached to a URL whose title/description scrape, or the
-    /// oEmbed thumbnail pipeline's own placeholder upsert, already created the row).
+    /// place).
     ///
     /// # Examples
     ///
@@ -818,24 +817,28 @@ pub trait Repository: Send + Sync {
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
     /// let world = repo.create_world("w", 0).await?;
     /// let asset = uuid::Uuid::new_v4();
-    /// repo.insert_asset(&Asset {
-    ///     id: asset,
-    ///     world_id: world.id,
-    ///     storage_key: format!("{}/{asset}", world.id),
-    ///     original_name: "preview.png".into(),
-    ///     content_type: "image/webp".into(),
-    ///     byte_size: 10,
-    ///     created_by: None,
-    ///     created_at: 0,
-    ///     version: 1,
-    ///     folder_id: None,
-    ///     tags: vec![],
-    ///     derived_tags: vec![],
-    ///     meta: AssetMeta::unprocessed("image/png", 10),
-    /// })
-    /// .await?;
+    /// let rival = uuid::Uuid::new_v4();
+    /// for id in [asset, rival] {
+    ///     repo.insert_asset(&Asset {
+    ///         id,
+    ///         world_id: world.id,
+    ///         storage_key: format!("{}/{id}", world.id),
+    ///         original_name: "preview.png".into(),
+    ///         content_type: "image/webp".into(),
+    ///         byte_size: 10,
+    ///         created_by: None,
+    ///         created_at: 0,
+    ///         version: 1,
+    ///         folder_id: None,
+    ///         tags: vec![],
+    ///         derived_tags: vec![],
+    ///         meta: AssetMeta::unprocessed("image/png", 10),
+    ///     })
+    ///     .await?;
+    /// }
     /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
     /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
+    /// repo.set_link_preview_cache_image("https://example.com", rival).await?;
     /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
     /// assert_eq!(row.image_asset_id, Some(asset));
     /// # Ok(())
