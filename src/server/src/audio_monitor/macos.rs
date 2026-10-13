@@ -44,13 +44,12 @@ use super::{reduce_to_basename, MonitorError, SessionLevel, SessionMonitor};
 /// Opaque Core Audio object id (`AudioObjectID`, a `u32` per the framework's own typedef).
 type AudioObjectId = u32;
 
-/// `kAudioHardwarePropertyProcessObjectList`'s numeric selector, the four-char code `'plis'`.
-const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = 0x70_6c_69_73; // 'plis'
-/// `kAudioProcessPropertyPID`'s numeric selector, the four-char code `'pid '` ('p'=0x70,
-/// 'i'=0x69, 'd'=0x64, ' '=0x20). The object id Core Audio enumerates is its own opaque
-/// `AudioObjectID`, never a POSIX pid, so the pid is read back through this property before
-/// `proc_pidpath` can resolve it.
-const K_AUDIO_PROCESS_PROPERTY_PID: u32 = 0x70_69_64_20; // 'pid '
+/// `kAudioHardwarePropertyProcessObjectList`'s numeric selector, the four-char code `'prs#'`.
+const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = 0x70_72_73_23; // 'prs#'
+/// `kAudioProcessPropertyPID`'s numeric selector, the four-char code `'ppid'`. The object id
+/// Core Audio enumerates is its own opaque `AudioObjectID`, never a POSIX pid, so the pid is read
+/// back through this property before `proc_pidpath` can resolve it.
+const K_AUDIO_PROCESS_PROPERTY_PID: u32 = 0x70_70_69_64; // 'ppid'
 /// The global audio-hardware object id every `AudioObjectGetPropertyData` call against a
 /// hardware-scoped selector targets.
 const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectId = 1;

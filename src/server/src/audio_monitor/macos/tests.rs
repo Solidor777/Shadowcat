@@ -10,7 +10,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use super::super::{platform_monitor, MonitorError};
-use super::departed_pids;
+use super::{
+    departed_pids, K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST,
+    K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL, K_AUDIO_PROCESS_PROPERTY_PID,
+};
 
 #[test]
 fn platform_monitor_never_panics_and_reports_a_sane_result() {
@@ -55,4 +58,19 @@ fn departed_pids_is_empty_when_everything_present_is_still_live() {
     let live: HashSet<i32> = [1, 2].into_iter().collect();
     let departed = departed_pids([1, 2].into_iter(), &live);
     assert!(departed.is_empty());
+}
+
+/// Each hand-written Core Audio selector equals the big-endian value of its four ASCII
+/// characters, so a transposed or mistyped code fails here.
+#[test]
+fn selector_constants_equal_their_four_char_codes() {
+    assert_eq!(
+        K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST,
+        u32::from_be_bytes(*b"prs#")
+    );
+    assert_eq!(K_AUDIO_PROCESS_PROPERTY_PID, u32::from_be_bytes(*b"ppid"));
+    assert_eq!(
+        K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        u32::from_be_bytes(*b"glob")
+    );
 }
