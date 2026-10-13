@@ -802,10 +802,10 @@ pub trait Repository: Send + Sync {
         fetched_at_ms: i64,
     ) -> Result<(), DataError>;
 
-    /// Sets `image_asset_id` on an EXISTING `url` row (a no-op if the row is
-    /// absent — an image is only ever attached to a URL whose
-    /// title/description scrape, or the oEmbed thumbnail pipeline's own
-    /// placeholder upsert, already created the row).
+    /// Sets `image_asset_id` on an EXISTING `url` row that has none (a no-op if the row is
+    /// absent, and a no-op if it already holds an id, so concurrent writers leave the first id in
+    /// place — an image is only ever attached to a URL whose title/description scrape, or the
+    /// oEmbed thumbnail pipeline's own placeholder upsert, already created the row).
     ///
     /// # Examples
     ///

@@ -497,11 +497,14 @@ impl SqliteRepository {
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
-        sqlx::query("UPDATE link_preview_cache SET image_asset_id = ? WHERE url = ?")
-            .bind(image_asset_id.to_string())
-            .bind(url)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE link_preview_cache SET image_asset_id = ? \
+             WHERE url = ? AND image_asset_id IS NULL",
+        )
+        .bind(image_asset_id.to_string())
+        .bind(url)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

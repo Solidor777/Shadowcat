@@ -1432,6 +1432,95 @@ async fn resolve_preview_image_propagates_a_known_asset_id_to_the_candidates_lac
     assert_eq!(row.image_asset_id, Some(asset.id));
 }
 
+/// Inserts an asset row in `world_id` and returns its id.
+async fn insert_test_asset(repo: &SqliteRepository, world_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    repo.insert_asset(&crate::data::asset::Asset {
+        id,
+        world_id,
+        storage_key: format!("{world_id}/{id}"),
+        original_name: "og.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 1,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// An asset id another writer records on the job's row while the job fetches stays: the job's
+/// own asset does not replace it.
+#[tokio::test]
+async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetched() {
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let rival = insert_test_asset(&repo, world.id).await;
+    let cache_url = "https://posted.example/page";
+    repo.upsert_link_preview_cache(cache_url, Some("T"), Some("D"), 0)
+        .await
+        .unwrap();
+
+    // The image response records `rival` on the row before answering, the way a concurrent
+    // writer that does not hold the job's lock would.
+    let rival_repo = repo.clone();
+    let router = Router::new().route(
+        "/img.png",
+        get(move || {
+            let repo = rival_repo.clone();
+            async move {
+                repo.set_link_preview_cache_image(cache_url, rival)
+                    .await
+                    .unwrap();
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    vec![7u8, 7, 7],
+                )
+            }
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let root = tempfile::tempdir().unwrap();
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![cache_url.to_string()],
+        cache_url.to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("a miss fetches and creates an asset");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    assert_ne!(asset_id, rival, "the job created its own asset");
+    let row = repo
+        .get_link_preview_cache(cache_url)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, Some(rival));
+}
+
 /// Callers whose key sets overlap and list the shared keys in opposite orders all complete, and
 /// the registry is empty afterwards.
 #[tokio::test]

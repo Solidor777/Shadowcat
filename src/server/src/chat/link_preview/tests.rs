@@ -1391,3 +1391,55 @@ async fn set_link_preview_cache_image_is_a_noop_on_absent_row() {
         .unwrap();
     assert_eq!(repo.get_link_preview_cache(url).await.unwrap(), None);
 }
+
+/// An id already recorded on a row stays: a second `set_link_preview_cache_image` with another
+/// asset id changes nothing, so concurrent writers leave the first id in place.
+#[tokio::test]
+async fn set_link_preview_cache_image_keeps_the_id_already_recorded() {
+    use crate::auth::role::ServerRole;
+    use crate::data::asset::Asset;
+
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let id = Uuid::new_v4();
+        repo.insert_asset(&Asset {
+            id,
+            world_id: world.id,
+            storage_key: format!("{}/{id}", world.id),
+            original_name: "og.png".to_string(),
+            content_type: "image/png".to_string(),
+            byte_size: 10,
+            created_by: Some(owner),
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+        })
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let url = "https://image.example/";
+    repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(url, ids[0])
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(url, ids[1])
+        .await
+        .unwrap();
+
+    let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+    assert_eq!(row.image_asset_id, Some(ids[0]));
+}

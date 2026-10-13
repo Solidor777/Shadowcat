@@ -445,11 +445,12 @@ async fn resolve_job(
 /// this or another message already imaged. On a miss, fetches `image_url` through the SAME
 /// SSRF-guarded client `enrich` uses (`link_preview::fetch_image_bytes`), asset-ifies it via
 /// `create_asset_from_bytes` (`created_by: None`: no user account backs a server-fetched image),
-/// and writes the asset id onto the `cache_urls` rows that exist. Holds
-/// `write_barrier`'s read side around the asset commit, as `http::assets::upload`/`replace`/
-/// `delete` do: this commit runs from the post-publish job rather than an HTTP handler, so it
-/// joins the same exclusion or an in-server backup's file copy could race a half-committed
-/// asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
+/// and records the asset id on the `cache_urls` rows that exist and hold no id, so the patched
+/// segment carries the job's asset even when a write that does not take the lock recorded another
+/// id on a row first. Holds `write_barrier`'s read side around the asset commit, as
+/// `http::assets::upload`/`replace`/`delete` do: this commit runs from the post-publish job
+/// rather than an HTTP handler, so it joins the same exclusion or an in-server backup's file copy
+/// could race a half-committed asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
 /// `cache_urls` (see `with_preview_url_locks`), so when the first of two concurrent jobs sharing
 /// a `cache_urls` entry succeeds, the second finds its recorded asset id instead of creating
 /// another asset.
@@ -524,8 +525,9 @@ async fn resolve_preview_image(
     .await
 }
 
-/// Writes `asset_id` onto the `link_preview_cache` row of each of `cache_urls`; a failed write
-/// is logged and the remaining rows are still written.
+/// Records `asset_id` on the `link_preview_cache` row of each of `cache_urls` that has no asset
+/// id yet (`set_link_preview_cache_image` leaves an existing id); a failed write is logged and the
+/// remaining rows are still written.
 async fn record_preview_image(repo: &SqliteRepository, cache_urls: Vec<&String>, asset_id: Uuid) {
     for cache_url in cache_urls {
         if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {

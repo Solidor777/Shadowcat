@@ -230,13 +230,13 @@ async fn cached_or_fetch(
 /// in the candidates' message order (existing segments are never reordered or removed). A
 /// candidate whose preview ends on an address for which another candidate's preview already holds
 /// an asset id reuses that id, records it on its own cache row, and queues no job. That write
-/// does not take `PreviewFetchLocks`, which would make the send wait on a background fetch, so a
-/// concurrent job for the same row can overwrite the id with another asset id. A failure or a
-/// rate-limited URL degrades silently to no card (a failure is still cached as a negative so a
-/// repeat within `NEGATIVE_TTL` doesn't re-fetch; a rate-limited miss is NOT cached, so a later
-/// minute may still succeed). `now_ms` drives the rate limiter's sliding window; `now` drives
-/// the cache's TTL — both must be consistent with the caller's clock but are
-/// deliberately separate types/precisions, matching each dependency's own
+/// does not take `PreviewFetchLocks`, which would make the send wait on a background fetch;
+/// `set_link_preview_cache_image` leaves an id already on the row, so a concurrent job's write
+/// does not replace it. A failure or a rate-limited URL degrades silently to no card (a failure
+/// is still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't re-fetch; a
+/// rate-limited miss is NOT cached, so a later minute may still succeed). `now_ms` drives the
+/// rate limiter's sliding window; `now` drives the cache's TTL — both must be consistent with the
+/// caller's clock but are deliberately separate types/precisions, matching each dependency's own
 /// clock source.
 ///
 /// Returns any `PendingEnrichment` jobs the caller must run AFTER its own
