@@ -531,3 +531,20 @@ fn call_wrapping_labeled_const_arg_surfaces_in_labeled_consts() {
     assert_eq!(out.labeled_consts[0].value, 3);
     assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
 }
+
+#[test]
+fn margin_against_a_saturated_total_saturates_without_panic() {
+    // `2000000000*2000000000*-3` folds to an exact `i64::MIN`; subtracting a
+    // positive difficulty from it with raw `-` overflows. The margin must
+    // saturate and classify as a failure.
+    let mut spec = notation::parse("2000000000*2000000000*-3", total_ctx()).unwrap();
+    spec.mode = Mode::Total(TotalConfig {
+        difficulty: Some(5),
+        tiers: vec![],
+    });
+    let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+    let out = evaluate(&spec, &raws);
+    assert_eq!(out.total, i64::MIN);
+    assert_eq!(out.margin, Some(i64::MIN));
+    assert_eq!(out.pass, Some(false));
+}
