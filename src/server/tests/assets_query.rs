@@ -307,7 +307,7 @@ async fn sort_and_keyset_pagination_walk_to_the_end() {
     );
 
     // Name sort is case-insensitive; a regex page still carries a cursor
-    // over the rows it examined, so nothing is skipped when it is followed.
+    // at the last row tested, so nothing is skipped when it is followed.
     assert_eq!(
         names(&page(&h, "sort=name").await),
         vec![
@@ -418,4 +418,31 @@ async fn name_sort_cursor_chain_visits_every_non_ascii_uppercase_name_once() {
     let mut want = vec!["Éclair", "Élan", "Zed", "Álamo", "apple"];
     want.sort();
     assert_eq!(visited, want);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_that_exactly_fills_with_no_row_after_it_has_no_cursor() {
+    let h = spawn().await;
+    seed_named(&h, &["hit-1", "hit-2", "hit-3"]).await;
+    let p = page(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(names(&p), vec!["hit-1", "hit-2", "hit-3"]);
+    assert!(
+        p["next_cursor"].is_null(),
+        "no row follows, so no cursor: {p}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_that_fills_with_a_non_matching_row_after_it_ends_on_an_empty_page() {
+    let h = spawn().await;
+    seed_named(&h, &["hit-1", "hit-2", "hit-3", "miss-4"]).await;
+    let first = page(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(names(&first), vec!["hit-1", "hit-2", "hit-3"]);
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("a row follows")
+        .to_string();
+    let second = page(&h, &format!("limit=3&name_regex=hit&cursor={cursor}")).await;
+    assert!(names(&second).is_empty());
+    assert!(second["next_cursor"].is_null(), "{second}");
 }

@@ -559,3 +559,14 @@ fn another_streams_writes_do_not_release_a_parked_tunnel() {
     );
     assert_eq!(t.backlog(1, 20_000, 10_000, &waker), Backlog::Over);
 }
+
+#[test]
+fn a_marker_left_for_an_absent_id_does_not_end_a_different_live_stream() {
+    let mut t = table(100);
+    t.read_headers(3);
+    t.write_headers_continue(1);
+    assert!(t.write_continuation_end(3).is_none());
+    assert_eq!(t.ids(), [3], "the marker names stream 1, not stream 3");
+    assert!(t.write_continuation_end(1).is_none());
+    assert_eq!(t.ids(), [3], "stream 1 is absent, so nothing is removed");
+}
