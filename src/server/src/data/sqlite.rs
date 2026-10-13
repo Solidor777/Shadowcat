@@ -1890,7 +1890,7 @@ impl Repository for SqliteRepository {
                     // and this query never touches `&self.pool` (which would
                     // deadlock mid-transaction, not race). `claimed_singletons`
                     // additionally covers a second same-batch Create of the
-                    // same singleton doc_type, which the DB read alone cannot
+                    // same singleton doc_type, which the DB read alone cannot see
                     // (see the comment above the validation pass's per-op loop).
                     if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str()) {
                         if claimed_singletons.contains(doc.doc_type.as_str())
@@ -2330,12 +2330,9 @@ impl Repository for SqliteRepository {
                         // validation pass still pushed an entry for it.
                         update_access_iter.next();
                     }
-                    // One-active-combat-per-scene is validated ONLY in the validation
+                    // The one-active-combat-per-scene decision is made in the validation
                     // pass (see `apply_intent`'s Update arm there, and the
-                    // `scene_owner` doc comment) -- the apply pass trusts that
-                    // decision and performs no recomputation of it, the same
-                    // way it trusts the validation pass's OCC/capability/containment/
-                    // singleton decisions for every other check.
+                    // `scene_owner` doc comment); the apply pass does not recompute it.
                     // Structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.

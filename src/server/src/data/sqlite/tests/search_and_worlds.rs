@@ -1632,7 +1632,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
     // `/owner` is a structural envelope field, not one of the four
     // content bands `redaction_target` classifies — the same pointer
     // `redaction_target_refuses_every_structural_envelope_field` pins in
-    // `permission` module.
+    // the `permission` module.
     doc.permissions.property_overrides.insert(
         "/owner".to_string(),
         crate::data::document::Visibility::GmOnly,

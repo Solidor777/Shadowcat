@@ -441,7 +441,7 @@ struct ProvenanceExpect {
 
 /// Pins `resolve_combat_rules`'s resolved VALUE for every case in the shared
 /// combat-provenance fixture against the client's `resolveSettingProvenance`
-/// mirror — the same never-fork discipline as `engine_combat_defaults_matches_the_shared_fixture`,.
+/// mirror — the same never-fork discipline as `engine_combat_defaults_matches_the_shared_fixture`.
 #[test]
 fn resolve_combat_rules_matches_the_shared_provenance_fixture() {
     let cases: Vec<ProvenanceCase> = serde_json::from_str(include_str!(

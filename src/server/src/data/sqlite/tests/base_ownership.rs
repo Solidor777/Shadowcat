@@ -1,4 +1,4 @@
-//! These tests cover the server ownership of `Document.base` at the write path.
+//! These tests cover the server ownership of `Document.base`.
 
 use super::*;
 use crate::data::membership::PermissionContext;

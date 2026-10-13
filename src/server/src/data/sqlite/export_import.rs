@@ -670,9 +670,9 @@ impl SqliteRepository {
         // load_document` inside `check_parent_placement` itself, not
         // through a batch map. No general multi-hop cycle walk runs here:
         // `documents.parent_id`'s foreign key is enforced immediately (no
-        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` set by `db::connect_pool_with_options`), so a ≥2-node
-        // `parent_id` cycle's first `INSERT` above already fails before this
-        // pass is reached.
+        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` set by `db::connect_pool_with_options`), so a
+        // ≥2-node `parent_id` cycle's first `INSERT` above already fails before this pass is
+        // reached.
         for document in &inserted_documents {
             validation::validate_containment(document)?;
             Self::check_parent_placement(
