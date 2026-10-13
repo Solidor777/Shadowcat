@@ -46,8 +46,8 @@ pub const OPUS_TARGET_SAMPLE_RATE: u32 = 48_000;
 pub const OPUS_FRAME_MS: u32 = 20;
 /// Samples per channel in one Opus frame at `OPUS_TARGET_SAMPLE_RATE`.
 const OPUS_FRAME_SAMPLES: u64 = OPUS_TARGET_SAMPLE_RATE as u64 * OPUS_FRAME_MS as u64 / 1000;
-/// The vendor string every `OpusTags` header written by the current encoder carries. The upgrade
-/// sweep reads it to tell a file written with the lookahead flush from one written without it.
+/// The vendor string the Ogg muxer writes into `OpusTags`. `process::audio::upgrade` defines how
+/// it marks a sibling current.
 pub(crate) const OPUS_VENDOR_MARKER: &str = "shadowcat-opus/2";
 
 pub(super) mod webm;
@@ -70,9 +70,9 @@ pub(crate) mod upgrade;
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum AudioContainers {
-    /// `.opus.ogg` only.
+    /// The Ogg sibling (`OPUS_SUFFIX`) only.
     Ogg,
-    /// `.opus.webm` only.
+    /// The WebM sibling (`WEBM_SUFFIX`) only.
     #[serde(rename = "webm")]
     WebM,
     /// Both derivatives (the import default).

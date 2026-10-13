@@ -34,12 +34,12 @@ struct Stored {
 }
 
 impl Stored {
-    /// The `.opus.ogg` sibling path.
+    /// The Ogg sibling path (`OPUS_SUFFIX`).
     fn ogg(&self) -> PathBuf {
         with_suffix(&self.canonical, OPUS_SUFFIX)
     }
 
-    /// The `.opus.webm` sibling path.
+    /// The WebM sibling path (`WEBM_SUFFIX`).
     fn webm(&self) -> PathBuf {
         with_suffix(&self.canonical, WEBM_SUFFIX)
     }
@@ -54,8 +54,8 @@ impl Stored {
     }
 }
 
-/// Stores the unmarked-layout siblings of `residue` that `ogg` / `webm` ask for, and the original WAV when
-/// `original` is set.
+/// Stores the unmarked-layout siblings of `residue` that `ogg` / `webm` ask for, and the original
+/// WAV when `original` is set.
 fn stored(residue: usize, ogg: bool, webm: bool, original: bool) -> Stored {
     let dir = tempfile::tempdir().unwrap();
     let canonical = dir.path().join("asset");
@@ -127,7 +127,7 @@ fn the_loss_range_is_residue_zero_and_649_to_959() {
 /// The two small reads recover the pre-skip, the vendor string and the final granule, and the
 /// loss-range predicate follows them.
 #[test]
-fn the_ogg_info_of_a_pre_fix_file_names_its_loss_range() {
+fn the_ogg_info_of_an_unmarked_file_names_its_loss_range() {
     for residue in [0, 648, 649, 959] {
         let asset = stored(residue, true, false, false);
         let info = read_ogg_info(&asset.ogg()).unwrap();

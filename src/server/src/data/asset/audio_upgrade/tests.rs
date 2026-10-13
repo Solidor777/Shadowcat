@@ -26,8 +26,9 @@ async fn repo_with_world() -> (SqliteRepository, Uuid) {
     (repo, world.id)
 }
 
-/// Seeds an asset row (version 7, `duration_ms` recorded when `transcoded`) and writes the unmarked-layout
-/// siblings of `residue` that `ogg` / `webm` ask for, plus the original WAV when `original`.
+/// Seeds an asset row (version 7, `duration_ms` recorded when `transcoded`) and writes the
+/// unmarked-layout siblings of `residue` that `ogg` / `webm` ask for, plus the original WAV when
+/// `original`.
 async fn seed(
     repo: &SqliteRepository,
     world: Uuid,
@@ -85,13 +86,13 @@ async fn seed(
     id
 }
 
-/// The asset's `.opus.webm` path.
+/// The asset's WebM sibling path (`WEBM_SUFFIX`).
 fn webm_of(root: &Path, world: Uuid, id: Uuid) -> std::path::PathBuf {
     root.join(world.to_string())
         .join(format!("{id}{WEBM_SUFFIX}"))
 }
 
-/// The asset's `.opus.ogg` path.
+/// The asset's Ogg sibling path (`OPUS_SUFFIX`).
 fn ogg_of(root: &Path, world: Uuid, id: Uuid) -> std::path::PathBuf {
     root.join(world.to_string())
         .join(format!("{id}{OPUS_SUFFIX}"))
@@ -114,7 +115,7 @@ async fn the_listing_names_only_transcoded_audio_assets() {
 /// asset with no siblings alone; a second pass finds everything current and rewrites nothing; no
 /// asset version changes.
 #[tokio::test]
-async fn a_pass_upgrades_old_assets_and_a_second_pass_rewrites_nothing() {
+async fn a_pass_upgrades_stale_assets_and_a_second_pass_rewrites_nothing() {
     let (repo, world) = repo_with_world().await;
     let root = tempfile::tempdir().unwrap();
     let outside = seed(&repo, world, root.path(), 648, true, (true, true, true)).await;

@@ -22,8 +22,8 @@
 //! which keeps the two siblings one encode. A stale WebM with no Ogg is re-encoded from the
 //! original (`Kind::Retranscode`), and with no original either the asset is left alone
 //! (`Plan::Unrepairable`). `plan` returns `Plan::Current` when neither sibling is stale and an
-//! `Err` when a sibling is unreadable or a decode, mux or staged write fails; `UpgradeReport.failed`
-//! counts the `Err`.
+//! `Err` when a sibling is unreadable or a decode, mux or staged write fails;
+//! `UpgradeReport.failed` counts the `Err`.
 //!
 //! The sweep never writes the database, never bumps a version and never goes through
 //! `reconvert`, `commit_replacement` or `move_asset_files` (which deletes a final sibling that has
@@ -42,11 +42,12 @@ use super::{
     OPUS_VENDOR_MARKER, WEBM_SUFFIX,
 };
 
-/// Bytes read from the start of the Ogg sibling (`OPUS_SUFFIX`) to cover its `OpusHead` and `OpusTags` pages.
+/// Bytes read from the start of the Ogg sibling (`OPUS_SUFFIX`) to cover its `OpusHead` and
+/// `OpusTags` pages.
 const OGG_HEAD_BYTES: usize = 8192;
 
-/// Bytes read from the end of the Ogg sibling (`OPUS_SUFFIX`): more than the largest Ogg page (65,307 bytes), so the
-/// final page's header is always inside the window.
+/// Bytes read from the end of the Ogg sibling (`OPUS_SUFFIX`): more than the largest Ogg page
+/// (65,307 bytes), so the final page's header is always inside the window.
 const OGG_TAIL_BYTES: u64 = 70_000;
 
 /// The Ogg facts the selection needs, read without scanning the stream.
@@ -254,7 +255,8 @@ fn tmp_beside(canonical: &Path) -> PathBuf {
     with_suffix(canonical, &format!(".{}.tmp", uuid::Uuid::new_v4()))
 }
 
-/// Writes `bytes` to a new temporary file beside `canonical` and returns it staged against `target`.
+/// Writes `bytes` to a new temporary file beside `canonical` and returns it staged against
+/// `target`.
 fn stage(canonical: &Path, target: PathBuf, bytes: &[u8]) -> io::Result<Staged> {
     let expect = fingerprint(&target)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "sibling vanished"))?;

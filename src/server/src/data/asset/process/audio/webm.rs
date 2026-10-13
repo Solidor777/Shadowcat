@@ -15,13 +15,14 @@ use super::{opus_head, OpusStream, OPUS_FRAME_MS, OPUS_FRAME_SAMPLES, OPUS_TARGE
 /// cluster must span well under 32.7 seconds.
 const WEBM_CLUSTER_FRAMES: usize = 64;
 
-/// The `WritingApp` string every file written by the current muxer carries. The upgrade sweep
-/// selects a WebM sibling (`WEBM_SUFFIX`) whose head lacks it.
+/// The `WritingApp` string `mux_webm` writes. `process::audio::upgrade` defines how it marks a
+/// sibling current.
 pub(crate) const WEBM_WRITING_APP: &str = "shadowcat-webm/2";
 
-/// Bytes at the start of a WebM sibling (`WEBM_SUFFIX`) that always contain `WEBM_WRITING_APP` when the file was
-/// written by the current muxer, and that the derivative `ETag` hashes: the EBML header, the
-/// Segment header, `SeekHead` and `Info` precede the first `Tracks` byte and total well under it.
+/// Bytes read from the start of a WebM sibling (`WEBM_SUFFIX`) to look for `WEBM_WRITING_APP`.
+/// `mux_webm` writes the marker in `Info`, which follows the EBML header, the Segment header and
+/// `SeekHead`; the test `the_writing_app_carries_the_version_marker_inside_the_head` pins that
+/// the marker lies inside this window.
 pub(crate) const WEBM_HEAD_BYTES: usize = 4096;
 
 /// EBML element id: Segment.
@@ -308,7 +309,7 @@ pub(super) fn mux_webm(
 }
 
 /// Whether the head of a WebM sibling (its first `WEBM_HEAD_BYTES` bytes, or the whole file when
-/// shorter) was written by the current muxer: the `WritingApp` marker is present.
+/// shorter) carries `WEBM_WRITING_APP`.
 pub(crate) fn head_is_current(head: &[u8]) -> bool {
     let marker = WEBM_WRITING_APP.as_bytes();
     head.windows(marker.len()).any(|w| w == marker)
