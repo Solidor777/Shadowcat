@@ -417,7 +417,7 @@ fn engine_combat_defaults_matches_the_shared_fixture() {
     assert_eq!(client_spelling, fixture);
 }
 
-/// One `combat-provenance-cases.json` fixture case. `source` is deliberately absent —
+/// One case of the shared combat-provenance fixture. `source` is deliberately absent —
 /// which resolution layer supplied a value is not observable server-side, so this side
 /// pins only the VALUE `resolve_combat_rules` produces; the Vitest side
 /// (`resolveSettingProvenance matches the shared cross-language fixture for every new
@@ -440,9 +440,8 @@ struct ProvenanceExpect {
 }
 
 /// Pins `resolve_combat_rules`'s resolved VALUE for every case in the shared
-/// `combat-provenance-cases.json` fixture against the client's `resolveSettingProvenance`
-/// mirror — the same never-fork discipline as `engine_combat_defaults_matches_the_shared_fixture`,
-/// extended to the six new `combat.*` leaves this milestone adds.
+/// combat-provenance fixture against the client's `resolveSettingProvenance`
+/// mirror — the same never-fork discipline as `engine_combat_defaults_matches_the_shared_fixture`,.
 #[test]
 fn resolve_combat_rules_matches_the_shared_provenance_fixture() {
     let cases: Vec<ProvenanceCase> = serde_json::from_str(include_str!(

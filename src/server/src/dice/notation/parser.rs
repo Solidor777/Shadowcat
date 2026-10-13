@@ -22,8 +22,6 @@ use crate::dice::spec::{
 /// well under that, so worst-case nesting is roughly ~2k levels (each `(` or
 /// unary `-` costs at least 2 input chars) -- a few thousand light recursive-
 /// descent frames, safe on all three target OSes' default thread stacks.
-/// Re-evaluate with an explicit depth counter if any future caller ever
-/// exposes this parser to longer untrusted input than that.
 struct P {
     /// The full token stream.
     toks: Vec<Token>,

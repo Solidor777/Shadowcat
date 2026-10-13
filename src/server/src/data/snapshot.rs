@@ -5,7 +5,7 @@
 //! the recipient's hidden set as `hidden_current ∪ hidden_commit` instead of re-deriving
 //! `hidden_commit` from the policy in force at replay time. The types are server-internal: they are
 //! never serialized to the wire, and `Operation`, `Command`, `ClientMsg`, `ServerMsg` and their
-//! ts-rs/Zod mirrors do not refer to them.
+//! ts-rs/Zod mirrors do not contain them.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

@@ -117,7 +117,7 @@ pub struct TableRow {
 /// `TableEngine::validate` already caps well within `i32` via
 /// `chat::rolls::MAX_DIE_SIDES`/`MAX_ROLL_DICE`, and an `i64` here forces
 /// ts-rs to emit a `bigint` field on a type constructed by client authoring
-/// code (`table-docs.ts`'s `buildTableDoc` callers), which `JSON.stringify`
+/// code (`buildTableDoc`'s callers), which `JSON.stringify`
 /// (`WsClient.send`) cannot serialize.
 ///
 /// # Examples

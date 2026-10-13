@@ -112,8 +112,8 @@ export function snapshotBase(doc: WireDocument): MergeBase {
 
 /** Deep-clone `source`'s mergeable bands into a NEW document (fresh id, initiator owner/perms,
  * caller parent/scope, `source` provenance, recursively fresh embedded ids + provenance), then
- * capture `base`. Deep-clone independence is load-bearing — never `{...doc}` for nested bands
- * ([[embedded-copy-needs-deep-clone]]). Stamping stays client-composed: it is a clone, not a
+ * capture `base`. Deep-clone independence is load-bearing — never `{...doc}` for nested bands.
+ * Stamping stays client-composed: it is a clone, not a
  * merge, so the server's authority over it is the `base` derivation the write path re-derives
  * at Create time (discarding this function's own `base` value) plus ordinary Create validation.
  * @param source The template document to stamp an instance from.

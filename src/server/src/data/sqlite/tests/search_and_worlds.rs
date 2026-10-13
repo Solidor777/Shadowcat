@@ -1632,7 +1632,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
     // `/owner` is a structural envelope field, not one of the four
     // content bands `redaction_target` classifies — the same pointer
     // `redaction_target_refuses_every_structural_envelope_field` pins in
-    // `permission.rs`.
+    // `permission` module.
     doc.permissions.property_overrides.insert(
         "/owner".to_string(),
         crate::data::document::Visibility::GmOnly,
@@ -1698,7 +1698,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
 /// `import_world` runs `validate_document_id_tree` over every row (a bundle is untrusted
 /// input, same posture as a live Create/Update) -- a row whose document carries a v1-shaped
 /// (time-based) id is rejected before anything is written, mirroring the wire-level Create
-/// rejection `tests/document_id_and_name_ingress.rs` pins for a live connection.
+/// rejection the document id and name ingress tests pin for a live connection.
 #[tokio::test]
 async fn import_world_rejects_a_document_with_a_non_v4_v7_id() {
     let src = repo().await;

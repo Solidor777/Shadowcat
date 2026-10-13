@@ -24,7 +24,7 @@ pub mod cap {
     //! This module names the built-in capabilities the server understands.
     //!
     //! Modules may grant additional namespaced capabilities (`<ns>:<verb>`); the server treats
-    //! those as opaque tokens and enforces only possession.
+    //! those as strings and `Access::has` looks a capability up by that string.
 
     /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";

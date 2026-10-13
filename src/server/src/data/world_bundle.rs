@@ -12,8 +12,8 @@
 //!
 //! Search state is rebuilt from a document's or asset's own content and is never carried across
 //! servers: `documents_fts_public`, `documents_fts_gm` and `assets_fts` are never exported or
-//! imported directly. Every FTS row a bundle produces on the target is a byproduct of the ordinary
-//! document and asset write paths that `SqliteRepository::import_world` drives.
+//! imported directly. On the target, a document's FTS rows come from `reindex_document_fts` and
+//! `assets_fts` rows from the SQL triggers on the `assets` and `asset_tags` inserts.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -11,7 +11,7 @@ let observing = false;
 
 // Leading-edge debounce with a trailing catch-up (ui_state changes are user-paced;
 // the leading edge persists promptly, the trailing flush captures a change made
-// during the cooldown). See [[debounce-leading-edge-not-trailing-rearm]].
+// during the cooldown).
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 

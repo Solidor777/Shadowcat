@@ -185,9 +185,8 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 BinOp::Add => add_saturating(l, r),
                 BinOp::Sub => sub_saturating(l, r),
                 BinOp::Mul => mul_saturating(l, r),
-                // Division by zero yields 0 — the ONLY guard; the parser
-                // accepts a literal `/0`, so this branch is reachable from
-                // untrusted notation.
+                // Division by zero yields 0. The parser accepts a literal
+                // `/0`, so this branch is reachable from untrusted notation.
                 BinOp::Div => {
                     if r == 0 {
                         0
@@ -227,11 +226,10 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 /// loses precision above `f64`'s 53-bit mantissa (~9e15, well under `i64::MAX`), which
 /// would silently corrupt a large already-integer input before any rounding function
 /// ever ran. These three functions exist so notation and the engine formula grammar
-/// (`crate::formula`) accept the same function names; if a future change gives this
-/// grammar a true fractional value, their implementation must be revisited then.
+/// (`crate::formula`) accept the same function names.
 /// `Min`/`Max` are variadic (`FnName::accepts_arg_count` admits any count `>= 2`): both fold
 /// over every element of `args` rather than indexing two fixed slots, so a 3+ argument call
-/// is folded the same way a 2-argument call always was. An empty slice (unreachable from the
+/// is folded the same way as a 2-argument call. An empty slice (unreachable from the
 /// parser, since even the minimum admissible count is 2) defensively yields 0, matching
 /// `fold`'s Div-by-zero-to-0 convention.
 fn apply_fn(name: FnName, args: &[i64]) -> i64 {

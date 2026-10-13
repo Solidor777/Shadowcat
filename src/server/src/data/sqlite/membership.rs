@@ -1,6 +1,5 @@
 //! This module holds accounts, seats and invites: the `users` / `world_members` / `world_invites`
-//! half of `SqliteRepository`, in a sibling `impl` block so the `sqlite` module stays under the
-//! file-size limit.
+//! half of `SqliteRepository`, in a sibling `impl` block.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -1083,7 +1082,7 @@ impl SqliteRepository {
     /// The consume is ONE guarded `UPDATE ... RETURNING`: the lifecycle
     /// predicates and the write are the same statement, so two concurrent
     /// redemptions of one code cannot both observe it as available and
-    /// double-seat (a check-then-act pair could — [[two-query-guard-needs-tx]]).
+    /// double-seat (a check-then-act pair could).
     /// The seating shares the transaction, so a burned invite always
     /// corresponds to a seated member.
     ///

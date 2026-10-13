@@ -294,7 +294,7 @@ export function placementExclusions(docType: string): string[] {
 
 /** Deep-clone `doc` into a new subtree: fresh `id`, `source` pointing at the template (`doc.id`),
  * recursively for every embedded child. Used to stamp a template-added embedded child into an
- * instance. Deep-clone independence is load-bearing ([[embedded-copy-needs-deep-clone]]).
+ * instance. Deep-clone independence is load-bearing.
  * @param doc The template (or template-embedded) document to restamp.
  * @returns A fresh clone with a new `id` and `source` pointing at `doc.id`; every embedded
  * child is restamped the same way, recursively.

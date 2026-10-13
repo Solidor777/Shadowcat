@@ -878,7 +878,7 @@ async fn events_since_returns_the_suffix() {
 
 #[tokio::test]
 async fn multi_op_command_snapshot_reflects_the_final_post_loop_state_for_every_op() {
-    // The write-loop counterpart of permission.rs's
+    // The write-loop counterpart of the permission module's
     // multi_op_leak_within_one_command_is_closed_by_the_post_loop_accumulator: proves
     // apply_intent's OWN snapshot construction (not a hand-built one) gives the FIRST op's
     // OpSnapshot the override the SECOND op in the SAME command adds.

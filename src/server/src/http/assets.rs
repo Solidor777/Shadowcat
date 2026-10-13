@@ -1035,8 +1035,7 @@ pub async fn replace(
 /// live bytes are untouched and the record stays consistent (tmp is removed).
 /// If the rename later fails, the DB is one version ahead of unchanged bytes
 /// — clients re-fetch (ETag changed) and the next replace lands correctly;
-/// the inverse order would strand new bytes under a stale ETag (broken 304)
-/// [[commit-db-row-before-swapping-file]].
+/// the inverse order would strand new bytes under a stale ETag (broken 304).
 pub(super) async fn commit_replacement(
     state: &AppState,
     existing: &Asset,

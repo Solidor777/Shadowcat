@@ -1,5 +1,5 @@
 //! This module holds the world bundle export and import of `SqliteRepository`, in a sibling `impl`
-//! block so the `sqlite` module stays under the file-size limit.
+//! block.
 //!
 //! `export_world_rows` returns `WorldExportData` and `import_world` takes `WorldImportData`.
 #![deny(missing_docs)]
@@ -259,10 +259,8 @@ impl SqliteRepository {
     /// `reindex_document_fts` with `upsert_document` (search state is
     /// rebuilt from `doc`'s content, never carried across servers —
     /// `documents_fts_public`/`documents_fts_gm` are never exported/imported
-    /// directly, see `data::world_bundle`'s module doc; the same is true of
-    /// `assets_fts`, whose triggers rebuild it from the imported `assets`/
-    /// `asset_tags` rows as `insert_asset`/`set_asset_tags` write them). A
-    /// plain `INSERT`
+    /// directly, see `data::world_bundle`'s module doc; `assets_fts` rows come from
+    /// the SQL triggers on the `assets` and `asset_tags` inserts). A plain `INSERT`
     /// (not `upsert_document`'s `ON CONFLICT(id) DO UPDATE`): a document id
     /// colliding with an existing row anywhere on the target server (a
     /// separate axis from the already-gated world-id collision) is a
@@ -672,7 +670,7 @@ impl SqliteRepository {
         // load_document` inside `check_parent_placement` itself, not
         // through a batch map. No general multi-hop cycle walk runs here:
         // `documents.parent_id`'s foreign key is enforced immediately (no
-        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` in `db.rs`), so a ≥2-node
+        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` set by `db::connect_pool_with_options`), so a ≥2-node
         // `parent_id` cycle's first `INSERT` above already fails before this
         // pass is reached.
         for document in &inserted_documents {

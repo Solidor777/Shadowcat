@@ -1,6 +1,6 @@
-//! This module holds the per-user UI state of `SqliteRepository`: `get_ui_state` and
-//! `merge_ui_state`, which read and merge the `users` row's `ui_state` blob one level deep, in a
-//! sibling `impl` block so the `sqlite` module stays under the file-size limit.
+//! This module holds the per-user UI state of `SqliteRepository`: `get_ui_state`, which reads the
+//! `users` row's `ui_state` blob, and `merge_ui_state`, which merges a patch into it one level
+//! deep, in a sibling `impl` block.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

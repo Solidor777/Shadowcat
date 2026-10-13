@@ -68,8 +68,7 @@ pub struct AssetMeta {
 impl AssetMeta {
     /// Metadata for bytes stored exactly as they arrived, with nothing
     /// decoded: no dimensions, no alpha/animation knowledge, no retained
-    /// original. The pre-pipeline shape every commit path records until the
-    /// conversion step fills the real values.
+    /// original.
     ///
     /// # Examples
     ///

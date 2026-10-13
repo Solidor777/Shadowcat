@@ -1,6 +1,5 @@
 //! This module is the `documents` / `documents_fts_gm` / `documents_fts_public` half of
-//! `SqliteRepository`, in a sibling `impl` block so the `sqlite` module stays under the file-size
-//! limit.
+//! `SqliteRepository`, in a sibling `impl` block.
 //!
 //! It covers row load/upsert/delete with FTS reindex, parent placement and move-cycle checks, and
 //! the commit-time `OpSnapshot` builder.

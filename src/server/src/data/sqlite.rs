@@ -90,7 +90,7 @@ pub struct UserRecord {
 /// code's verifier half; the code itself is never stored. The lifecycle
 /// columns are read-only context for the GM's listing — they are NOT the
 /// redemption gate, which lives entirely in `consume_invite`'s single guarded
-/// UPDATE (see [[two-query-guard-needs-tx]]).
+/// UPDATE.
 ///
 /// # Examples
 ///
