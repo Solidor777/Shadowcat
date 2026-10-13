@@ -1,18 +1,18 @@
-//! Notation-template rewriting into plain dice notation.
+//! This module rewrites a notation template into plain dice notation.
 //!
 //! A template such as `1d20 + str` — a mix of dice-notation atoms (numbers, the dice operator,
 //! `NOTATION_KEYWORDS` modifiers, bracketed label spans) and dotted identifier references — is
 //! rewritten into plain dice notation by substituting each reference with its resolved value as a
 //! labeled constant (`1d20 + 3[str]`).
 //!
-//! Twin of the client package's `template` module's rewrite half; the two are pinned together by
-//! the `templates` section of the shared conformance corpus. The client module's `checkNotationKey`
-//! half has no twin: it is an authoring aid, and the server answers "does this reference run" by
-//! running it.
+//! It is the twin of the client package's `template` module's rewrite half; the two are pinned
+//! together by the `templates` section of the shared conformance corpus. The client module's
+//! `checkNotationKey` half has no twin: it is an authoring aid, and the server answers "does this
+//! reference run" by running it.
 //!
-//! INVARIANT: never panics on any input; every failure is a `FormulaError`
-//! value. INVARIANT: the rewritten text carries the author's case and the
-//! author's labels verbatim — only identifier claims are rewritten.
+//! INVARIANT: nothing here panics on any input; every failure is a `FormulaError` value.
+//! INVARIANT: the author's case and labels pass through verbatim; the rewrite replaces identifier
+//! claims and inserts a `1` before a dice operator that no integer claim precedes.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -82,8 +82,8 @@ enum ClaimKind {
     /// A run of digits.
     Integer,
     /// An identifier-start run that is a `NOTATION_KEYWORDS` member when
-    /// lowercased, or a `NOTATION_FUNCTIONS` member immediately followed by
-    /// `(`.
+    /// lowercased, or a `NOTATION_FUNCTIONS` member followed by `(` after any
+    /// spaces or tabs.
     Keyword,
     /// A dotted reference span — the only kind whose text reaches the
     /// consumer's resolver.
@@ -154,9 +154,7 @@ fn claim_integer_run(chars: &[(char, usize)], at: usize) -> Option<usize> {
 /// lowercased. The run's extent is `is_word_start`'s alone (over `kh_max` it
 /// is the whole six characters; over `kh1` only `kh`), and only the whole run
 /// is tested for membership. Ordered before `claim_identifier_span`, which is
-/// what makes the reserved set wider than the list — the one adjacency in the
-/// chain whose order is observable, since the two share `is_word_start` as
-/// their start set.
+/// what makes the reserved set wider than the list.
 fn claim_notation_keyword(chars: &[(char, usize)], at: usize) -> Option<usize> {
     if !is_word_start(chars[at].0) {
         return None;
@@ -295,9 +293,8 @@ fn emit_claim(
 
 /// Resolves a `.`-joined identifier path (e.g. `hp.max`) to a labeled
 /// substitution. The resolver's `Err` passes through verbatim; its `Ok` passes
-/// the same finite gate every other resolver boundary in this crate applies,
-/// so a non-finite value becomes a `NonFinite` error rather than leaking into
-/// the notation. A non-integer value is a `Type` error (roll templates require
+/// `finite`, so a non-finite value becomes a `NonFinite` error rather than
+/// reaching the notation. A non-integer value is a `Type` error (roll templates require
 /// integers) and a magnitude past `I32_MAX` a `Cap` — the cap is a MAGNITUDE
 /// test, asymmetric about zero on purpose. A negative value emits the same
 /// labeled shape as a positive one, prefixed with a unary minus, so the
@@ -332,8 +329,8 @@ fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, Fo
 /// identifier reference with its resolved value as a labeled constant
 /// (`1d20 + str` → `1d20 + 3[str]`). The scan runs the recognizer chain left
 /// to right through `claim_at`, emitting via `emit_claim`; an unclaimed
-/// character always passes through as a `Literal` claim, so the scan never
-/// fails on unfamiliar input and the returned notation is NOT guaranteed to
+/// character passes through as a `Literal` claim, so an unfamiliar character
+/// never fails the scan and the returned notation is NOT guaranteed to
 /// be text the dice parser accepts — parse validity is the caller's next step.
 ///
 /// The resolver is offered each identifier's path in the author's RAW case

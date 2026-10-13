@@ -1,15 +1,16 @@
-//! Memoized, cycle-guarded resolution over a named dependency graph.
+//! This module resolves a named dependency graph with memoization and cycle detection.
 //!
-//! Twin of the client package's `graph` module. Dependencies are discovered dynamically: `eval_node`
-//! calls the injected `get` for each dependency, and a cycle is detected on the active path.
-//! INVARIANT: the result is a pure function of the key SET — roots iterate in sorted order so the
-//! traversal (and therefore which member of a short-circuitable cycle reports `Cycle`) never
-//! depends on caller order. Stack bound: the driver runs on an explicit heap `stack`, never JS/Rust
-//! recursion. The first time `get` meets a key that is neither memoized nor on the active path it
-//! records the key as `needed` and returns a placeholder error; the driver discards that
-//! `eval_node` result, resolves the dependency, and re-invokes `eval_node` for the same key from
-//! scratch. Memoized dependencies make each retry a series of O(1) lookups. `MAX_GRAPH_VISITS` is
-//! charged once per key at first attempt.
+//! It is the twin of the client package's `graph` module. Dependencies are discovered dynamically:
+//! `eval_node` calls the injected `get` for each dependency, and a cycle is detected on the active
+//! path. INVARIANT: the result is a pure function of the key SET — roots iterate in sorted order so
+//! the traversal (and therefore which member of a short-circuitable cycle reports `Cycle`) never
+//! depends on caller order.
+//!
+//! The driver runs on an explicit heap `stack` rather than recursion. The first time `get` meets a
+//! key that is neither memoized nor on the active path it records the key as `needed` and returns
+//! a placeholder error; the driver discards that `eval_node` result, resolves the dependency, and
+//! re-invokes `eval_node` for the same key from scratch, reading the memoized dependencies from
+//! `memo`. `MAX_GRAPH_VISITS` is charged once per key at first attempt.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

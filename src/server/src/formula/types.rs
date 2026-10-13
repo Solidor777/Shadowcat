@@ -1,7 +1,8 @@
-//! Failure values, the value type and the DoS caps of the formula language.
+//! This module declares the failure values, the value type and the DoS caps of the formula
+//! language.
 //!
-//! Twin of the client package's `types` module; the tag spellings and cap values
-//! are asserted equal by the conformance corpus and by the `types` test module.
+//! It is the twin of the client package's `types` module. The conformance corpus and the `types`
+//! test module pin the tag spellings, and the `types` test module also asserts the four cap values.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -126,7 +127,7 @@ pub(crate) fn js_number(n: f64) -> String {
 }
 
 /// Gates an arithmetic result: a finite value passes through; anything else
-/// becomes a `NonFinite` error, so no infinity or NaN leaves the library.
+/// becomes a `NonFinite` error.
 pub(crate) fn finite(n: f64) -> FormulaValue {
     if n.is_finite() {
         Ok(n)

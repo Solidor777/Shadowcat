@@ -1,14 +1,15 @@
-//! The engine's formula language, server side.
+//! This module is the server side of the engine's formula language.
 //!
 //! It is an exact behavioural twin of the client's `@shadowcat/formula` package (lexer → parser →
 //! evaluator → dependency graph).
 //!
-//! The two implementations are pinned together by one conformance corpus,
-//! the `conformance` fixture of the client `@shadowcat/formula` package, that both test suites
-//! read, so a divergence fails on whichever side moved. INVARIANT: nothing here panics on any input
-//! and no `Ok` value is ever non-finite — every failure is a `FormulaError` value. INVARIANT: the
-//! language carries no game-system vocabulary; a reference path means whatever the `Resolve`
-//! implementation says it means (`SystemLeafResolver` is the engine's one such decision).
+//! One conformance corpus, the `conformance` fixture of the client package, is read by both test
+//! suites, so a divergence fails on whichever side moved.
+//!
+//! INVARIANT: nothing here panics on any input and no `Ok` value is ever non-finite — every
+//! failure is a `FormulaError` value. INVARIANT: the language carries no game-system vocabulary; a
+//! reference path means whatever the `Resolve` implementation says it means (`SystemLeafResolver`
+//! is the engine's one such decision).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,9 +1,10 @@
-//! Structural recursion over `Expr`.
+//! This module evaluates an `Expr` by structural recursion.
 //!
-//! Twin of the client package's `evaluate` module: operands evaluate left-to-right and the FIRST error
-//! wins; `/` is float division, `%` truncated remainder, `round` ties toward +∞; every arithmetic
-//! result passes `finite`, so no infinity or NaN escapes. Recursion depth is bounded by
-//! `MAX_AST_NODES` (one frame per node on a left-deep chain), not `MAX_PARSE_DEPTH`.
+//! It is the twin of the client package's `evaluate` module. Operands evaluate left-to-right and
+//! the FIRST error wins; `/` is float division, `%` is truncated remainder, and `round` ties toward
+//! +∞. Every arithmetic result and every resolved reference passes `finite`, so an `Expr` that
+//! `parse` produced never evaluates to infinity or NaN. For such an `Expr` the recursion depth is
+//! bounded by `MAX_AST_NODES` (one frame per node on a left-deep chain), not `MAX_PARSE_DEPTH`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
