@@ -1521,6 +1521,110 @@ async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetche
     assert_eq!(row.image_asset_id, Some(rival));
 }
 
+/// A job whose candidate redirected to an address that has its own row carrying an asset id
+/// reuses that asset without fetching and records it on the candidate's row.
+#[tokio::test]
+async fn resolve_preview_image_reuses_an_asset_recorded_on_the_landed_address_row() {
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let known = insert_test_asset(&repo, world.id).await;
+    let candidate = "https://posted.example/short";
+    let landed = "https://landed.example/final";
+    for url in [candidate, landed] {
+        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+    repo.set_link_preview_cache_image(landed, known)
+        .await
+        .unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            Arc::new(build_link_preview_client()),
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed.to_string(),
+        "https://unreachable.example/img.png".to_string(),
+    )
+    .await
+    .expect("an asset on the landed address row resolves without a fetch");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    assert_eq!(asset_id, known);
+    let row = repo
+        .get_link_preview_cache(candidate)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, Some(known));
+}
+
+/// A job that creates an asset records it on the landed address row too, when that row exists
+/// without an asset id.
+#[tokio::test]
+async fn resolve_preview_image_records_a_new_asset_on_a_landed_address_row_without_one() {
+    let router = Router::new().route(
+        "/img.png",
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                vec![7u8, 7, 7],
+            )
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let candidate = "https://posted.example/short";
+    let landed = "https://landed.example/final";
+    for url in [candidate, landed] {
+        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let root = tempfile::tempdir().unwrap();
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed.to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("a miss fetches and creates an asset");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    for url in [candidate, landed] {
+        let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+        assert_eq!(row.image_asset_id, Some(asset_id), "{url}");
+    }
+}
+
 /// Callers whose key sets overlap and list the shared keys in opposite orders all complete, and
 /// the registry is empty afterwards.
 #[tokio::test]

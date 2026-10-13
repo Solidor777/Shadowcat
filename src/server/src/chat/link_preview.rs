@@ -176,13 +176,21 @@ async fn cached_or_fetch(
     if let Some(mut hit) = cache.get(url, now) {
         // A background job records an asset on the persisted row without updating this entry.
         if let Some(preview) = hit.as_mut().filter(|p| p.image_asset_id.is_none()) {
-            if let Ok(Some(row)) = repo.get_link_preview_cache(url).await {
-                preview.image_asset_id = row.image_asset_id;
+            match repo.get_link_preview_cache(url).await {
+                Ok(Some(row)) => preview.image_asset_id = row.image_asset_id,
+                Ok(None) => {}
+                Err(e) => tracing::warn!(?e, %url, "link-preview cache row read failed"),
             }
         }
         return Some(hit);
     }
-    let row = repo.get_link_preview_cache(url).await.ok().flatten()?;
+    let row = match repo.get_link_preview_cache(url).await {
+        Ok(row) => row?,
+        Err(e) => {
+            tracing::warn!(?e, %url, "link-preview cache row read failed");
+            return None;
+        }
+    };
     let is_negative = row.title.is_none() && row.description.is_none();
     let ttl_ms = if is_negative {
         NEGATIVE_TTL.as_millis() as i64
@@ -397,11 +405,14 @@ pub async fn enrich(
         let Some(image_url) = &preview.image_url else {
             continue;
         };
+        if preview.image_asset_id.is_some() {
+            continue;
+        }
         let queued = pending.iter().any(|p| {
             matches!(p, PendingEnrichment::PreviewImage { preview_url, .. }
                 if *preview_url == preview.url)
         });
-        if preview.image_asset_id.is_none() && !queued {
+        if !queued {
             pending.push(PendingEnrichment::PreviewImage {
                 cache_urls: Vec::new(),
                 preview_url: preview.url.clone(),

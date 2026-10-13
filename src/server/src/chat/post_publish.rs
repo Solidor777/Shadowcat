@@ -154,8 +154,8 @@ pub enum PendingEnrichment {
     PreviewImage {
         /// The candidate URLs `enrich` extracted from the message, in message order, whose
         /// previews carry this job's `preview_url`: the keys of the persisted
-        /// `link_preview_cache` rows the job reads and writes. `enrich` builds it with at least
-        /// one entry.
+        /// `link_preview_cache` rows the job reads and writes, together with the `preview_url`
+        /// row. `enrich` builds it with at least one entry.
         cache_urls: Vec<String>,
         /// The `url` of the `Segment::LinkPreview` this job patches: the address the fetch
         /// ended on (normalized by `Url::to_string`, post-redirect). Differs from a
@@ -439,21 +439,23 @@ async fn resolve_job(
     }
 }
 
-/// De-dup-then-fetch for one `PreviewImage` job: reads the persisted `link_preview_cache` row of
-/// every `cache_urls` entry FIRST and, when any row carries an `image_asset_id`, reuses it
-/// verbatim, writing it onto the rows that lack one -- no refetch and no second asset for a link
-/// this or another message already imaged. On a miss, fetches `image_url` through the SAME
-/// SSRF-guarded client `enrich` uses (`link_preview::fetch_image_bytes`), asset-ifies it via
-/// `create_asset_from_bytes` (`created_by: None`: no user account backs a server-fetched image),
-/// and records the asset id on the `cache_urls` rows that exist and hold no id, so the patched
-/// segment carries the job's asset even when a write that does not take the lock recorded another
-/// id on a row first. Holds `write_barrier`'s read side around the asset commit, as
-/// `http::assets::upload`/`replace`/`delete` do: this commit runs from the post-publish job
-/// rather than an HTTP handler, so it joins the same exclusion or an in-server backup's file copy
-/// could race a half-committed asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
-/// `cache_urls` (see `with_preview_url_locks`), so when the first of two concurrent jobs sharing
-/// a `cache_urls` entry succeeds, the second finds its recorded asset id instead of creating
-/// another asset.
+/// De-dup-then-fetch for one `PreviewImage` job over its rows: the persisted
+/// `link_preview_cache` rows of every `cache_urls` entry and of `preview_url`. Reads them FIRST
+/// and, when any row carries an `image_asset_id`, reuses it verbatim, recording it on the rows
+/// that lack one -- no refetch and no second asset for a link this or another message already
+/// imaged, including a link whose final address another message posted directly. On a miss,
+/// fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
+/// (`link_preview::fetch_image_bytes`), asset-ifies it via `create_asset_from_bytes`
+/// (`created_by: None`: no user account backs a server-fetched image), and records the asset id
+/// on the rows that exist and hold no id, so the patched segment carries the job's asset even
+/// when a write that does not take the lock recorded another id on a row first. Holds
+/// `write_barrier`'s read side around the asset commit, as `http::assets::upload`/`replace`/
+/// `delete` do: this commit runs from the post-publish job rather than an HTTP handler, so it
+/// joins the same exclusion or an in-server backup's file copy could race a half-committed
+/// asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
+/// the rows' URLs (see `with_preview_url_locks`), so when the first of two concurrent jobs
+/// sharing a row succeeds, the second finds its recorded asset id instead of creating another
+/// asset.
 async fn resolve_preview_image(
     deps: FetchDeps,
     world_id: Uuid,
@@ -469,12 +471,18 @@ async fn resolve_preview_image(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    // The closure moves `cache_urls`, so the lock keys are a separate clone.
-    let lock_keys = cache_urls.clone();
+    // The landed address's own row joins the read and write set, so an asset a message that
+    // posted that address directly already recorded is reused, and the closure moves `row_urls`,
+    // so the lock keys are a separate clone.
+    let mut row_urls = cache_urls;
+    if !row_urls.contains(&preview_url) {
+        row_urls.push(preview_url.clone());
+    }
+    let lock_keys = row_urls.clone();
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         let mut known: Option<Uuid> = None;
         let mut unset: Vec<&String> = Vec::new();
-        for cache_url in &cache_urls {
+        for cache_url in &row_urls {
             match repo.get_link_preview_cache(cache_url).await {
                 Ok(Some(row)) => match row.image_asset_id {
                     Some(id) => {
@@ -516,7 +524,7 @@ async fn resolve_preview_image(
             .await
             .ok()?
         };
-        record_preview_image(&repo, cache_urls.iter().collect(), asset.id).await;
+        record_preview_image(&repo, row_urls.iter().collect(), asset.id).await;
         Some(ResolvedEnrichment::ImageForPreview {
             preview_url,
             asset_id: asset.id,
