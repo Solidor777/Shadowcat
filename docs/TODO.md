@@ -71,7 +71,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
     as run 1 of a fresh process and worker count is not cleanly separable from run position or
     regime.
 
-  Whether to measure it is the owner's decision. Host observation, not a blocker and with no
+  Owner ruled: measure it later. Host observation, not a blocker and with no
   diagnosed cause: a 2-worker process of these servers runs about 11.6 ms per download in the
   fast regime and reads the slow ranges above in later runs of the same session. Then, in the same
   branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR` set
