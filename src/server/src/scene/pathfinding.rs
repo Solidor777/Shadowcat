@@ -588,8 +588,8 @@ pub fn find(
     let mut cells: Vec<Cell> = Vec::new();
     let mut total = 0.0;
     let mut parity = 0u8;
-    // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
-    // window: both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
+    // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window:
+    // both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
     // the axial window. A square-only `to_cell` here paired with the square window would silently
     // route a hex request to the WRONG destination cell; fixing only one side would instead make
     // the goal fall outside the other's box, reading spuriously Unreachable.

@@ -174,7 +174,7 @@ fn a_corner_free_long_diagonal_emits_a_plain_staircase() {
     // Discrimination: the assertion is a COUNT, so it fails on any edit that emits a flanking
     // pair on a step whose two crossings are separated. It does NOT restate the traversal:
     // the expected count is `2n + 1` from the staircase geometry, and the accompanying
-    // accompanying superset check re-derives the same set from the dense-sample oracle.
+    // superset check re-derives the same set from the dense-sample oracle.
     //
     // SCOPE, stated so this test is not read as more than it is: the two crossings on each
     // step of this construction are separated by `0.15/n` in the parametric variable, which is

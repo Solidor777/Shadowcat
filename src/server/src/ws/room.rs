@@ -1740,8 +1740,8 @@ impl Room {
         // `gather_vision_sources_in_scene` → `user_access`), both of which run
         // UNDER that guard — and a scene read guard is never held across an await, so the
         // settings read has to happen ahead of it. Fetched unconditionally rather than only when
-        // a combat turns out to be running: whether one is is itself only knowable under the
-        // guard. Propagates its error rather than defaulting: an unresolvable authority input
+        // a combat turns out to be running: whether one is running is itself only knowable under
+        // the guard. Propagates its error rather than defaulting: an unresolvable authority input
         // fails closed (the move is refused) instead of being guessed at.
         let world_defaults = repo.world_cap_defaults(self.world_id).await?;
 
