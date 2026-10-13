@@ -21,8 +21,8 @@
 //! `AudioHardwareCreateProcessTap`, `AudioHardwareDestroyProcessTap`,
 //! `AudioHardwareCreateAggregateDevice`, `AudioHardwareDestroyAggregateDevice`,
 //! `AudioDeviceCreateIOProcID`, `AudioDeviceStart`, `AudioDeviceStop` and
-//! `AudioDeviceDestroyIOProcID` mirror Apple's CoreAudio and AudioToolbox declarations for macOS
-//! 14.2 and later. `CATapDescription` is an Objective-C class with no C-only constructor, so
+//! `AudioDeviceDestroyIOProcID` are declared by hand in the CoreAudio `extern "C"` block.
+//! `CATapDescription` is an Objective-C class with no C-only constructor, so
 //! `build_stereo_mixdown_tap_description` builds it through `objc_msgSend` rather than an
 //! `objc`/`objc2` crate (neither is a workspace dependency), and guards the initializer with
 //! `class_respondsToSelector` so an absent selector fails closed. If a signature changes, the
@@ -44,14 +44,12 @@ use super::{reduce_to_basename, MonitorError, SessionLevel, SessionMonitor};
 /// Opaque Core Audio object id (`AudioObjectID`, a `u32` per the framework's own typedef).
 type AudioObjectId = u32;
 
-/// `kAudioHardwarePropertyProcessObjectList`'s numeric selector (from `AudioHardware.h`).
+/// `kAudioHardwarePropertyProcessObjectList`'s numeric selector, the four-char code `'plis'`.
 const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = 0x70_6c_69_73; // 'plis'
-/// `kAudioProcessPropertyPID`'s numeric selector (from `AudioHardware.h`) — the SECOND
-/// `AudioObjectGetPropertyData` call every process object needs: the object id Core Audio
-/// enumerates is its OWN opaque `AudioObjectID`, never a POSIX pid, so the real pid must be
-/// read back through this property before `proc_pidpath` can resolve anything. Encoded the
-/// same four-char-code way as the already-verified `'plis'` selector above: 'p'=0x70, 'i'=0x69,
-/// 'd'=0x64, ' '=0x20.
+/// `kAudioProcessPropertyPID`'s numeric selector, the four-char code `'pid '` ('p'=0x70,
+/// 'i'=0x69, 'd'=0x64, ' '=0x20). The object id Core Audio enumerates is its own opaque
+/// `AudioObjectID`, never a POSIX pid, so the pid is read back through this property before
+/// `proc_pidpath` can resolve it.
 const K_AUDIO_PROCESS_PROPERTY_PID: u32 = 0x70_69_64_20; // 'pid '
 /// The global audio-hardware object id every `AudioObjectGetPropertyData` call against a
 /// hardware-scoped selector targets.
@@ -141,10 +139,9 @@ extern "C" {
     fn objc_getClass(name: *const i8) -> *mut c_void;
     /// The Objective-C runtime's selector registration.
     fn sel_registerName(name: *const i8) -> *mut c_void;
-    /// Reports whether `cls` implements `sel` — checked before every `objc_msgSend` call this
-    /// file makes against a selector name, so
-    /// an unrecognized selector fails closed (returns `None`) instead of raising
-    /// `doesNotRecognizeSelector:` and aborting the process.
+    /// Reports whether `cls` implements `sel`. `build_stereo_mixdown_tap_description` checks it
+    /// before the `objc_msgSend` that sends `initStereoMixdownOfProcesses:`, so an absent
+    /// selector returns `None` instead of raising `doesNotRecognizeSelector:`.
     fn class_respondsToSelector(cls: *mut c_void, sel: *mut c_void) -> i8;
     /// `objc_msgSend`, the Objective-C runtime's message dispatch. Declared ONCE at its minimal
     /// (0-argument-selector) arity: Objective-C calls this same C symbol with a different
@@ -192,7 +189,7 @@ type AudioDeviceIoProc = extern "C" fn(
     client_data: *mut c_void,
 ) -> i32;
 
-/// Mirrors `AudioBufferList` (`CoreAudioTypes.h`): a single-element view is enough here since
+/// Mirrors the Core Audio `AudioBufferList` struct: a single-element view is enough here since
 /// this file always taps a single stereo-or-mono process mixdown.
 #[repr(C)]
 struct AudioBufferList {
@@ -202,7 +199,7 @@ struct AudioBufferList {
     buffers: [AudioBuffer; 1],
 }
 
-/// Mirrors `AudioBuffer` (`CoreAudioTypes.h`): one channel-interleaved audio buffer.
+/// Mirrors the Core Audio `AudioBuffer` struct: one channel-interleaved audio buffer.
 #[repr(C)]
 struct AudioBuffer {
     /// Channel count in `data`.
@@ -338,7 +335,7 @@ fn macos_at_least_14_2() -> bool {
     major > 23 || (major == 23 && minor >= 2)
 }
 
-/// Mirrors POSIX `struct utsname` (`sys/utsname.h`) — only `release` is read.
+/// Mirrors the POSIX `struct utsname` that `uname` fills — only `release` is read.
 #[repr(C)]
 struct Utsname {
     /// Operating system name.
@@ -490,11 +487,11 @@ unsafe fn release_objc_instance(instance: *mut c_void) {
 }
 
 /// Builds a `CATapDescription` mixing down `pid`'s own audio, via hand-transcribed
-/// `objc_msgSend` calls (the module doc states why no Objective-C crate is used). Returns the owned Objective-C instance pointer (release with
-/// `release_objc_instance`).
+/// `objc_msgSend` calls (the module doc states why no Objective-C crate is used). Returns the
+/// owned Objective-C instance pointer, to be released with `release_objc_instance`.
 fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
-    // SAFETY: every symbol here is a `dlsym`-resolved libobjc/CoreFoundation entry point;
-    // each selector/class name is a static, NUL-terminated C string literal.
+    // SAFETY: every Objective-C runtime function here is declared in this file's `extern "C"`
+    // block; each class and selector name is a NUL-terminated `CString` that outlives its call.
     unsafe {
         let class_name = CString::new("CATapDescription").ok()?;
         let class = objc_getClass(class_name.as_ptr());

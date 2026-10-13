@@ -29,8 +29,8 @@ fn platform_monitor_never_panics_and_reports_a_sane_result() {
 
 /// The pid diff `teardown_departed_taps` runs before every teardown call: a pid present in the
 /// tap map but absent from the current live set is "departed" and must be torn down. Exercises
-/// the LOGIC in isolation (`departed_pids` takes no real `TapHandle`/Core Audio resource), which
-/// is what `run_process_tap_loop`'s leak fix depends on.
+/// the LOGIC in isolation (`departed_pids` takes no real `TapHandle`/Core Audio resource); the
+/// diff decides which taps `run_process_tap_loop` releases through `teardown_departed_taps`.
 #[test]
 fn departed_pids_reports_exactly_the_pids_missing_from_live() {
     let live: HashSet<i32> = [2].into_iter().collect();

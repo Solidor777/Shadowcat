@@ -10,13 +10,13 @@
 //! (`IAudioSessionManager2`, `IAudioSessionControl`, `IAudioSessionControl2`,
 //! `IAudioSessionEnumerator`) live under `Win32::Media::Audio`, while the meter interface
 //! (`IAudioMeterInformation`) lives under the nested `Win32::Media::Audio::Endpoints` module
-//! behind its own `Win32_Media_Audio_Endpoints` feature. `IMMDevice::Activate` takes
-//! `Option<*const windows_core::PROPVARIANT>` and needs no extra feature.
+//! behind its own `Win32_Media_Audio_Endpoints` feature. `IMMDevice::Activate` sits behind the
+//! `Win32_System_Com` feature and takes `Option<*const windows_core::PROPVARIANT>`.
 //! `IAudioSessionEnumerator::GetCount` returns an `i32` and `GetSession` takes an `i32`.
 //!
-//! The design to preserve is a dedicated MTA thread that walks the enumerator, the default render
-//! endpoint, the session manager and each session's control and meter, and derives the basename
-//! with `QueryFullProcessImageNameW`.
+//! The design to preserve is a dedicated MTA thread that walks the `IMMDeviceEnumerator`, the
+//! default render endpoint, the session manager and each session's control and meter, and derives
+//! the basename with `QueryFullProcessImageNameW`.
 
 use std::sync::{Arc, Mutex};
 

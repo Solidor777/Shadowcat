@@ -8,11 +8,13 @@
 //! Node discovery considers nodes whose `media.class` property is `"Stream/Output/Audio"` and names
 //! each from its `application.process.binary` property. The name is reduced to a basename
 //! defensively: PipeWire already reports a bare binary name, but `filter_for_watch_list` re-derives
-//! it regardless. Peak measurement links a passive capture stream to each node's monitor port and
-//! tracks the maximum absolute sample seen since the last publish.
+//! it regardless. Peak measurement connects an input stream (media category `Monitor`) to each
+//! node by id (`attach_monitor_stream`) and tracks the maximum absolute sample seen since the last
+//! `poll`.
 //!
-//! The backend binds the `pipewire` 0.8 and `libspa` 0.8 APIs. Its capture stream follows the
-//! shape of the `audio-capture` example shipped with `pipewire` 0.8.0.
+//! The backend binds the `pipewire` 0.8 and `libspa` 0.8 APIs. The `audio-capture` example in the
+//! `pipewire` 0.8.0 crate creates its stream with `Stream::new`, registers a local listener and
+//! calls `connect`, the same sequence `attach_monitor_stream` uses.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -122,9 +124,9 @@ impl SessionMonitor for LinuxMonitor {
 /// One capture stream's live PipeWire resources. Field order is load-bearing: struct fields
 /// drop in declaration order, and `StreamListener::drop` (`spa::utils::hook::remove`) patches
 /// pointers within the stream's own internal listener list — it must run before `Stream::drop`
-/// (`pw_stream_destroy`) can free that memory. Source: `pipewire-0.8.0/examples/audio-capture.rs`
-/// binds its `stream` variable before its `_listener` variable for the same reason (reverse-drop
-/// order at scope exit tears the listener down first).
+/// (`pw_stream_destroy`) can free that memory. The `audio-capture` example in the `pipewire` 0.8.0
+/// crate binds its `stream` variable before its `_listener` variable, so scope exit drops the
+/// listener first.
 struct CaptureStream {
     /// Dropped FIRST — unregisters the `process` callback from the stream's listener list.
     /// Held only for its `Drop` side effect (`StreamListener` exposes no other API over its

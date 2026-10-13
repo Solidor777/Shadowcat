@@ -160,10 +160,9 @@ fn resolve_track_index(
 }
 
 /// Apply one `AudioOp` to `state`, returning the fresh post-image or a refusal. Pure and
-/// I/O-free: `playlist_lookup` resolves a playlist id to its (already-fetched) engine body —
-/// the CALLER (`transport::handle_transport`) does the async DB read before calling this, since
-/// a `Play`/`Next`/`Prev` never needs more than the one playlist the op itself names or the
-/// advancing entry's own `playlist` field.
+/// I/O-free: `playlist_lookup` resolves a playlist id to its already-fetched engine body. The
+/// caller reads the playlist before calling this: `transport::handle_transport_locked` through
+/// `transport::prefetch_playlist`, and `transport::on_active_scene` inline.
 ///
 /// # Examples
 ///

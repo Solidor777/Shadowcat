@@ -3,8 +3,7 @@
 //! The `state` module holds the engine's entry point, `state::apply`. The `transport` module holds
 //! the handler and `on_active_scene`.
 
-// Ratchet: every item in this module must carry a doc comment, enforced by
-// the two crate-level deny attributes this module declares.
+// The two deny attributes below reject any item in this module that lacks a doc comment.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

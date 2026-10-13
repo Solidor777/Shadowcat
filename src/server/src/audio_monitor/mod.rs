@@ -5,8 +5,7 @@
 //! the macOS Core Audio process tap and Linux PipeWire. The subcommand is a
 //! `CliCommand::AudioMonitor` branch of the single `shadowcat` binary, never a second executable.
 
-// Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// The two deny attributes below reject any item in this module that lacks a doc comment.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
