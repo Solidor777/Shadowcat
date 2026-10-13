@@ -1,4 +1,4 @@
-//! The per-stream cut: how one HTTP/2 stream's response is ended without touching its connection.
+//! This module cuts one HTTP/2 stream's response without touching its connection.
 //!
 //! [`StreamExec`] is the executor hyper's HTTP/2 server spawns every request's future through
 //! (`execute_h2stream`; an extended-CONNECT tunnel's upgrade task goes through it too). It runs
@@ -8,14 +8,15 @@
 //! discards the stream's buffered DATA and frees its `max_concurrent_streams` slot. The connection,
 //! every other stream and every tunnel are untouched.
 //!
-//! INVARIANTS:
-//! 1. The scope is entered around the WHOLE future, so a `LeasedBody` polled by the response pipe
-//!    (the same `poll` as the service future in hyper's `H2Stream`) reads it with
-//!    [`current_cut`]. A task spawned any other way has no scope, so nothing registers a cut for it.
-//! 2. Only a future that runs a `LeasedBody` registers a marker, so a tunnel (no `LeasedBody`) is
-//!    never cut by this unit, and the wrapper need not tell the two apart.
-//! 3. A cut fired before the future's first poll still drops it: the race is `biased` toward the
-//!    cut, and a `watch` value is not lost to a late subscriber.
+//! INVARIANT: The scope is entered around the WHOLE future, so a `LeasedBody` polled by the
+//! response pipe (the same `poll` as the service future in hyper's `H2Stream`) reads it with
+//! [`current_cut`]. A task spawned any other way has no scope, so nothing registers a cut for it.
+//!
+//! INVARIANT: Only a future that runs a `LeasedBody` registers a marker, so a tunnel (no
+//! `LeasedBody`) is never cut by this unit, and the wrapper need not tell the two apart.
+//!
+//! INVARIANT: A cut fired before the future's first poll still drops it: the race is `biased`
+//! toward the cut, and a `watch` value is not lost to a late subscriber.
 
 use std::future::Future;
 

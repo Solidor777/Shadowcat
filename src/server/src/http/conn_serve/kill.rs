@@ -1,5 +1,5 @@
-//! The kill switch: how a connection's IO is failed on purpose, once and for every task that polls
-//! it.
+//! This module is the kill switch that fails a connection's IO on purpose, once and for every
+//! task that polls it.
 //!
 //! A [`KillSignal`] (one per serve loop) hands each connection a [`ConnKill`]; firing the signal
 //! fires every live connection's [`ConnKill`], and a connection's own [`ConnKill`] can be fired
@@ -8,26 +8,30 @@
 //!
 //! WHY the end is delivered as an IO error and not by aborting the connection task: an HTTP/2
 //! extended-CONNECT tunnel (a WebSocket) runs as a task hyper detaches from its connection, and
-//! aborting the connection task while such a tunnel is live drops the h2 connection out from under
-//! it. An IO error instead makes the h2 codec end the connection through its own error path: every
-//! stream, tunnels included, is reset by the protocol. The drop and the abort remain only as
+//! aborting the connection task while such a tunnel is live drops the h2 connection's state out
+//! from under it, which trips a debug assertion in h2's stream counting (`Counts::drop`) in debug
+//! builds. An IO error instead makes the h2 codec end the connection through its own error path:
+//! every stream, tunnels included, is reset by the protocol. The drop and the abort remain only as
 //! counted last resorts for a connection that does not end.
 //!
-//! INVARIANTS:
-//! 1. After [`ConnKill::fire`], every poll of an IO method of a [`Replay`](super::Replay)
-//!    holding that [`ConnKill`] returns an error. All five methods must check it (`poll_read`,
-//!    `poll_write`, `poll_write_vectored`, `poll_flush`, `poll_shutdown`): the h2 codec can be
-//!    parked in any of them, and `poll_shutdown` is what a connection that is already closing
-//!    waits in.
-//! 2. Every task parked in any IO method of the connection, however many tasks poll it, is woken
-//!    by the firing, whether it registered before or after it. Registration and firing are ordered
-//!    by the one lock of [`ConnKill`], so a waker is either registered before the firing (and woken
-//!    by it) or finds the reason set when it polls.
-//! 3. Dropping the [`KillSignal`] does not fire it: a connection outlives a dropped signal only
-//!    when the serve loop was cancelled, and its tasks are then dropped with it.
-//! 4. The first reason wins: the reason of a connection that has fired never changes, so the error
-//!    every IO method returns and the reason the serve loop acts on cannot disagree.
-//! 5. Wakers are woken outside the lock, so a waker that re-polls the connection cannot deadlock.
+//! INVARIANT: After [`ConnKill::fire`], every poll of an IO method of a [`Replay`](super::Replay)
+//! holding that [`ConnKill`] returns an error. All five methods must check it (`poll_read`,
+//! `poll_write`, `poll_write_vectored`, `poll_flush`, `poll_shutdown`): the h2 codec can be parked
+//! in any of them, and `poll_shutdown` is what a connection that is already closing waits in.
+//!
+//! INVARIANT: Every task parked in any IO method of the connection, however many tasks poll it, is
+//! woken by the firing. Registration and firing are ordered by the one lock of [`ConnKill`], so a
+//! waker is either registered before the firing (and woken by it) or finds the reason set when it
+//! polls.
+//!
+//! INVARIANT: Dropping the [`KillSignal`] does not fire it: a connection outlives a dropped signal
+//! only when the serve loop was cancelled, and its tasks are then dropped with it.
+//!
+//! INVARIANT: The first reason wins: the reason of a connection that has fired never changes, so
+//! the error every IO method returns and the reason the serve loop acts on cannot disagree.
+//!
+//! INVARIANT: Wakers are woken outside the lock, so a waker that re-polls the connection cannot
+//! deadlock.
 //!
 //! The waker list of a [`ConnKill`] is bounded by the number of distinct tasks polling the
 //! connection (a [`Replay`](super::Replay) is polled by the connection task and, after an HTTP/1
