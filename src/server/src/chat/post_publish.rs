@@ -479,8 +479,8 @@ async fn resolve_job(
 /// (`created_by: None`: no user account backs a server-fetched image), and records the asset id
 /// on the rows that hold no id, so the patched segment carries the job's asset even when a write
 /// that does not take the lock recorded another id on a row first; that row keeps its id. A
-/// `preview_url` row that does not exist is first created from the job's `title` and
-/// `description` (a failed write is logged), so a later post of that address reuses the asset.
+/// `preview_url` row that does not exist is created once the job has an asset, from the job's
+/// `title` and `description` (see `create_landed_row`), so a later post of that address reuses it.
 /// Holds `write_barrier`'s read side around the asset commit, as `http::assets::upload`/
 /// `replace`/`delete` do: this commit runs from the post-publish job rather than an HTTP handler,
 /// so it joins the same exclusion or an in-server backup's file copy could race a half-committed
@@ -507,6 +507,7 @@ async fn resolve_preview_image(
     } = deps;
     // The landed address's own row joins the read and write set, so an asset already recorded
     // under it is reused and a new asset is recorded on it.
+    let source_rows = cache_urls.len();
     let mut row_urls = cache_urls;
     if !row_urls.contains(&preview_url) {
         row_urls.push(preview_url.clone());
@@ -515,39 +516,46 @@ async fn resolve_preview_image(
     let lock_keys: Vec<PreviewLockKey> = row_urls.iter().map(|u| (world_id, u.clone())).collect();
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         let mut known: Option<Uuid> = None;
+        // The rows to record the asset id on: all but those that carry one, and the landed row
+        // until it is created.
         let mut unset: Vec<&String> = Vec::new();
-        for cache_url in &row_urls {
+        let mut landed_missing = false;
+        // The earliest `fetched_at_ms` among the candidate rows. The landed row's text comes from
+        // one of their scrapes, so this time expires it no later than that scrape's own row.
+        let mut scraped_at: Option<i64> = None;
+        for (index, cache_url) in row_urls.iter().enumerate() {
             match repo.get_link_preview_cache(world_id, cache_url).await {
-                Ok(Some(row)) => match row.image_asset_id {
-                    Some(id) => {
-                        known.get_or_insert(id);
+                Ok(Some(row)) => {
+                    if index < source_rows {
+                        scraped_at = Some(
+                            scraped_at.map_or(row.fetched_at_ms, |t| t.min(row.fetched_at_ms)),
+                        );
                     }
-                    None => unset.push(cache_url),
-                },
-                Ok(None) if *cache_url == preview_url => {
-                    // The row is created from the preview the job carries, so a later post of
-                    // the landed address reads the recorded asset instead of fetching it again.
-                    let now_ms = crate::ws::time::now_millis();
-                    match repo
-                        .upsert_link_preview_cache(
-                            world_id,
-                            cache_url,
-                            Some(&title),
-                            Some(&description),
-                            now_ms,
-                        )
-                        .await
-                    {
-                        Ok(()) => unset.push(cache_url),
-                        Err(e) => {
-                            tracing::warn!(?e, %cache_url, "link-preview cache persist failed");
+                    match row.image_asset_id {
+                        Some(id) => {
+                            known.get_or_insert(id);
                         }
+                        None => unset.push(cache_url),
                     }
                 }
+                Ok(None) if *cache_url == preview_url => landed_missing = true,
                 _ => unset.push(cache_url),
             }
         }
         if let Some(asset_id) = known {
+            if landed_missing
+                && create_landed_row(
+                    &repo,
+                    world_id,
+                    &preview_url,
+                    &title,
+                    &description,
+                    scraped_at,
+                )
+                .await
+            {
+                unset.push(&preview_url);
+            }
             record_preview_image(&repo, world_id, unset, asset_id).await;
             return Some(ResolvedEnrichment::ImageForPreview {
                 preview_url,
@@ -578,13 +586,60 @@ async fn resolve_preview_image(
             .await
             .ok()?
         };
-        record_preview_image(&repo, world_id, row_urls.iter().collect(), asset.id).await;
+        if landed_missing
+            && create_landed_row(
+                &repo,
+                world_id,
+                &preview_url,
+                &title,
+                &description,
+                scraped_at,
+            )
+            .await
+        {
+            unset.push(&preview_url);
+        }
+        record_preview_image(&repo, world_id, unset, asset.id).await;
         Some(ResolvedEnrichment::ImageForPreview {
             preview_url,
             asset_id: asset.id,
         })
     })
     .await
+}
+
+/// Creates the `link_preview_cache` row of a job's landed address from the title and description
+/// the job carries, once the job has an asset to record on it, so a later post of that address
+/// reads the recorded asset instead of fetching it again. The row takes `scraped_at`, the earliest
+/// scrape time among the candidate rows the text came from; without one, or when the write fails
+/// (logged), no row is created. Returns `true` when the write succeeded.
+async fn create_landed_row(
+    repo: &SqliteRepository,
+    world_id: Uuid,
+    preview_url: &str,
+    title: &str,
+    description: &str,
+    scraped_at: Option<i64>,
+) -> bool {
+    let Some(fetched_at) = scraped_at else {
+        return false;
+    };
+    match repo
+        .insert_link_preview_cache_if_absent(
+            world_id,
+            preview_url,
+            Some(title),
+            Some(description),
+            fetched_at,
+        )
+        .await
+    {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(?e, %preview_url, "link-preview cache persist failed");
+            false
+        }
+    }
 }
 
 /// Records `asset_id` on the `link_preview_cache` row in `world_id` of each of `row_urls` that has
@@ -603,6 +658,30 @@ async fn record_preview_image(
         {
             tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
         }
+    }
+}
+
+/// Records `asset_id` on the `link_preview_cache` row of an image URL in `world_id`, inserting a
+/// row without text first when none exists. A row that exists keeps its title, description and
+/// fetch time. A failed write is logged.
+async fn record_image_url_row(
+    repo: &SqliteRepository,
+    world_id: Uuid,
+    image_url: &str,
+    asset_id: Uuid,
+    now_ms: i64,
+) {
+    if let Err(e) = repo
+        .insert_link_preview_cache_if_absent(world_id, image_url, None, None, now_ms)
+        .await
+    {
+        tracing::warn!(?e, %image_url, "link-preview cache persist failed");
+    }
+    if let Err(e) = repo
+        .set_link_preview_cache_image(world_id, image_url, asset_id)
+        .await
+    {
+        tracing::warn!(?e, %image_url, "link-preview image asset persist failed");
     }
 }
 
@@ -696,18 +775,7 @@ async fn resolve_inline_image(
             .await
             .ok()?
         };
-        // No prior `upsert_link_preview_cache` call exists for `image_url`
-        // (unlike `resolve_preview_image`'s target, which the synchronous
-        // href-preview scrape already upserted) -- an inline chat image URL
-        // never went through that stage, so a row must be created here
-        // before `set_link_preview_cache_image` can attach an asset id to
-        // it. Same two-call shape as `resolve_thumbnail_asset`.
-        let _ = repo
-            .upsert_link_preview_cache(world_id, &image_url, None, None, now)
-            .await;
-        let _ = repo
-            .set_link_preview_cache_image(world_id, &image_url, asset.id)
-            .await;
+        record_image_url_row(&repo, world_id, &image_url, asset.id, now).await;
         Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
             asset_id: asset.id,
             alt,
@@ -824,12 +892,7 @@ async fn resolve_thumbnail_asset(
             .await
             .ok()?
         };
-        let _ = repo
-            .upsert_link_preview_cache(world_id, &thumbnail_url, None, None, now)
-            .await;
-        let _ = repo
-            .set_link_preview_cache_image(world_id, &thumbnail_url, asset.id)
-            .await;
+        record_image_url_row(&repo, world_id, &thumbnail_url, asset.id, now).await;
         Some(asset.id)
     })
     .await

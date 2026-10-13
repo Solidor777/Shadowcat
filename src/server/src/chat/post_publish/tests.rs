@@ -2170,3 +2170,217 @@ async fn resolvers_lock_their_url_in_their_own_world() {
         held.await.unwrap();
     }
 }
+
+/// The landed address row is stamped with the scrape time of the candidate rows it merges, not
+/// with the time the job runs, so its title and description expire when the scrape does. Covers a
+/// job that fetches the image and a job that reuses an asset recorded on a candidate row.
+#[tokio::test]
+async fn resolve_preview_image_stamps_the_landed_row_with_the_scrape_time() {
+    let (repo, world, _other, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let candidate = "https://posted.example/short";
+    let imaged = "https://posted.example/imaged";
+    let (landed_fetch, landed_known) = (
+        "https://landed.example/fetched",
+        "https://landed.example/known",
+    );
+    repo.upsert_link_preview_cache(world.id, candidate, Some("T"), Some("D"), 1_234)
+        .await
+        .unwrap();
+    repo.upsert_link_preview_cache(world.id, imaged, Some("T"), Some("D"), 5_678)
+        .await
+        .unwrap();
+    let known = insert_test_asset(&repo, world.id).await;
+    repo.set_link_preview_cache_image(world.id, imaged, known)
+        .await
+        .unwrap();
+
+    resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client.clone(),
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed_fetch.to_string(),
+        "T".to_string(),
+        "D".to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("a miss fetches and creates an asset");
+    resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![imaged.to_string()],
+        landed_known.to_string(),
+        "T".to_string(),
+        "D".to_string(),
+        "https://unreachable.example/img.png".to_string(),
+    )
+    .await
+    .expect("an asset on a candidate row resolves without a fetch");
+
+    let fetched = repo
+        .get_link_preview_cache(world.id, landed_fetch)
+        .await
+        .unwrap()
+        .expect("the landed row exists");
+    assert_eq!(fetched.fetched_at_ms, 1_234);
+    let reused = repo
+        .get_link_preview_cache(world.id, landed_known)
+        .await
+        .unwrap()
+        .expect("the landed row exists");
+    assert_eq!(reused.fetched_at_ms, 5_678);
+    assert_eq!(reused.image_asset_id, Some(known));
+}
+
+/// A job whose image fetch fails leaves no row for the landed address, so a later post of that
+/// address is scraped again instead of reading an image-less row.
+#[tokio::test]
+async fn resolve_preview_image_creates_no_landed_row_when_the_image_fetch_fails() {
+    let (repo, world, _other, _client, _port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let candidate = "https://posted.example/short";
+    let landed = "https://landed.example/final";
+    repo.upsert_link_preview_cache(world.id, candidate, Some("T"), Some("D"), 0)
+        .await
+        .unwrap();
+
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            Arc::new(build_link_preview_client()),
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed.to_string(),
+        "T".to_string(),
+        "D".to_string(),
+        "https://unreachable.example/img.png".to_string(),
+    )
+    .await;
+    assert!(resolved.is_none());
+    assert_eq!(
+        repo.get_link_preview_cache(world.id, landed).await.unwrap(),
+        None
+    );
+}
+
+/// A landed row that cannot be written is skipped: the job still resolves and records its asset
+/// on the candidate row.
+#[tokio::test]
+async fn resolve_preview_image_records_the_asset_when_the_landed_row_cannot_be_written() {
+    let (repo, world, _other, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let candidate = "https://posted.example/short";
+    let landed = "https://landed.example/final";
+    repo.upsert_link_preview_cache(world.id, candidate, Some("T"), Some("D"), 0)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_landed BEFORE INSERT ON link_preview_cache \
+         WHEN NEW.url = 'https://landed.example/final' \
+         BEGIN SELECT RAISE(ABORT, 'refused'); END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed.to_string(),
+        "T".to_string(),
+        "D".to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("the job resolves without the landed row");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    let row = repo
+        .get_link_preview_cache(world.id, candidate)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, Some(asset_id));
+    assert_eq!(
+        repo.get_link_preview_cache(world.id, landed).await.unwrap(),
+        None
+    );
+}
+
+/// An inline image or an oEmbed thumbnail whose URL already has a positive row keeps the row's
+/// title, description and fetch time when the image is recorded.
+#[tokio::test]
+async fn image_jobs_keep_an_existing_rows_text_and_fetch_time() {
+    let (repo, world, _other, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let inline_url = format!("http://stub.test:{port}/img.png");
+    let thumbnail_url = format!("http://stub.test:{port}/img.png?thumb");
+    for url in [&inline_url, &thumbnail_url] {
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 5)
+            .await
+            .unwrap();
+    }
+    let deps = |client: Arc<reqwest::Client>| {
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        )
+    };
+
+    let inline = resolve_inline_image(
+        deps(client.clone()),
+        world.id,
+        inline_url.clone(),
+        String::new(),
+    )
+    .await
+    .expect("the job creates an asset");
+    let ResolvedEnrichment::NewImageSegment(Segment::Image {
+        asset_id: inline_asset,
+        ..
+    }) = inline
+    else {
+        panic!("expected a new Image segment");
+    };
+    let thumbnail_asset = resolve_thumbnail_asset(deps(client), world.id, thumbnail_url.clone())
+        .await
+        .expect("the job creates an asset");
+
+    for (url, asset) in [
+        (&inline_url, inline_asset),
+        (&thumbnail_url, thumbnail_asset),
+    ] {
+        let row = repo
+            .get_link_preview_cache(world.id, url)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.title.as_deref(), Some("T"), "{url}");
+        assert_eq!(row.description.as_deref(), Some("D"), "{url}");
+        assert_eq!(row.fetched_at_ms, 5, "{url}");
+        assert_eq!(row.image_asset_id, Some(asset), "{url}");
+    }
+}
