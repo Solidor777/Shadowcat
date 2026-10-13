@@ -378,11 +378,12 @@ pub enum Segment {
         title: String,
         /// Server-extracted description (may be empty).
         description: String,
-        /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when a persisted
-        /// `link_preview_cache` row for a link ending on this segment's `url` already carries an
-        /// asset id, and `None` otherwise. A `None` segment whose preview has an image candidate
-        /// gets its id when the post-publish pipeline (`chat::post_publish`) resolves the
-        /// `PendingEnrichment::PreviewImage` job `enrich` queued or joined for it, through a
+        /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when the preview
+        /// carries an asset id read from its candidate's persisted `link_preview_cache` row, or
+        /// the one a preview of another candidate ending on the same address carries, and `None`
+        /// otherwise. A `None` segment gets its id when the post-publish pipeline
+        /// (`chat::post_publish`) resolves the `PendingEnrichment::PreviewImage` job `enrich`
+        /// queued or joined for its address, through a
         /// `WriteOrigin::ServerMessageRevision` republish (`run_pending_enrichments`). A preview
         /// with no image candidate queues no job, and a job that fails leaves `None`.
         /// `#[serde(default)]`: a stored segment may omit the key, which reads as `None`.
