@@ -1465,3 +1465,44 @@ async fn with_preview_url_locks_overlapping_key_sets_in_opposite_orders_do_not_d
         "every entry is reclaimed once all callers finish"
     );
 }
+
+/// A repeated key in one caller's key list is locked once, so the caller does not deadlock on
+/// itself, and the registry is empty afterwards.
+#[tokio::test]
+async fn with_preview_url_locks_duplicate_keys_lock_once_and_reclaim_the_entry() {
+    let locks = test_preview_fetch_locks();
+    let keys: Vec<String> = vec!["a".into(), "a".into()];
+    let run = with_preview_url_locks(&locks, &keys, || async { 7 });
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("a duplicated key must not deadlock the caller on itself");
+    assert_eq!(out, 7);
+    assert!(locks.is_empty(), "the single entry is reclaimed");
+}
+
+/// Releasing a key removes its entry exactly when the releaser is the last holder, in either
+/// release order: a releaser that still sees another holder leaves the entry, and the holder
+/// that releases afterwards removes it.
+#[tokio::test]
+async fn release_preview_lock_last_holder_removes_the_entry_in_either_order() {
+    for first_is_caller in [true, false] {
+        let locks = test_preview_fetch_locks();
+        let held = locks
+            .entry("a".to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let other = locks.get("a").unwrap().clone();
+        let (first, second) = if first_is_caller {
+            (held, other)
+        } else {
+            (other, held)
+        };
+        release_preview_lock(&locks, "a".to_string(), first);
+        assert_eq!(locks.len(), 1, "another holder remains, so the entry stays");
+        release_preview_lock(&locks, "a".to_string(), second);
+        assert!(
+            locks.is_empty(),
+            "the last holder to release removes the entry"
+        );
+    }
+}

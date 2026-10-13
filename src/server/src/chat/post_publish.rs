@@ -38,12 +38,12 @@ use crate::ws::room::Room;
 /// (see `with_preview_url_locks` for the concurrency argument, including why an entry is removed
 /// without a race). The map has the keyed-registry shape of `ws::room::RoomRegistry.rooms`. That
 /// map holds one entry per world, while this one would gain an entry for every distinct
-/// link-preview URL seen, so the last caller to finish with a key removes its entry.
+/// link-preview URL seen, so `release_preview_lock` removes an entry once its last holder
+/// releases.
 pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 
 /// Runs `f` while holding the lock of every distinct key in `keys`, get-or-inserting a fresh
-/// `Mutex` per key on first use and, on return, removing each entry that no other caller
-/// references.
+/// `Mutex` per key on first use and, on return, removing each entry no other caller holds.
 ///
 /// # Lock order
 ///
@@ -60,15 +60,13 @@ pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 /// Two callers would then hold two different mutexes for one URL, defeating the registry.
 ///
 /// This function never separates the strong-count check from the removal: both happen under the
-/// shard lock of one `locks.entry(key)` call made after the guards are dropped.
-/// `DashMap::entry` blocks any other `entry()`, `get()` or `insert()` for that key while the
-/// returned `Entry` is alive, and this function is the only code that clones an `Arc` out of the
-/// map, so no concurrent caller can clone it between the count read and the removal.
-/// `Arc::strong_count(occ.get()) <= 2` means only the map's clone and this function's own `arcs`
-/// clone remain, so the entry is removed. A higher count means a concurrent waiter already
-/// cloned the `Arc`, and the entry stays for them. Every `Arc` is cloned out of the map before
-/// any lock is awaited, so a concurrent finisher observes a count above 2 for the whole time this
-/// call holds or awaits that key.
+/// shard lock of one `locks.entry(key)` call in `release_preview_lock`, made after the guards and
+/// the caller's own `Arc` clone for that key are dropped. `DashMap::entry` blocks any other
+/// `entry()`, `get()` or `insert()` for that key while the returned `Entry` is alive, and this
+/// function is the only code that clones an `Arc` out of the map, so no concurrent caller can
+/// clone it between the count read and the removal. Every `Arc` is cloned out of the map before
+/// any lock is awaited, so a holder other than this caller makes the count exceed 1 for as long
+/// as it holds or awaits the key.
 async fn with_preview_url_locks<F, Fut, T>(locks: &PreviewFetchLocks, keys: &[String], f: F) -> T
 where
     F: FnOnce() -> Fut,
@@ -93,14 +91,26 @@ where
         }
         f().await
     };
-    for key in sorted {
-        if let Entry::Occupied(occ) = locks.entry(key.clone()) {
-            if Arc::strong_count(occ.get()) <= 2 {
-                occ.remove();
-            }
-        }
+    for (key, arc) in sorted.into_iter().zip(arcs) {
+        release_preview_lock(locks, key.clone(), arc);
     }
     result
+}
+
+/// Drops the caller's `arc` for `key` and removes the map entry when the map holds the only
+/// remaining clone.
+///
+/// Dropping before the count check makes the last of several concurrent holders to release see
+/// a count of 1, whichever order they release in. Counting while still holding `arc` would leave
+/// two holders that each release while the other's clone is alive both seeing a higher count,
+/// and the entry would never be removed.
+fn release_preview_lock(locks: &PreviewFetchLocks, key: String, arc: Arc<tokio::sync::Mutex<()>>) {
+    drop(arc);
+    if let Entry::Occupied(occ) = locks.entry(key) {
+        if Arc::strong_count(occ.get()) == 1 {
+            occ.remove();
+        }
+    }
 }
 
 /// One post-publish background job queued by `link_preview::enrich` for the

@@ -298,19 +298,22 @@ pub async fn enrich(
     // Each preview travels with the candidate URL its cache rows are keyed on: a fresh fetch
     // carries the address it ended on in `LinkPreview.url` (normalized, and post-redirect when
     // it redirected), while `link_preview_cache` is written and read under the candidate.
-    let mut previews: Vec<(String, LinkPreview)> = Vec::with_capacity(urls.len());
-    let mut misses: Vec<String> = Vec::new();
-    for url in urls {
+    // The leading index is the candidate's position in `urls`; sorting by it below makes segment
+    // order, job `cache_urls` order and the winning `image_url` independent of the order the
+    // concurrent fetches complete in.
+    let mut previews: Vec<(usize, String, LinkPreview)> = Vec::with_capacity(urls.len());
+    let mut misses: Vec<(usize, String)> = Vec::new();
+    for (index, url) in urls.into_iter().enumerate() {
         match cached_or_fetch(repo, cache, &url, now, now_ms).await {
-            Some(Some(preview)) => previews.push((url, preview)),
+            Some(Some(preview)) => previews.push((index, url, preview)),
             Some(None) => {} // live cached negative: skip silently, no re-fetch
-            None => misses.push(url),
+            None => misses.push((index, url)),
         }
     }
 
     if !misses.is_empty() {
         let mut set = tokio::task::JoinSet::new();
-        for url in misses {
+        for (index, url) in misses {
             // Rate-limit-gated BEFORE spawning the fetch task — a rejected
             // URL never touches the network and is never cached (a fresh
             // minute may still succeed for it).
@@ -320,11 +323,11 @@ pub async fn enrich(
             let client = client.clone();
             set.spawn(async move {
                 let result = fetch_preview(&client, &url).await;
-                (url, result)
+                (index, url, result)
             });
         }
         while let Some(joined) = set.join_next().await {
-            let Ok((url, result)) = joined else {
+            let Ok((index, url, result)) = joined else {
                 continue; // a joined task panicking is not this stage's failure mode to surface
             };
             match result {
@@ -345,7 +348,7 @@ pub async fn enrich(
                         // at risk, which is worth an operator-visible signal.
                         tracing::warn!(?e, %url, "link-preview cache persist failed");
                     }
-                    previews.push((url, preview));
+                    previews.push((index, url, preview));
                 }
                 Err(_) => {
                     cache.insert(url.clone(), None, now);
@@ -360,7 +363,28 @@ pub async fn enrich(
         }
     }
 
-    for (cache_url, preview) in previews {
+    previews.sort_by_key(|(index, _, _)| *index);
+    // Candidates ending on an address a persisted row already has an asset for reuse that asset
+    // instead of queueing a job whose result would overwrite it.
+    let mut known_assets: std::collections::HashMap<String, Uuid> =
+        std::collections::HashMap::new();
+    for (_, _, preview) in &previews {
+        if let Some(asset_id) = preview.image_asset_id {
+            known_assets.entry(preview.url.clone()).or_insert(asset_id);
+        }
+    }
+    for (_, cache_url, mut preview) in previews {
+        if preview.image_asset_id.is_none() {
+            if let Some(&asset_id) = known_assets.get(&preview.url) {
+                if let Err(e) = repo
+                    .set_link_preview_cache_image(&cache_url, asset_id)
+                    .await
+                {
+                    tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
+                }
+                preview.image_asset_id = Some(asset_id);
+            }
+        }
         if let Some(asset_id) = preview.image_asset_id {
             segments.push(Segment::LinkPreview {
                 url: preview.url,

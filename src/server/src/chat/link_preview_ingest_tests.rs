@@ -936,7 +936,10 @@ async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
         Router::new()
             .route(
                 "/a",
-                get(|| async { axum::response::Redirect::to("/final") }),
+                get(|| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    axum::response::Redirect::to("/final")
+                }),
             )
             .route(
                 "/b",
@@ -972,9 +975,11 @@ async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
     else {
         panic!("expected a PreviewImage job, got {:?}", pending[0]);
     };
-    let mut keys = cache_urls.clone();
-    keys.sort();
-    assert_eq!(keys, vec![first.clone(), second.clone()]);
+    assert_eq!(
+        *cache_urls,
+        vec![first.clone(), second.clone()],
+        "message order, though the second candidate's fetch completes first"
+    );
     let sys = f.stored_engine(&cmd).await;
     let urls: Vec<&String> = sys
         .content
@@ -994,5 +999,128 @@ async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
                 .is_some(),
             "the persisted row of {candidate} is keyed on the candidate"
         );
+    }
+}
+
+#[tokio::test]
+async fn fetched_previews_append_in_message_order_not_completion_order() {
+    let addr = spawn_stub(
+        Router::new()
+            .route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    axum::response::Html("<title>Slow</title>")
+                }),
+            )
+            .route(
+                "/fast",
+                get(|| async { axum::response::Html("<title>Fast</title>") }),
+            ),
+    )
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let slow = format!("http://stub.test:{addr}/slow");
+    let fast = format!("http://stub.test:{addr}/fast");
+    let (cmd, _pending) = f
+        .send_full(&format!("see [one]({slow}) and [two]({fast})"), 1)
+        .await
+        .unwrap();
+    let sys = f.stored_engine(&cmd).await;
+    let titles: Vec<&str> = sys
+        .content
+        .iter()
+        .filter_map(|seg| match seg {
+            Segment::LinkPreview { title, .. } => Some(title.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, vec!["Slow", "Fast"]);
+}
+
+/// Seeds an asset row and a fresh persisted cache row for `known_url` carrying that asset, so the
+/// url resolves from the persisted tier with an `image_asset_id`.
+async fn seed_imaged_row(f: &Fixture, known_url: &str) -> Uuid {
+    let asset = crate::data::asset::Asset {
+        id: Uuid::new_v4(),
+        world_id: f.room.world_id,
+        storage_key: "k".into(),
+        original_name: "og.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 1,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    };
+    f.repo.insert_asset(&asset).await.unwrap();
+    f.repo
+        .upsert_link_preview_cache(known_url, Some("Landed"), Some("D"), 0)
+        .await
+        .unwrap();
+    f.repo
+        .set_link_preview_cache_image(known_url, asset.id)
+        .await
+        .unwrap();
+    asset.id
+}
+
+/// A persisted-row candidate that already carries an asset and a fresh candidate whose fetch
+/// ends on the persisted candidate's address are the same preview: no job is queued, both
+/// segments carry the known asset, and the fresh candidate's row records it, in either message
+/// order.
+#[tokio::test]
+async fn fresh_candidate_ending_on_a_persisted_imaged_address_reuses_its_asset() {
+    for known_first in [true, false] {
+        let addr = spawn_stub(
+            Router::new()
+                .route(
+                    "/q",
+                    get(|| async { axum::response::Redirect::to("/final") }),
+                )
+                .route(
+                    "/final",
+                    get(|| async {
+                        axum::response::Html(
+                            r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                        )
+                    }),
+                ),
+        )
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let known = format!("http://stub.test:{addr}/final");
+        let fresh = format!("http://stub.test:{addr}/q");
+        let asset_id = seed_imaged_row(&f, &known).await;
+        let body = if known_first {
+            format!("see [one]({known}) and [two]({fresh})")
+        } else {
+            format!("see [two]({fresh}) and [one]({known})")
+        };
+        let (cmd, pending) = f.send_full(&body, 1).await.unwrap();
+        assert!(
+            pending.is_empty(),
+            "no image job when the address already has an asset: {pending:?}"
+        );
+        let sys = f.stored_engine(&cmd).await;
+        let ids: Vec<Option<Uuid>> = sys
+            .content
+            .iter()
+            .filter_map(|seg| match seg {
+                Segment::LinkPreview { image_asset_id, .. } => Some(*image_asset_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![Some(asset_id), Some(asset_id)]);
+        let row = f
+            .repo
+            .get_link_preview_cache(&fresh)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.image_asset_id, Some(asset_id));
     }
 }
