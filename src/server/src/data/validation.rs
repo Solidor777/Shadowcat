@@ -1,4 +1,7 @@
-//! Structural (never semantic) validation: size caps, paths, tier-2 shape.
+//! This module validates documents and field changes: size caps, ids and names, field paths, engine
+//! bodies, system schemas, property overrides and containment.
+//!
+//! `derive_engine_side_effects` derives the engine side-effect field changes.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -203,7 +206,7 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// is the single chokepoint every persistence path (Create; Update
 /// post-image; embedded mutation) calls before storing a document.
 ///
-/// For `Update`, `apply_intent`'s Phase 2 additionally re-derives every
+/// For `Update`, `apply_intent`'s apply pass additionally re-derives every
 /// `/engine`(/*) `FieldChange.new` from this SAME normalized `doc` before the
 /// `world_events` INSERT, so the normalized form reaches not just the
 /// persisted row but also the broadcast delta and the permanent event log
@@ -369,7 +372,7 @@ pub fn derive_engine_side_effects(
 /// therefore reads the pre-image through the SAME normalizer the stored value
 /// came from, by splicing it into a copy of the stored document at `path`
 /// and running `validate_engine_tree` on the result — the very function
-/// Phase 2 runs to produce what gets stored, which also normalizes an
+/// the apply pass runs to produce what gets stored, which also normalizes an
 /// embedded child's band under the CHILD's `doc_type` (a bare
 /// `normalize_engine_opt(root doc_type, …)` would misread
 /// `/embedded/actor/0/engine`). The value at `path` is then re-extracted.
@@ -884,7 +887,7 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
 /// meaning. Rejecting it is defence in depth for a real divergence class: `new` is
 /// checked by NEITHER the OCC pre-image comparison (which reads `old`) NOR
 /// `required_cap_for_path`, so any consumer that mirrors a change by unconditionally
-/// setting `new` — instead of branching on `remove` as `apply_intent` Phase 2 does —
+/// setting `new` — instead of branching on `remove` as `apply_intent`'s apply pass does —
 /// lands an attacker-chosen value while the store lands absence.
 /// `command::apply_field_change` is the store-equal rule the repository's apply paths
 /// share. Denying the shape at ingress means a mirror that sets `new` unconditionally

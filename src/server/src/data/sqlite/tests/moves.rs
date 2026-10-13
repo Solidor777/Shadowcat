@@ -1,7 +1,7 @@
-//! `Operation::Move` through `apply_intent`.
+//! These tests drive `Operation::Move` through `apply_intent`.
 //!
-//! The tests cover authorization, Create-validity placement (including parent world scope), folder
-//! cycle rejection (including same-batch Move cycles), OCC on the parent pre-image, the no-op
+//! They cover authorization, Create-validity placement (including parent world scope), folder cycle
+//! rejection (including same-batch Move cycles), OCC on the parent pre-image, the no-op
 //! short-circuit, derived-tag recomputation, and bundle survival.
 
 use super::*;

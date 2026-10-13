@@ -1,8 +1,8 @@
-//! Row-level persistence and ingress validation in the SQLite repository.
+//! These tests cover row-level persistence and ingress validation in the SQLite repository.
 //!
-//! The tests cover OCC pre-image comparison, membership/role guards, world/user/scene delete
-//! cascades, asset and schema-declaration round trips, world-scoped UI state merge, explored-fog
-//! persistence, and the engine/property-override ingress gates on Create/Update.
+//! They check OCC pre-image comparison, membership/role guards, world/user/scene delete cascades,
+//! asset and schema-declaration round trips, world-scoped UI state merge, explored-fog persistence,
+//! and the engine/property-override ingress gates on Create/Update.
 
 use super::*;
 

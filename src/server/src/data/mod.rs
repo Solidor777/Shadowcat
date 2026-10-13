@@ -1,4 +1,4 @@
-//! The data layer.
+//! This module is the data layer.
 //!
 //! It holds the document model, per-recipient permissions/redaction, command application,
 //! engine-band validation, search, assets, and SQLite persistence.

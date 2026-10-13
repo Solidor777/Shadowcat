@@ -1,8 +1,8 @@
-//! `WriteOrigin::CombatTransition`'s capability exemption and the one-active-combat-per-scene batch
-//! rule.
+//! These tests cover `WriteOrigin::CombatTransition`'s capability exemption and the
+//! one-active-combat-per-scene rule across a batch.
 //!
-//! A same-batch deactivate+activate swap, in either op ordering, is accepted while a genuine
-//! two-activation batch is still rejected.
+//! A same-batch deactivate-then-activate swap is accepted in either op order, while a batch that
+//! activates two combats on one scene is rejected.
 
 use super::*;
 use crate::data::command::{FieldChange, Operation, WriteOrigin};
@@ -426,7 +426,7 @@ async fn combat_transition_may_create_but_never_update_a_message_document() {
 
 /// A batch that deactivates `a`, lets a same-batch `Create` of `b` claim the
 /// now-freed scene, and then re-declares `a`'s ORIGINAL pre-batch `active:
-/// true` as a second Update's OCC pre-image (Phase 1 performs no writes, so
+/// true` as a second Update's OCC pre-image (the validation pass performs no writes, so
 /// both Updates to `a` independently pass OCC against the same unwritten
 /// pristine row) must reject the whole batch -- `b`'s claim already consumed
 /// the one release credit this scene can grant, and `a`'s own reassertion is

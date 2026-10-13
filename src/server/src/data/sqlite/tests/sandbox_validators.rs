@@ -1,8 +1,8 @@
-//! The sandboxed-validator chokepoint.
+//! These tests cover the sandboxed-validator chokepoint in `apply_intent`.
 //!
-//! The tests cover `apply_intent`'s pre-transaction pass over the `system` band (opt-in per world
-//! per module), its interaction with the structural validators and the OCC pre-image check, and the
-//! `apply_command` exemption.
+//! They exercise its pre-transaction pass over the `system` band (opt-in per world per module), its
+//! interaction with the structural validators and the OCC pre-image check, and the `apply_command`
+//! exemption.
 
 use super::*;
 
@@ -366,7 +366,7 @@ async fn a_structural_failure_rejects_before_and_without_faulting_any_validator(
         .unwrap_err();
     assert!(
         matches!(err, DataError::SchemaViolation { .. }),
-        "a tier-2 violation must surface as Phase 1's own error, never DataError::Validator: {err:?}"
+        "a tier-2 violation must surface as the validation pass's own error, never DataError::Validator: {err:?}"
     );
 
     // The registry's streak for (world, mod-x) is still zero: `record_fault`
@@ -418,7 +418,7 @@ async fn a_document_changed_between_the_pre_image_read_and_the_transaction_confl
 
     // A second Update captured against the original pre-image: the validator's
     // own pre-tx read sees the newer stored value and validates the merged
-    // post-image, but Phase 1's ordinary OCC pre-image check refuses the
+    // post-image, but the validation pass's ordinary OCC pre-image check refuses the
     // write — the guarantee that a stale validator read can never let a
     // superseded post-image commit.
     let err = r
@@ -727,7 +727,7 @@ async fn an_unauthorized_intent_is_forbidden_before_and_without_faulting_any_val
         world_role: WorldRole::Player,
     };
 
-    // The player holds no core:create and no WRITE_FIELDS floor — Phase 1
+    // The player holds no core:create and no WRITE_FIELDS floor — the validation pass
     // would refuse this Create with `Forbidden`, so the answer must be
     // `Forbidden`, never the validator's own error...
     let err = r

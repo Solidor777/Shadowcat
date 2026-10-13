@@ -1,8 +1,8 @@
-//! `Document.base` server ownership at the write path.
+//! These tests cover the server ownership of `Document.base` at the write path.
 //!
-//! It covers Create-time derivation (`merge::bands::derive_create_base`), the client `/base` write
-//! rejection, `WriteOrigin::TemplateMerge`'s apply-level gating, and read tolerance of a stored `base` with a stale schema
-//! (validation is ingest-time only).
+//! They exercise Create-time derivation (`merge::bands::derive_create_base`), rejection of client
+//! writes to `/base`, `WriteOrigin::TemplateMerge`'s apply-level gating, and read tolerance of a
+//! stored `base` with a stale schema: a read returns it verbatim and a rewrite re-validates it.
 
 use super::*;
 use crate::data::membership::PermissionContext;

@@ -1,7 +1,6 @@
-//! Accounts, seats and invites in the SQLite repository.
-//!
-//! It is the `users` / `world_members` / `world_invites` half of `SqliteRepository`, in a sibling
-//! `impl` block so the `sqlite` module stays under the file-size limit.
+//! This module holds accounts, seats and invites: the `users` / `world_members` / `world_invites`
+//! half of `SqliteRepository`, in a sibling `impl` block so the `sqlite` module stays under the
+//! file-size limit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

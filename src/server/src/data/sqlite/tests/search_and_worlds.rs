@@ -1,9 +1,8 @@
-//! Search, worlds and accounts in the SQLite repository.
+//! These tests cover search, worlds and accounts in the SQLite repository.
 //!
-//! The tests cover FTS index sync and search-result redaction/pagination, world capability
-//! requirements and enabled-module sets, admin/user-account setup, world
-//! creation/membership/permission-context resolution, and world export/import round trips through a
-//! tar bundle.
+//! They check FTS index sync and search-result redaction/pagination, world capability requirements
+//! and enabled-module sets, admin/user-account setup, world creation/membership/permission-context
+//! resolution, and world export/import, including a round trip through a tar bundle.
 
 use super::*;
 

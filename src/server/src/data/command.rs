@@ -1,4 +1,7 @@
-//! Commands/operations/field changes + the shared JSON-pointer mutation ops.
+//! This module defines `Command`, `Operation`, `FieldChange` and `WriteOrigin`.
+//!
+//! `set_pointer`, `remove_pointer` and `apply_field_change` apply a JSON-pointer mutation to a
+//! `serde_json::Value`; other modules call them as well.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

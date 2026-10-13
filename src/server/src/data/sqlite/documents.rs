@@ -1,9 +1,9 @@
-//! Document rows: the `documents` / `documents_fts_gm` / `documents_fts_public` half of
-//! `SqliteRepository`.
+//! This module is the `documents` / `documents_fts_gm` / `documents_fts_public` half of
+//! `SqliteRepository`, in a sibling `impl` block so the `sqlite` module stays under the file-size
+//! limit.
 //!
 //! It covers row load/upsert/delete with FTS reindex, parent placement and move-cycle checks, and
-//! the commit-time `OpSnapshot` builder — in a sibling `impl` block so the `sqlite` module stays
-//! under the file-size limit.
+//! the commit-time `OpSnapshot` builder.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -331,7 +331,7 @@ impl SqliteRepository {
     /// ancestor chain upward from `new_parent`, resolving each hop against
     /// this batch's not-yet-applied Moves first (`batch_moves` — the
     /// prospective parent wins over the stored one, since the walk must see
-    /// the tree the batch will leave, and Phase 2 applies nothing until
+    /// the tree the batch will leave, and the apply pass applies nothing until
     /// every op has validated), then this batch's not-yet-inserted Creates
     /// (`batch_folders`), then the stored tree — refusing if `moved` appears
     /// anywhere in the chain (self-parent included).

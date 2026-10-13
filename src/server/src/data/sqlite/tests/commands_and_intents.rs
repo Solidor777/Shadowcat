@@ -1,8 +1,8 @@
-//! Command and intent application: role/capability gating on `apply_command`/`apply_intent`.
+//! These tests cover role and capability gating on `apply_command` and `apply_intent`.
 //!
-//! The tests also cover command create/update/delete round trips and their commit-time snapshots,
-//! OCC conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/capability-gated
-//! Update, system-schema enforcement, and the singleton-`doc_type` create-gate (cross-call and
+//! They also cover command create/update/delete round trips and their commit-time snapshots, OCC
+//! conflict and `remove` semantics, `WriteOrigin`-scoped exemptions, path/capability-gated Update,
+//! system-schema enforcement, and the singleton-`doc_type` create-gate (cross-call and
 //! intra-batch).
 
 use super::*;
@@ -4630,10 +4630,10 @@ async fn apply_intent_pairs_update_access_across_two_updates_to_one_doc() {
     // `old` chained off the first's `new` -- exercises `update_access`'s
     // push-then-consume pairing across N>1 Update ops on one doc_id rather
     // than N=1 ops on N docs, pinning that the
-    // `.expect("one Access recorded per Update op in Phase 1")` never panics
+    // `.expect("one Access recorded per Update op in the validation pass")` never panics
     // regardless of how many ops in the batch target the same doc. Both
     // ops' OCC `old` names the document's true stored value at the start of
-    // this call: Phase 1 validates each op's pre-image against a fresh
+    // this call: the validation pass validates each op's pre-image against a fresh
     // `Self::load_document` read, never against a sibling op's `new` --
     // there is no intra-batch simulation of a prior op's effect for OCC
     // purposes, so a chained pre-image (this op's `old` set to the
@@ -4680,7 +4680,7 @@ async fn apply_intent_pairs_update_access_across_two_updates_to_one_doc() {
             "each Update op must carry exactly one derived /engine/body change: {changes:?}"
         );
     }
-    // Phase 2 applies both ops in order against the SAME transaction, so
+    // The apply pass applies both ops in order against the SAME transaction, so
     // the second op's write lands on top of the first's -- the final stored
     // value is the second op's `new`, not the first's.
     let row = r.get_document(doc_a).await.unwrap().unwrap();

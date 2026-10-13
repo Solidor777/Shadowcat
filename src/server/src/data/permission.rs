@@ -1,4 +1,5 @@
-//! The authz/redaction core: access resolution + per-recipient filtering.
+//! This module is the authorization and redaction core: it resolves access and filters documents
+//! and commands per recipient.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -20,9 +21,10 @@ use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 use crate::merge::bands::{EmbeddedBaseChild, MergeBase, StoredBase};
 
 pub mod cap {
-    //! Built-in, server-understood capabilities. Modules may grant additional
-    //! namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
-    //! tokens and enforces only possession (Phase 2 gates custom actions).
+    //! This module names the built-in capabilities the server understands.
+    //!
+    //! Modules may grant additional namespaced capabilities (`<ns>:<verb>`); the server treats
+    //! those as opaque tokens and enforces only possession.
 
     /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";

@@ -1,4 +1,5 @@
-//! The storage seam (`Repository` trait) the HTTP/WS layers program against.
+//! This module defines `Repository`, the storage trait the HTTP and WebSocket layers use, and
+//! `LinkPreviewCacheRow`.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

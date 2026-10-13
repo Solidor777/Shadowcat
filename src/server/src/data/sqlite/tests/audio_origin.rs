@@ -1,7 +1,8 @@
-//! `WriteOrigin::AudioTransport` is the only origin permitted to `Update` `audio-state`.
+//! These tests pin which write origins may Create and Update the `audio-state` singleton.
 //!
-//! Create/Delete of that singleton are reserved to `WriteOrigin::ConfigSeed` (the world-seed path
-//! creates it exactly once).
+//! `apply_intent` permits `WriteOrigin::AudioTransport`, and no other origin, to `Update` it, and
+//! reserves Create and Delete to `WriteOrigin::ConfigSeed`; the world-seed path creates the
+//! singleton.
 
 use super::*;
 use crate::data::engine::{AudioStateEngine, AUDIO_STATE_DOC_TYPE};

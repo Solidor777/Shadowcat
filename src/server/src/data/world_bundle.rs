@@ -1,19 +1,19 @@
-//! Per-world export/import row and manifest DTOs (`BundleManifest` and the row types).
+//! This module defines the per-world export/import row types and `BundleManifest`.
 //!
-//! The on-disk-bundle-portable shape of the five FK-scoped tables `SqliteRepository::delete_world`
-//! already walks (read instead of deleted), the FK-less `explored_fog` table it purges via an
-//! explicit `DELETE`, plus the world's five keyed `settings` rows.
+//! The rows are the on-disk-bundle-portable form of the five FK-scoped tables whose rows
+//! `SqliteRepository::delete_world` removes by FK cascade (here they are read instead), the FK-less
+//! `explored_fog` table it purges via an explicit `DELETE`, and the world's five keyed `settings`
+//! rows. `crate::world_bundle` builds the tar file format from them.
 //!
-//! `crate::world_bundle` builds the tar file-format I/O from them. A `users(id)` reference is
-//! exported as a portable username string, never a raw id (source and target servers do not share a
-//! `users` table) — resolved back to a target-local id (or degraded to `NULL`/row-drop when
-//! unresolved) only at import time, in `SqliteRepository::import_world`.
+//! A `users(id)` reference is exported as a portable username string, never a raw id (source and
+//! target servers do not share a `users` table). It is resolved back to a target-local id (or
+//! degraded to `NULL` or a row drop when unresolved) only at import time, in
+//! `SqliteRepository::import_world`.
 //!
-//! Search state is rebuilt from a document's/asset's own content, never
-//! carried across servers: `documents_fts_public`/`documents_fts_gm` and
-//! `assets_fts` are never exported or imported directly. Every FTS row a
-//! bundle produces on the target is a byproduct of the ordinary
-//! document/asset write paths this module drives.
+//! Search state is rebuilt from a document's or asset's own content and is never carried across
+//! servers: `documents_fts_public`, `documents_fts_gm` and `assets_fts` are never exported or
+//! imported directly. Every FTS row a bundle produces on the target is a byproduct of the ordinary
+//! document and asset write paths that `SqliteRepository::import_world` drives.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -28,8 +28,7 @@ use crate::data::document::{Document, WorldRole};
 
 /// Bundle format version. Bumped whenever `BundleManifest`'s or a row type's
 /// shape changes in a way `world_bundle::read_bundle` cannot tolerate;
-/// import refuses cleanly on a mismatch rather than attempting a migration —
-/// no data-migration machinery exists pre-customers.
+/// import refuses cleanly on a mismatch rather than attempting a migration.
 pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
 
 /// `manifest.json`'s root: the exported world's identity/watermark plus

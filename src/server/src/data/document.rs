@@ -1,4 +1,5 @@
-//! The document envelope, permission types, and structural schema types.
+//! This module defines the `Document` envelope, its permission types, the capability and contract
+//! declaration types, and the structural schema types.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

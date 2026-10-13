@@ -1,6 +1,6 @@
-//! World invites, effective token ownership and member roles in the SQLite repository.
+//! These tests cover world invites and token ownership in the SQLite repository.
 //!
-//! The tests cover world-invite seating/expiry/revocation, effective-token-ownership resolution
+//! They exercise world-invite seating/expiry/revocation, effective-token-ownership resolution
 //! (linked-actor vs. per-token override, degenerate-link fail-closed cases), the owner capability
 //! floor, `created_seq` generation tracking, and world member-role enumeration.
 

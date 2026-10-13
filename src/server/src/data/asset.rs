@@ -1,4 +1,7 @@
-//! Uploaded binary assets: rows, content-addressed storage, ETag revalidation.
+//! This module holds the uploaded-asset row types and the commit path that writes an asset's files
+//! and metadata row.
+//!
+//! `Asset::version` backs the asset's ETag.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -329,16 +332,15 @@ pub async fn process_staged_blocking(
 }
 
 /// Moves an already-processed staged stem into its final location, then
-/// inserts `asset`'s metadata row and its derived tags — file-BEFORE-row (see
-/// `create_asset_from_bytes`'s doc for why: a create has no prior bytes and
-/// no existing ETag to strand, so the failure that matters is an orphan DB
-/// row, not an orphan file) [[commit-db-row-before-swapping-file]]. Shared
+/// inserts `asset`'s metadata row and its derived tags — file-BEFORE-row (a
+/// create has no prior bytes and no existing ETag to strand, so the failure
+/// that matters is an orphan DB row, not an orphan file). Shared
 /// commit step: `http::assets::upload` streams its OWN tmp file via
 /// `store_streamed` (avoiding a second in-memory buffer for an arbitrarily
-/// large GM upload), processes it in place, and calls this directly;
-/// `create_asset_from_bytes` stages + processes `bytes` itself first and then
-/// calls this — so both callers' resulting `Asset` rows are committed through
-/// byte-for-byte the same ordering logic. A row-insert failure removes every
+/// large GM upload), processes it in place, and calls this directly, as does
+/// `http::assets::uploads::complete_session`; `create_asset_from_bytes` stages
+/// + processes `bytes` itself first and then calls this — so every caller's
+/// resulting `Asset` row is committed through the same ordering logic. A row-insert failure removes every
 /// file just moved; a tag-write failure after the row is in leaves the asset
 /// untagged (`refresh_derived_tags` repairs it) rather than orphaning files.
 ///
@@ -405,11 +407,7 @@ pub async fn commit_staged_asset(
     })
 }
 
-/// Grouped byte-buffer/metadata parameters for `create_asset_from_bytes` —
-/// grouped instead of five positional parameters (bringing the call to eight
-/// total) to stay under `clippy::too_many_arguments` by restructuring the
-/// signature, never by suppressing the lint (same pattern as `chat`'s
-/// `RecalcRollRequestCtx`).
+/// The byte-buffer and metadata parameters of `create_asset_from_bytes`, grouped into one struct.
 ///
 /// # Examples
 ///
@@ -455,7 +453,7 @@ pub struct NewAssetBytes<'a> {
 /// Creates an asset from an already-in-memory byte buffer: allocates a fresh
 /// `Uuid`/`storage_key`, writes `bytes` to a unique temp sibling of the final
 /// path, runs the conversion pipeline on it, derives tags, then commits via
-/// `commit_staged_asset` (file-first-then-row, unchanged ordering). For a
+/// `commit_staged_asset` (file first, then row). For a
 /// SMALL buffer only (the link-preview/oEmbed background image pipeline,
 /// capped at `chat::link_preview::MAX_IMAGE_BYTES`) — `http::assets::upload`'s
 /// own arbitrarily-large GM uploads stream straight to disk via

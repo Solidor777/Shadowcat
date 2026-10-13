@@ -1,7 +1,7 @@
-//! World bundle export/import in the SQLite repository.
-//!
-//! It is the `WorldExportData` / `WorldImportData` half of `SqliteRepository`, in a sibling `impl`
+//! This module holds the world bundle export and import of `SqliteRepository`, in a sibling `impl`
 //! block so the `sqlite` module stays under the file-size limit.
+//!
+//! `export_world_rows` returns `WorldExportData` and `import_world` takes `WorldImportData`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

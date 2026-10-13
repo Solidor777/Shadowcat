@@ -1,7 +1,7 @@
-//! A world bundle carries `playlist` documents and the `audio-state` singleton generically.
+//! This test checks that a world bundle round trip carries `playlist` documents and the
+//! `audio-state` singleton.
 //!
-//! `export_world_rows`/`import_world` operate over the whole `documents` table with no `doc_type`
-//! filter, so both ride the same bulk path every other document does — proven here end to end.
+//! `export_world_rows` selects the world's `documents` rows with no `doc_type` filter.
 use super::*;
 use crate::data::document::PermissionSet;
 use crate::data::engine::{

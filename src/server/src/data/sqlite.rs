@@ -1,4 +1,5 @@
-//! The SQLite `Repository` implementation + the authoritative apply loops.
+//! This module implements `Repository` for `SqliteRepository`, including the `apply_command` and
+//! `apply_intent` apply loops.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -582,12 +583,12 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
     }
 }
 
-/// Phase 1's Create authorization, resolved per op through ONE function both the
+/// The validation pass's Create authorization, resolved per op through ONE function both the
 /// in-transaction Phase-1 arm and `apply_intent`'s pre-transaction validator screen
 /// call — authz is the codebase's never-fork class, so the screen never re-spells
 /// any of these checks. Returns the resolved `Access` (the screen additionally reads
 /// it for the validator `prior` band's READ gate). `executor` is the write
-/// transaction for Phase 1, a read-only pool connection for the screen — both only
+/// transaction for the validation pass, a read-only pool connection for the screen — both only
 /// ever feed `load_effective_owner`.
 async fn authorize_create_intent<'e, E>(
     executor: E,
@@ -681,7 +682,7 @@ where
     Ok(access)
 }
 
-/// Phase 1's stored-type rejections and access resolution for an Update, shared by
+/// The validation pass's stored-type rejections and access resolution for an Update, shared by
 /// the in-transaction arm and the pre-transaction validator screen (see
 /// `authorize_create_intent` for why this is one function). Returns the resolved
 /// `Access` plus whether the op is a `ServerMessageRevision` write to a message
@@ -773,11 +774,11 @@ struct UpdateAuthzContext<'a> {
     is_server_message_revision: bool,
 }
 
-/// Phase 1's per-change authorization for an Update — the structural capability
+/// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
 /// (`declared_caps_for_path`), and the carried-light GM gate
 /// (`carried_light_touched`) for one `FieldChange`. Pure: every input was resolved
-/// by `authorize_update_access` (or Phase 1's own load), so the in-transaction
+/// by `authorize_update_access` (or the validation pass's own load), so the in-transaction
 /// arm and the pre-transaction validator screen apply the identical decision.
 fn authorize_update_change(
     op: &UpdateAuthzContext<'_>,
@@ -876,7 +877,7 @@ fn authorize_update_change(
 }
 
 /// Reconstructs the MERGED post-image document a `changes` Update would produce against
-/// `doc_id`'s CURRENT stored row, read through `executor` — shared by Phase 2's authoritative
+/// `doc_id`'s CURRENT stored row, read through `executor` — shared by the apply pass's authoritative
 /// merge (`&mut *tx`, inside the write transaction) and the pre-transaction validator
 /// pre-image build (a read-only pool connection, before the transaction opens): both merges
 /// must reach the IDENTICAL document, or the validated post-image and the committed one could
@@ -1334,7 +1335,7 @@ impl Repository for SqliteRepository {
                             match merge_update_document(&read_pool, *doc_id, changes).await {
                                 Ok((pre, post)) => (post, Some(pre)),
                                 // A missing/malformed pre-image here is not this pass's problem
-                                // to report — the real, authoritative Phase 1 load inside the
+                                // to report — the real, authoritative load inside the
                                 // transaction below surfaces the SAME failure properly.
                                 Err(_) => continue,
                             }
@@ -1343,21 +1344,21 @@ impl Repository for SqliteRepository {
                         Operation::Delete { .. } => continue,
                     };
                     // Authorization screen, consulted BEFORE any validator: the SAME shared
-                    // functions Phase 1's own arms call inside the transaction below
+                    // functions the validation pass's own arms call inside the transaction below
                     // (`authorize_create_intent`/`authorize_update_access`/
-                    // `authorize_update_change`), never a re-spelled copy — an op Phase 1
+                    // `authorize_update_change`), never a re-spelled copy — an op the validation pass
                     // would refuse with `Forbidden` must not reach a validator's error text
                     // (which can disclose the validator's rules), must not burn a faulting
                     // module's streak toward auto-disable, and must not burn fuel CPU.
                     // Capability-skipping origins are exempt inside the shared functions
-                    // exactly as they are in Phase 1. The screen's `Forbidden` also short-
+                    // exactly as they are in the validation pass. The screen's `Forbidden` also short-
                     // circuits the structural pre-pass below — a deliberately stricter
-                    // precedence than Phase 1's (less disclosure), never a weaker one:
-                    // anything the screen admits still faces Phase 1 unchanged.
+                    // precedence than the validation pass's (less disclosure), never a weaker one:
+                    // anything the screen admits still faces the validation pass unchanged.
                     let prior_permitted = match op {
                         Operation::Create { doc: create_doc } => {
                             // Scope before anything else: a foreign-scope intent must
-                            // never reach a validator (same check Phase 1 runs).
+                            // never reach a validator (same check the validation pass runs).
                             check_command_scope(create_doc, world_id)?;
                             authorize_create_intent(
                                 &read_pool,
@@ -1422,7 +1423,7 @@ impl Repository for SqliteRepository {
                     .await
                     {
                         // `validate_document`'s own structural pre-pass rejected `doc` before
-                        // any validator ran — Phase 1 below would reject it identically, so
+                        // any validator ran — the validation pass below would reject it identically, so
                         // its error is returned untouched here.
                         Err(structural_err) => return Err(structural_err),
                         Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
@@ -1435,7 +1436,7 @@ impl Repository for SqliteRepository {
                             return Err(DataError::Validator(fault));
                         }
                     }
-                    // Captured for the in-transaction re-validation below: Phase 1's OCC
+                    // Captured for the in-transaction re-validation below: the validation pass's OCC
                     // covers only each change's own pointer, so a concurrent write to any
                     // OTHER path of the same document would pass OCC and commit a post-image
                     // no validator ever saw. The Update arm compares its in-transaction
@@ -1449,16 +1450,16 @@ impl Repository for SqliteRepository {
         }
         let mut tx = self.pool.begin().await?;
 
-        // Phase 1 — authorize, structurally validate, and check pre-images.
+        // The validation pass — authorize, structurally validate, and check pre-images.
         // No row is mutated; any failure here drops the transaction, so the
         // per-world seq is never consumed by a rejected intent. `Create`'s
         // `doc` is mutated in place (`&mut ops`) so `validate_engine_tree`
         // can normalize the engine band here and have that normalization
-        // survive into Phase 2 storage AND the returned `Command` (broadcast).
+        // survive into the apply pass's storage AND the returned `Command` (broadcast).
         //
         // `claimed_singletons` tracks singleton doc_types already passed by an
-        // EARLIER Create in this SAME batch. Phase 2 (the actual inserts)
-        // only runs after every op in the batch clears Phase 1, so a batch
+        // EARLIER Create in this SAME batch. The apply pass (the actual inserts)
+        // only runs after every op in the batch clears the validation pass, so a batch
         // containing two Creates of the same singleton doc_type would have
         // both ops' `singleton_doc_exists` reads see nothing (neither has
         // been inserted yet) and both pass the DB check alone — this set
@@ -1481,8 +1482,8 @@ impl Repository for SqliteRepository {
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
         // `batch_moves` records the PROSPECTIVE parent of each Move already
-        // validated in this batch. Phase 2 applies nothing until every op
-        // clears Phase 1, so a cycle walk that read only the stored tree
+        // validated in this batch. The apply pass applies nothing until every op
+        // clears the validation pass, so a cycle walk that read only the stored tree
         // would validate each Move against a tree no op has rewritten yet —
         // two Moves that swap a pair of subtrees into a cycle would each
         // pass alone. `check_move_acyclic` consults this map first, so it
@@ -1493,7 +1494,7 @@ impl Repository for SqliteRepository {
         // that holds its active slot, AS OF THIS POINT in a single simulated
         // walk of `ops` in their actual batch order. The one-active-combat-
         // per-scene decision -- for both the Create arm and the Update
-        // arm -- is made exactly ONCE, entirely inside Phase 1 (Phase 2
+        // arm -- is made exactly ONCE, entirely inside the validation pass (the apply pass
         // performs no independent recomputation of it), consulting and
         // mutating this ONE map: a claim (a Create or Update that would make
         // some combat `active: true` on scene `S`) succeeds when
@@ -1546,7 +1547,7 @@ impl Repository for SqliteRepository {
         //   PRE-merge scene in both cases -- the scene the combat is LEAVING,
         //   never the one it is moving to), so neither double-frees nor
         //   conflicts with the other.
-        // An op this cannot merge or parse is left alone here -- Phase 1's
+        // An op this cannot merge or parse is left alone here -- the validation pass's
         // real validation below surfaces the failure through the ordinary
         // path.
         let mut deactivations_this_batch: std::collections::HashSet<Uuid> =
@@ -1590,7 +1591,7 @@ impl Repository for SqliteRepository {
             }
         }
         // Batch-start permissions for each Update target, captured the FIRST time its
-        // pre-image is loaded in Phase 1 — before any op applies — so a second same-batch
+        // pre-image is loaded in the validation pass — before any op applies — so a second same-batch
         // Update to the same doc still snapshots the true batch-start permissions, not an
         // intermediate value written by an earlier op in this same command.
         let mut pre_permissions: std::collections::HashMap<
@@ -1603,14 +1604,14 @@ impl Repository for SqliteRepository {
         // captured", its `None` value means "captured, no owner".
         let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
             std::collections::HashMap::new();
-        // Phase 1's resolved `Access` for each `Operation::Update`, ONE entry
+        // The validation pass's resolved `Access` for each `Operation::Update`, ONE entry
         // per Update op, pushed in the same relative order those ops appear
         // in `ops` (an id may recur across several Update ops; each gets its
-        // own entry). Phase 2 threads this through to gate a normalize-time
+        // own entry). The apply pass threads this through to gate a normalize-time
         // derived engine change (`derive_engine_side_effects`) against the
         // world's declared capability requirements — reusing the capability
-        // set Phase 1 already resolved for this exact actor/document/origin,
-        // never re-resolving access in Phase 2.
+        // set the validation pass already resolved for this exact actor/document/origin,
+        // never re-resolving access in the apply pass.
         let mut update_access: Vec<Access> = Vec::new();
         // A stamp whose template is CREATED in this same batch cannot load it
         // from the store yet (nothing is written before the loop below), so
@@ -1966,9 +1967,9 @@ impl Repository for SqliteRepository {
                     let (access, is_server_message_revision) =
                         authorize_update_access(&mut *tx, ctx, &cur, origin, &world_defaults)
                             .await?;
-                    // Recorded for Phase 2's derived-path capability check
+                    // Recorded for the apply pass's derived-path capability check
                     // before any per-change validation below can reject this
-                    // op -- an error return here never reaches Phase 2, so
+                    // op -- an error return here never reaches the apply pass, so
                     // pushing early does not desync the two phases' op order.
                     update_access.push(access.clone());
                     // Field-level OCC: every change's pre-image must equal the
@@ -2035,12 +2036,12 @@ impl Repository for SqliteRepository {
                         }
                     }
                     // One-active-combat-per-scene enforcement for an Update,
-                    // run entirely HERE in Phase 1 -- never re-derived by
-                    // Phase 2, which performs no independent recomputation of
+                    // run entirely HERE in the validation pass -- never re-derived by
+                    // the apply pass, which performs no independent recomputation of
                     // this invariant (see `scene_owner`'s doc comment above).
                     // Uses the same tolerant merge-simulation the pre-scan
                     // above uses; a merge/parse failure here is left to the
-                    // authoritative `validate_engine_tree` pass in Phase 2 to
+                    // authoritative `validate_engine_tree` pass in the apply pass to
                     // surface.
                     if let Some(pre_engine) = combat_engine_of(&cur) {
                         if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
@@ -2114,8 +2115,8 @@ impl Repository for SqliteRepository {
                     // every descendant (children before parents) so each removal
                     // is an individually reversible op (#8) and broadcasts to
                     // clients (#2) — never a silent FK cascade. Descendants are
-                    // discovered here in Phase 2, so each is authorized against
-                    // its stored doc with the same DELETE gate Phase 1 applies to
+                    // discovered here in the apply pass, so each is authorized against
+                    // its stored doc with the same DELETE gate the validation pass applies to
                     // the submitted op.
                     for desc in Self::descendants_first(&mut tx, doc.id).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
@@ -2151,13 +2152,13 @@ impl Repository for SqliteRepository {
             }
         }
 
-        // Phase 2 — allocate seq, apply, log. Identical machinery to
+        // The apply pass — allocate seq, apply, log. Identical machinery to
         // apply_command; authorization above has already cleared every op.
         // Consumes `update_access` in order: `authoritative_ops` preserves
         // the relative order of every `Operation::Update` from `ops`
         // (Delete expansion is the only reordering, and it never touches
         // Update), so the Nth Update encountered here is always the Nth
-        // entry Phase 1 pushed.
+        // entry the validation pass pushed.
         let mut update_access_iter = update_access.into_iter();
         let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
             .bind(world_id.to_string())
@@ -2298,12 +2299,12 @@ impl Repository for SqliteRepository {
                             doc.engine.as_ref(),
                             &requested_paths_for_derived,
                         );
-                    // Phase 1's resolved `Access` for this exact Update op —
+                    // The validation pass's resolved `Access` for this exact Update op —
                     // never re-resolved here (see `update_access`'s doc
                     // comment). Absent only for a capability-skipping origin
                     // (`CombatTransition`/`TemplateMerge`/`ConfigSeed`), which
                     // this check exempts the same way `declared_caps_for_path`
-                    // is exempted for every other write path in Phase 1 above
+                    // is exempted for every other write path in the validation pass above
                     // — a capability-skipping origin's authorization is
                     // vetted entirely elsewhere (see the Phase-1 doc comments
                     // beside `origin.skips_capability_gates()`), and a
@@ -2311,7 +2312,7 @@ impl Repository for SqliteRepository {
                     if !origin.skips_capability_gates() {
                         let access_for_derived = update_access_iter
                             .next()
-                            .expect("one Access recorded per Update op in Phase 1");
+                            .expect("one Access recorded per Update op in the validation pass");
                         for extra in &derived_changes_preview {
                             for cap_needed in declared_caps_for_path(&extra.path, &world_reqs) {
                                 if !access_for_derived.has(cap_needed) {
@@ -2324,7 +2325,7 @@ impl Repository for SqliteRepository {
                             }
                         }
                     } else {
-                        // Keep the iterator in lockstep with Phase 1's push
+                        // Keep the iterator in lockstep with the validation pass's push
                         // order even when this op's check is skipped — Phase
                         // 1 still pushed an entry for it.
                         update_access_iter.next();
@@ -2333,7 +2334,7 @@ impl Repository for SqliteRepository {
                     // 1 (see `apply_intent`'s Update arm there, and the
                     // `scene_owner` doc comment) -- this phase trusts that
                     // decision and performs no recomputation of it, the same
-                    // way it trusts Phase 1's OCC/capability/containment/
+                    // way it trusts the validation pass's OCC/capability/containment/
                     // singleton decisions for every other check.
                     // Tier-2 structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
@@ -2341,7 +2342,7 @@ impl Repository for SqliteRepository {
                     validation::validate_system_schema_tree(&doc, &world_schemas)?;
                     // In-transaction validator re-validation (the TOCTOU half of
                     // the pre-transaction pass): the pass validated a post-image
-                    // merged from a pre-transaction read, and Phase 1's OCC covers
+                    // merged from a pre-transaction read, and the validation pass's OCC covers
                     // only each change's own pointer — a concurrent write to any
                     // OTHER path of this document would pass OCC and commit a
                     // post-image no validator ever saw. When the in-transaction

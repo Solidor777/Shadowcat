@@ -1,14 +1,14 @@
-//! Server-side world-config seeding.
+//! This module builds the ops that seed a world's config singletons.
 //!
-//! It is the ops-builder that creates absent config singletons with their engine-defined default
+//! `missing_config_ops` creates the absent config singletons with their engine-defined default
 //! bodies and keeps the `system-defaults` singleton mirroring the enabled system package's manifest
-//! declaration. `enabled_system_defaults` and `seed_author` derive the enabled-system defaults and
-//! the author its callers commit under `WriteOrigin::ConfigSeed`.
+//! declaration. `enabled_system_defaults` reads that declaration, and `seed_author` returns the
+//! world's lowest-id GM as a `PermissionContext`, or `None`.
 //!
-//! The DECISION of what to seed lives here alone; callers commit the returned ops under
-//! `WriteOrigin::ConfigSeed` through their own channel — `Repository::apply_intent` where no room
-//! exists, `Room::publish` where one does (publish wraps the same `apply_intent` plus broadcast, so
-//! the transport split is not a forked decision).
+//! Callers commit the returned ops under `WriteOrigin::ConfigSeed` through their own channel:
+//! `Repository::apply_intent` where no room exists, `Room::publish` where one does (`Room::publish`
+//! commits through the same `apply_intent` and then broadcasts, so the transport split is not a
+//! forked decision).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -33,7 +33,7 @@ use crate::modules::scan_installed_modules;
 
 /// Every world-config singleton doc_type the seed pass owns, in seed order.
 /// One list, read by the ops-builder and by callers querying a world's
-/// current config set — never re-enumerated elsewhere.
+/// current config set.
 pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 11] = [
     WORLD_SETTINGS_DOC_TYPE,
     VISION_MODES_DOC_TYPE,
