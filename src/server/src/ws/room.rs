@@ -1652,10 +1652,10 @@ impl Room {
     /// explored blob, walls, and regions — is DERIVED from the token's own `parent_id`
     /// (`SceneEcs::token_move`), never taken from the caller's `scene_id`. Gating a token that
     /// lives in scene A against scene B's walls, mask, and regions is a full bypass of the
-    /// movement gate for a token the requester legitimately owns. `Room::publish` reads a
-    /// token's scene from `SceneEcs::token_move` only to compare the start and end positions,
-    /// and refuses a non-GM position write outright. `scene_id` is additionally required to
-    /// agree with the derived scene (defense in depth — it selects nothing).
+    /// movement gate for a token the requester legitimately owns. `Room::publish` takes only
+    /// the start and end positions from `SceneEcs::token_move` and refuses a non-GM `Update`
+    /// when they differ. `scene_id` is additionally required to agree with the derived scene
+    /// (defense in depth — it selects nothing).
     ///
     /// # Critical-section invariant (load-bearing)
     ///

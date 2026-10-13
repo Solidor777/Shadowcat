@@ -2200,8 +2200,7 @@ impl SceneEcs {
     /// The token's current committed position `(x, y)` in scene coordinates.
     /// `None` if `token` is not a token entity or has no `(x, y)` in its `engine` band.
     /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
-    /// authoritative ECS state; `Room::execute_move` calls it to read the committed start
-    /// position before dispatching to the executor.
+    /// authoritative ECS state.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
@@ -2212,9 +2211,8 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish`'s sole caller: the refusal predicate compares this call's pre- and
-    /// post-image to reject any non-GM `Update` that changes a token's position (players move
-    /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
+    /// `Room::publish` compares this call's pre- and post-image to reject a non-GM `Update`
+    /// that changes a token's position. A `/system/x` write on a token is structurally
     /// inert against this `/engine`-only read; see the
     /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///

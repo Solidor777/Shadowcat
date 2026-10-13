@@ -1628,8 +1628,8 @@ pub async fn handle_send_message(
     // without hyperlinks). Otherwise a body with hyperlinks off but images on would collect
     // `image_urls` in vain, since only `enrich` turns them into `PendingEnrichment::InlineImage`
     // jobs. The stage joins its preview fetches before publish, so the message is published with
-    // its `LinkPreview` segments in place: no post-publish revision of the message adds them and
-    // no message-deleted-mid-fetch race can touch them.
+    // its `LinkPreview` segments appended; the `PendingEnrichment` jobs it returns run after
+    // publish.
     if parsed.kind != MessageKind::Roll && (policy.previews_enabled() || !image_urls.is_empty()) {
         pending = link_preview::enrich(
             &mut content_segments,
