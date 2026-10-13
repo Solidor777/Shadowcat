@@ -167,7 +167,8 @@ pub struct EnrichDeps<'a> {
 /// `None` return means BOTH tiers missed (or a persisted row expired past
 /// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
 /// memory hit whose preview has no asset id reads the persisted row's, which a background job may
-/// have recorded since. A failed persisted-row read is logged at warn.
+/// have recorded since. A failed persisted-row read counts as a miss and leaves a memory hit as
+/// cached.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
