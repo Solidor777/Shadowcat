@@ -175,7 +175,9 @@ impl DieScore {
     /// assert_eq!(scored.net(), 2); // 1 (base) + 2 (extra) - 1 (lost)
     /// ```
     pub fn net(&self) -> i32 {
-        i32::from(self.base_success) + self.crit.extra_successes - self.crit.lost
+        i32::from(self.base_success)
+            .saturating_add(self.crit.extra_successes)
+            .saturating_sub(self.crit.lost)
     }
 }
 

@@ -59,8 +59,9 @@ fn die_values(
             // symbols, so an empty slice is exact here, not a placeholder.
             let dc = crit::score_die(direction, f, &[], cfg);
             (
-                base + dc.extra_successes - dc.lost,
-                dc.positive_counter - dc.negative_counter,
+                base.saturating_add(dc.extra_successes)
+                    .saturating_sub(dc.lost),
+                dc.positive_counter.saturating_sub(dc.negative_counter),
             )
         })
         .collect()
@@ -68,7 +69,7 @@ fn die_values(
 
 /// Component-wise pair addition (net successes, net counters).
 fn add(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
-    (a.0 + b.0, a.1 + b.1)
+    (a.0.saturating_add(b.0), a.1.saturating_add(b.1))
 }
 
 /// Bounded knapsack DP over `dies` (each a `v[k]` table, `k in 0..=e`) with budget
@@ -220,7 +221,7 @@ pub fn allocate(
         .iter()
         .filter(|r| r.kept && !bounds.contains_key(&r.id))
         .map(|r| crit::score_die_net(direction, cfg, r.value, &r.symbols).net())
-        .sum();
+        .fold(0i32, i32::saturating_add);
     let dies: Vec<Vec<(i32, i32)>> = kept
         .iter()
         .map(|&idx| {
@@ -236,7 +237,7 @@ pub fn allocate(
         .as_ref()
         .map(|c| c.allow_negative)
         .unwrap_or(false);
-    let alloc = if allow_neg || net + fixed >= 1 {
+    let alloc = if allow_neg || net.saturating_add(fixed) >= 1 {
         lex_alloc
     } else {
         // All-failed region: successes all clamp to 0; maximize counters only.

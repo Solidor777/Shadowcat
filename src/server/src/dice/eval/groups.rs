@@ -177,7 +177,7 @@ pub fn resolve_group(
                                 ExplodeKind::Compound
                                     if matches!(group.kind, DieKind::Numeric { .. }) =>
                                 {
-                                    recs[i].value += extra;
+                                    recs[i].value = recs[i].value.saturating_add(extra);
                                 }
                                 ExplodeKind::Penetrate
                                     if matches!(group.kind, DieKind::Numeric { .. }) =>

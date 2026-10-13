@@ -57,7 +57,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
             *symbol_counts.entry(s.clone()).or_insert(0) += 1;
         }
         let scored = crit::score_die_net(spec.direction, cfg, r.value, &r.symbols);
-        raw_net += scored.net();
+        raw_net = raw_net.saturating_add(scored.net());
         let dc = scored.crit;
         r.crit_success = dc.is_success;
         r.crit_fail = dc.is_fail;
@@ -67,8 +67,8 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         if dc.is_fail {
             crit_f += 1;
         }
-        pos += dc.positive_counter;
-        neg += dc.negative_counter;
+        pos = pos.saturating_add(dc.positive_counter);
+        neg = neg.saturating_add(dc.negative_counter);
     }
     let allow_neg = cfg
         .crit_fail
@@ -85,7 +85,7 @@ pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) ->
         None => (None, None, None, None),
         Some(req) => {
             // Direction is NOT applied here: more successes is always better.
-            let m = (net - req) as i64;
+            let m = i64::from(net) - i64::from(req);
             let c = classify::classify(m, &cfg.tiers);
             (c.pass, Some(m), c.tier_label, c.tier_value)
         }
