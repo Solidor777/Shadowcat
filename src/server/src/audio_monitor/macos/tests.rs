@@ -1,8 +1,9 @@
-//! macOS-only enumeration smoke test, run on the macOS matrix leg.
+//! The macOS-only enumeration smoke test runs on the macOS matrix leg.
 //!
-//! `platform_monitor` never panics — either it returns a working monitor whose first `poll()`
+//! `platform_monitor` never panics. It either returns a working monitor whose first `poll()`
 //! succeeds, or (on a macOS version below 14.2, if the runner image is ever older)
-//! `MonitorError::Unsupported` naming the version requirement.
+//! `MonitorError::Unsupported` naming the version requirement. The module also unit-tests the pid
+//! diff of `departed_pids`.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;

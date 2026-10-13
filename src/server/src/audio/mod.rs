@@ -1,4 +1,4 @@
-//! Server-side audio: the pure transport-state engine (`state::apply`) and the GM-only
+//! Server-side audio consists of the pure transport-state engine (`state::apply`) and the
 //! `AudioTransport` handler (`transport`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by

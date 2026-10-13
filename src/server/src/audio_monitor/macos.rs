@@ -1,37 +1,36 @@
-//! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in macOS
-//! 14.2.
+//! The macOS backend uses Core Audio's process tap API, available from macOS 14.2.
 //!
-//! The API is new enough that `coreaudio-sys` does not wrap it in the resolved version, so this
-//! file binds the small entry-point surface it needs directly via `extern "C"`, linked against the
-//! `CoreAudio` framework (`#[link(name = "CoreAudio", kind = "framework")]` on the `extern "C"`
-//! block declaring these entry points — every symbol this file calls lives in
-//! `CoreAudio.framework`; the Objective-C runtime symbols (`objc_getClass`, `sel_registerName`,
-//! `class_respondsToSelector`, `objc_msgSend`) and `proc_pidpath` resolve via the platform's
-//! always-linked `libSystem`/`libobjc`, needing no framework directive of their own), using
-//! `core-foundation` only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling.
+//! The API (`AudioHardwareCreateProcessTap`) is new enough that `coreaudio-sys` does not wrap it in
+//! the resolved version, so this file binds the small entry-point surface it needs directly via
+//! `extern "C"`, linked against the `CoreAudio` framework. The link is `#[link(name = "CoreAudio",
+//! kind = "framework")]` on the `extern "C"` block declaring these entry points, because every
+//! symbol this file calls lives in the `CoreAudio` framework itself. The Objective-C runtime
+//! symbols (`objc_getClass`, `sel_registerName`, `class_respondsToSelector`, `objc_msgSend`) and
+//! `proc_pidpath` resolve via the platform's always-linked `libSystem`/`libobjc`, which need no
+//! framework directive of their own. The file uses `core-foundation` only for
+//! `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling.
 //!
 //! On macOS < 14.2 (detected by `macos_at_least_14_2`'s Darwin-kernel version probe),
-//! `MacosMonitor::new` returns `MonitorError::Unsupported("macOS 14.2 or newer")` — the hello frame
-//! says so verbatim.
+//! `MacosMonitor::new` returns `MonitorError::Unsupported("macOS 14.2 or newer")`, and the hello
+//! frame says so verbatim.
 //!
-//! Requires the user to grant the "System Audio Recording" permission on first run (the OS's
-//! own prompt).
+//! The first run requires the user to grant the "System Audio Recording" permission (the OS's own
+//! prompt).
 //!
 //! Verification note: the plain-C signatures below (`AudioObjectGetPropertyData`,
 //! `AudioObjectGetPropertyDataSize`, `proc_pidpath`, `AudioDeviceCreateIOProcID`,
 //! `AudioDeviceStart`, `AudioDeviceStop`, `AudioDeviceDestroyIOProcID`,
 //! `AudioHardwareCreateAggregateDevice`, `AudioHardwareDestroyAggregateDevice`,
-//! `AudioHardwareDestroyProcessTap`) are transcribed from Apple's published
-//! `CoreAudio/AudioHardware.h`/`AudioToolbox` headers for macOS 14.2+ and MUST be checked
-//! against the actual SDK headers on a macOS host (`xcrun --show-sdk-path`) before this file is
-//! trusted to compile. The ONE piece with materially lower confidence is
-//! `CATapDescription` construction (`build_tap_description`): it is an Objective-C class with
-//! no C-only equivalent, so it is built here via hand-transcribed `objc_msgSend` calls rather
-//! than the `objc`/`objc2` crate (neither is a workspace dependency, and adding one is an
-//! architecture change outside this fix's scope) — this is the single most likely build/runtime
-//! failure point in the file and needs a macOS host with the AudioToolbox headers to confirm.
-//! Keep the dedicated-thread + process-object-list + aggregate-device-with-tap shape unchanged
-//! if any signature differs.
+//! `AudioHardwareDestroyProcessTap`) are transcribed from Apple's published Core Audio and
+//! AudioToolbox headers for macOS 14.2+ and MUST be checked against the actual SDK headers on a
+//! macOS host (`xcrun --show-sdk-path`) before this file is trusted to compile. The ONE piece with
+//! materially lower confidence is `CATapDescription` construction
+//! (`build_stereo_mixdown_tap_description`): it is an Objective-C class with no C-only equivalent,
+//! so it is built via hand-transcribed `objc_msgSend` calls rather than the `objc`/`objc2` crate
+//! (neither is a workspace dependency, and adding one is an architecture change). It is the single
+//! most likely build/runtime failure point in the file and needs a macOS host with the AudioToolbox
+//! headers to confirm. Keep the dedicated-thread + process-object-list + aggregate-device-with-tap
+//! shape unchanged if any signature differs.
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};

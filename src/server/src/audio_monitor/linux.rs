@@ -1,29 +1,28 @@
-//! Linux backend: enumerates PipeWire output-audio stream nodes and reads each one's peak level.
+//! The Linux backend enumerates PipeWire output-audio stream nodes and reads each one's peak level.
 //!
 //! PipeWire's API is event-loop driven, so this backend runs its own dedicated OS thread owning a
 //! `pipewire::main_loop::MainLoop` for its entire lifetime and publishes the latest per-node peak
-//! into shared state; `poll` only reads that state, so it stays synchronous and non-blocking like
+//! into shared state. `poll` only reads that state, so it stays synchronous and non-blocking like
 //! every other backend (`SessionMonitor`'s doc).
 //!
-//! Node discovery: nodes whose `media.class` property is `"Stream/Output/Audio"` are
-//! considered, named from their `application.process.binary` property (reduced to a basename
-//! defensively — PipeWire already reports a bare binary name, but `filter_for_watch_list`
-//! re-derives it regardless). Peak measurement links a passive capture stream to each node's
-//! monitor port and tracks the maximum absolute sample seen since the last publish.
+//! Node discovery considers nodes whose `media.class` property is `"Stream/Output/Audio"` and names
+//! each from its `application.process.binary` property. The name is reduced to a basename
+//! defensively: PipeWire already reports a bare binary name, but `filter_for_watch_list` re-derives
+//! it regardless. Peak measurement links a passive capture stream to each node's monitor port and
+//! tracks the maximum absolute sample seen since the last publish.
 //!
-//! Verification note: every `pipewire`/`libspa` 0.8 symbol this file uses — `pipewire::init`,
+//! Verification note: every `pipewire`/`libspa` 0.8 symbol this file uses was checked against the
+//! resolved crates' own source (`pipewire` 0.8.0 and `libspa` 0.8.0 as the cargo registry holds
+//! them) and the `audio-capture` example and `channel` module of `pipewire`, not merely against
+//! documentation. The symbols are `pipewire::init`,
 //! `main_loop::MainLoop::new`/`run`/`quit`/`loop_`, `context::Context::new`/`connect`,
-//! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`),
-//! `GlobalObject`'s `props`, `spa::utils::dict::DictRef::get`,
-//! `stream::Stream::new`/`connect`/`add_local_listener`, `StreamListener`,
-//! `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`, `Stream::state`,
-//! `StreamState`, `Buffer::datas_mut`,
-//! `Data::data`/`Data::chunk`, `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`,
-//! `TimerSource::update_timer`, `spa::param::audio::AudioInfoRaw`,
-//! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
-//! the resolved crate's own vendored source (`~/.cargo/registry/src/…/pipewire-0.8.0` and
-//! `libspa-0.8.0`) and its `audio-capture` example and `channel` module, not merely against
-//! documentation.
+//! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`), `GlobalObject`'s
+//! `props`, `spa::utils::dict::DictRef::get`, `stream::Stream::new`/`connect`/`add_local_listener`,
+//! `StreamListener`, `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`,
+//! `Stream::state`, `StreamState`, `Buffer::datas_mut`, `Data::data`/`Data::chunk`,
+//! `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`, `TimerSource::update_timer`,
+//! `spa::param::audio::AudioInfoRaw`, `spa::pod::serialize::PodSerializer` and
+//! `spa::pod::Pod::from_bytes`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

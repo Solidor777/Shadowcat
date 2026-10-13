@@ -1,8 +1,8 @@
-//! Scripted in-memory `SessionMonitor` backend for tests — a fixed sequence of poll results,
-//! replayed once each and then repeating the last entry.
+//! `FakeMonitor` is a scripted in-memory `SessionMonitor` backend for tests.
 //!
-//! Never compiled into the release binary (`#[cfg(test)]` at the `mod fake;` declaration in
-//! the `audio_monitor` module).
+//! It replays a fixed sequence of poll results once each and then repeats the last entry. It is
+//! never compiled into the release binary (`#[cfg(test)]` at the `mod fake;` declaration in the
+//! `audio_monitor` module).
 
 use super::{MonitorError, SessionLevel, SessionMonitor};
 

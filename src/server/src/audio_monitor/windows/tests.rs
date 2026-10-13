@@ -1,8 +1,8 @@
-//! Windows-only enumeration smoke test, run on the Windows matrix leg.
+//! The Windows-only enumeration smoke test runs on the Windows matrix leg.
 //!
-//! `platform_monitor` never panics on a headless runner, even one with no active render session
-//! (`enumerate_sessions` returning an empty `Vec` is a valid, non-error result, and a missing
-//! endpoint surfaces as a runtime `Backend` error from `poll`, not a construction failure).
+//! `platform_monitor` never panics on a headless runner, even one with no active render session.
+//! `enumerate_sessions` returning an empty `Vec` is a valid, non-error result, and a missing
+//! endpoint surfaces as a runtime `Backend` error from `poll`, not a construction failure.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

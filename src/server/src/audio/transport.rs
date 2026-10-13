@@ -1,10 +1,11 @@
-//! GM-only `AudioTransport` handling and the active-scene ambience swap.
+//! This module handles `AudioTransport` frames and swaps a scene's ambience playlist when the
+//! active scene changes.
 //!
-//! Handling authorizes, resolves the one playlist an op could need, applies the pure
-//! `state::apply`, and commits the `audio-state` Update under `WriteOrigin::AudioTransport`. The
-//! module also holds `on_active_scene`, the server rule that swaps a scene's ambience playlist when
-//! `world-settings.activeScene` commits (`ws::room::Room::publish`'s own hook calls it — never a
-//! client-driven path).
+//! Handling authorizes (every op except the `TrackEnded` report is GM-only), resolves the one
+//! playlist an op could need, applies the pure `state::apply`, and commits the `audio-state` Update
+//! under `WriteOrigin::AudioTransport`. The module also holds `on_active_scene`, the server rule
+//! that swaps a scene's ambience playlist when `world-settings.activeScene` commits.
+//! `ws::room::Room::publish`'s own hook calls it; it is never a client-driven path.
 
 use std::collections::HashMap;
 use std::fmt;
