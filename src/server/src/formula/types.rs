@@ -102,8 +102,7 @@ impl FormulaError {
     }
 }
 
-/// A number, or a `FormulaError`. INVARIANT: `evaluate` returns a finite `Ok` for an `Expr` that
-/// `parse` produced.
+/// A finite number, or a `FormulaError`. INVARIANT: an `Ok` is always finite.
 pub type FormulaValue = Result<f64, FormulaError>;
 
 /// Renders a number the way JavaScript's template interpolation does for the

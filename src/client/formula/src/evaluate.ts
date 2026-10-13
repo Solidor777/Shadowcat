@@ -32,7 +32,9 @@ export function evaluate(
 ): FormulaValue {
   switch (expr.kind) {
     case "num":
-      return expr.value;
+      // Gated like every other result so no number returned is non-finite even for a hand-built
+      // `Expr`; the lexer never produces a non-finite `num`, so parsed input is unaffected.
+      return finite(expr.value);
 
     case "ref": {
       return validateResolverOutput(callResolver(expr.path, resolve));

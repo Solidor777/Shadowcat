@@ -6,10 +6,10 @@
 //! One conformance corpus, the `conformance` fixture of the client package, is read by both test
 //! suites, so a divergence fails on whichever side moved.
 //!
-//! INVARIANT: nothing here panics on any input and `evaluate` returns no non-finite `Ok` for an
-//! `Expr` that `parse` produced — every failure is a `FormulaError` value. INVARIANT: the language
-//! carries no game-system vocabulary; a reference path means whatever the `Resolve` implementation
-//! says it means (`SystemLeafResolver` is the engine's one such decision).
+//! INVARIANT: nothing here panics on any input and no `Ok` value is ever non-finite — every
+//! failure is a `FormulaError` value. INVARIANT: the language carries no game-system vocabulary; a
+//! reference path means whatever the `Resolve` implementation says it means (`SystemLeafResolver`
+//! is the engine's one such decision).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

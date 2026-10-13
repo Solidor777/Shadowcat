@@ -2,9 +2,9 @@
 //!
 //! It is the twin of the client package's `evaluate` module. Operands evaluate left-to-right and
 //! the FIRST error wins; `/` is float division, `%` is truncated remainder, and `round` ties toward
-//! +∞. Every arithmetic result and every resolved reference passes `finite`, so an `Expr` that
-//! `parse` produced never evaluates to infinity or NaN. For such an `Expr` the recursion depth is
-//! bounded by `MAX_AST_NODES` (one frame per node on a left-deep chain), not `MAX_PARSE_DEPTH`.
+//! +∞. Every numeric literal, arithmetic result and resolved reference passes `finite`, so no `Ok`
+//! is infinity or NaN. For an `Expr` that `parse` produced the recursion depth is bounded by
+//! `MAX_AST_NODES` (one frame per node on a left-deep chain), not `MAX_PARSE_DEPTH`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -82,7 +82,9 @@ pub(crate) fn js_round(x: f64) -> f64 {
 /// ```
 pub fn evaluate(expr: &Expr, resolve: &dyn Resolve) -> FormulaValue {
     match expr {
-        Expr::Num(v) => Ok(*v),
+        // A literal is gated like every other result so no `Ok` is non-finite even for a
+        // hand-built `Expr`; the lexer never produces a non-finite `Num`, so parsed input is unaffected.
+        Expr::Num(v) => finite(*v),
         // A resolver's own error passes through unchanged; a number it returns
         // is gated exactly like an arithmetic result.
         Expr::Ref(path) => resolve.resolve(path).and_then(finite),

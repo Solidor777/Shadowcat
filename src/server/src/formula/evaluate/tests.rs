@@ -171,3 +171,18 @@ fn a_hand_built_call_with_missing_arguments_yields_non_finite_not_a_panic() {
         FormulaErrorKind::NonFinite
     );
 }
+
+#[test]
+fn a_hand_built_non_finite_literal_is_gated_to_non_finite() {
+    assert_eq!(
+        evaluate(&Expr::Num(f64::INFINITY), &env(&[])),
+        Err(FormulaError::new(
+            FormulaErrorKind::NonFinite,
+            "arithmetic result is not finite (Infinity)"
+        ))
+    );
+    assert_eq!(
+        evaluate(&Expr::Num(f64::NAN), &env(&[])).unwrap_err().error,
+        FormulaErrorKind::NonFinite
+    );
+}
