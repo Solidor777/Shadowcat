@@ -1,5 +1,5 @@
-//! The cut counters, the write-side counting rules, the stream table kept in step with the wire
-//! from both directions, and the sliding sampler.
+//! These tests cover the cut counters, the write-side counting rules, the stream table kept in
+//! step with the wire from both directions, and the sliding sampler.
 
 use std::io::IoSlice;
 

@@ -1,4 +1,6 @@
-//! All REST route handlers.
+//! This module holds the REST route handlers for the server, user, world and document routes.
+//!
+//! The asset, installed-module and world-bundle handlers live in sibling modules.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

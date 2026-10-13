@@ -1,5 +1,5 @@
-//! The frame walker: header splits, event order, payload skipping cost, GOAWAY capture and the
-//! client preface.
+//! These tests cover the frame walker: header splits, event order, payload skipping cost, GOAWAY
+//! capture and the client preface.
 
 use super::*;
 

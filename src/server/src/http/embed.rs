@@ -1,4 +1,4 @@
-//! The rust-embedded client bundle (`dist/`) served as the SPA.
+//! This module serves the rust-embedded client bundle (`dist/`) as the router's fallback.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -14,13 +14,13 @@ use axum::response::{IntoResponse, Response};
 #[folder = "../../dist/"]
 struct StaticAssets;
 
-/// True when `path` lives under the content-hashed `assets/` directory `vite.config.ts`'s
-/// `rollupOptions.output.entryFileNames` writes every non-runtime build chunk to
+/// True when `path` lives under the content-hashed `assets/` directory that the client build's
+/// `rollupOptions.output.entryFileNames` setting writes every non-runtime build chunk to
 /// (`assets/[name]-[hash].js`, and Vite's default asset naming for images/CSS matches the same
 /// convention) — a changed file gets a brand-new URL there, so it alone is safe to cache
-/// `immutable`. Root files (`index.html`, `popout.html`, favicons) and the deliberately
-/// STABLE-named `runtime/*.js` chunks (referenced by filename from `index.html`'s import map at
-/// build time) are excluded: their URL never changes when their content does.
+/// `immutable`. Root files (the page entry points and favicons) and the deliberately STABLE-named
+/// `runtime/*.js` chunks (referenced by name from the page's import map at build time) are
+/// excluded: their URL never changes when their content does.
 fn is_hashed_asset_path(path: &str) -> bool {
     path.starts_with("assets/")
 }

@@ -1,4 +1,5 @@
-//! Tables over `classify`, `is_media_or_archive` and `decide`.
+//! These tests are tables over `classify`, `is_media_or_archive` and `decide`, plus the
+//! `multipart/byteranges` framing.
 
 use super::*;
 use tower_http::compression::predicate::{NotForContentType, Predicate};

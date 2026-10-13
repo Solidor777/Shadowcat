@@ -1,11 +1,12 @@
-//! The bound on asset files held open while their bytes stream to peers.
+//! This module bounds the asset files held open while their bytes stream to peers.
 //!
-//! A streamed response keeps its file descriptor open while its peer reads slowly, up to the
-//! egress stall window plus one sampler tick when the peer stops reading altogether. The
-//! descriptor budget (`crate::fd_budget`) counts [`STREAMED_FILE_PERMITS`] descriptors for this
-//! purpose, so the server must never hold more: every handler that opens a file to stream it
-//! takes a permit from one process-wide semaphore first and keeps it for as long as it holds the
-//! file.
+//! A streamed response keeps its file descriptor open while its peer reads slowly. A peer that
+//! stops reading altogether is cut between the egress stall window and that window plus one
+//! sampler tick after its last progress. The descriptor budget (`crate::fd_budget`) counts
+//! [`STREAMED_FILE_PERMITS`] descriptors for this purpose, so the server must never hold more:
+//! every handler that opens a file to stream it takes a permit from one process-wide semaphore
+//! first and keeps it for as long as it holds the file.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

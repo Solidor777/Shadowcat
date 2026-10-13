@@ -1,17 +1,17 @@
-//! Egress no-progress accounting.
+//! This module accounts for the egress no-progress bounds.
 //!
 //! It covers what a cut is counted as, the counters the serve loop owns, the connection unit's
 //! evidence (how many response bytes the socket accepted, and whether its writer is parked), and
 //! the wire-fed table of live HTTP/2 streams.
 //!
-//! One definition of "no progress" is shared by every unit that cuts a response: a peer that
+//! One definition of "no progress" is shared by the units that cut a response for it: a peer that
 //! returns no flow-control credit for a pending chunk (the stream unit), a socket that accepts
-//! nothing (the connection unit), or an ended response whose own stream's queued tail makes less
-//! than `min(egress_floor, remaining)` bytes of progress (the ended-unflushed unit, tracked by the
-//! `table` module), for [`ConnLimits::egress_window`](super::ConnLimits). Each cut is counted under
-//! exactly one [`StallUnit`], through [`StallCounters::record_stall`] and nothing else, so the
-//! serve loop's closing report ([`DrainReport::stall_cuts`](super::DrainReport)) says which bound
-//! fired.
+//! fewer than `egress_floor` bytes while its writer is parked (the connection unit), or an ended
+//! response whose own stream's queued tail makes less than `min(egress_floor, remaining)` bytes of
+//! progress (the ended-unflushed unit, tracked by the `table` module), for
+//! [`ConnLimits::egress_window`](super::ConnLimits). Each cut is counted under exactly one
+//! [`StallUnit`], through [`StallCounters::record_stall`] and nothing else, so the serve loop's
+//! closing report ([`DrainReport::stall_cuts`](super::DrainReport)) says which bound fired.
 //!
 //! The connection unit measures the socket, not the application: [`WriteCounter`] sits in the
 //! connection's IO and adds the response bytes the socket accepted to [`Egress`]; [`Sampler`], run
@@ -25,8 +25,9 @@
 //! keeps the `table` module's per-stream table in step with the wire. The table fails closed: a
 //! connection whose table outgrows its cap is cut and counted as [`StallUnit::TrackerOverflow`].
 //! Response bodies add the other half of each stream's life (the frame that carries END_STREAM, and
-//! the body's drop), and [`Egress::cut_ended_unflushed`], run by `drive` on every tick, cuts a
-//! connection whose finished response's own queued tail made no progress for the window.
+//! the body's drop), and [`Egress::cut_ended_unflushed`], run by `drive` on each tick at which the
+//! writer is not parked, cuts a connection whose finished response's own queued tail made no
+//! progress for the window.
 
 use std::collections::VecDeque;
 use std::io;

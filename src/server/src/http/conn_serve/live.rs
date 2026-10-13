@@ -1,7 +1,8 @@
-//! Per-connection liveness.
+//! This module holds the per-connection liveness state.
 //!
-//! It tracks the connection's cap slot, the count of in-flight streams the HTTP/2 idle bound reads,
-//! and the stream markers the egress stream unit scans.
+//! It holds the connection's cap slot, counts the streams in flight (the count the HTTP/2 idle
+//! bound reads), registers the stream markers the egress stream unit scans, and owns the
+//! connection's `Egress` state.
 //!
 //! WHY a lease seam exists: hyper runs an HTTP/2 extended-CONNECT tunnel (an RFC 8441 WebSocket)
 //! as a detached upgrade task, so once the handler returns its response no hyper-visible future

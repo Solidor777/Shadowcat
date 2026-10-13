@@ -1,13 +1,13 @@
-//! The HTTP/2 frame walker the egress bounds read the wire with.
+//! This module is the HTTP/2 frame walker the egress bounds read the wire with.
 //!
-//! One [`FrameParser`] type, two instances per HTTP/2 connection: the WRITE instance walks what the
+//! Each HTTP/2 connection has two [`FrameParser`] instances: the WRITE instance walks what the
 //! writer accepted (counting DATA payload for the connection unit and reporting which frames ended
 //! which streams), and the READ instance walks what the codec is handed (reporting request HEADERS
 //! and RST_STREAM).
 //!
-//! A frame is `9` header bytes (24-bit length, type, flags, 31-bit stream id) and a payload; the
+//! A frame is 9 header bytes (24-bit length, type, flags, 31-bit stream id) and a payload; the
 //! walker collects a header in whatever pieces the bytes arrive (split across writes and across
-//! `IoSlice`s), then skips the payload by arithmetic, so its cost is per frame and never per byte.
+//! `IoSlice`s), then consumes the payload as a run, so its cost is per frame and never per byte.
 //! Frame layout: RFC 9113 section 4.1.
 
 use super::super::H2_PREFACE_LEN;

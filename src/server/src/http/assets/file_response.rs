@@ -1,11 +1,11 @@
-//! Streamed whole-file responses with byte-range support.
+//! This module streams whole stored files as responses, with byte-range support.
 //!
-//! The helpers are shared by every asset site that serves a stored file, so the validator order,
-//! the range decision and the response framing cannot differ between sites.
+//! The helpers are shared by every asset handler that serves a stored file, so the validator
+//! order, the range decision and the response framing cannot differ between sites.
 //!
-//! The file is read in `FILE_READ_CHUNK` pieces as the connection pulls them; no response holds a
-//! file's bytes in memory. `http::conn_serve`'s `LeasedBody` re-chunks every response body to the
-//! egress frame size, so the read size is chosen for syscall count and is not coupled to it.
+//! The file is read in `FILE_READ_CHUNK` pieces as the connection pulls them, so a response never
+//! buffers the whole file. `http::conn_serve::live`'s `LeasedBody` splits every response body into
+//! frames of at most `EGRESS_CHUNK_BYTES`, so the read size is not coupled to the frame size.
 //!
 //! A GET holds one `FilePermit` for as long as it holds the file open. The permit is taken before
 //! the file is opened and before any header is written, so an exhausted pool is a clean 503, and
@@ -13,10 +13,11 @@
 //! body is dropped (a peer that reset, or a connection cut by the egress stall bounds).
 //!
 //! A response whose validator is derived from the file's own bytes (`Validator::OfFile`) cannot
-//! answer a validator hit before opening: the file is opened under the permit, its length,
-//! modification time and head are read from that one handle, and a 304 is answered after the open
-//! (the permit is held until the 304 is returned). A response with a version-derived validator
-//! (`Validator::Version`) is answered 304 by its caller before any open and holds no permit.
+//! answer a validator hit before opening. Its GET opens the file under the permit, reads the
+//! length, modification time and head from that one handle, and answers a 304 after the open,
+//! holding the permit until the 304 is returned. Its HEAD opens the file for the head read alone
+//! and takes no permit. A version-derived validator (`Validator::Version`) is checked by the
+//! caller before `serve_file` runs, so its 304 opens no file and takes no permit.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

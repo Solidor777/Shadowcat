@@ -1,7 +1,8 @@
-//! `LeasedBody`.
+//! These tests cover `LeasedBody`.
 //!
-//! The tests cover the chunk bound ([`EGRESS_CHUNK_BYTES`]), exact size hints, pass-through of
-//! non-data frames, and the stream marker the stream unit scans.
+//! They check the chunk bound ([`EGRESS_CHUNK_BYTES`]), exact size hints, pass-through of non-data
+//! frames, the stream marker the stream unit scans, and the registrations the body's end makes in
+//! the stream table.
 
 use std::collections::VecDeque;
 use std::net::IpAddr;

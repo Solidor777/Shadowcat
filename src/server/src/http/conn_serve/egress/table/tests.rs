@@ -1,7 +1,8 @@
-//! The stream table's lifecycle.
+//! These tests cover the stream table's lifecycle.
 //!
-//! The tests cover creation at parse time, removal only on wire evidence, the GOAWAY filter and
-//! purge, the fail-closed cap, and the Final and Queued states with the stream's own progress.
+//! They cover creation at parse time, removal only on wire evidence, the GOAWAY filter and purge,
+//! the fail-closed cap, the Final and Queued states with the stream's own progress, and the
+//! parking of a tunnel session on its stream's backlog.
 
 use super::*;
 

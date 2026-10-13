@@ -1,4 +1,6 @@
-//! Installed-module discovery + path-guarded static serving.
+//! This module serves the installed-module routes: discovery (`list_installed_modules`),
+//! path-guarded static file serving (`serve_module_file`) and per-world enablement
+//! (`get_world_enabled_modules`, `set_world_enabled_modules`).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -42,7 +44,7 @@ use crate::http::AppState;
 pub struct InstalledModuleInfo {
     /// The install FOLDER name — the authoritative enablement key.
     pub id: String,
-    /// The raw module.json, byte-for-byte (the client's Zod schema reads it).
+    /// The raw module manifest, byte-for-byte (the client's Zod schema reads it).
     #[ts(type = "unknown")]
     pub manifest: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
@@ -134,8 +136,8 @@ use crate::http::error::AppError;
 /// an `id` segment that canonicalizes to exactly `modules_root` (a `.`
 /// segment, or a module "folder" that is a symlink back to the root itself)
 /// would otherwise collapse the per-module boundary onto its parent, letting
-/// stage 2 read ANY file under `modules_root` — including another module's
-/// own files, not just loose root files.
+/// the file-path check read ANY file under `modules_root` — including another
+/// module's own files, not just loose root files.
 pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
     candidate != root && candidate.starts_with(root)
 }
@@ -144,15 +146,15 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// module's OWN folder only. Auth: any authenticated user (browsers `import()`
 /// the entry + fetch its relative assets under session cookies). The server
 /// never reads or executes this JS — this is byte-serving with a MANDATORY
-/// two-stage path-traversal guard:
-///   1. `id` alone (a single URL segment, but percent-encoded `..`/`/` can
-///      still smuggle a traversal into it) must canonicalize to a path still
-///      inside the modules root.
-///   2. `rel_path` joined onto that module's own canonicalized root must
-///      still canonicalize to a path inside THAT root.
+/// path-traversal guard of two checks:
+/// - The module-folder check: `id` alone (a single URL segment, but
+///   percent-encoded `..`/`/` can still smuggle a traversal into it) must
+///   canonicalize to a path still inside the modules root.
+/// - The file-path check: `rel_path` joined onto the module's folder must
+///   canonicalize to a path inside THAT module's canonicalized folder.
 ///
-/// Both canonicalize calls resolve symlinks too, closing that escape route in
-/// the same check. Any failure (missing file, either escape) is a uniform 404
+/// Canonicalization resolves symlinks too, closing that escape route in the
+/// same checks. Any failure (missing file, either escape) is a uniform 404
 /// — never distinguishing "traversal rejected" from "not found".
 ///
 /// Windows case-insensitive/case-preserving filesystem semantics (a request

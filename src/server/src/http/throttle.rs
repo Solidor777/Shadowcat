@@ -1,10 +1,11 @@
-//! Shared sliding-window throttle for the two Argon2-verifying auth endpoints (`/api/login`,
-//! `/api/invites/accept`).
+//! This module is the shared sliding-window throttle for the two Argon2-verifying auth endpoints
+//! (`/api/login`, `/api/invites/accept`) and for world creation.
 //!
 //! Keys are opaque strings composed by the callers (`login:u:<username>`, `login:ip:<ip>`,
-//! `invite:u:<uuid>`, `invite:ip:<ip>`). INVARIANT (no enumeration oracle): identity keys count
-//! attempts against unknown identities exactly like known ones, and callers return one uniform 429
-//! — the throttle must never behave differently for an identity that exists.
+//! `invite:u:<uuid>`, `invite:ip:<ip>`, `world_create:u:<uuid>`). INVARIANT (no enumeration
+//! oracle): identity keys count attempts against unknown identities exactly like known ones, and
+//! callers return one uniform 429 — the throttle must never behave differently for an identity
+//! that exists.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -25,8 +26,8 @@ pub const INVITE_PER_MIN_PER_IP: usize = 30;
 /// authenticated `AuthUser` with no per-world capability check, so an unthrottled account
 /// could mint unbounded worlds (each seeding a full config-doc set via `apply_intent`),
 /// exhausting storage/DB rows with no signal beyond ordinary write volume. Sized well above
-/// legitimate interactive use (no test in this crate creates more than a handful of worlds
-/// per session) while still bounding a scripted flood to one order of magnitude per minute.
+/// legitimate interactive use while still bounding a scripted flood to one order of magnitude
+/// per minute.
 pub const WORLD_CREATE_PER_MIN_PER_ACCOUNT: usize = 10;
 /// Tracked-key capacity. Unauthenticated input mints identity keys, so the map
 /// must be bounded; per-IP budgets cap the mint rate per address, and on
@@ -37,7 +38,7 @@ pub const MAX_TRACKED_KEYS: usize = 65_536;
 const WINDOW_MS: i64 = 60_000;
 
 /// Sliding-window budgets for login/invite abuse, keyed by opaque strings
-/// (`login:user:<name>`, `login:ip:<addr>`, ...). Fails closed at capacity.
+/// (`login:u:<username>`, `login:ip:<addr>`, ...). Fails closed at capacity.
 ///
 /// # Examples
 ///
@@ -120,11 +121,12 @@ impl Default for AuthThrottle {
 }
 
 /// Infallible client-IP extractor: `Some` when the server is served with connect-info (production,
-/// via `http::into_service`, which supplies `ConnectInfo<ConnMeta>`), `None` under the axum-test mock transport — IP
-/// throttling degrades to identity-only there, never a 500. Behind a configured trusted reverse
-/// proxy (`Config::trusted_proxies`), resolves through `X-Forwarded-For` instead of the raw TCP
-/// peer — see `resolve_client_ip`'s doc for the exact trust-walk algorithm. Default configuration
-/// (`trusted_proxies` empty) preserves the original TCP-peer-only behavior exactly.
+/// via `http::into_service`, which supplies `ConnectInfo<ConnMeta>`), `None` under the axum-test
+/// mock transport — IP throttling degrades to identity-only there, never a 500. Behind a
+/// configured trusted reverse proxy (`Config::trusted_proxies`), resolves through
+/// `X-Forwarded-For` instead of the raw TCP peer — see `resolve_client_ip`'s doc for the exact
+/// trust-walk algorithm. With `trusted_proxies` empty no peer is trusted, so the client address is
+/// the raw TCP peer.
 ///
 /// # Examples
 ///

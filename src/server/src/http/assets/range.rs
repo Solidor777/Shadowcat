@@ -1,13 +1,14 @@
-//! Byte-range policy for the whole-file asset responses.
+//! This module is the byte-range policy for the whole-file asset responses.
 //!
 //! It decides which responses are ranged at all (`classify`) and what a `Range` request selects
-//! from a file of known length (`decide`).
+//! from a file of known length (`decide`), and it builds the `multipart/byteranges` framing.
 //!
-//! Pure: no IO, no clock, no allocation beyond the parsed request. The serve sites and the
-//! compression predicate consume the one classification, so the ranged-versus-compressed decision
-//! cannot fork between them. Semantics follow RFC 9110 section 14 (range requests): a `Range`
-//! header the server does not understand, or whose unit is not `bytes`, is ignored and the full
-//! representation is sent; a range set with no satisfiable member is answered 416.
+//! `classify` and `decide` are pure: they do no IO and read no clock. `serve_file` uses the one
+//! classification and the compression predicate follows its `Accept-Ranges` header, so the
+//! ranged-versus-compressed decision cannot fork between them. Semantics follow RFC 9110
+//! section 14 (range requests): a `Range` header the server does not understand, or whose unit is
+//! not `bytes`, is ignored and the full representation is sent; a range set with no satisfiable
+//! member is answered 416.
 
 /// Largest slice of a media response one request is answered with: one read-ahead burst of a
 /// browser media element. A response larger than the element buffers is a series of such slices,
@@ -82,8 +83,7 @@ pub(super) enum RangeDecision {
 /// `Range` (lazy page loads, resume) or whose payload is already compressed. Compared lowercase
 /// and without parameters. A ranged response cannot also be compressed (a range addresses bytes
 /// of the selected representation, and a compressed slice would contradict its own
-/// `Content-Range`), so membership trades compression for ranges. Names are the IANA media-type
-/// registry names.
+/// `Content-Range`), so membership trades compression for ranges.
 const RANGED_EXACT_TYPES: [&str; 13] = [
     "application/ogg",
     "application/pdf",

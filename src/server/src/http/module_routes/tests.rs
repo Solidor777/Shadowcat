@@ -212,7 +212,7 @@ async fn serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root()
     let server = logged_in_server_with_modules_dir(dir.path()).await;
 
     // id="..%2f.." resolves (via the `id` capture alone) above modules_dir
-    // before `rel_path` is even considered — the two-stage guard must catch
+    // before `rel_path` is even considered — the module-folder check must catch
     // this at the FIRST canonicalize, not rely on the second.
     let res = server.get("/modules/%2e%2e/outside.txt").await;
     res.assert_status(StatusCode::NOT_FOUND);
@@ -222,7 +222,7 @@ async fn serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root()
 // three CI OSes (unlike the symlink-based HTTP reproduction below, which
 // is unix-only). `Path::starts_with` alone is
 // satisfied by EQUALITY — an `id`/`rel_path` that canonicalizes to exactly
-// `root` must NOT be treated as "within" it, or stage 2 permits reading
+// `root` must NOT be treated as "within" it, or the file-path check permits reading
 // ANY file under `modules_root`, including another module's own files.
 #[test]
 fn is_strictly_within_rejects_equality_but_accepts_a_proper_descendant() {

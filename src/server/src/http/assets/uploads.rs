@@ -1,8 +1,9 @@
-//! Resumable chunked upload sessions: a GM opens a session, appends chunks at explicit offsets,
-//! then completes (or aborts) it.
+//! This module serves resumable chunked upload sessions.
 //!
+//! A GM opens a session, appends chunks at explicit offsets, then completes (or aborts) it.
 //! Sessions live in memory only — they survive a dropped connection, not a server restart — and
 //! idle ones are swept with their staging file.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

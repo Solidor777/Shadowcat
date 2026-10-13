@@ -1,4 +1,4 @@
-//! The registry's length bound and its survival rule, measured at every insert.
+//! These tests measure the registry's length bound and its survival rule at every insert.
 
 use super::*;
 

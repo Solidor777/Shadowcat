@@ -1,7 +1,7 @@
-//! `Validator::OfFile`: the validator is derived from the opened file's bytes.
+//! These tests cover `Validator::OfFile`, whose validator is derived from the opened file's bytes.
 //!
-//! A validator hit on that arm is therefore answered after the open, under a permit, and a rewrite
-//! of the file changes the validator.
+//! A GET's validator hit is answered after the open, under a permit, a HEAD takes no permit, and a
+//! rewrite of the file changes the validator.
 
 use std::sync::Arc;
 use std::time::Duration;

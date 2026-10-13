@@ -1,5 +1,5 @@
-//! The stream executor: scope visibility across yields, the cut dropping the future, and a cut
-//! that fires before the first poll.
+//! These tests cover the stream executor: scope visibility across yields, the cut dropping the
+//! future, and a cut that fires before the first poll.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

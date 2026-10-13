@@ -1,7 +1,6 @@
-//! A registry of weak references that frees the entries of dropped items without a per-entry
-//! cost.
+//! This module is a registry of weak references that frees the entries of dropped items.
 //!
-//! Algorithm: amortised pruning. An insert first checks whether the vector has grown past
+//! The algorithm is amortised pruning. An insert first checks whether the vector has grown past
 //! `max(2 * live_at_last_prune, PRUNE_FLOOR)` and, if so, retains only the entries that still
 //! upgrade and records that live count. A prune costs O(len) and is paid for by the more than
 //! `len / 2` inserts since the previous prune, so an insert is amortised O(1); the vector never

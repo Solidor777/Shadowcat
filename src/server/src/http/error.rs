@@ -1,4 +1,4 @@
-//! `AppError` and its status-code mapping.
+//! This module defines `AppError` and its status-code mapping.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

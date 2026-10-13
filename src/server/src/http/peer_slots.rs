@@ -1,6 +1,6 @@
-//! Per-peer and global connection slots.
+//! This module holds the per-peer and global connection slots.
 //!
-//! This module is the ONE definition of how a peer is keyed, how a cap is counted and how a
+//! It is the ONE definition of how a peer is keyed, how a cap is counted and how a
 //! cap-exempt peer (`Config::is_cap_exempt`: a trusted proxy or a loopback peer) is exempted.
 //!
 //! The pre-hand-off admission caps (`crate::tls::listener::SniffListener`) and the post-hand-off

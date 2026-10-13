@@ -1,5 +1,5 @@
-//! The permit pool: a bounded wait that ends in a 503 with `Retry-After`, release on drop, and a
-//! peak gauge that never goes down.
+//! These tests cover the permit pool: a bounded wait that ends in a 503 with `Retry-After`,
+//! release on drop, and a peak gauge that never goes down.
 
 use super::*;
 use axum::http::{header, StatusCode};

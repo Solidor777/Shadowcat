@@ -1,5 +1,5 @@
-//! The kill switch's ordering, wake and reason rules, driven with counting wakers so every
-//! outcome is deterministic.
+//! These tests cover the kill switch's ordering, wake and reason rules, and the signal's registry
+//! of connection switches.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::Wake;

@@ -1,4 +1,5 @@
-//! Asset upload/serve routes + the upload rate limiter.
+//! This module holds the asset upload, serve, metadata, replace and delete handlers, the byte
+//! sniffers that decide a content type, and the upload rate limiter.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

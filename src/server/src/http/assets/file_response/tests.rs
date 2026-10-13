@@ -1,7 +1,8 @@
-//! `serve_file` and `not_modified` over real files.
+//! These tests exercise `serve_file` and `not_modified` over real files.
 //!
-//! The two I/O edges (GET and HEAD) agree on status and headers for every range outcome, bodies are
-//! byte-exact, and a file that shrinks under a response aborts it.
+//! GET and HEAD agree on status and headers for every range outcome, bodies are byte-exact, and a
+//! file that shrinks under a response aborts it. The tests also cover the release and refusal of
+//! the streamed-file permit.
 
 use super::*;
 use axum::body::to_bytes;
