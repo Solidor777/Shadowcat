@@ -345,3 +345,66 @@ async fn query_is_membership_gated() {
         .unwrap();
     assert_eq!(res.status(), 403);
 }
+
+/// Seeds one image per `(name, created_at)` pair, oldest first.
+async fn seed_named(h: &Harness, names: &[&str]) {
+    for (i, name) in names.iter().enumerate() {
+        seed(
+            h,
+            Seed {
+                name,
+                content_type: "image/webp",
+                size: 1,
+                created_at: i as i64 + 1,
+                folder: None,
+                explicit: &[],
+                derived: &[],
+            },
+        )
+        .await;
+    }
+}
+
+/// Follows `next_cursor` from the first page of `query` to the end, returning every visited
+/// item name in visit order.
+async fn walk_cursor_chain(h: &Harness, query: &str) -> Vec<String> {
+    let mut visited = Vec::new();
+    let mut next = query.to_string();
+    for _ in 0..20 {
+        let p = page(h, &next).await;
+        visited.extend(names(&p));
+        match p["next_cursor"].as_str() {
+            Some(c) => next = format!("{query}&cursor={c}"),
+            None => return visited,
+        }
+    }
+    panic!("cursor chain did not end: {visited:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_filling_mid_sql_page_resumes_at_the_next_untested_row() {
+    let h = spawn().await;
+    // A page of three fills after hit-5 while hit-6 is still untested and an SQL row follows.
+    seed_named(
+        &h,
+        &[
+            "hit-1", "miss-2", "miss-3", "hit-4", "hit-5", "hit-6", "miss-7", "hit-8",
+        ],
+    )
+    .await;
+    let visited = walk_cursor_chain(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(visited, vec!["hit-1", "hit-4", "hit-5", "hit-6", "hit-8"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn regex_page_filling_on_the_last_sql_page_still_returns_a_cursor() {
+    let h = spawn().await;
+    // The final SQL page has no extra row, yet its last match is untested when the page fills.
+    seed_named(
+        &h,
+        &["hit-1", "miss-2", "miss-3", "hit-4", "hit-5", "hit-6"],
+    )
+    .await;
+    let visited = walk_cursor_chain(&h, "limit=3&name_regex=hit").await;
+    assert_eq!(visited, vec!["hit-1", "hit-4", "hit-5", "hit-6"]);
+}

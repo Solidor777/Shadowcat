@@ -265,9 +265,9 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 /// `GET /api/worlds/{world}/assets` — membership-gated. With none of the `AssetQuery`
 /// parameters present (`AssetQuery::is_bare`): the bare `Asset[]` listing. With any of them: an
 /// `AssetPage`. The SQL filters narrow first; `name_regex` is then applied in Rust to the rows
-/// the SQL selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the page fills —
-/// `next_cursor` always marks the last row EXAMINED, so a caller following cursors never skips a
-/// row.
+/// the SQL selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the page fills;
+/// a `next_cursor` then names the last row tested against the pattern, so the next page begins
+/// at the first untested row.
 ///
 /// # Examples
 ///
@@ -339,34 +339,43 @@ pub async fn list(
             .await?;
         let has_more = rows.len() as u32 > limit;
         rows.truncate(limit as usize);
-        let last_examined = rows.last().map(|a| AssetCursor {
+        let cursor_of = |a: &Asset| AssetCursor {
             sort_key: sort_key_of(a, sort),
             id: a.id,
-        });
+        };
         match &regex {
             None => {
+                next_cursor = if has_more {
+                    rows.last().map(cursor_of)
+                } else {
+                    None
+                };
                 items = rows;
-                next_cursor = if has_more { last_examined } else { None };
                 break;
             }
             Some(re) => {
-                for a in rows {
-                    if items.len() as u32 >= limit {
-                        break;
-                    }
+                let fetched = rows.len();
+                let mut last_tested = None;
+                let mut rows_untested = false;
+                for (i, a) in rows.into_iter().enumerate() {
+                    last_tested = Some(cursor_of(&a));
                     if re.is_match(&a.original_name) {
                         items.push(a);
                     }
+                    if items.len() as u32 >= limit {
+                        rows_untested = i + 1 < fetched;
+                        break;
+                    }
                 }
-                if !has_more {
+                if !(has_more || rows_untested) {
                     next_cursor = None;
                     break;
                 }
-                next_cursor = last_examined.clone();
+                next_cursor = last_tested.clone();
                 if items.len() as u32 >= limit {
                     break;
                 }
-                after = last_examined;
+                after = last_tested;
             }
         }
     }
