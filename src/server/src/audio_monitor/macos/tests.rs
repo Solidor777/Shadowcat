@@ -384,23 +384,35 @@ fn buffer_list_peak_reads_a_list_with_no_buffers_as_zero() {
 }
 
 /// The Core Audio headers declare `AudioStreamBasicDescription` as a `Float64` followed by eight
-/// `UInt32`s, so the mirror measures 40 bytes with `mFormatID` at offset 8, `mFormatFlags` at 12
-/// and `mBitsPerChannel` at 32. `kAudioTapPropertyFormat` is read into this struct.
+/// `UInt32`s in the order `mSampleRate`, `mFormatID`, `mFormatFlags`, `mBytesPerPacket`,
+/// `mFramesPerPacket`, `mBytesPerFrame`, `mChannelsPerFrame`, `mBitsPerChannel`, `mReserved`, so
+/// the mirror measures 40 bytes with each field at its header offset. `kAudioTapPropertyFormat` is
+/// read into this struct.
 #[test]
 fn stream_description_layout_matches_the_core_audio_headers() {
+    use std::mem::offset_of;
     assert_eq!(std::mem::size_of::<AudioStreamBasicDescription>(), 40);
+    assert_eq!(offset_of!(AudioStreamBasicDescription, sample_rate), 0);
+    assert_eq!(offset_of!(AudioStreamBasicDescription, format_id), 8);
+    assert_eq!(offset_of!(AudioStreamBasicDescription, format_flags), 12);
     assert_eq!(
-        std::mem::offset_of!(AudioStreamBasicDescription, format_id),
-        8
+        offset_of!(AudioStreamBasicDescription, bytes_per_packet),
+        16
     );
     assert_eq!(
-        std::mem::offset_of!(AudioStreamBasicDescription, format_flags),
-        12
+        offset_of!(AudioStreamBasicDescription, frames_per_packet),
+        20
+    );
+    assert_eq!(offset_of!(AudioStreamBasicDescription, bytes_per_frame), 24);
+    assert_eq!(
+        offset_of!(AudioStreamBasicDescription, channels_per_frame),
+        28
     );
     assert_eq!(
-        std::mem::offset_of!(AudioStreamBasicDescription, bits_per_channel),
+        offset_of!(AudioStreamBasicDescription, bits_per_channel),
         32
     );
+    assert_eq!(offset_of!(AudioStreamBasicDescription, reserved), 36);
 }
 
 /// `kAudioFormatFlagIsSignedInteger`, used only to build refused descriptions.
@@ -523,4 +535,48 @@ fn verify_tap_format_rejects_float32_in_a_wider_container() {
         ..description(K_AUDIO_FORMAT_LINEAR_PCM, K_AUDIO_FORMAT_FLAG_IS_FLOAT, 32)
     };
     assert!(verify_tap_format(&wide).is_err());
+}
+
+/// Packed 32-bit signed integer PCM is refused: `buffer_list_peak` decodes every sample as float.
+#[test]
+fn verify_tap_format_rejects_thirty_two_bit_signed_integer_pcm() {
+    let format = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_SIGNED_INTEGER | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+        32,
+    );
+    assert!(verify_tap_format(&format).is_err());
+}
+
+/// A description with zero channels is refused with the packed flag set, and with it clear and a
+/// zero frame size, which satisfies the implied-packed relation as `0 == 0 * 4`.
+#[test]
+fn verify_tap_format_rejects_zero_channels() {
+    let flagged = AudioStreamBasicDescription {
+        bytes_per_frame: 0,
+        channels_per_frame: 0,
+        ..description(
+            K_AUDIO_FORMAT_LINEAR_PCM,
+            K_AUDIO_FORMAT_FLAG_IS_FLOAT | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+            32,
+        )
+    };
+    assert!(verify_tap_format(&flagged).is_err());
+    let implied = AudioStreamBasicDescription {
+        format_flags: K_AUDIO_FORMAT_FLAG_IS_FLOAT,
+        ..flagged
+    };
+    assert!(verify_tap_format(&implied).is_err());
+}
+
+/// A channel count whose sample bytes overflow 32 bits does not wrap into the implied-packed
+/// relation: 2^30 channels of 4 bytes is 2^32 bytes per frame, not 0.
+#[test]
+fn verify_tap_format_rejects_a_channel_count_that_overflows_the_frame_size() {
+    let format = AudioStreamBasicDescription {
+        bytes_per_frame: 0,
+        channels_per_frame: 1 << 30,
+        ..description(K_AUDIO_FORMAT_LINEAR_PCM, K_AUDIO_FORMAT_FLAG_IS_FLOAT, 32)
+    };
+    assert!(verify_tap_format(&format).is_err());
 }

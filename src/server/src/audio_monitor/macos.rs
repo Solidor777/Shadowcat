@@ -33,7 +33,7 @@
 //! `AudioObjectGetPropertyData` also reads each new tap's `kAudioTapPropertyFormat`, and
 //! `verify_tap_format` refuses a tap that is not packed little-endian 32-bit float linear PCM, the
 //! layout `buffer_list_peak` decodes. A refusal takes the same retry and logging path as any other
-//! tap-creation failure.
+//! tap-creation failure. The aggregate device's own input stream format is not read.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CString};
@@ -64,9 +64,9 @@ const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE: u32 = 0x734f_7574;
 /// `kAudioDevicePropertyDeviceUID`'s numeric selector, the four-char code `'uid '` (trailing
 /// space): the device's persistent UID as a `CFString` the caller owns.
 const K_AUDIO_DEVICE_PROPERTY_DEVICE_UID: u32 = 0x7569_6420; // 'uid '
-/// `kAudioTapPropertyFormat`'s numeric selector, the four-char code `'tfmt'`: the tap's data
-/// format as an `AudioStreamBasicDescription`, the format of the data accessible in an aggregate
-/// device that contains the tap.
+/// `kAudioTapPropertyFormat`'s numeric selector, the four-char code `'tfmt'`: the tap's current
+/// data format as an `AudioStreamBasicDescription`, which the header describes as the format of
+/// the data accessible in any aggregate device that contains the tap.
 const K_AUDIO_TAP_PROPERTY_FORMAT: u32 = 0x7466_6d74; // 'tfmt'
 /// `kAudioFormatLinearPCM`, the four-char code `'lpcm'`.
 const K_AUDIO_FORMAT_LINEAR_PCM: u32 = 0x6c70_636d; // 'lpcm'
@@ -510,31 +510,34 @@ fn read_tap_format(tap_id: AudioObjectId) -> Result<AudioStreamBasicDescription,
     Ok(format)
 }
 
-/// Pure check that `format` is packed little-endian 32-bit float linear PCM, the layout
-/// `buffer_list_peak` decodes. Packed holds when the flag is set or, per Core Audio's header, when
-/// the frame size equals the channels' sample bytes, counting one channel per frame for a
-/// non-interleaved description. Channel layout is not otherwise checked: the peak is a maximum
-/// over every buffer's samples, interleaved or not. The error states the observed format id,
-/// flags and sample width.
+/// Pure check that `format` is packed little-endian 32-bit float linear PCM with at least one
+/// channel, the layout `buffer_list_peak` decodes. Packed holds when the flag is set or when the
+/// header's implied-packed relation holds: the channels' sample bytes equal the frame size. A
+/// non-interleaved description counts one channel per frame, since its per-frame fields describe
+/// one buffer. Channel layout is not otherwise checked: the peak is a maximum over every buffer's
+/// samples, interleaved or not. The error states the observed format id, flags, sample width and channel count.
 fn verify_tap_format(format: &AudioStreamBasicDescription) -> Result<(), String> {
     let channels_per_frame = if format.format_flags & K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED != 0 {
         1
     } else {
-        format.channels_per_frame
+        u64::from(format.channels_per_frame)
     };
     let packed = format.format_flags & K_AUDIO_FORMAT_FLAG_IS_PACKED != 0
-        || format.bytes_per_frame == channels_per_frame * (format.bits_per_channel / 8);
+        || u64::from(format.bytes_per_frame)
+            == channels_per_frame * u64::from(format.bits_per_channel / 8);
     let accepted = format.format_id == K_AUDIO_FORMAT_LINEAR_PCM
         && format.format_flags & K_AUDIO_FORMAT_FLAG_IS_FLOAT != 0
         && packed
         && format.format_flags & K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN == 0
-        && format.bits_per_channel == 32;
+        && format.bits_per_channel == 32
+        && format.channels_per_frame > 0;
     if accepted {
         return Ok(());
     }
     Err(format!(
-        "tap format is not packed little-endian 32-bit float linear PCM: id {:#010x}, flags {:#x}, {} bits",
-        format.format_id, format.format_flags, format.bits_per_channel
+        "tap format is not packed little-endian 32-bit float linear PCM: id {:#010x}, \
+         flags {:#x}, {} bits, {} channels",
+        format.format_id, format.format_flags, format.bits_per_channel, format.channels_per_frame
     ))
 }
 
@@ -968,10 +971,9 @@ fn aggregate_description(
 /// POSIX pid `pid` and Core Audio process object id `process_object_id`, with `output_uid` (see
 /// `read_default_system_output_uid`) as the aggregate's time source. A tap whose stream format
 /// cannot be read, or that `verify_tap_format` refuses, is destroyed before any aggregate device
-/// exists. The error names the
-/// step that failed and its `OSStatus`, or the refused format. A single process's tap failing never
-/// takes down the whole enumeration loop, mirroring the Linux backend's per-node
-/// `attach_monitor_stream` failure shape.
+/// exists. The error names the step that failed and its `OSStatus`, or the refused format. A
+/// single process's tap failing never takes down the whole enumeration loop, mirroring the Linux
+/// backend's per-node `attach_monitor_stream` failure shape.
 fn create_tap_for_pid(
     pid: i32,
     process_object_id: AudioObjectId,
