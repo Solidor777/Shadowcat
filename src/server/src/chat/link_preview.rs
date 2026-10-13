@@ -34,15 +34,15 @@ use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
 /// A server-fetched link preview. `enrich` copies `url`, `title`, `description` and
-/// `image_asset_id` into a `Segment::LinkPreview`. When `image_asset_id` is `None` and `image_url`
-/// is `Some`, it queues `image_url` as a `PendingEnrichment::PreviewImage` instead of storing it.
+/// `image_asset_id` into a `Segment::LinkPreview`. `image_url` is never stored on the segment;
+/// `enrich` queues or joins a `PendingEnrichment::PreviewImage` job for it unless the address
+/// already has an asset id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
     /// The address the preview describes. A preview from `fetch_preview` carries the address the
     /// fetch ended on, because `guarded_get` substitutes each redirect target (`url = next`). A
-    /// preview that `cached_or_fetch` builds from a persisted row carries the candidate URL
-    /// `enrich` extracted from the message, and an in-memory cache entry holds whichever of the
-    /// two built it.
+    /// preview that `cached_or_fetch` builds from a persisted row carries the link's address in
+    /// the message, and an in-memory cache entry holds whichever of the two built it.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
@@ -222,8 +222,10 @@ async fn cached_or_fetch(
 /// each through `cached_or_fetch` (a hit reuses the cached outcome; a miss is
 /// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
 /// `JoinSet` so the total added latency is one fetch's worth, not N serial
-/// fetches. Each successful fetch APPENDS one `Segment::LinkPreview` to the
-/// END of `segments` (existing segments are never reordered or removed); a
+/// fetches. Each successful preview APPENDS one `Segment::LinkPreview` to the
+/// END of `segments` in the candidates' message order (existing segments are never reordered or
+/// removed). A candidate whose preview address another candidate's persisted row already has an
+/// asset id for reuses that id, recorded on its own cache row, and queues no job. A
 /// failure or a rate-limited URL degrades silently to no card (a failure is
 /// still cached as a negative so a repeat within `NEGATIVE_TTL` doesn't
 /// re-fetch; a rate-limited miss is NOT cached, so a later minute may still

@@ -180,7 +180,7 @@
   {:else if s.kind === "link_preview"}
     <!-- Server-fetched preview (SSRF-guarded). The client NEVER fetches
     `s.url` or any remote resource itself — title/description/url render as escaped
-    text. `image_asset_id`, when present, is a post-publish-resolved thumbnail
+    text. `image_asset_id`, when present, is a server-resolved thumbnail
     served through this server's OWN /api/assets/{uuid} endpoint (see the `html`
     branch's INVARIANT comment above); the raw external image URL is never stored
     and never reaches the client. -->

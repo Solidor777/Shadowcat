@@ -1,10 +1,11 @@
 //! This module holds the link-preview fetcher's per-URL result cache and per-user rate limiter.
 //!
 //! It is separate from `link_preview` because the cache has NO SSRF-guard responsibility of its
-//! own: it stores outcomes the guarded fetcher produced and the previews `cached_or_fetch`
-//! backfills from a persisted row, keyed on the CANDIDATE URL the ingest stage extracted from the
-//! message. `enrich` gets and inserts under the same pre-fetch href; the address the fetcher ends
-//! on is stored in the outcome and is not the key.
+//! own: it stores outcomes the guarded fetcher produced and the outcomes `cached_or_fetch`
+//! backfills from a persisted row (a preview, or a negative entry), keyed on the CANDIDATE URL
+//! the ingest stage extracted from the message. `cached_or_fetch` reads and backfills, and
+//! `enrich` inserts fetch outcomes, all under the same pre-fetch href; the address the fetcher
+//! ends on is stored in the outcome and is not the key.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -46,11 +47,12 @@ pub const PREVIEW_FETCH_PER_MIN: usize = 20;
 /// logic in it. `PingRateLimiter` is the shared implementation.
 pub type PreviewRateLimiter = PingRateLimiter;
 
-/// Caches `fetch_preview` outcomes and the previews `cached_or_fetch` builds from persisted rows,
+/// Caches `fetch_preview` outcomes and the outcomes `cached_or_fetch` builds from persisted rows,
 /// keyed on the candidate URL `enrich` extracted from the message, not on the address the stored
-/// outcome carries. `None` stored against a URL is a NEGATIVE cache entry (a prior fetch failed);
-/// `Some(preview)` is a positive one. Both are read through `get`, which additionally applies the
-/// TTL appropriate to which kind is stored.
+/// outcome carries. `None` stored against a URL is a NEGATIVE cache entry (a prior fetch failed,
+/// or a persisted row has no title and no description); `Some(preview)` is a positive one. Both
+/// are read through `get`, which additionally applies the TTL appropriate to which kind is
+/// stored.
 #[derive(Default)]
 pub struct LinkPreviewCache {
     /// URL -> (store time, outcome); `None` outcome = negative entry.

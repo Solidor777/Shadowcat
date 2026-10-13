@@ -123,17 +123,16 @@ pub enum PendingEnrichment {
     /// index -- this task's own OCC re-read may observe a `content` array a
     /// concurrent edit reordered) whose synchronous scrape found an image
     /// candidate not yet fetched. One job serves the message's candidate URLs whose previews
-    /// ended on the same `preview_url` and queued an image; the first such preview's
-    /// `image_url` is the one fetched.
+    /// ended on the same `preview_url` and queued an image; the `image_url` of the first such
+    /// preview in message order is the one fetched.
     PreviewImage {
-        /// The candidate URLs `enrich` extracted from the message, in first-seen order, whose
+        /// The candidate URLs `enrich` extracted from the message, in message order, whose
         /// previews carry this job's `preview_url`: the keys of the persisted
         /// `link_preview_cache` rows the job reads and writes. `enrich` builds it with at least
         /// one entry.
         cache_urls: Vec<String>,
         /// The `url` of the `Segment::LinkPreview` this job patches: the address the fetch
-        /// ended on after a fresh fetch (normalized by `Url::to_string`, post-redirect), or
-        /// the candidate URL for a preview built from a persisted row. Differs from a
+        /// ended on (normalized by `Url::to_string`, post-redirect). Differs from a
         /// `cache_urls` entry whenever the fetch's final address differs from the extracted
         /// href.
         preview_url: String,
@@ -420,7 +419,7 @@ async fn resolve_job(
 /// this or another message already imaged. On a miss, fetches `image_url` through the SAME
 /// SSRF-guarded client `enrich` uses (`link_preview::fetch_image_bytes`), asset-ifies it via
 /// `create_asset_from_bytes` (`created_by: None`: no user account backs a server-fetched image),
-/// and records the asset id on every `cache_urls` row. Holds
+/// and writes the asset id onto the `cache_urls` rows that exist. Holds
 /// `write_barrier`'s read side around the asset commit, as `http::assets::upload`/`replace`/
 /// `delete` do: this commit runs from the post-publish job rather than an HTTP handler, so it
 /// joins the same exclusion or an in-server backup's file copy could race a half-committed

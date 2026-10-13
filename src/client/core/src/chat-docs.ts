@@ -362,7 +362,7 @@ export const DocLinkTargetSchema: z.ZodType<DocLinkTarget> = docLinkTargetSchema
  * `link_preview` is a server-fetched, SSRF-guarded preview of a link in the message; the
  * client renders the stored `url`/`title`/`description` strings (escaped, never
  * innerHTML) and never fetches `url` itself — the optional `image_asset_id` is a
- * post-publish-resolved thumbnail, rendered via `ctx.assets.url(uuid)` (this server's own
+ * server-resolved thumbnail, rendered via `ctx.assets.url(uuid)` (this server's own
  * asset endpoint), never a raw external URL. `oembed` is a provider-native embed from an
  * allowlisted host, structured fields only — the provider's own `html` is never sent to
  * the client. `doc_link` is a free-form, author-inserted link to a document or placed
@@ -398,15 +398,15 @@ export type ChatSegment =
       /** A server-fetched, SSRF-guarded preview of a link in the message. */
       kind: "link_preview";
       /** The address the preview was built from: the address the server's fetch ended on
-       * (normalized, and after any redirect) when a fetch built it, or the URL as posted when a
-       * stored cache row built it. */
+       * (normalized, and after any redirect) when a fetch built it, or the link's address in the
+       * message when a stored cache row built it. */
       url: string;
       /** Server-extracted title. */
       title: string;
       /** Server-extracted description (may be empty). */
       description: string;
-      /** The asset-ified `og:image`, once the post-publish background
-       * pipeline has resolved one. Absent/`null` until then; the client
+      /** The asset-ified `og:image` when the server has resolved one, either at send
+       * time or through a later background update. Absent/`null` otherwise; the client
        * resolves it via `ctx.assets.url(uuid)` — the server's OWN
        * `/api/assets/{uuid}` endpoint, never a raw external URL (which is
        * never stored on this segment in the first place). */

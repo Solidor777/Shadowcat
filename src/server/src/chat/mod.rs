@@ -371,17 +371,18 @@ pub enum Segment {
     /// never reorders or removes an existing segment).
     LinkPreview {
         /// The address the fetch ended on (normalized, and post-redirect when it redirected)
-        /// when a fetch built the preview, or the candidate URL when a persisted row built it.
+        /// when a fetch built the preview, or the link's address in the message when a persisted
+        /// row built it.
         url: String,
         /// Server-extracted title.
         title: String,
         /// Server-extracted description (may be empty).
         description: String,
-        /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when the persisted
-        /// `link_preview_cache` row that built the preview already carries an asset id, and
-        /// `None` otherwise. A `None` segment whose preview has an image candidate gets its id
-        /// when the post-publish pipeline (`chat::post_publish`) resolves the
-        /// `PendingEnrichment::PreviewImage` job `enrich` queued for it, through a
+        /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when a persisted
+        /// `link_preview_cache` row for a link ending on this segment's `url` already carries an
+        /// asset id, and `None` otherwise. A `None` segment whose preview has an image candidate
+        /// gets its id when the post-publish pipeline (`chat::post_publish`) resolves the
+        /// `PendingEnrichment::PreviewImage` job `enrich` queued or joined for it, through a
         /// `WriteOrigin::ServerMessageRevision` republish (`run_pending_enrichments`). A preview
         /// with no image candidate queues no job, and a job that fails leaves `None`.
         /// `#[serde(default)]`: a stored segment may omit the key, which reads as `None`.
