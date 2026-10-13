@@ -1653,7 +1653,7 @@ impl Room {
     /// (`SceneEcs::token_move`), never taken from the caller's `scene_id`. Gating a token that
     /// lives in scene A against scene B's walls, mask, and regions is a full bypass of the
     /// movement gate for a token the requester legitimately owns. `Room::publish`'s drag path
-    /// derives the scene the same way (`SceneEcs::token_move`). `scene_id` is additionally
+    /// derives the scene the same way. `scene_id` is additionally
     /// required to agree with the derived scene (defense in depth — it selects nothing).
     ///
     /// # Critical-section invariant (load-bearing)

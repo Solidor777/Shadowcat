@@ -69,9 +69,8 @@ pub enum DieKind {
 }
 
 /// Construction-time validation error for a `DieKind`. `Numeric` has no
-/// invalid state representable by this type (`sides >= 1` is enforced by the
-/// notation parser's `ParseError::InvalidDieSides`, the site that builds
-/// `Numeric { min: 1, max: sides }`).
+/// invalid state representable by this type (`sides >= 1` is enforced by the notation parser,
+/// which returns `ParseError::InvalidDieSides` before it builds `Numeric { min: 1, max: sides }`).
 ///
 /// # Examples
 ///

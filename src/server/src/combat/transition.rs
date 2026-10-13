@@ -391,19 +391,16 @@ impl Working {
     /// resort `order` for their own reasons (`sort`/`roll`/a restoring
     /// `rewind`).
     ///
-    /// Deliberately DROP-ONLY: it never appends a `combatants` entry
-    /// `order` doesn't name. A combatant re-parented INTO this combat (or
-    /// `Create`d as one of its children from the start) without an `order`
-    /// entry is a genuine, permanent design state — a staged/hidden
-    /// combatant a GM adds to the clock only via an explicit `CombatRoll`/
-    /// `CombatSort`, pinned by an end-to-end scenario asserting such a
-    /// combatant "never enters `order`/`turn`" across an entire round.
-    /// Appending (as `reconcile_membership` does) would silently roll the staged
-    /// combatant into the clock on every `advance` — an ARRIVAL
-    /// is not itself a defect the way a stale departed id is; it is
-    /// indistinguishable, from `order` alone, from a combatant the GM
-    /// deliberately never rolled in, and only an explicit resort may
-    /// resolve that ambiguity.
+    /// Deliberately DROP-ONLY: it never appends a `combatants` entry `order` doesn't name. A
+    /// combatant re-parented INTO this combat (or `Create`d as one of its children from the
+    /// start) without an `order` entry is a genuine, permanent design state — a staged/hidden
+    /// combatant a GM adds to the clock only via an explicit `CombatRoll`/`CombatSort`, pinned
+    /// by an end-to-end scenario asserting such a combatant "never enters `order`/`turn`"
+    /// across an entire round. Appending (as `reconcile_membership` does) would silently roll
+    /// the staged combatant into the clock on every `advance` — an ARRIVAL is not itself a
+    /// defect the way a stale departed id is; it is indistinguishable, from `order` alone, from
+    /// a combatant the GM deliberately never rolled in, and only an explicit resort may resolve
+    /// that ambiguity.
     ///
     /// A no-op (nothing recorded) when the pruned order already matches;
     /// otherwise stages the correcting `Update` through `commit_combat`,

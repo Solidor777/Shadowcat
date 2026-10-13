@@ -142,7 +142,8 @@ pub(crate) async fn scene_broadcast_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
-/// Realtime state shared in `AppState`: the room registry and the per-user rate budgets.
+/// Realtime state shared in `AppState`: the room registry, the rate limiters, the link-preview
+/// and module-scan caches, and the shutdown and connection-drain signals.
 ///
 /// # Examples
 ///
