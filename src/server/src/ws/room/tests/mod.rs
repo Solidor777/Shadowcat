@@ -3064,9 +3064,9 @@ async fn execute_move_revealed_union_allows_explored_cell() {
 /// Identical to `movement_scene`, but the scene doc's `engine.vision.movementModel` is
 /// explicitly `"continuous"`: proves `execute_move` gates an any-angle route
 /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
-/// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
-/// being engine-agnostic; this mirrors `movement_scene`'s body (the established
-/// per-scenario-helper convention) with one added JSON key.
+/// `SceneEcs::resolve_scene` reads the key into `MovementModel::Continuous`, which
+/// `execute_move` prices with its continuous tail; the body otherwise mirrors
+/// `movement_scene` with one added JSON key.
 async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
     use serde_json::json;
 
@@ -3124,7 +3124,7 @@ async fn movement_scene_continuous(restriction: &str, with_light: bool) -> Movem
     .unwrap();
 
     // Only structural difference from `movement_scene`: declares `vision.movementModel` on
-    // the scene doc. Inert server-side today — execute_move has no movementModel branch.
+    // the scene doc, which `SceneEcs::resolve_scene` resolves to `MovementModel::Continuous`.
     let mut scene = wdoc(world_id, scene_id, "scene");
     scene.owner = Some(gm.user_id);
     scene.system = json!({
@@ -3452,17 +3452,15 @@ async fn resync_floor_is_established_seq_plus_one() {
 
 /// Discriminating test for the whole feature: a user who never called
 /// `establish_resync_floor` fails closed to `current_seq() + 1` (empty resync), NOT to
-/// `1` (today's effectively-unbounded reach). Verified by hand: temporarily changing
-/// `resync_floor`'s `None` branch to `1` makes this assertion fail (`1 != current_seq()
-/// + 1` once at least one event has committed), confirming the test actually catches a
-/// regression back to the unbounded default rather than passing vacuously.
+/// `1` (an unbounded reach). The two differ once at least one event has committed, so the
+/// assertion distinguishes the fail-closed `None` branch of `resync_floor` from a floor of `1`.
 #[tokio::test]
 async fn resync_floor_fails_closed_for_a_user_who_never_established_one() {
     let (repo, world_id, ctx) = repo_with_world().await;
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
 
-    // Advance current_seq so `1` (the old unbounded default) and
+    // Advance current_seq so `1` (the unbounded floor) and
     // `current_seq() + 1` (the fail-closed default) are distinguishable.
     let mut scene = crate::data::document::tests::world_scoped_doc(
         world_id,

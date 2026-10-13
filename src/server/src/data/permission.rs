@@ -260,7 +260,7 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
 /// airtight against a deployment granting `cap::EDIT_PERMISSIONS` via `capabilities.by_user`/
 /// `by_role` without `cap::READ` alongside it — an author whose own write flips their OWN READ
 /// from denied to granted would see their read-back silently no-op client-side once, since no
-/// transition is synthesized here. No shipped grant creates this configuration today.
+/// transition is synthesized here.
 ///
 /// # Examples
 ///
@@ -956,12 +956,12 @@ fn effective_role(
     //
     // CONSEQUENCE a deployment must weigh before granting `by_role[Owner] ⊇
     // EDIT_PERMISSIONS`: that reaches `/owner`, so an effective owner can write
-    // `/owner = self`, which PINS the token — the override now wins, and a GM
+    // `/owner = self`, which PINS the token — the override wins, and a GM
     // re-assigning the actor no longer re-owns it, silently defeating the
     // inheritance mechanism. The same grant reaches `/permissions`, so they can
     // also lock the GM out of the document entirely. Parity with a stamped owner
-    // still holds exactly; what changed is the POPULATION — "Owner" here is
-    // "every player with an assigned actor", not a hand-enumerated set.
+    // holds exactly; the Owner POPULATION is "every player with an assigned actor", not a
+    // hand-enumerated set.
     let owner_floor = doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user);
     let floor = |r: DocRole| {
         if owner_floor {
@@ -1784,7 +1784,7 @@ pub fn filter_command<'a>(
                 }
             }
             Operation::Update { doc_id, changes } => {
-                // Absent = does not currently exist → drop, preserving today's semantics.
+                // Absent = does not currently exist → drop.
                 let Some(cur) = current.get(doc_id) else {
                     continue;
                 };

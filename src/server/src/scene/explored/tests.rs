@@ -109,7 +109,7 @@ fn a_scan_wider_than_the_window_but_under_the_cap_is_returned_unchanged() {
     // The property the conditional application exists for: the cap bounds a PRODUCT while the
     // window bounds a PER-AXIS distance, so a box can reach far past the window on both axes
     // and still enumerate fewer cells than the cap allows. Such a box must not lose a single
-    // candidate — its cells are in the mask today and a player can move to them.
+    // candidate — its cells are in the mask and a player can move to them.
     //
     // Discrimination: fails if the window is applied whenever the box is wider than it,
     // because the returned max would then be the window edge rather than the box edge. The

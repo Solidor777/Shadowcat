@@ -3792,7 +3792,7 @@ async fn clip_gm_see_as_clips_to_target_vision() {
 
 /// A see-as whose target has NO vision source in the move's scene (their token is in a
 /// DIFFERENT scene) must NOT clip — the see-as is not applicable to this scene, so the GM
-/// keeps the full unclipped stream (today's plain-GM behavior). Scene-exactness guard: the
+/// keeps the full unclipped stream. Scene-exactness guard: the
 /// target's token lives in `scene_id`, but the move targets an unrelated scene, so
 /// `player_vision_polygons(target)` (tagged with `scene_id`) filters to empty for the move's
 /// scene.
@@ -4577,8 +4577,8 @@ async fn enrich_vision_explored_reads_the_shared_bucket_when_scene_is_pooled() {
     );
 }
 
-/// Absent from `fog_pooling` (or explicitly `Individual`) is today's unchanged behavior: the
-/// recipient's own `user` id is the key.
+/// Absent from `fog_pooling` (or explicitly `Individual`) keys the bucket by the recipient's own
+/// `user` id.
 #[tokio::test]
 async fn enrich_vision_explored_reads_the_individual_bucket_by_default() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();

@@ -334,7 +334,7 @@ pub fn propagate_overrides(instance: &mut Document, template: &Document) -> bool
     changed
 }
 
-/// Per-`doc_type` instance-local paths that never merge. Currently only
+/// Per-`doc_type` instance-local paths that never merge. Only
 /// `token`'s placement fields are excluded; every other doc type gets an
 /// empty set. INVARIANT: equals the client's `placementExclusions` set — the
 /// client's `syncState` badge excludes the same paths from its comparison,

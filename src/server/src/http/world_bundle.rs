@@ -221,7 +221,7 @@ fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
 /// including a `spawn_blocking` worker, aborts the whole process
 /// immediately; there is no unwind for any `Drop` to run during, so in a
 /// release binary this guard cannot and does not protect against that case
-/// — an accepted, pre-existing characteristic of the abort profile, not
+/// — a characteristic of the abort profile, not
 /// something a `Drop` impl is ever able to change. In a dev/test build
 /// (default `panic = "unwind"`), `spawn_blocking` itself converts a
 /// panicked task into a `JoinError`, so the panic is caught and re-surfaced
@@ -240,8 +240,8 @@ impl TempFileGuard {
         Self(Some(path))
     }
 
-    /// Cancels the cleanup. No production call site needs this today (the
-    /// one `TempFileGuard` this module creates is always explicitly
+    /// Cancels the cleanup. No production call site needs this (the
+    /// one `TempFileGuard` this module creates is explicitly
     /// `drop`ped once its file is no longer needed — see `import_world`),
     /// so this stays test-only rather than shipping an unused release-build
     /// method; it exists to let a test assert the disarmed half of the

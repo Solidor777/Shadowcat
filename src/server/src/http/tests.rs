@@ -987,7 +987,7 @@ async fn user_password_reset_unknown_id_is_not_found() {
 /// An admin resetting their OWN password is not exempted from the same live-eviction rule
 /// `set_user_password` applies to any other target: their own session dies in the same
 /// transaction as the hash update, so the very server instance that just performed the reset
-/// is authenticated no longer. Pins the intent `reset_user_password`'s own doc now states.
+/// is authenticated no longer. Pins the intent `reset_user_password`'s own doc states.
 #[tokio::test]
 async fn user_password_reset_by_admin_on_their_own_account_evicts_their_own_session() {
     let state = initialized_state().await;

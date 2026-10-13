@@ -85,10 +85,9 @@ fn door_closed_and_locked_resolve_authored_flags_unchanged() {
 
 #[test]
 fn door_absent_resolves_authored_flags_unchanged() {
-    // The pre-existing-behavior pin: a wall carrying no door resolves exactly
-    // its authored flags. Also pinned at the serde boundary: a stored document
-    // written before the field existed carries no `door` key and must
-    // deserialize to `None` (the migration-freedom contract).
+    // A wall carrying no door resolves exactly its authored flags. Also pinned at the
+    // serde boundary: a stored document with no `door` key must deserialize to `None`
+    // (no migration step).
     let body = serde_json::json!({
         "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
         "blocksSight": true,
@@ -397,7 +396,7 @@ fn template(angle: Option<f64>, width: Option<f64>) -> TemplateEngine {
 
 #[test]
 fn template_engine_validate_bounds_angle_and_width() {
-    // Absent angle/width is the pre-existing-behavior pin: always valid.
+    // Absent angle/width is always valid.
     assert!(template(None, None).validate().is_ok());
 
     // A valid angle in (0.0, 180.0) and a valid non-negative width both pass.

@@ -138,7 +138,7 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
 /// rewrite BEYOND the path a caller's own `FieldChange`s named — the single
 /// source `data::validation::derive_engine_side_effects` consults to decide
 /// which top-level engine keys to diff at all. The only such derivation
-/// today is `NoteEngine::derive_body` (the `"note"` arm of `normalize_engine`
+/// is `NoteEngine::derive_body` (the `"note"` arm of `normalize_engine`
 /// above), which rewrites `/engine/body` from `/engine/source`; every other
 /// registered doc_type derives nothing beyond what it was asked to write, so
 /// it names an empty slice. INVARIANT: any `derive_*` call added to

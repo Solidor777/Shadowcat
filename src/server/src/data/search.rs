@@ -101,7 +101,7 @@ pub struct SearchPage {
 /// let text = index_content(&doc);
 /// assert!(text.contains("MOCK_NOTE_A") && text.contains("cellar"));
 /// assert!(!text.contains("hidden_flag")); // keys and booleans are not indexed
-/// assert!(!text.contains("item")); // doc_type is no longer indexed
+/// assert!(!text.contains("item")); // doc_type is not indexed
 /// ```
 pub fn index_content(doc: &Document) -> String {
     let mut out = String::new();

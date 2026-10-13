@@ -1162,7 +1162,7 @@ fn hex_world_units_per_cell_matches_the_cross_language_pinned_literal() {
     // value (`50 * sqrt(3)`) independently, rather than each deriving its expectation from its
     // own implementation as the self-consistency test above does. A literal is not a
     // decision-maker two sites can disagree over — it is the ground truth both sides are
-    // checked against — so a formula change on EITHER side alone now fails that side's own
+    // checked against — so a formula change on EITHER side alone fails that side's own
     // comparison against this literal, where two self-derived oracles could update in lockstep
     // and silently diverge from the other language.
     let g = HexGrid { size: 50.0 };

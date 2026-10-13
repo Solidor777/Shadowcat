@@ -514,11 +514,12 @@ pub(crate) struct RegionFieldBuilder {
 impl RegionFieldBuilder {
     /// Add one region's rasterized cells + behavior/cost. Skips (contributes nothing) on a
     /// fail-closed rasterization failure — never silently all-passes an over-cap/degenerate shape.
-    /// The single-shape convenience spelling of `add_parts` (a legacy one-part region), kept so
-    /// every additive contribution routes through the ONE composition rule. Production callers
-    /// always feed the normalized part list from `parse_region_shape`, so this spelling exists
-    /// for the single-shape fixtures only. Carries no `cost_by_tag` (an empty map) — a fixture
-    /// exercising per-tag cost calls `add_parts` directly.
+    /// The single-shape convenience spelling of `add_parts` (a legacy one-part region), so every
+    /// additive contribution routes through the ONE composition rule. The production caller
+    /// (`SceneEcs::region_field_if`) feeds `add_parts` the normalized part list from
+    /// `parse_region_shape`; this `#[cfg(test)]` spelling serves the single-shape fixtures.
+    /// Carries no `cost_by_tag` (an empty map) — a fixture exercising per-tag cost calls
+    /// `add_parts` directly.
     #[cfg(test)]
     pub(crate) fn add(
         &mut self,

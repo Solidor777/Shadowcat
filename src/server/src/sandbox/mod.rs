@@ -161,8 +161,8 @@ pub enum ValidatorVerdict {
 pub struct ValidatorInput {
     /// The document's `doc_type`.
     pub doc_type: String,
-    /// `"create"` or `"update"` (a `Move` op never touches `system`, so a validator never sees
-    /// `"move"` in practice — the ABI reserves the value but nothing currently sends it).
+    /// `"create"` or `"update"` (`validate_document`, the only non-test constructor of this
+    /// input, writes only these two).
     pub op: String,
     /// Post-image `system` band.
     pub system: serde_json::Value,

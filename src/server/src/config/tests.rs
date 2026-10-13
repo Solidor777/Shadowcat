@@ -591,7 +591,8 @@ fn retired_behind_tls_proxy_key_fails_boot_from_toml() {
     assert!(err.to_string().contains("behind_proxy"));
 }
 
-/// The old CLI flag is unknown to clap, so it is rejected before `Config::load` runs.
+/// `--behind-tls-proxy` is not a CLI flag, so clap rejects it before `Config::load` runs;
+/// `--behind-proxy` parses.
 #[test]
 fn retired_behind_tls_proxy_cli_flag_is_rejected_by_clap() {
     use clap::Parser;

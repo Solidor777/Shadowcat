@@ -39,7 +39,8 @@ fn a_declared_id_that_is_not_the_folder_name_still_loads_under_the_folder_name()
     );
     let found = scan_installed_modules(dir.path());
     // The folder name wins everywhere the id is used as a key, and the mismatch does not
-    // reject the module — it is reported, so a module that works today keeps working.
+    // reject the module — it is reported, so a module whose declared id differs from its
+    // folder keeps loading.
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, "on-disk-name");
     assert_eq!(found[0].entry_url, "/modules/on-disk-name/index.js");

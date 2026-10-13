@@ -1,8 +1,8 @@
 use super::*;
 
 /// A distinct, valid asset-ref UUID string derived from `i` — every track/entry fixture in
-/// this file needs one, since `PlaylistTrack.asset`/`PlayingTrack.asset` are now format-checked
-/// by `validate_asset_ref` (a placeholder like `"a0"` no longer passes ingress).
+/// this file needs one, since `PlaylistTrack.asset`/`PlayingTrack.asset` are format-checked
+/// by `validate_asset_ref` (a placeholder like `"a0"` fails ingress).
 fn test_asset(i: usize) -> String {
     format!("00000000-0000-0000-0000-{i:012}")
 }

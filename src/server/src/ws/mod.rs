@@ -142,8 +142,7 @@ pub(crate) async fn scene_broadcast_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
-/// Realtime state shared in `AppState`. A thin handle today; the seam for future
-/// bus internals (actor pool / external broker) without touching callers.
+/// Realtime state shared in `AppState`: the room registry and the per-user rate budgets.
 ///
 /// # Examples
 ///

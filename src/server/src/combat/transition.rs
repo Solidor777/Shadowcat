@@ -397,11 +397,9 @@ impl Working {
     /// entry is a genuine, permanent design state — a staged/hidden
     /// combatant a GM adds to the clock only via an explicit `CombatRoll`/
     /// `CombatSort`, pinned by an end-to-end scenario asserting such a
-    /// combatant "never enters `order`/`turn`" across an entire round. An
-    /// earlier version of this function reused `reconcile_membership`
-    /// wholesale (append included) and broke that scenario: every
-    /// `advance` silently rolled the staged combatant into the clock
-    /// on its own, which is a real regression, not a fix — an ARRIVAL
+    /// combatant "never enters `order`/`turn`" across an entire round.
+    /// Appending (as `reconcile_membership` does) would silently roll the staged
+    /// combatant into the clock on every `advance` — an ARRIVAL
     /// is not itself a defect the way a stale departed id is; it is
     /// indistinguishable, from `order` alone, from a combatant the GM
     /// deliberately never rolled in, and only an explicit resort may

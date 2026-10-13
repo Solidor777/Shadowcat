@@ -97,8 +97,9 @@ pub enum ClientMsg {
         /// The live search to cancel.
         request_id: Uuid,
     },
-    /// Subscribe to a derived scene channel (`compute_derived` currently recognizes
-    /// "vision", plus a debug-only "identity" channel); unknown channels yield SceneError.
+    /// Subscribe to a derived scene channel (the channel names `compute_derived`
+    /// matches; the `"identity"` channel exists only in debug builds); unknown channels yield
+    /// SceneError.
     /// `as_user` (see-as-player) is **GM-only**: it views the channel as that user; the
     /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
     /// the connection's own view.

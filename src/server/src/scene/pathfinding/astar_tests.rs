@@ -66,7 +66,7 @@ fn astar_leg_orthogonal_never_returns_a_diagonal_step() {
     // The adjacency change end-to-end: under `Orthogonal` the search graph has no diagonal
     // edges, so every consecutive pair of a returned route differs on exactly one axis by one
     // cell, and the route's cost IS the Manhattan distance (exact for this graph). Swept over a
-    // battery of (start, goal) pairs — including pure-diagonal alignments, which must now route
+    // battery of (start, goal) pairs — including pure-diagonal alignments, which route
     // as an L-shaped orthogonal detour rather than a straight diagonal.
     let g = open(DiagonalRule::Orthogonal, 0.1);
     for (start, goal) in [

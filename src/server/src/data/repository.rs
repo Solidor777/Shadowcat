@@ -45,8 +45,7 @@ pub struct LinkPreviewCacheRow {
     pub fetched_at_ms: i64,
 }
 
-/// Storage contract. The only implementation today is `SqliteRepository`;
-/// the trait exists so Postgres can be added later behind the same surface.
+/// Storage contract. `SqliteRepository` is the production implementation.
 ///
 /// # Examples
 ///
@@ -56,7 +55,7 @@ pub struct LinkPreviewCacheRow {
 /// use shadowcat::data::repository::Repository;
 /// use shadowcat::data::sqlite::SqliteRepository;
 ///
-/// // `SqliteRepository` is the trait's sole implementor today.
+/// // `SqliteRepository` is the production implementor.
 /// let repo: Box<dyn Repository> = Box::new(SqliteRepository::connect("sqlite::memory:").await?);
 /// assert!(repo.get_document(uuid::Uuid::nil()).await?.is_none());
 /// # Ok(())

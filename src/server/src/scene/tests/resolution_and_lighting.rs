@@ -859,7 +859,7 @@ fn hex_env_light_walks_the_blocks_real_origin_side_edges() {
     // real boundary — half the flats left of the origin hex's centre and one circumradius
     // below it — rather than at the origin, so the origin side gets boundary samples of its
     // own and the hexes just outside the block there fall inside the raycast bound those
-    // samples terminate on. Square has always had that one-cell margin (its own origin cell's
+    // samples terminate on. Square has that one-cell margin (its own origin cell's
     // corner IS the origin); this is hex reaching the same behaviour.
     //
     // Discrimination: both probes are hexes the ORIGIN-ANCHORED walk cannot reach — their

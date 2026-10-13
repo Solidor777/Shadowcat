@@ -1166,9 +1166,7 @@ impl std::fmt::Display for RecalcRollError {
 /// single chokepoint covering BOTH the `SendMessage` frame's own `audience`
 /// field and a content-level `/w` command, so neither front-door can bypass
 /// `MAX_WHISPER_RECIPIENTS` or the fail-closed unknown-recipient rejection.
-/// `_sender` is unused today (kept on the signature for parity with the
-/// call site's other request-scoped parameters); a `Public`/`GmOnly`
-/// audience is a no-op.
+/// `_sender` is not read; a `Public`/`GmOnly` audience is a no-op.
 pub(crate) async fn validate_audience(
     repo: &dyn Repository,
     world_id: Uuid,
@@ -1617,11 +1615,10 @@ pub async fn handle_send_message(
     // `kind != Roll` guard is EXPLICIT, not incidental: a successful roll
     // falls through here with `content_segments == [RollEmbed]` (only the
     // roll-EXECUTION-FAILURE arm returns early), so without this guard a
-    // `/roll` on a preview/image-enabled world would enter `enrich` — a
-    // no-op today only because `enrich` scans `Segment::Html` runs and
-    // `image_urls` (never populated for a roll body), but a latent path to
-    // attaching outbound-fetched content to a roll message if that ever
-    // changes. Runs when EITHER href-preview scanning is enabled
+    // `/roll` on a preview/image-enabled world would enter `enrich`. A roll body holds only
+    // the `RollEmbed` segment and an empty `image_urls`, which `enrich` has nothing to scan,
+    // so the guard is what keeps outbound-fetched content off a roll message structurally.
+    // Runs when EITHER href-preview scanning is enabled
     // (`previews_enabled`, which requires `hyperlinks`) OR the composer
     // already collected inline image sources (`image_urls`, gated
     // independently on `policy.images()` inside `sanitize` -- a world can

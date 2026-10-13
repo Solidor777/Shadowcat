@@ -1835,7 +1835,7 @@ async fn enrich_vision_explored(
             continue;
         };
         // The bucket this recipient reads/writes for THIS scene: their own `user` id under
-        // `Individual` pooling (today's behavior), or the reserved shared-pool sentinel under
+        // `Individual` pooling, or the reserved shared-pool sentinel under
         // `Shared` — computed once, consumed by BOTH calls below, never `user` directly. Absent
         // from `fog_pooling` cannot happen alongside a present `grid`/`grid_shapes` entry (both
         // maps are built from the same live-scene scan under the same ECS read lock), but falls
@@ -2125,8 +2125,7 @@ fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::
 /// capability machinery. Non-destructive: `world_cap_requirements` itself is
 /// NEVER mutated by enable/disable; this union is recomputed fresh on every
 /// `Welcome`, so a mid-session enable/disable takes effect on the affected
-/// world's next (re)connect, exactly like a `world_cap_requirements` edit
-/// already does today. Re-checks `engine_compat_ok` per enabled module (not
+/// world's next (re)connect. Re-checks `engine_compat_ok` per enabled module (not
 /// just at enable time) so a module that has gone incompatible since being
 /// enabled (server downgrade, on-disk manifest edit) stops contributing.
 ///

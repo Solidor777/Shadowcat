@@ -133,7 +133,7 @@ fn world_settings_partial_overlay_body_is_valid() {
     // complete, valid body — absent leaves fall through the resolution chain.
     let v = json!({ "scene": { "fog": false } });
     assert!(validate_engine("world-settings", Some(&v)).is_ok());
-    // The old full-required shape remains valid (full ⊃ optional).
+    // A body with every leaf present is valid too (full ⊃ optional).
     let full = json!({
         "scene": {
             "losRestriction": true, "fog": true, "lightingEnabled": true,
@@ -908,7 +908,7 @@ fn generated_crop_literal_set_deserializes() {
     assert!(serde_json::from_value::<GeneratedCrop>(json!("hex")).is_err());
 }
 
-// --- literal-set assertions (client writers emit these strings today) ---
+// --- literal-set assertions: each accepted spelling validates ---
 
 #[test]
 fn shape_literal_set_deserializes() {
@@ -1972,9 +1972,9 @@ fn search_text_malformed_body_contributes_nothing_rather_than_failing() {
 fn derived_engine_paths_names_are_registered_engine_doc_types() {
     // Every doc_type this registry names a non-empty derivation set for must
     // itself be an engine doc_type -- a derivation on a doc_type with no
-    // typed engine band is a contradiction. `note` is the only such doc_type
-    // today; extend this assertion (not a loop -- clippy flags a single-entry
-    // one) alongside any future registration.
+    // typed engine band is a contradiction. `note` is the only such doc_type;
+    // a further registration extends this assertion (not a loop -- clippy flags a
+    // single-entry one).
     assert!(ENGINE_DOC_TYPES.contains(&"note"));
     assert!(!derived_engine_paths("note").is_empty());
 }
@@ -2004,7 +2004,7 @@ fn dice_settings_sound_field_round_trips() {
 
 #[test]
 fn dice_settings_validate_is_wired_into_normalize_engine() {
-    // DiceSettingsEngine::validate is a no-op today; this pins that
+    // DiceSettingsEngine::validate has no failing case; this pins that
     // normalize_engine's "dice-settings" arm actually calls it (not just a bare
     // round_trip), so the next field to need a check has a home.
     assert!(DiceSettingsEngine::default().validate().is_ok());

@@ -1165,7 +1165,7 @@ fn derive_engine_side_effects_ignores_semantically_equal_numeric_noise() {
     // `values_semantically_eq`, not raw `Value` equality: a whole-number
     // round trip through the typed normalizer must never register as a
     // derived change. `note` is the only doc_type registering a derived
-    // path today, so the registry itself is exercised with a stand-in
+    // path, so the registry itself is exercised with a stand-in
     // shape rather than a real `NoteEngine` (whose `body` is a segment
     // list, not a bare number) to isolate the comparator behavior.
     let pre = serde_json::json!({ "body": 30 });

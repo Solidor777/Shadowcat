@@ -23,10 +23,9 @@ pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 /// Maximum UTF-8 byte length of `Document.name` — the ONE envelope field
 /// exempt from the `MAX_SYSTEM_BYTES`-style band caps (it lives outside all
 /// three opaque/typed bodies `validate_system_size` bounds). 512 bytes is
-/// generous for a display name — no client editor imposes its own cap today
-/// (checked: no `maxlength` attribute exists on a document-name input in the
-/// tree), so this is sized purely to bound the field rather than to match an
-/// existing client limit; ordinary usage never approaches it, so it should
+/// generous for a display name — no client document-name input declares a
+/// `maxlength`, so this is sized purely to bound the field rather than to match a
+/// client limit; ordinary usage never approaches it, so it should
 /// never surface as a rejected-intent toast.
 pub const MAX_DOCUMENT_NAME_BYTES: usize = 512;
 
@@ -886,11 +885,10 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
 /// checked by NEITHER the OCC pre-image comparison (which reads `old`) NOR
 /// `required_cap_for_path`, so any consumer that mirrors a change by unconditionally
 /// setting `new` — instead of branching on `remove` as `apply_intent` Phase 2 does —
-/// lands an attacker-chosen value while the store lands absence. The derived scene ECS
-/// had exactly that bug; `command::apply_field_change` is now the single store-equal
-/// rule, called by every authoritative path and every mirror. Denying the shape at
-/// ingress means no future mirror can be forked this way even if it re-introduces the
-/// same mistake.
+/// lands an attacker-chosen value while the store lands absence.
+/// `command::apply_field_change` is the store-equal rule the repository's apply paths
+/// share. Denying the shape at ingress means a mirror that sets `new` unconditionally
+/// cannot land a value the store does not.
 ///
 /// # Examples
 ///

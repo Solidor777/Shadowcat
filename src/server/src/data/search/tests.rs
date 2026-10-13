@@ -57,7 +57,7 @@ fn extracts_string_and_number_leaves_and_doc_type_is_absent() {
     // Keys and non-text leaves are not indexed.
     assert!(!c.contains("weapon"));
     assert!(!c.contains("true"));
-    // doc_type is no longer an index term (a `doc_types` filter replaces it).
+    // doc_type is not an index term; the `doc_types` filter selects by type.
     assert!(!c.contains("actor"));
 }
 

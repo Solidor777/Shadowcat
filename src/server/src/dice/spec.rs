@@ -70,8 +70,8 @@ pub enum DieKind {
 
 /// Construction-time validation error for a `DieKind`. `Numeric` has no
 /// invalid state representable by this type (`sides >= 1` is enforced by the
-/// notation parser's `ParseError::InvalidDieSides`, since only the notation
-/// path constructs `Numeric` from untrusted input today).
+/// notation parser's `ParseError::InvalidDieSides`, the site that builds
+/// `Numeric { min: 1, max: sides }`).
 ///
 /// # Examples
 ///
@@ -84,8 +84,8 @@ pub enum DieKind {
 pub enum DieKindError {
     /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
     /// non-degenerate range; `roll_uniform` only `debug_assert!`s this (a
-    /// no-op in release). No notation path constructs `Faces` today (it is
-    /// struct-only for face-lists); `chat::rolls::validate_pre_roll` calls
+    /// no-op in release). The notation parser does not construct `Faces`;
+    /// `chat::rolls::validate_pre_roll` calls
     /// `DieKind::validate()` on every parsed group before rolling, so this is
     /// the enforcement point at the untrusted-wire boundary.
     EmptyFaces,
