@@ -1,7 +1,5 @@
-//! `combat::eval`: formula-host resolution and every combat evaluation contract.
-//!
-//! The contracts are host precedence, number/text evaluation, resource derivation, lifecycle-flag
-//! chains, and duration amounts.
+//! These tests cover `combat::eval`: formula-host precedence, formula evaluation, resource
+//! derivation, lifecycle-flag chains, and duration amounts.
 
 use std::collections::{BTreeMap, HashMap};
 

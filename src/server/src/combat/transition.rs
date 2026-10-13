@@ -1,34 +1,32 @@
-//! Pure combat-clock transitions: each public function takes a `CombatSnapshot` and returns the
-//! `Operation`s for ONE command.
+//! This module holds the pure combat-clock transitions.
 //!
-//! Nothing here touches a `Repository` or chooses a `WriteOrigin` — a later caller commits the
-//! returned ops. The one other thing a transition hands back is a RECORD, not an effect:
-//! `start_with_trigger_plan`/`advance_with_trigger_plan` also return the turn/round boundaries the
-//! walk crossed (`TurnRoundBoundary`), the firing plan the room applies turn/round-scoped region
-//! triggers from. Recording stays pure — region rows, membership, and effect application never
-//! reach this module.
+//! Each public transition except `rebuild_order` takes a `CombatSnapshot` and returns the
+//! `Operation`s for ONE command; `rebuild_order` takes the combatant slice and returns the turn
+//! order's ids. Nothing here touches a `Repository` or chooses a `WriteOrigin`, because a later
+//! caller commits the returned ops. The one other thing a transition hands back is a RECORD, not an
+//! effect: `start_with_trigger_plan`/`advance_with_trigger_plan` also return the turn/round
+//! boundaries the walk crossed (`TurnRoundBoundary`), the firing plan the room applies
+//! turn/round-scoped region triggers from. Recording stays pure, since region rows and region
+//! membership never reach this module.
 //!
-//! `advance`/`start` share one core mechanism (`settle_turn`): entering a
-//! combatant runs its `turn_start` boundary; an `Event` combatant, or a
-//! hidden combatant under `TurnControl::OwnerMayEnd`, immediately resolves
-//! and the walk continues to the next entry. The step budget starts at
-//! `order.len()` and grows by exactly one for every entry the walk
-//! deletes (an exhausted `Event`), rather than resetting to a fresh
-//! full-length guard on each deletion — so an all-auto-resolving order
-//! (e.g. every entry an infinite `Event`) still terminates, in a number of
-//! steps linear in `order`'s initial length, and the walk's last allowed
-//! step always settles the turn wherever it lands, rather than erroring.
-//! INVARIANT: nothing this module does for a hidden combatant is
-//! observable from outside its own document (no message, no distinguishing
-//! op shape) — the SAME `recover`/`tick`/`expire_by_policy` calls run for a
-//! hidden entry as for a visible one, writing only to that combatant's own
-//! (permission-gated) document and its own hosts' effect documents. Every
-//! `Operation::Update` a transition accumulates is folded, by document id,
-//! through `Working::coalesce_updates` once at the end — so a document
-//! written from more than one boundary/phase within the same command
-//! (an auto-resolved entry's start+end pair, or more than one `resolve_event` deletion in
-//! one `settle_turn` walk) always reaches the caller as ONE `Update` per
-//! document, with a correct cumulative OCC pre-image.
+//! `advance`/`start` share one core mechanism (`settle_turn`). Entering a combatant runs its
+//! `turn_start` boundary; an `Event` combatant, or a hidden combatant under
+//! `TurnControl::OwnerMayEnd`, immediately resolves and the walk continues to the next entry. The
+//! step budget starts at `order.len()` and grows by exactly one for every entry the walk deletes
+//! (an exhausted `Event`), rather than resetting to a fresh full-length guard on each deletion. An
+//! all-auto-resolving order (e.g. every entry an infinite `Event`) therefore still terminates, in
+//! a number of steps linear in `order`'s initial length, and the walk's last allowed step always
+//! settles the turn wherever it lands, rather than erroring.
+//!
+//! INVARIANT: nothing this module does for a hidden combatant is observable from outside its own
+//! document (no message, no distinguishing op shape). The SAME `recover`/`tick`/`expire_by_policy`
+//! calls run for a hidden entry as for a visible one, writing only to that combatant's own
+//! (permission-gated) document and its own hosts' effect documents. Every `Operation::Update` that
+//! `start` and `advance` accumulate is folded, by document id, through `Working::coalesce_updates`
+//! once at the end. A document written from more than one boundary/phase within the same command
+//! (an auto-resolved entry's start+end pair, or more than one `resolve_event` deletion in one
+//! `settle_turn` walk) therefore always reaches the caller as ONE `Update` per document, with a
+//! correct cumulative OCC pre-image.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

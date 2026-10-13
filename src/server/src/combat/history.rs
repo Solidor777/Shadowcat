@@ -1,14 +1,15 @@
-//! Turn-history record/restore seam.
+//! This module records and restores a combat's turn history.
 //!
-//! `transition::advance`/`start` call through here so the rewind/redo transition lands as a body
-//! change to these two functions, never a call-site change in `transition`.
+//! `transition::start` and `transition::advance` record a `TurnRecord` through `append_record`
+//! each time a combatant enters its turn. `transition::advance` first tries `fast_forward` to
+//! replay a redo from history. `transition::rewind` calls `restore` and `resulting_combatants` to
+//! roll the live documents back to a record.
 //!
-//! `append_record`/`fast_forward` take `&CombatSnapshot` (the transition's
-//! PRE-transition state) rather than `transition::Working` (private to that
-//! module) — the post-transition combatant/effect state a captured
-//! `TurnRecord` needs is derived by replaying the ops already accumulated in
-//! the same command on top of `snap`, the same fold a real repository
-//! commit performs field-change by field-change.
+//! `append_record` takes `&CombatSnapshot` (the transition's PRE-transition state) rather than
+//! `transition::Working` (private to that module). The post-transition combatant/effect state a
+//! captured `TurnRecord` needs is derived by replaying the ops already accumulated in the same
+//! command on top of `snap`, the same fold a real repository commit performs field-change by
+//! field-change.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

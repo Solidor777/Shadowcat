@@ -1,6 +1,6 @@
-//! Effect discovery and clock-driven mutation.
+//! This module discovers a combatant's effects and applies the clock-driven mutations to them.
 //!
-//! It decides which effects belong to a combatant, and how a boundary tick or a lifecycle-policy
+//! Discovery decides which effects belong to a combatant; a boundary tick or a lifecycle-policy
 //! expiry writes them. Lifecycle flags and duration amounts are evaluated server-side at the moment
 //! of use (`eval::lifecycle_flags`/`eval::duration_amount`) over the document hosting the effect;
 //! an evaluation failure skips that one effect and is reported to the caller — never guessed

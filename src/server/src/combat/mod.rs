@@ -1,18 +1,17 @@
-//! The server-owned combat clock.
+//! This module is the server-owned combat clock.
 //!
 //! It loads a `CombatSnapshot`, runs a pure transition (`transition`), and hands ONE command's ops
 //! to `Room`. The `effects` module holds the effect-lifecycle helpers, of which `collect_effects`
 //! is re-exported here.
 //!
-//! INVARIANT: every formula a transition acts on is evaluated HERE, through
-//! `crate::formula` over the combatant's formula host (`eval`); an
-//! evaluation failure skips its one write and surfaces as a GM-only chat
-//! notice — the clock never stops on a bad formula. For the two intents
-//! that cross clock boundaries (`CombatStart`/`CombatAdvance`) the
-//! transition also returns the boundaries it crossed, which `run_intent`
-//! hands to `Room::fire_turn_round_triggers` after the commit — the
-//! turn/round-scoped region-trigger family (`scene::regions`), fired
-//! room-side so this module stays a pure state machine.
+//! INVARIANT: every formula a transition acts on is evaluated inside this module tree, through
+//! `crate::formula` over the combatant's formula host (`eval`). An evaluation failure skips its one
+//! write and surfaces as a GM-only chat notice, so the clock never stops on a bad formula.
+//!
+//! The two intents that cross clock boundaries (`CombatStart`/`CombatAdvance`) also return the
+//! boundaries they crossed. `run_intent` passes them to `Room::commit_combat_and_fire`, which hands
+//! them to `Room::fire_turn_round_triggers` after the commit. That fires the turn/round-scoped
+//! region-trigger family (`scene::regions`) room-side, so this module stays a pure state machine.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

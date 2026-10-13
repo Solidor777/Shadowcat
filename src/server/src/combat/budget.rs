@@ -1,4 +1,4 @@
-//! The ONE resolution of "this combatant's movement budget, in cells".
+//! This module is the ONE resolution of a combatant's movement budget, in cells.
 //!
 //! The resolution is read by the movement-budget gate (`ws::room::resolve_budget`, and through it
 //! the route-preview clamp `ws::conn::handle_pathfind`) and by the `"combat"` derived channel

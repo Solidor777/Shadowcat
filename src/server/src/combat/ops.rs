@@ -1,6 +1,6 @@
-//! Field-path `Operation`/`FieldChange` construction shared by every transition.
+//! This module builds the `FieldChange`s, each writing one field path, that every transition shares.
 //!
-//! It reads a document's own current value as the OCC pre-image, the same convention
+//! Each change reads the document's own current value as its OCC pre-image, the same convention
 //! `data::command`'s doc comment on `FieldChange` establishes for the whole repository.
 
 #![deny(missing_docs)]
