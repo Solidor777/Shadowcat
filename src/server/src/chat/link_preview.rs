@@ -1,17 +1,16 @@
-//! SSRF-guarded outbound HTTP fetcher for chat link previews — the server's FIRST outbound HTTP
-//! surface, so every guard here is load-bearing.
+//! This module is the SSRF-guarded outbound HTTP fetcher for chat link previews.
 //!
-//! The client never fetches link previews itself; ONLY the server fetches, behind this module's
-//! address guard, and stores the result.
+//! It is the server's FIRST outbound HTTP surface, so every guard here is load-bearing. The client
+//! never fetches link previews itself; ONLY the server fetches, behind this module's address guard,
+//! and stores the result.
 //!
-//! Guard order (each a hard fail-closed reject): URL validation (scheme +
-//! userinfo + host; a literal-IP host is checked against the blocked ranges
-//! HERE because hyper's connector short-circuits DNS for IP literals, so the
-//! resolver only ever sees `Host::Domain`) -> address validation for domain
-//! hosts (`GuardedResolver`, DNS-rebind-safe because reqwest connects to
-//! EXACTLY the IPs the resolver validated, no second resolution) -> manual
-//! per-hop redirect re-validation -> a single deadline over the whole redirect
-//! chain -> streamed size cap -> content-type check -> bounded text extraction.
+//! The guards run in this order, and each is a hard fail-closed reject. URL validation checks
+//! scheme, userinfo and host; a literal-IP host is checked against the blocked ranges HERE because
+//! hyper's connector short-circuits DNS for IP literals, so the resolver only ever sees
+//! `Host::Domain`. Address validation for domain hosts follows (`GuardedResolver`, DNS-rebind-safe
+//! because reqwest connects to EXACTLY the IPs the resolver validated, with no second resolution).
+//! The remaining guards are manual per-hop redirect re-validation, a single deadline over the whole
+//! redirect chain, a streamed size cap, a content-type check, and bounded text extraction.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

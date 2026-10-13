@@ -1,10 +1,10 @@
-//! The `/fx` chat command.
+//! This module implements the `/fx` chat command.
 //!
-//! It is intercepted in `handle_send_message` BEFORE `parse_command` runs (`parse_command` stays a
-//! pure three-kind classifier that can never produce `MessageKind::System` — see its own exhaustive
-//! test). A successful `/fx` authors no message document; a failure authors a whispered
-//! `MessageKind::System` notice, the SAME shape `build_system_error_notice` already establishes for
-//! `/roll`.
+//! The command is intercepted in `handle_send_message` BEFORE `parse_command` runs, because
+//! `parse_command` stays a pure three-kind classifier that can never produce `MessageKind::System`
+//! (see its own exhaustive test). A successful `/fx` authors no message document; a failure authors
+//! a whispered `MessageKind::System` notice, the SAME shape `build_system_error_notice` already
+//! establishes for `/roll`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

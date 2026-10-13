@@ -1,10 +1,11 @@
-//! `:shortcode:` → unicode emoji, applied to raw chat input BEFORE any markdown/html processing.
+//! This module replaces `:shortcode:` spans in raw chat input with unicode emoji.
 //!
-//! It runs as the `chat::sanitize` pre-pass so stored content is final and identical under every
-//! content policy. Always-on typing sugar — output is plain unicode text with no security surface.
-//! A `:name:` span is skipped when its opening `:` falls inside a markdown inline code span
-//! (`code_span_ranges`); this is still pre-parse relative to full markdown/HTML rendering, and it
-//! is not a full CommonMark parser — only the backtick-run/code-span rule is implemented.
+//! `replace_shortcodes` runs as the `chat::sanitize` pre-pass, BEFORE any markdown/html processing,
+//! so stored content is final and identical under every content policy. It is always-on typing
+//! sugar: the output is plain unicode text with no security surface. A `:name:` span is skipped
+//! when its opening `:` falls inside a markdown inline code span (`code_span_ranges`). The pass is
+//! still pre-parse relative to full markdown/HTML rendering, and it is not a full CommonMark
+//! parser: only the backtick-run/code-span rule is implemented.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,10 +1,11 @@
-//! oEmbed provider embeds: allowlisted provider HOSTS only, never autodiscovery.
+//! This module resolves oEmbed provider embeds for allowlisted provider HOSTS only, never by
+//! autodiscovery.
 //!
 //! Autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
-//! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. Structured
-//! fields only — `title`, `author_name`, `provider_name`, `thumbnail_asset_id` — never a provider's
-//! raw `html` field, which is third-party-controlled markup and a direct stored-XSS vector this
-//! server does not control.
+//! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. The module
+//! accepts structured fields only (`title`, `author_name`, `provider_name`, `thumbnail_asset_id`)
+//! and never a provider's raw `html` field, which is third-party-controlled markup and a direct
+//! stored-XSS vector this server does not control.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

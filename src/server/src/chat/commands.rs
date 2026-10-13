@@ -1,8 +1,9 @@
-//! Leading chat-command parser: `/me`/`/em`/`/emote`, `/roll`|`/r`|`/NdM` shorthand, and `/w
-//! @user...` whisper-target extraction.
+//! This module parses a message's leading chat command.
 //!
-//! Pure (no repo/async) — the async caller (`handle_send_message`) resolves `/w` usernames to
-//! member uuids and re-validates the resulting audience.
+//! It recognizes `/me`/`/em`/`/emote`, the `/roll`|`/r`|`/NdM` shorthand, and extracts the `@user`
+//! whisper targets of `/w`. The parser is pure (no repo/async): the async caller
+//! (`handle_send_message`) resolves `/w` usernames to member uuids and re-validates the resulting
+//! audience.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

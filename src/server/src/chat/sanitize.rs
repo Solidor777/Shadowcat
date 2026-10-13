@@ -1,17 +1,15 @@
-//! Message-content sanitizer: the single security boundary between raw user input and a stored
-//! `Segment::Html` run.
+//! This module is the security boundary between raw user input and a stored `Segment::Html` run.
 //!
-//! `sanitize` is the ONLY producer of `Segment::Html` (see `Segment`'s doc comment) — every
+//! `sanitize` is the ONLY producer of `Segment::Html` (see `Segment`'s doc comment). Every
 //! enrichment path (Markdown rendering, raw HTML passthrough) funnels through one `ammonia`
 //! `clean()` call here before anything is persisted or broadcast.
 //!
-//! INVARIANT: an `<img>` carrying a `src` never survives `sanitize` — chat
-//! images travel exclusively as structured `Segment::Image` references
-//! (`[[asset:...]]` spans, or a server-fetched external URL asset-ified by
-//! `chat::post_publish`), never as raw hotlinked markup. `image_urls` on the
-//! returned `Sanitized` is how a Markdown `![alt](url)`/raw `<img src=url>`
-//! source is captured for the post-publish inline-image pipeline; the `<img>`
-//! element itself is always removed from the returned segments.
+//! INVARIANT: an `<img>` carrying a `src` never survives `sanitize`. Chat images travel exclusively
+//! as structured `Segment::Image` references (`[[asset:...]]` spans, or a server-fetched external
+//! URL asset-ified by `chat::post_publish`), never as raw hotlinked markup. `image_urls` on the
+//! returned `Sanitized` is how a Markdown `![alt](url)`/raw `<img src=url>` source is captured for
+//! the post-publish inline-image pipeline; the `<img>` element itself is always removed from the
+//! returned segments.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

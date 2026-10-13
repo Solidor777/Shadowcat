@@ -1,10 +1,10 @@
-//! Per-world chat content policy: a single `chat-settings` config `Document`.
+//! This module resolves a world's chat content policy from its `chat-settings` config `Document`.
 //!
-//! The message sanitizer reads it to decide which enrichment producers are allowed. Resolution is
-//! fail-closed: an absent doc, a query error, or an `engine` body that does not deserialize into
-//! `ChatSettingsEngine` all yield `ChatContentPolicy::default()` (every toggle absent, i.e. plain
-//! text). The toggles only ever WIDEN enrichment from that safe baseline, so any failure mode
-//! degrades safe rather than open.
+//! The message sanitizer reads the policy to decide which enrichment producers are allowed.
+//! Resolution is fail-closed: an absent doc, a query error, or an `engine` body that does not
+//! deserialize into `ChatSettingsEngine` all yield `ChatContentPolicy::default()` (every toggle
+//! absent, i.e. plain text). The toggles only ever WIDEN enrichment from that safe baseline, so any
+//! failure mode degrades safe rather than open.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,4 +1,4 @@
-//! The one reader-facing text extraction over a segment list.
+//! This module extracts the one reader-facing text from a segment list.
 //!
 //! It is shared by `data::engine::search_text`'s `note` and `message` arms so the FTS projection is
 //! never duplicated across the two doc types.

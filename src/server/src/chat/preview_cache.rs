@@ -1,11 +1,10 @@
-//! Per-URL result cache and per-user fetch rate limiter for the link-preview fetcher
-//! (`link_preview`).
+//! This module holds the link-preview fetcher's per-URL result cache and per-user rate limiter.
 //!
-//! It is a separate module because the cache has NO SSRF-guard responsibility of its own — it
-//! only remembers outcomes already produced by the guarded fetcher, keyed on the CANDIDATE URL the
-//! ingest stage extracted from the message (`enrich` gets and inserts under the same pre-fetch
-//! href; the post-redirect address the fetcher returns is stored in the outcome, never used as the
-//! key).
+//! It is separate from `link_preview` because the cache has NO SSRF-guard responsibility of its
+//! own: it only remembers outcomes already produced by the guarded fetcher, keyed on the CANDIDATE
+//! URL the ingest stage extracted from the message. `enrich` gets and inserts under the same
+//! pre-fetch href; the post-redirect address the fetcher returns is stored in the outcome and never
+//! used as the key.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

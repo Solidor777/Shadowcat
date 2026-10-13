@@ -1,30 +1,27 @@
-//! Chat domain: the server-authoritative message model and ingest.
+//! This module is the chat domain: the server-authoritative message model and ingest.
 //!
-//! Messages are ordinary sequenced `Document`s with a typed, ingress-validated
-//! `engine` body (this module's `MessageEngine`); `system` stays
-//! reserved-empty (`{}`) for message docs. Authored and revised ONLY by the
-//! server — never built or mutated by a client directly. A `message` doc_type reaches
-//! `apply_intent` only via `handle_send_message` (Create), `handle_edit_message`,
-//! or `handle_delete_message` (both Update, the latter a soft tombstone). Four
-//! chokepoints jointly enforce this: the create-gate baseline-message exemption
-//! (`apply_intent`'s `is_baseline_message` check, ties a Create to its
-//! authenticated author); the ingress guard
-//! (`ops_target_message`) rejects any client-authored `message` Create/Delete op
-//! at the WS/HTTP boundary; `apply_intent`'s `Update` branch blanket-rejects
-//! every client (`WriteOrigin::Client`) Update targeting a stored `message` doc
-//! (Updates carry no `doc_type`, so they cannot be classified by
-//! `ops_target_message` and must be blocked against the authoritative stored
-//! document instead), exempting ONLY `WriteOrigin::ServerMessageRevision` — a
-//! marker no wire frame can set, produced solely by
-//! `handle_edit_message`/`handle_delete_message` after their own owner-or-GM check — and granting it a
-//! scoped `Access` (`READ`+`WRITE_FIELDS` only, plus an exact-path admission in
-//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a
-//! message doc under this origin -- see `handle_recalc_roll` -- never any
-//! other `/permissions` subpath, and never `/embedded`). `handle_recalc_roll`
-//! is this origin's third producer, after its own GM-only check (never
-//! owner-or-GM -- see `RecalcRollError::Forbidden`); the post-publish
-//! enrichment republish (`chat::post_publish::run_pending_enrichments`) is a
-//! fourth producer, after its own tombstone/OCC checks.
+//! Messages are ordinary sequenced `Document`s with a typed, ingress-validated `engine` body (this
+//! module's `MessageEngine`); `system` stays reserved-empty (`{}`) for message docs. The server
+//! alone authors and revises them; a client never builds or mutates one directly.
+//!
+//! A `message` doc_type reaches `apply_intent` only via `handle_send_message` (Create),
+//! `handle_edit_message`, or `handle_delete_message` (both Update, the latter a soft tombstone).
+//! Three chokepoints jointly enforce this. The create-gate baseline-message exemption
+//! (`apply_intent`'s `is_baseline_message` check) ties a Create to its authenticated author. The
+//! ingress guard (`ops_target_message`) rejects any client-authored `message` Create/Delete op at
+//! the WS/HTTP boundary. `apply_intent`'s `Update` branch blanket-rejects every client
+//! (`WriteOrigin::Client`) Update targeting a stored `message` doc; Updates carry no `doc_type`, so
+//! `ops_target_message` cannot classify them and they must be blocked against the authoritative
+//! stored document instead.
+//!
+//! That Update rejection exempts ONLY `WriteOrigin::ServerMessageRevision`, a marker no wire frame
+//! can set. It has four producers: `handle_edit_message` and `handle_delete_message`, each after
+//! its own owner-or-GM check; `handle_recalc_roll`, after its own GM-only check (never owner-or-GM;
+//! see `RecalcRollError::Forbidden`); and the post-publish enrichment republish
+//! (`chat::post_publish::run_pending_enrichments`), after its own tombstone/OCC checks. The origin
+//! is granted a scoped `Access` (`READ`+`WRITE_FIELDS` only), plus an exact-path admission in
+//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a message doc (needed by
+//! `handle_recalc_roll`), never any other `/permissions` subpath and never `/embedded`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,10 +1,10 @@
-//! Ingest integration for the link-preview enrich stage.
+//! These tests drive the link-preview enrich stage through the ingest path.
 //!
-//! It drives `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`, but
-//! against a real stub `axum` target on `127.0.0.1` — the same `build_client_allow_loopback` seam
-//! `link_preview`'s own fetcher tests use. It is its own `mod` (not folded into `chat::tests`)
-//! because every test here needs `hyperlinks: true` and a stub server, unlike the tests in
-//! `chat::tests`.
+//! They call `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`, but
+//! against a real stub `axum` target on `127.0.0.1`, through the same `build_client_allow_loopback`
+//! seam `link_preview`'s own fetcher tests use. They live in their own `mod` (not folded into
+//! `chat::tests`) because every test here needs `hyperlinks: true` and a stub server, unlike the
+//! tests in `chat::tests`.
 
 use super::*;
 use crate::auth::role::ServerRole;
