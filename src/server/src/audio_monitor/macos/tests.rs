@@ -2,14 +2,16 @@
 //!
 //! The smoke test calls `platform_monitor` and accepts a monitor (polled once, result ignored) or
 //! `MonitorError::Unsupported` naming the 14.2 version requirement, and fails on
-//! `MonitorError::Backend`. The pure-helper tests cover `departed_pids`, `untapped_processes` and
-//! `aggregate_description`. The selector tests pin each hand-written Core Audio selector to its
-//! four ASCII characters. One test reads a built `CATapDescription` back through the
-//! Objective-C runtime.
+//! `MonitorError::Backend`. The pure-helper tests cover `departed_pids`, `untapped_processes`,
+//! `TapRetryBackoff` and `aggregate_description`. The selector tests pin each hand-written Core
+//! Audio selector to its four ASCII characters. One test reads a built `CATapDescription` back
+//! through the Objective-C runtime on macOS 14.2 or newer, and asserts the `Unsupported` result
+//! of `MacosMonitor::new` below it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFType, TCFType};
@@ -21,10 +23,10 @@ use super::super::{platform_monitor, MonitorError};
 use super::{
     aggregate_description, build_stereo_mixdown_tap_description, departed_pids,
     macos_at_least_14_2, new_tap_uuid, objc_msg_send_0, registered_selector, release_objc_instance,
-    untapped_processes, K_AUDIO_DEVICE_PROPERTY_DEVICE_UID,
+    untapped_processes, MacosMonitor, TapRetryBackoff, K_AUDIO_DEVICE_PROPERTY_DEVICE_UID,
     K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
     K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST, K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
-    K_AUDIO_PROCESS_PROPERTY_PID,
+    K_AUDIO_PROCESS_PROPERTY_PID, TAP_RETRY_DELAY,
 };
 
 #[test]
@@ -42,32 +44,41 @@ fn platform_monitor_never_panics_and_reports_a_sane_result() {
     }
 }
 
-/// A pid present in the tap map but absent from the current live set is "departed" and must be
-/// torn down. `departed_pids` takes no real `TapHandle` or Core Audio resource, so the diff
+/// A tap whose pid is absent from the live map is "departed" and must be torn down.
+/// `departed_pids` takes no real `TapHandle` or Core Audio resource, so the diff
 /// `teardown_departed_taps` runs is exercised in isolation.
 #[test]
-fn departed_pids_reports_exactly_the_pids_missing_from_live() {
-    let live: HashSet<i32> = [2].into_iter().collect();
-    let mut departed = departed_pids([1, 2, 3].into_iter(), &live);
+fn departed_pids_reports_exactly_the_taps_missing_from_live() {
+    let live: HashMap<i32, u32> = [(2, 20)].into_iter().collect();
+    let mut departed = departed_pids([(1, 10), (2, 20), (3, 30)].into_iter(), &live);
     departed.sort_unstable();
     assert_eq!(departed, vec![1, 3]);
 }
 
-/// Every present pid is "departed" against an empty live set — the shape
-/// `run_process_tap_loop` uses on its shutdown path to tear down every remaining tap.
+/// A pid that stays live but now enumerates under a different process object id is "departed":
+/// the tap built from the old id points at a different object than the live process.
 #[test]
-fn departed_pids_against_an_empty_live_set_is_everything_present() {
-    let live: HashSet<i32> = HashSet::new();
-    let mut departed = departed_pids([4, 5].into_iter(), &live);
+fn departed_pids_reports_a_live_pid_whose_process_object_id_changed() {
+    let live: HashMap<i32, u32> = [(7, 99), (8, 80)].into_iter().collect();
+    let departed = departed_pids([(7, 70), (8, 80)].into_iter(), &live);
+    assert_eq!(departed, vec![7]);
+}
+
+/// Every tap is "departed" against an empty live map, the shape `run_process_tap_loop` uses on
+/// its shutdown path to tear down every remaining tap.
+#[test]
+fn departed_pids_against_an_empty_live_map_is_everything_present() {
+    let live: HashMap<i32, u32> = HashMap::new();
+    let mut departed = departed_pids([(4, 40), (5, 50)].into_iter(), &live);
     departed.sort_unstable();
     assert_eq!(departed, vec![4, 5]);
 }
 
-/// No pid departs when every present pid is still live.
+/// No tap departs when every present pid is still live under the same process object id.
 #[test]
-fn departed_pids_is_empty_when_everything_present_is_still_live() {
-    let live: HashSet<i32> = [1, 2].into_iter().collect();
-    let departed = departed_pids([1, 2].into_iter(), &live);
+fn departed_pids_is_empty_when_everything_present_still_matches_live() {
+    let live: HashMap<i32, u32> = [(1, 10), (2, 20)].into_iter().collect();
+    let departed = departed_pids([(1, 10), (2, 20)].into_iter(), &live);
     assert!(departed.is_empty());
 }
 
@@ -99,26 +110,67 @@ fn selector_constants_equal_their_four_char_codes() {
 #[test]
 fn untapped_processes_pairs_each_untapped_pid_with_its_process_object_id() {
     let live: HashMap<i32, u32> = [(300, 71), (100, 52), (200, 63)].into_iter().collect();
-    let pairs = untapped_processes(&live, [200].into_iter());
+    let pairs = untapped_processes(&live, [(200, 63)].into_iter());
     assert_eq!(pairs, vec![(100, 52), (300, 71)]);
 }
 
-/// A tapped pid that is no longer live is not reported, and nothing is reported when every live
-/// pid already has a tap.
+/// A tapped pair that is no longer live is not reported, and nothing is reported when every live
+/// pair already has a tap.
 #[test]
-fn untapped_processes_ignores_tapped_pids_and_reports_nothing_when_all_are_tapped() {
+fn untapped_processes_ignores_tapped_pairs_and_reports_nothing_when_all_are_tapped() {
     let live: HashMap<i32, u32> = [(1, 10), (2, 20)].into_iter().collect();
-    assert!(untapped_processes(&live, [1, 2, 9].into_iter()).is_empty());
+    assert!(untapped_processes(&live, [(1, 10), (2, 20), (9, 90)].into_iter()).is_empty());
 }
 
-/// Every minted tap uuid parses as a UUID, is spelled in upper case (the spelling `NSUUID`'s
-/// `UUIDString` returns) and differs between calls.
+/// A live pid whose tap was built from a different process object id is reported again, paired
+/// with its current object id.
 #[test]
-fn new_tap_uuid_is_an_upper_case_uuid_that_differs_per_call() {
+fn untapped_processes_reports_a_pid_tapped_under_a_stale_process_object_id() {
+    let live: HashMap<i32, u32> = [(5, 55)].into_iter().collect();
+    assert_eq!(
+        untapped_processes(&live, [(5, 50)].into_iter()),
+        vec![(5, 55)]
+    );
+}
+
+/// A process whose tap failed is retried only after `TAP_RETRY_DELAY`, only the first recorded
+/// failure per (pid, object id) reports as new, and a success or a departed process clears the
+/// record.
+#[test]
+fn tap_retry_backoff_delays_a_failed_process_until_the_retry_delay_elapses() {
+    let start = Instant::now();
+    let mut backoff = TapRetryBackoff::default();
+    let key = (11, 110);
+    assert!(backoff.should_attempt(key, start));
+    assert!(backoff.record_failure(key, start));
+    assert!(!backoff.should_attempt(key, start));
+    assert!(!backoff.should_attempt(key, start + TAP_RETRY_DELAY - Duration::from_millis(1)));
+    assert!(backoff.should_attempt(key, start + TAP_RETRY_DELAY));
+    assert!(
+        !backoff.record_failure(key, start + TAP_RETRY_DELAY),
+        "a repeat failure of the same key is not the first"
+    );
+
+    backoff.record_success(key);
+    assert!(backoff.should_attempt(key, start));
+
+    assert!(backoff.record_failure(key, start));
+    let live: HashMap<i32, u32> = [(11, 111)].into_iter().collect();
+    backoff.retain_live(&live);
+    assert!(
+        backoff.should_attempt(key, start),
+        "a pid now enumerating under another object id drops the old key's record"
+    );
+}
+
+/// Every minted tap uuid is the upper-case hyphenated spelling of a parsed UUID (the spelling
+/// `NSUUID`'s `UUIDString` returns) and differs between calls.
+#[test]
+fn new_tap_uuid_is_an_upper_case_hyphenated_uuid_that_differs_per_call() {
     let first = new_tap_uuid();
     let second = new_tap_uuid();
-    assert!(uuid::Uuid::parse_str(&first).is_ok());
-    assert_eq!(first, first.to_uppercase());
+    let parsed = uuid::Uuid::parse_str(&first).expect("parses as a UUID");
+    assert_eq!(first, parsed.hyphenated().to_string().to_uppercase());
     assert_ne!(first, second);
 }
 
@@ -164,7 +216,7 @@ fn aggregate_description_carries_the_keys_core_audio_reads() {
     let dict = aggregate_description(77, "BuiltInSpeakerDevice", "TAP-UUID-0001");
 
     assert_eq!(string_value(&dict, "name"), "shadowcat-tap-77");
-    assert_eq!(string_value(&dict, "uid"), "shadowcat-tap-77");
+    assert_eq!(string_value(&dict, "uid"), "shadowcat-tap-TAP-UUID-0001");
     assert_eq!(string_value(&dict, "master"), "BuiltInSpeakerDevice");
     assert_eq!(number_value(&dict, "private"), 1);
     assert_eq!(number_value(&dict, "stacked"), 0);
@@ -178,12 +230,26 @@ fn aggregate_description_carries_the_keys_core_audio_reads() {
     assert_eq!(number_value(&sub_tap, "drift"), 1);
 }
 
+/// Two aggregate descriptions for the same pid but different tap uuids carry different UIDs.
+#[test]
+fn aggregate_description_uid_differs_per_tap_uuid() {
+    let first = aggregate_description(77, "Out", "TAP-A");
+    let second = aggregate_description(77, "Out", "TAP-B");
+    assert_ne!(string_value(&first, "uid"), string_value(&second, "uid"));
+}
+
 /// A built `CATapDescription` holds the process object id it was given (not a pid) in its
 /// `processes` array and the uuid it was given as its `UUID`, read back through the Objective-C
-/// runtime.
+/// runtime. Below macOS 14.2 the test asserts that `MacosMonitor::new` reports `Unsupported`
+/// instead.
 #[test]
 fn tap_description_holds_the_process_object_id_and_the_given_uuid() {
     if !macos_at_least_14_2() {
+        match MacosMonitor::new(Arc::new(AtomicBool::new(false))) {
+            Err(MonitorError::Unsupported(reason)) => assert!(reason.contains("14.2")),
+            Err(MonitorError::Backend(reason)) => panic!("unexpected backend error: {reason}"),
+            Ok(_) => panic!("a monitor was built below macOS 14.2"),
+        }
         return;
     }
     let tap_uuid = new_tap_uuid();
