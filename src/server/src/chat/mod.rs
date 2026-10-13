@@ -6,15 +6,18 @@
 //!
 //! `handle_send_message` Creates a `message` doc. `handle_edit_message`, `handle_delete_message`
 //! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment each Update one.
-//! Three chokepoints keep a client from authoring or mutating a message doc. In
-//! `authorize_create_intent`, `is_baseline_message` exempts a Player's Create of a message doc
-//! from the world's create-capability check only when the doc's owner is the authenticated
-//! user. The ingress guard (`ops_target_message`) rejects any client-authored `message`
-//! Create/Delete op at the WS/HTTP boundary. `apply_intent`'s `Update` branch
-//! (`authorize_update_access`) rejects every Update targeting a stored `message` doc unless its
-//! origin is `WriteOrigin::ServerMessageRevision`; Updates carry no `doc_type`, so
-//! `ops_target_message` cannot classify them and they must be blocked against the authoritative
-//! stored document instead.
+//! Three guards reject a client's attempt to author or mutate a message doc. The ingress guard
+//! (`ops_target_message`) rejects a client-authored `message` Create or Delete op at the WS/HTTP
+//! boundary. `apply_intent`'s `Update` branch (`authorize_update_access`) and its `Move` branch
+//! each reject an op targeting a stored `message` doc unless its origin is
+//! `WriteOrigin::ServerMessageRevision`. Updates and Moves carry no `doc_type`, so
+//! `ops_target_message` cannot classify them; those two branches classify against the
+//! authoritative stored document instead.
+//!
+//! `is_baseline_message` in `authorize_create_intent` is an exemption, not a guard: it admits a
+//! Player's Create of a message doc without the world's create capability when the doc's owner
+//! is the authenticated user. That exemption is sound because the ingress guard keeps a
+//! client-authored message Create from reaching `apply_intent`.
 //!
 //! `WriteOrigin::ServerMessageRevision` is a marker no wire frame can set. It has four producers:
 //! `handle_edit_message` and `handle_delete_message`, each after its own owner-or-GM check;

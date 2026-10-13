@@ -398,11 +398,10 @@ async fn resolve_job(
 /// asset commit, as `http::assets::upload`/`replace`/`delete` do -- this
 /// commit runs from the post-publish job rather than inside an HTTP handler,
 /// so it must join that same exclusion or an in-server backup's file-copy
-/// could race a half-committed asset. Runs the
-/// WHOLE check-then-fetch-then-set sequence under `preview_fetch_locks`'
-/// per-`preview_url` lock (see `with_preview_url_lock`) so two concurrent
-/// jobs for the identical URL never both observe a cache miss and each
-/// create their own orphaned `Asset`.
+/// could race a half-committed asset. Runs the WHOLE check-then-fetch-then-set
+/// sequence under `preview_fetch_locks`' per-`preview_url` lock (see
+/// `with_preview_url_lock`) so two concurrent jobs for the identical URL never
+/// both observe a cache miss and each create their own orphaned `Asset`.
 async fn resolve_preview_image(
     deps: FetchDeps,
     world_id: Uuid,

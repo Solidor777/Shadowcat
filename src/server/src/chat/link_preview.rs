@@ -38,21 +38,22 @@ use super::{PendingEnrichment, Segment};
 /// `PendingEnrichment::PreviewImage` instead of storing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
-    /// The URL the fetch ended on — redirects substitute it (`url = next` per
-    /// hop in `guarded_get`), so this is the post-redirect address,
-    /// not necessarily what the author posted.
+    /// The URL a fresh fetch ended on: `guarded_get` substitutes each redirect target (`url =
+    /// next`), so a preview from `fetch_preview`, and an in-memory cache hit on it, carries the
+    /// post-redirect address. A preview that `cached_or_fetch` builds from a persisted row
+    /// carries the URL as posted.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
     pub title: String,
     /// Extracted description, entity-decoded, capped at
     /// `MAX_DESCRIPTION_CHARS`; may be empty.
     pub description: String,
-    /// A candidate `og:image`/canonical-image URL extracted (never fetched)
-    /// by THIS fetch — `Some` only on a genuinely fresh scrape, always
-    /// `None` on a cache-tier hit (see `image_asset_id`'s doc for why a
-    /// cache hit carries the asset id instead, never the raw URL). Never
-    /// persisted or serialized to any wire type — purely an in-process
-    /// signal from `enrich` to its `PendingEnrichment::PreviewImage` queue.
+    /// A candidate `og:image`/canonical-image URL extracted (never fetched) by the fetch that
+    /// built this preview. A preview that `cached_or_fetch` builds from a persisted row has
+    /// `None` here and carries the asset id instead (see `image_asset_id`), while the
+    /// in-memory cache stores and returns the whole preview, `image_url` included. Never
+    /// persisted or serialized to any wire type — purely an in-process signal from `enrich` to
+    /// its `PendingEnrichment::PreviewImage` queue.
     pub image_url: Option<String>,
     /// The already-known asset id for this URL's image, populated ONLY from
     /// a persisted-cache hit (`cached_or_fetch`) whose row already carries
@@ -1590,12 +1591,11 @@ pub async fn fetch_json_bytes(
 ///
 /// The scheme must be exactly http or https. A URL carrying `userinfo` is rejected (credential
 /// confusion), as is a missing or empty host. A literal-IP host is checked against the blocked
-/// ranges here, directly: a URL whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
-/// like `2130706433`/`0x7f000001`, which parse to `Host::Ipv4`) never reaches
-/// `GuardedResolver`: hyper-util's connector short-circuits DNS for IP-literal
-/// hosts, so `is_blocked_ip` would otherwise never be consulted and reqwest
-/// would connect straight to a blocked address. Only `Host::Domain` proceeds to
-/// the resolver.
+/// ranges here, directly. The `url` crate parses decimal and hex spellings such as `2130706433`
+/// and `0x7f000001` to `Host::Ipv4`. A URL with an IP-literal host never reaches
+/// `GuardedResolver`, because hyper-util's connector skips DNS for IP-literal hosts. Without
+/// this check `is_blocked_ip` would never be consulted and reqwest would connect straight to a
+/// blocked address. Only `Host::Domain` proceeds to the resolver.
 fn validate_url(url: &Url) -> Result<(), PreviewError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(PreviewError::BadScheme);

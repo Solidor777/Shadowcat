@@ -19,10 +19,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Spawns a stub HTTP target on a random loopback port, returning the
 /// port. Mirrors `link_preview`'s own `spawn_stub` test helper. Callers address it
-/// via the fake domain `stub.test` (never a literal `127.0.0.1` URL,
+/// through a domain such as `stub.test` (never a literal `127.0.0.1` URL,
 /// which `validate_url` blocks unconditionally regardless of any
-/// loopback allowance) — `Fixture::new`'s client resolves that name to
-/// this stub's real loopback IP.
+/// loopback allowance) — `Fixture::new`'s client resolves every host name to
+/// the loopback IP this stub binds.
 async fn spawn_stub(router: Router) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -104,10 +104,10 @@ impl Fixture {
             room,
             ctx,
             rate: PingRateLimiter::new(),
-            // Maps the fake domain `stub.test` to real loopback — the
-            // ONLY way to reach a `127.0.0.1`-bound stub, since
-            // `validate_url` rejects a literal `127.0.0.1` host outright
-            // regardless of any loopback allowance (see that fn's doc).
+            // Resolves every host name to real loopback, so a domain such as `stub.test`
+            // reaches a `127.0.0.1`-bound stub; a literal `127.0.0.1` URL cannot, since
+            // `validate_url` rejects that host outright regardless of any loopback allowance
+            // (see that fn's doc).
             preview_client: link_preview::build_client_with_resolve_fn(|_host| {
                 Ok(vec!["127.0.0.1".parse().unwrap()])
             }),

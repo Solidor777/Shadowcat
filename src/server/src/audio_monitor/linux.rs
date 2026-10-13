@@ -125,14 +125,14 @@ impl SessionMonitor for LinuxMonitor {
 ///
 /// `StreamListener::drop` (`spa::utils::hook::remove`) patches pointers within the stream's own
 /// internal listener list, so it must run before `Stream::drop` (`pw_stream_destroy`) can free
-/// that memory. The `Drop` impl takes and drops `listener` explicitly, ahead of the field drops
+/// that memory. The `Drop` impl takes and unregisters `listener` explicitly, ahead of the field drops
 /// that follow it, so the order does not depend on field declaration order. The
 /// `audio-capture` example in the `pipewire` 0.8.0 crate binds its `stream` variable before its
 /// `_listener` variable, so scope exit drops the listener first.
 struct CaptureStream {
-    /// Unregisters the `process` callback from the stream's listener list when dropped.
-    /// `StreamListener` exposes no other API over its opaque internal hook, so `Drop` is its
-    /// only use.
+    /// Unregisters the `process` callback from the stream's listener list: `Drop` for
+    /// `CaptureStream` calls `StreamListener::unregister`, which consumes the listener and so
+    /// runs its removal from that list.
     listener: Option<pw::stream::StreamListener<()>>,
     /// Destroys the underlying `pw_stream` when dropped, which is safe only once no listener
     /// still points into it.
@@ -141,7 +141,9 @@ struct CaptureStream {
 
 impl Drop for CaptureStream {
     fn drop(&mut self) {
-        drop(self.listener.take());
+        if let Some(listener) = self.listener.take() {
+            listener.unregister();
+        }
     }
 }
 
