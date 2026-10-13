@@ -1,6 +1,6 @@
 //! These tests cover `upgrade_audio_derivatives`.
 //!
-//! They check the database listing that selects only transcoded audio assets, the upgrade of old
+//! They check the database listing that selects only transcoded audio assets, the upgrade of stale
 //! assets with a second pass that rewrites nothing, the skip of a failed swap and its completion by
 //! the next pass, and the swap's wait on the write barrier.
 
@@ -158,7 +158,7 @@ async fn a_pass_upgrades_old_assets_and_a_second_pass_rewrites_nothing() {
     );
 }
 
-/// A swap that fails is counted as skipped, leaves the asset's old files intact and is retried and
+/// A swap that fails is counted as skipped, leaves the asset's files untouched and is retried and
 /// completed by the next pass.
 #[tokio::test]
 async fn a_failed_swap_is_skipped_and_completed_by_the_next_pass() {

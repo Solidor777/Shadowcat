@@ -7,7 +7,7 @@ import type { DiceModeSetting } from "./DiceModeSetting";
  * GM-configured ambient dice-notation context (exported to the client as
  * `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
  * or absent body fills the rest with the safe default (Total + HighWins,
- * empty `channel_overrides`).
+ * empty `channel_overrides`, no `sound`).
  *
  * # Examples
  *
@@ -37,8 +37,8 @@ direction: DiceDirectionSetting,
  */
 channel_overrides: { [key in string]: ChannelDiceOverride }, 
 /**
- * The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, wired
- * through `ctx.audio.playOneShot` once `AudioApi` exists); `None` = silent.
+ * The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, played
+ * through `AudioApi.playOneShot`); `None` = silent.
  * A bare `Uuid` like every other asset reference in `chat::mod` (e.g.
  * `Segment::Image::asset_id`) — no separate existence check at this layer, the asset
  * endpoint 404s on a dangling id the same way an image segment's would.

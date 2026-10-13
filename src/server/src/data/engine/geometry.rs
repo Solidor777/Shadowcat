@@ -371,8 +371,7 @@ impl WallEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct RegionShape {
-    /// "rect" | "circle" | "polygon" — kept a `String` in v1 (asserted by
-    /// the unit battery).
+    /// "rect" | "circle" | "polygon"; a `String`, not a Rust enum.
     pub kind: String,
     /// Flat coordinate list in scene units; layout depends on `kind` (see the
     /// struct doc).

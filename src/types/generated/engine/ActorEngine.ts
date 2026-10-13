@@ -54,7 +54,8 @@ visual: TokenVisual,
  */
 size: Size, 
 /**
- * "square" | "circle" — kept a `String` in v1 (asserted by the battery).
+ * "square" | "circle"; a `String`, not a Rust enum. `shape_literal_set_deserializes` checks
+ * that both literals pass `validate_engine`.
  */
 shape: string, 
 /**

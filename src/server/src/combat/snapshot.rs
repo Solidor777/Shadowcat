@@ -1,7 +1,7 @@
 //! This module loads a `CombatSnapshot`, the state a pure `transition` runs against.
 //!
-//! The snapshot holds one combat document, its combatants, their hosts, the optional history and
-//! registry documents, the sibling active combats on the scene and the resolved-rules override
+//! The snapshot holds one combat document, its combatants, their hosts, the optional history document
+//! and resource registry, the sibling active combats on the scene and the resolved-rules override
 //! chain.
 
 #![deny(missing_docs)]

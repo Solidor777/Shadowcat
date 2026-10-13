@@ -49,8 +49,8 @@ visual: TokenVisual | null,
  */
 size: Size | null, 
 /**
- * "square" | "circle" — kept a `String` in v1 (the literal set is
- * asserted by the unit battery, not enforced by a Rust enum).
+ * "square" | "circle", the same literal set as `ActorEngine.shape`; a `String`, not a Rust
+ * enum.
  */
 shape: string | null, 
 /**

@@ -355,8 +355,8 @@ pub struct TokenOverrides {
     /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     #[serde(default)]
     pub size: Option<Size>,
-    /// "square" | "circle" — kept a `String` in v1 (the literal set is
-    /// asserted by the unit battery, not enforced by a Rust enum).
+    /// "square" | "circle", the same literal set as `ActorEngine.shape`; a `String`, not a Rust
+    /// enum.
     #[serde(default)]
     pub shape: Option<String>,
     /// Per-token vision override: replaces the actor's `vision[]` entirely
@@ -845,7 +845,8 @@ pub struct ActorEngine {
     /// client multiplies it by the scene's cell size to reach scene units. Not to be confused with
     /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     pub size: Size,
-    /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
+    /// "square" | "circle"; a `String`, not a Rust enum. `shape_literal_set_deserializes` checks
+    /// that both literals pass `validate_engine`.
     pub shape: String,
     /// The client's `ActorEngine.faction: string | null`. INVARIANT: `Option<T>`
     /// always accepts a missing key as `None` (serde special-cases `Option`

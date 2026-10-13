@@ -1,15 +1,13 @@
 //! This module is the background sweep that upgrades stale Opus derivatives.
 //!
-//! A derivative is stale when its WebM head lacks `WEBM_WRITING_APP`, or when its Ogg vendor string
-//! is not `OPUS_VENDOR_MARKER` and its valid-sample count is in the loss range (`loss_range`).
-//!
-//! See `process::audio::upgrade` for how each stale sibling is repaired.
+//! `process::audio::upgrade` defines when a derivative is stale and how each stale sibling is
+//! repaired.
 //!
 //! The sweep runs once per server start, after the listener is bound, one asset at a time. The
 //! decode and mux work of an asset runs on the blocking pool without any lock, and only the swap
 //! (a rename of a staged file over each sibling) holds the read side of the write barrier, like
 //! every other commit-and-file-move pair. It writes no database row, bumps no asset version and
-//! broadcasts nothing: the derivative's `ETag` is derived from the served file's bytes, so a
+//! broadcasts nothing: the derivative's `ETag` is derived from the served file's length, modification time and head bytes, so a
 //! rewritten sibling is a new validator for every cache without a version change.
 
 #![deny(missing_docs)]
@@ -49,10 +47,11 @@ pub struct UpgradeReport {
     /// Tail-loss assets with no stored original: the WebM was remuxed to its decodable length and
     /// the lost tail cannot be recovered.
     pub unrepairable_tail: usize,
-    /// Assets selected where no write could improve the files, or whose files changed under the
-    /// sweep or whose swap failed: selected again by the next pass.
+    /// Assets selected again by the next pass: those where no write could improve the files, those
+    /// whose files changed under the sweep and those whose swap failed.
     pub skipped: usize,
-    /// Assets whose staging failed (an unreadable sibling, a failed decode).
+    /// Assets whose planning or staging failed (an unreadable sibling, a failed decode) or whose
+    /// planning or swap task did not complete.
     pub failed: usize,
 }
 
@@ -63,7 +62,7 @@ impl UpgradeReport {
     }
 }
 
-/// Upgrades every stored audio asset's stale Opus siblings, one asset at a time, and reports what
+/// Upgrades every transcoded audio asset's stale Opus siblings, one asset at a time, and reports what
 /// it did. `assets_dir` is the asset store root and `barrier` the write barrier whose read side the
 /// swap holds.
 ///

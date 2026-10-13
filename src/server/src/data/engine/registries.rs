@@ -508,7 +508,7 @@ pub struct ChannelDiceOverride {
 /// GM-configured ambient dice-notation context (exported to the client as
 /// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
 /// or absent body fills the rest with the safe default (Total + HighWins,
-/// empty `channel_overrides`).
+/// empty `channel_overrides`, no `sound`).
 ///
 /// # Examples
 ///
@@ -534,8 +534,8 @@ pub struct DiceSettingsEngine {
     /// independently-optional fields (see `ChannelDiceOverride`'s doc).
     #[serde(default)]
     pub channel_overrides: BTreeMap<String, ChannelDiceOverride>,
-    /// The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, wired
-    /// through `ctx.audio.playOneShot` once `AudioApi` exists); `None` = silent.
+    /// The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, played
+    /// through `AudioApi.playOneShot`); `None` = silent.
     /// A bare `Uuid` like every other asset reference in `chat::mod` (e.g.
     /// `Segment::Image::asset_id`) — no separate existence check at this layer, the asset
     /// endpoint 404s on a dangling id the same way an image segment's would.
@@ -545,10 +545,10 @@ pub struct DiceSettingsEngine {
 }
 
 impl DiceSettingsEngine {
-    /// Ingress validation beyond serde shape. Today `sound` is a bare `Uuid` — already
-    /// exhaustively checked by the type itself — so this always succeeds; it exists as the
-    /// home for the next `DiceSettingsEngine` field that needs a runtime check, the same
-    /// reason `ChannelRegistryEngine`/`ConditionRegistryEngine` each carry one.
+    /// Ingress validation beyond serde shape. `sound` is a bare `Uuid`, fully checked by the
+    /// type itself, so this always succeeds; it exists as the home for the next
+    /// `DiceSettingsEngine` field that needs a runtime check, the same reason
+    /// `ChannelRegistryEngine`/`ConditionRegistryEngine` each carry one.
     ///
     /// # Examples
     ///

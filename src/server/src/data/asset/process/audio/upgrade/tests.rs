@@ -20,7 +20,7 @@ fn valid_of(residue: usize) -> u64 {
     12 * 960 + residue as u64
 }
 
-/// The bytes of a unmarked-layout fixture.
+/// The bytes of an unmarked-layout fixture.
 fn fixture(residue: usize, suffix: &str) -> Vec<u8> {
     std::fs::read(Path::new(FIXTURES).join(format!("residue-{residue}{suffix}"))).unwrap()
 }

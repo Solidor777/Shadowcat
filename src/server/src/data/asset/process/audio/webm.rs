@@ -16,10 +16,10 @@ use super::{opus_head, OpusStream, OPUS_FRAME_MS, OPUS_FRAME_SAMPLES, OPUS_TARGE
 const WEBM_CLUSTER_FRAMES: usize = 64;
 
 /// The `WritingApp` string every file written by the current muxer carries. The upgrade sweep
-/// selects a `.opus.webm` whose head lacks it.
+/// selects a WebM sibling (`WEBM_SUFFIX`) whose head lacks it.
 pub(crate) const WEBM_WRITING_APP: &str = "shadowcat-webm/2";
 
-/// Bytes at the start of a `.opus.webm` that always contain `WEBM_WRITING_APP` when the file was
+/// Bytes at the start of a WebM sibling (`WEBM_SUFFIX`) that always contain `WEBM_WRITING_APP` when the file was
 /// written by the current muxer, and that the derivative `ETag` hashes: the EBML header, the
 /// Segment header, `SeekHead` and `Info` precede the first `Tracks` byte and total well under it.
 pub(crate) const WEBM_HEAD_BYTES: usize = 4096;
@@ -307,7 +307,7 @@ pub(super) fn mux_webm(
     Ok(out)
 }
 
-/// Whether the head of a `.opus.webm` (its first `WEBM_HEAD_BYTES` bytes, or the whole file when
+/// Whether the head of a WebM sibling (its first `WEBM_HEAD_BYTES` bytes, or the whole file when
 /// shorter) was written by the current muxer: the `WritingApp` marker is present.
 pub(crate) fn head_is_current(head: &[u8]) -> bool {
     let marker = WEBM_WRITING_APP.as_bytes();

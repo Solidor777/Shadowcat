@@ -6,10 +6,9 @@
 //! A marker separates a stale sibling from a current one. A WebM sibling is stale when its head
 //! carries no `WEBM_WRITING_APP` marker; an unmarked WebM also lacks `Duration`, `SeekHead`, `Cues`
 //! and `DiscardPadding`. An Ogg sibling is stale when its vendor string is not `OPUS_VENDOR_MARKER`
-//! and its valid-sample count is in the loss range (`loss_range`). An unmarked Ogg has no lookahead
-//! flush and is missing the last samples of the audio: the encoder emits each sample `pre_skip`
-//! samples late, so a stream of `ceil(total_valid / 960)` frames covers only
-//! `frames * 960 - pre_skip` audible samples.
+//! and `loss_range` holds for its pre-skip and valid-sample count. An unmarked Ogg in the loss
+//! range has no lookahead flush and is missing the last samples of the audio. An asset is selected
+//! when either sibling is stale.
 //!
 //! The repair depends on which sibling is stale and what is stored. An Ogg in the loss range cannot
 //! be repaired from its own packets, because the missing samples were never encoded. With the
@@ -22,7 +21,9 @@
 //! When only the WebM is stale, an Ogg beside it supplies the packets for a remux (`Kind::Remux`),
 //! which keeps the two siblings one encode. A stale WebM with no Ogg is re-encoded from the
 //! original (`Kind::Retranscode`), and with no original either the asset is left alone
-//! (`Plan::Unrepairable`).
+//! (`Plan::Unrepairable`). `plan` returns `Plan::Current` when neither sibling is stale and an
+//! `Err` when a sibling is unreadable or a decode, mux or staged write fails; `UpgradeReport.failed`
+//! counts the `Err`.
 //!
 //! The sweep never writes the database, never bumps a version and never goes through
 //! `reconvert`, `commit_replacement` or `move_asset_files` (which deletes a final sibling that has
@@ -41,10 +42,10 @@ use super::{
     OPUS_VENDOR_MARKER, WEBM_SUFFIX,
 };
 
-/// Bytes read from the start of an `.opus.ogg` to cover its `OpusHead` and `OpusTags` pages.
+/// Bytes read from the start of the Ogg sibling (`OPUS_SUFFIX`) to cover its `OpusHead` and `OpusTags` pages.
 const OGG_HEAD_BYTES: usize = 8192;
 
-/// Bytes read from the end of an `.opus.ogg`: more than the largest Ogg page (65,307 bytes), so the
+/// Bytes read from the end of the Ogg sibling (`OPUS_SUFFIX`): more than the largest Ogg page (65,307 bytes), so the
 /// final page's header is always inside the window.
 const OGG_TAIL_BYTES: u64 = 70_000;
 
@@ -69,11 +70,8 @@ impl OggInfo {
         self.final_granule.checked_sub(self.pre_skip)
     }
 
-    /// Whether the vendor string is not `OPUS_VENDOR_MARKER` AND the frame count cannot cover
-    /// `pre_skip + total_valid` samples: an unmarked file holds `ceil(total_valid / 960)` frames,
-    /// which cover `frames * 960 - pre_skip` audible samples, fewer than `total_valid` exactly when
-    /// `frames * 960 < pre_skip + total_valid`. A marked file carries the flush and is never in the
-    /// range.
+    /// Whether the vendor string is not `OPUS_VENDOR_MARKER` and `loss_range` holds for the
+    /// pre-skip and `total_valid`. A marked file carries the flush and is never in the range.
     pub(crate) fn in_loss_range(&self) -> bool {
         if self.vendor == OPUS_VENDOR_MARKER {
             return false;
@@ -85,8 +83,10 @@ impl OggInfo {
     }
 }
 
-/// Whether an unflushed encode of `total_valid` samples with `pre_skip` lookahead loses its tail:
-/// `ceil(total_valid / 960)` frames cover fewer than `pre_skip + total_valid` samples.
+/// Whether an unflushed encode of `total_valid` samples with `pre_skip` lookahead loses its tail.
+/// The encoder emits each sample `pre_skip` samples late, so the `ceil(total_valid / 960)` frames
+/// of an unflushed stream cover `frames * 960 - pre_skip` audible samples, fewer than `total_valid`
+/// exactly when `frames * 960 < pre_skip + total_valid`.
 pub(crate) fn loss_range(pre_skip: u64, total_valid: u64) -> bool {
     total_valid.div_ceil(OPUS_FRAME_SAMPLES) * OPUS_FRAME_SAMPLES < pre_skip + total_valid
 }
@@ -277,8 +277,7 @@ pub(crate) fn discard(staged: &[Staged]) {
 /// Decides and stages the upgrade of the Opus siblings beside `canonical` (BLOCKING: decode and
 /// encode are CPU-bound, so the caller runs it on the blocking pool). Writes only temporary files.
 ///
-/// Selection: the `.opus.webm` head lacks the writing-app marker, or the `.opus.ogg` is unmarked
-/// and in the loss range (so a sweep interrupted between the two swaps selects the asset again).
+/// Selects the asset when either sibling is stale, as the module doc defines.
 pub(crate) fn plan(canonical: &Path) -> Result<Plan, String> {
     let webm_path = with_suffix(canonical, WEBM_SUFFIX);
     let ogg_path = with_suffix(canonical, OPUS_SUFFIX);
@@ -365,7 +364,7 @@ pub(crate) fn plan(canonical: &Path) -> Result<Plan, String> {
     })
 }
 
-/// Whether the head of the `.opus.webm` at `path` carries the current writing-app marker.
+/// Whether the head of the WebM sibling at `path` carries the current writing-app marker.
 fn webm_head_is_current(path: &Path) -> io::Result<bool> {
     let mut file = fs::File::open(path)?;
     let mut head = Vec::with_capacity(WEBM_HEAD_BYTES);

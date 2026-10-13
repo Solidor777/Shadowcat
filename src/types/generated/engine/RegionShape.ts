@@ -16,8 +16,7 @@
  */
 export type RegionShape = { 
 /**
- * "rect" | "circle" | "polygon" — kept a `String` in v1 (asserted by
- * the unit battery).
+ * "rect" | "circle" | "polygon"; a `String`, not a Rust enum.
  */
 kind: string, 
 /**

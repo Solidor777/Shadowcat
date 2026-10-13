@@ -11,7 +11,7 @@
 //! intents that cross clock boundaries (`CombatStart`/`CombatAdvance`), return the boundaries they
 //! crossed. `run_intent` passes them to `Room::commit_combat_and_fire`, which hands
 //! them to `Room::fire_turn_round_triggers` after the commit. That fires the turn/round-scoped
-//! region-trigger family (`scene::regions`) room-side, so this module stays a pure state machine.
+//! region-trigger family (`scene::regions`) room-side, so the transitions stay pure.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
