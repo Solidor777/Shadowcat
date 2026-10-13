@@ -3,10 +3,11 @@
 //! The smoke test calls `platform_monitor` and accepts a monitor (polled once, result ignored) or
 //! `MonitorError::Unsupported` naming the 14.2 version requirement, and fails on
 //! `MonitorError::Backend`. The pure-helper tests cover `departed_pids`, `untapped_processes`,
-//! `TapRetryBackoff`, `aggregate_description` and `buffer_list_peak`. The selector tests pin each hand-written Core
-//! Audio selector to its four ASCII characters. One test reads a built `CATapDescription` back
-//! through the Objective-C runtime on macOS 14.2 or newer, and asserts the `Unsupported` result
-//! of `MacosMonitor::new` below it.
+//! `TapRetryBackoff`, `aggregate_description` and `buffer_list_peak`. The selector tests pin each
+//! hand-written Core Audio selector to its four ASCII characters, and the layout test pins the
+//! `AudioBuffer` size and the `AudioBufferList` field offset that `buffer_list_peak` indexes with.
+//! One test reads a built `CATapDescription` back through the Objective-C runtime on macOS 14.2
+//! or newer, and asserts the `Unsupported` result of `MacosMonitor::new` below it.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -103,6 +104,16 @@ fn selector_constants_equal_their_four_char_codes() {
         K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
         u32::from_be_bytes(*b"glob")
     );
+}
+
+/// The Core Audio headers declare `AudioBuffer` as two `UInt32`s and a pointer and
+/// `AudioBufferList` as a `UInt32` count followed by the buffer array, so on a 64-bit target the
+/// mirrors must measure 16 bytes and place `buffers` at offset 8. `buffer_list_peak` finds the
+/// first entry at that offset and steps by that size.
+#[test]
+fn audio_buffer_layout_matches_the_core_audio_headers() {
+    assert_eq!(std::mem::size_of::<AudioBuffer>(), 16);
+    assert_eq!(std::mem::offset_of!(AudioBufferList, buffers), 8);
 }
 
 /// The (pid, object id) pairs returned are exactly the live processes without a tap, ordered by

@@ -230,14 +230,14 @@ struct AudioBufferList {
     buffers: [AudioBuffer; 1],
 }
 
-/// Mirrors the Core Audio `AudioBuffer` struct: one channel-interleaved audio buffer.
+/// Mirrors the Core Audio `AudioBuffer` struct: one buffer of audio data.
 #[repr(C)]
 struct AudioBuffer {
-    /// Channel count in `data`.
+    /// Number of interleaved channels in `data`.
     number_channels: u32,
     /// `data`'s length in bytes.
     data_byte_size: u32,
-    /// Interleaved `Float32` sample data.
+    /// Sample data. `buffer_list_peak` reads it as `Float32`.
     data: *mut c_void,
 }
 
@@ -249,9 +249,10 @@ type TapPeaks = Arc<Mutex<HashMap<i32, f32>>>;
 /// mirrors the Linux backend's window-reset shape (`LinuxMonitor`'s `NodeState.peak`).
 static TAP_PEAKS: Mutex<Option<TapPeaks>> = Mutex::new(None);
 
-/// Max-abs-sample over the interleaved `Float32` data of every buffer in `list`. A buffer with a
-/// null `data` pointer or a zero `data_byte_size` contributes nothing; a list with no buffers
-/// reads as 0.
+/// Max-abs-sample over the `Float32` data of every buffer in `list`. A buffer with a null `data`
+/// pointer or a zero `data_byte_size` contributes nothing; a list with no buffers reads as 0.
+///
+/// The sample format is assumed, not read: nothing in this file queries the tap's stream format.
 ///
 /// Algorithm: the `AudioBufferList` contract in Core Audio's public headers declares
 /// `mBuffers` as a variable-length array of `mNumberBuffers` `AudioBuffer` elements, so entry `i`
@@ -286,7 +287,7 @@ unsafe fn buffer_list_peak(list: *const AudioBufferList) -> f32 {
 }
 
 /// The IO callback registered on every tapped aggregate device: computes this window's
-/// max-abs-sample over every buffer's interleaved `Float32` data (`buffer_list_peak`) and folds it
+/// max-abs-sample over every buffer's `Float32` data (`buffer_list_peak`) and folds it
 /// into `TAP_PEAKS` under the tap id `client_data` carries.
 extern "C" fn tap_io_proc(
     _device_id: AudioObjectId,
