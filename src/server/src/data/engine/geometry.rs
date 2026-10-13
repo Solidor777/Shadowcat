@@ -859,8 +859,9 @@ pub struct RegionEngine {
     /// still emitted by the default authoring gesture) or a compound list of
     /// parts with per-part hole flags — see `RegionGeometry`.
     pub shape: RegionGeometry,
-    /// "terrain" | "impassable" | "arrest" | "ambient_light" — kept a `String`
-    /// in v1 (asserted by the battery).
+    /// "terrain" | "impassable" | "arrest" | "ambient_light". Ingress accepts any string;
+    /// `SceneEcs::region_field_if` reads `"impassable"`, `"arrest"` and `"ambient_light"` and
+    /// treats every other spelling as `"terrain"`.
     pub behavior: String,
     /// Movement-cost multiplier (>= 1, clamped read-side); meaningful only
     /// for `behavior: "terrain"`.
@@ -869,9 +870,8 @@ pub struct RegionEngine {
     /// meaningful only for `behavior: "terrain"`. A mover carrying one or more matching
     /// tags (`scene::regions::RegionField::resolved_terrain_multiplier`) pays the MINIMUM
     /// matching value rather than `cost` — "you navigate however is easiest for you". `cost`
-    /// remains the fallback for a mover whose tags match no key here, exactly as it is the
-    /// only value today. Absent on documents written before per-tag terrain cost existed
-    /// (serde default, empty map).
+    /// is the fallback for a mover whose tags match no key here. An absent key deserializes
+    /// to an empty map (serde default).
     #[serde(default)]
     pub cost_by_tag: std::collections::BTreeMap<String, f64>,
     /// GM toggle; a disabled region is dropped entirely at read time.
@@ -1040,8 +1040,8 @@ fn validate_trigger_id(id: &str, what: &str) -> Result<(), String> {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct DrawingShape {
-    /// "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer
-    /// vocabulary; kept a `String` in v1).
+    /// "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer vocabulary). The
+    /// server stores any string and does not read it.
     pub kind: String,
     /// Flat coordinate list in scene units; layout depends on `kind` (see the
     /// struct doc).
@@ -1228,7 +1228,7 @@ impl DrawingEngine {
 #[serde(deny_unknown_fields)]
 pub struct TemplateShape {
     /// "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
-    /// vocabulary; kept a `String` in v1).
+    /// vocabulary). The server stores any string and does not read it.
     pub kind: String,
     /// Anchor x, scene units.
     pub x: f64,
@@ -1254,14 +1254,10 @@ pub struct TemplateShape {
     /// `"circle"`/`"rect"`/`"line"`.
     #[serde(default)]
     pub angle: Option<f64>,
-    /// The shape's second/perpendicular dimension. The SCALE follows `size`'s
-    /// own convention for the same `kind`, which is what makes an absent
-    /// `width` (`width ?? size` client-side) reproduce today's exact shape in
-    /// every kind that uses it: `"rect"` — HALF the second-axis side (full
-    /// side `2*width`; absent defaults to `size`, giving the pre-existing
-    /// forced-square `2*size × 2*size` output); `"line"` — the FULL
-    /// perpendicular thickness (absent/`0.0` is a zero-width segment, today's
-    /// exact shape). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
+    /// The shape's second/perpendicular dimension, scaled by `kind`: `"rect"` — HALF the
+    /// second-axis side (full side `2*width`; the client reads an absent `width` as `size`,
+    /// a square of side `2*size`); `"line"` — the FULL perpendicular thickness (absent or
+    /// `0.0` is a zero-width segment). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
     #[serde(default)]
     pub width: Option<f64>,
 }

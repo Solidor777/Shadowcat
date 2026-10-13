@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// The `explored_fog` key a caller should read/write for `user` under `pooling`: `user` itself
-/// under `FogPooling::Individual` (today's behavior, unchanged), or the reserved
+/// under `FogPooling::Individual`, or the reserved
 /// `Uuid::nil()` sentinel under `FogPooling::Shared` — every player then reads/writes the SAME
 /// bucket for that scene. Safe with no schema change because `Uuid::new_v4()` (how every real
 /// user id is generated) can never produce the nil UUID, so the sentinel is unambiguously

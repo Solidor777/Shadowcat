@@ -2,7 +2,7 @@
 
 /**
  * Which `explored_fog` bucket a scene's players accumulate into:
- * `Individual` keys memory per real `user_id` (today's behavior); `Shared`
+ * `Individual` keys memory per real `user_id`; `Shared`
  * pools every player's exploration into one bucket, keyed by the reserved
  * `Uuid::nil()` sentinel (`scene::explored::explored_fog_key`) — no schema
  * change, since `Uuid::new_v4()` can never produce the nil UUID.

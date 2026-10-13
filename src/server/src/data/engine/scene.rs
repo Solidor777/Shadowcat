@@ -227,7 +227,8 @@ pub struct GridDistance {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Grid {
-    /// "square" | "hex" — kept a `String` in v1 (asserted by the battery).
+    /// "square" | "hex". Ingress accepts any string; `grid_kind_from` reads `"hex"` as a hex
+    /// grid and every other spelling as square.
     pub kind: String,
     /// Cell size in scene units. For hex grids this is the OUTER radius
     /// (center-to-vertex circumradius) — `HexGrid` and the client's `GridSpec.size`
@@ -239,7 +240,7 @@ pub struct Grid {
 }
 
 /// Which `explored_fog` bucket a scene's players accumulate into:
-/// `Individual` keys memory per real `user_id` (today's behavior); `Shared`
+/// `Individual` keys memory per real `user_id`; `Shared`
 /// pools every player's exploration into one bucket, keyed by the reserved
 /// `Uuid::nil()` sentinel (`scene::explored::explored_fog_key`) — no schema
 /// change, since `Uuid::new_v4()` can never produce the nil UUID.
@@ -255,7 +256,7 @@ pub struct Grid {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
 pub enum FogPooling {
-    /// Every player accumulates their own explored-fog memory (today's behavior).
+    /// Every player accumulates their own explored-fog memory.
     Individual,
     /// Every player reads/writes the SAME explored-fog memory for this scene.
     Shared,

@@ -17,7 +17,8 @@ import type { GridDistance } from "./GridDistance";
  */
 export type Grid = { 
 /**
- * "square" | "hex" — kept a `String` in v1 (asserted by the battery).
+ * "square" | "hex". Ingress accepts any string; `grid_kind_from` reads `"hex"` as a hex
+ * grid and every other spelling as square.
  */
 kind: string, 
 /**

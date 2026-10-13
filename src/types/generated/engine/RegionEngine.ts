@@ -41,8 +41,9 @@ export type RegionEngine = {
  */
 shape: RegionGeometry, 
 /**
- * "terrain" | "impassable" | "arrest" | "ambient_light" — kept a `String`
- * in v1 (asserted by the battery).
+ * "terrain" | "impassable" | "arrest" | "ambient_light". Ingress accepts any string;
+ * `SceneEcs::region_field_if` reads `"impassable"`, `"arrest"` and `"ambient_light"` and
+ * treats every other spelling as `"terrain"`.
  */
 behavior: string, 
 /**
@@ -55,9 +56,8 @@ cost: number,
  * meaningful only for `behavior: "terrain"`. A mover carrying one or more matching
  * tags (`scene::regions::RegionField::resolved_terrain_multiplier`) pays the MINIMUM
  * matching value rather than `cost` — "you navigate however is easiest for you". `cost`
- * remains the fallback for a mover whose tags match no key here, exactly as it is the
- * only value today. Absent on documents written before per-tag terrain cost existed
- * (serde default, empty map).
+ * is the fallback for a mover whose tags match no key here. An absent key deserializes
+ * to an empty map (serde default).
  */
 cost_by_tag: { [key in string]: number }, 
 /**

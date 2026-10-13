@@ -17,7 +17,7 @@
 export type TemplateShape = { 
 /**
  * "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
- * vocabulary; kept a `String` in v1).
+ * vocabulary). The server stores any string and does not read it.
  */
 kind: string, 
 /**
@@ -54,13 +54,9 @@ direction: number,
  */
 angle: number | null, 
 /**
- * The shape's second/perpendicular dimension. The SCALE follows `size`'s
- * own convention for the same `kind`, which is what makes an absent
- * `width` (`width ?? size` client-side) reproduce today's exact shape in
- * every kind that uses it: `"rect"` — HALF the second-axis side (full
- * side `2*width`; absent defaults to `size`, giving the pre-existing
- * forced-square `2*size × 2*size` output); `"line"` — the FULL
- * perpendicular thickness (absent/`0.0` is a zero-width segment, today's
- * exact shape). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
+ * The shape's second/perpendicular dimension, scaled by `kind`: `"rect"` — HALF the
+ * second-axis side (full side `2*width`; the client reads an absent `width` as `size`,
+ * a square of side `2*size`); `"line"` — the FULL perpendicular thickness (absent or
+ * `0.0` is a zero-width segment). Unused for `"circle"`/`"cone"`. `>= 0.0` when present.
  */
 width: number | null, };

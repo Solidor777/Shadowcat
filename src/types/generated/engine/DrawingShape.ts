@@ -15,8 +15,8 @@
  */
 export type DrawingShape = { 
 /**
- * "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer
- * vocabulary; kept a `String` in v1).
+ * "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer vocabulary). The
+ * server stores any string and does not read it.
  */
 kind: string, 
 /**
