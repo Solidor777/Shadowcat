@@ -5,15 +5,16 @@
 //! alone authors and revises them; a client never builds or mutates one directly.
 //!
 //! `handle_send_message` Creates a `message` doc. `handle_edit_message`, `handle_delete_message`
-//! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment Update one.
-//! Three chokepoints keep a client from authoring or mutating a message doc. The create-gate baseline-message exemption
-//! (`apply_intent`'s `is_baseline_message` check) ties a Create to its authenticated author. The
-//! ingress guard (`ops_target_message`) rejects any client-authored `message` Create/Delete op at
-//! the WS/HTTP boundary. `apply_intent`'s `Update` branch (`authorize_update_access`) rejects every
-//! Update targeting a stored `message` doc unless its origin is
-//! `WriteOrigin::ServerMessageRevision`; Updates carry no `doc_type`, so `ops_target_message`
-//! cannot classify them and they must be blocked against the authoritative stored document
-//! instead.
+//! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment each Update one.
+//! Three chokepoints keep a client from authoring or mutating a message doc. In
+//! `authorize_create_intent`, `is_baseline_message` exempts a Player's Create of a message doc
+//! from the world's create-capability check only when the doc's owner is the authenticated
+//! user. The ingress guard (`ops_target_message`) rejects any client-authored `message`
+//! Create/Delete op at the WS/HTTP boundary. `apply_intent`'s `Update` branch
+//! (`authorize_update_access`) rejects every Update targeting a stored `message` doc unless its
+//! origin is `WriteOrigin::ServerMessageRevision`; Updates carry no `doc_type`, so
+//! `ops_target_message` cannot classify them and they must be blocked against the authoritative
+//! stored document instead.
 //!
 //! `WriteOrigin::ServerMessageRevision` is a marker no wire frame can set. It has four producers:
 //! `handle_edit_message` and `handle_delete_message`, each after its own owner-or-GM check;
@@ -84,7 +85,7 @@ use crate::ws::PingRateLimiter;
 pub const MESSAGE_DOC_TYPE: &str = "message";
 
 /// True if any op authors a `message` doc via the generic document path.
-/// Clients must NOT author messages (only `handle_send_message` may); the WS
+/// Clients must NOT author messages; the server's own handlers create them. The WS
 /// `Intent` and HTTP write paths reject ops for which this is true, keeping
 /// message ingest server-authoritative.
 ///

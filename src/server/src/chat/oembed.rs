@@ -2,9 +2,10 @@
 //!
 //! `match_provider` admits allowlisted provider HOSTS only, and `OEmbedProvider::endpoint` builds
 //! the request URL from a fixed per-provider base, passing the posted URL only as the `url` query
-//! value, so no endpoint is ever discovered. Autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
-//! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. The fetch
-//! itself runs in `chat::post_publish`.
+//! value, so no endpoint is ever discovered. Autodiscovery (reading a `<link rel="alternate"
+//! type="application/json+oembed">` tag from an arbitrary posted URL) would reintroduce the
+//! arbitrary-host-fetch risk this feature must avoid. The fetch itself runs in
+//! `chat::post_publish`.
 //!
 //! The accepted input, `OEmbedResponse`, carries `title`, `author_name` and `thumbnail_url` only,
 //! and never a provider's raw `html` field, which is third-party-controlled markup and a direct
@@ -71,10 +72,12 @@ impl OEmbedProvider {
 /// Synchronous, zero-network host check against the allowlist — matched at
 /// `link_preview::enrich` time against the SAME candidate URLs the generic
 /// preview scraper extracts (genuine `<a href>` targets from sanitized HTML,
-/// never raw body-text substrings). No I/O: this check IS the entire SSRF
-/// mitigation for oEmbed — a URL failing it falls through to the existing
-/// generic `LinkPreview` scrape unchanged; there is no autodiscovery fetch
-/// anywhere in this module.
+/// never raw body-text substrings). No I/O: this check admits allowlisted provider hosts only,
+/// and a URL failing it falls through to the existing generic `LinkPreview` scrape unchanged.
+/// The request for an admitted URL then goes through `link_preview::fetch_json_bytes`, which
+/// calls `guarded_get`, so it passes the same URL validation and redirect re-validation as every
+/// other fetch routed through that function. There is no autodiscovery fetch anywhere in this
+/// module.
 pub fn match_provider(raw_url: &str) -> Option<OEmbedProvider> {
     let url = url::Url::parse(raw_url).ok()?;
     if url.scheme() != "http" && url.scheme() != "https" {

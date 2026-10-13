@@ -1,11 +1,12 @@
 //! These tests drive the link-preview enrich stage through the ingest path.
 //!
-//! They call `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`, but
-//! against a real stub `axum` target on `127.0.0.1`, through `link_preview::build_client_with_resolve_fn`,
-//! which maps the fake domain `stub.test` to loopback. They live in their own `mod` (not folded into
-//! `chat::tests`) because the link-preview tests need a stub server and a hyperlink-enabling policy
-//! (`hyperlinks_on`) that `chat::tests` does not set up. The same fixture also drives the oEmbed
-//! segment tests and the per-channel dice-mode tests.
+//! They call `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`,
+//! against a real stub `axum` target on `127.0.0.1`. The fixture builds its client through
+//! `link_preview::build_client_with_resolve_fn` with a resolver closure that answers every host
+//! with the loopback address, so the fake domain `stub.test` reaches the stub. They live in
+//! their own `mod` (not folded into `chat::tests`) because the link-preview tests need a stub
+//! server and a hyperlink-enabling policy (`hyperlinks_on`) that `chat::tests` does not set up.
+//! The same fixture also drives the oEmbed segment tests and the per-channel dice-mode tests.
 
 use super::*;
 use crate::auth::role::ServerRole;

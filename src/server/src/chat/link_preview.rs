@@ -33,12 +33,13 @@ use super::preview_cache::{
 use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
-/// A server-fetched preview. Stored verbatim by the ingest stage as a `Segment::LinkPreview`;
-/// the client renders ONLY these stored strings and never fetches `url` itself.
+/// A server-fetched link preview. `enrich` copies `url`, `title`, `description` and
+/// `image_asset_id` into a `Segment::LinkPreview`, and queues `image_url` as a
+/// `PendingEnrichment::PreviewImage` instead of storing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
     /// The URL the fetch ended on — redirects substitute it (`url = next` per
-    /// hop in `fetch_preview_inner`), so this is the post-redirect address,
+    /// hop in `guarded_get`), so this is the post-redirect address,
     /// not necessarily what the author posted.
     pub url: String,
     /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
@@ -60,9 +61,9 @@ pub struct LinkPreview {
     pub image_asset_id: Option<Uuid>,
 }
 
-/// Cap on distinct URLs previewed per message. First-seen
-/// order, applied to the DEDUPED candidate list — a message pasting the same
-/// link four times still counts it once toward this cap.
+/// Cap on the distinct preview candidates `enrich` collects per message, plain URLs and oEmbed
+/// posts together. Candidates are taken in the order the sanitized HTML segments list them, and
+/// a link pasted four times counts once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
 
 /// Cap on distinct inline chat images (Markdown/HTML image sources
@@ -1584,16 +1585,17 @@ pub async fn fetch_json_bytes(
     }
 }
 
-/// Scheme MUST be exactly http/https; reject a URL carrying
-/// `userinfo` (credential confusion); reject a missing/empty host; and — the
-/// SSRF-critical part — validate any literal-IP host HERE, directly. A URL
-/// whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
+/// Validates a URL before any outbound fetch; `guarded_get` runs it on the initial URL and on
+/// every redirect hop's resolved `Location`.
+///
+/// The scheme must be exactly http or https. A URL carrying `userinfo` is rejected (credential
+/// confusion), as is a missing or empty host. A literal-IP host is checked against the blocked
+/// ranges here, directly: a URL whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
 /// like `2130706433`/`0x7f000001`, which parse to `Host::Ipv4`) never reaches
 /// `GuardedResolver`: hyper-util's connector short-circuits DNS for IP-literal
 /// hosts, so `is_blocked_ip` would otherwise never be consulted and reqwest
 /// would connect straight to a blocked address. Only `Host::Domain` proceeds to
-/// the resolver. Run on the initial URL AND on every redirect hop's resolved
-/// `Location`, so this closes the literal-IP door on redirects too.
+/// the resolver.
 fn validate_url(url: &Url) -> Result<(), PreviewError> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(PreviewError::BadScheme);

@@ -1,16 +1,18 @@
-//! This module resolves a world's chat content policy, per-channel dice context and channel
-//! registration, and defines the fixed `NOTE_CONTENT_POLICY`.
+//! This module reads a world's chat content policy, per-channel dice context and channel
+//! registry, and defines the fixed `NOTE_CONTENT_POLICY`.
 //!
 //! `resolve_content_policy` reads the policy from the world's `chat-settings` config `Document`.
 //! The message sanitizer reads the policy to decide which enrichment producers are allowed.
 //! Resolution is fail-closed: an absent doc, a query error, or an `engine` body that does not
 //! deserialize into `ChatSettingsEngine` all yield `ChatContentPolicy::default()` (every toggle
-//! absent, i.e. plain text). The toggles only ever WIDEN enrichment from that safe baseline, so any
-//! failure mode degrades safe rather than open.
+//! absent, i.e. plain text). Each toggle widens enrichment from that baseline, so these three
+//! failures degrade to plain text rather than to a wider policy.
 //!
 //! `resolve_dice_context` resolves the ambient dice-notation `ParseContext` for a sending channel
-//! from the `dice-settings` document, fail-closed to the default context. `channel_registered` is
-//! the ingest gate that refuses a message naming a channel its world has not registered.
+//! from the `dice-settings` document, fail-closed to the default context. `channel_registered`
+//! reports whether a channel is in the world's channel registry; `handle_send_message`, the
+//! combat roll dispatch and `handle_draw_table` call it and refuse a channel the world has not
+//! registered.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -222,8 +224,8 @@ pub async fn resolve_dice_context(
 }
 
 /// Whether `channel` is a registered channel of this world — the ingest gate
-/// for `MessageEngine.channel`, consulted by `handle_send_message` and the
-/// `CombatRoll` dispatch before any content work runs. A message's channel
+/// for `MessageEngine.channel`, consulted by `handle_send_message`, the
+/// `CombatRoll` dispatch and `handle_draw_table` before any content work runs. A message's channel
 /// selects the per-channel dice `ParseContext` (`resolve_dice_context`) and
 /// labels the clients' channel views, so a sender naming a channel that does
 /// not exist is a mistake to refuse, not to file.

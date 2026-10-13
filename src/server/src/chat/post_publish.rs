@@ -395,10 +395,10 @@ async fn resolve_job(
 /// backs a server-fetched image, the same generalization
 /// `Asset.created_by`'s own doc comment already covers), and records the
 /// result for future hits. Holds `write_barrier`'s read side around the
-/// asset commit, same as every other asset writer (`http::assets::upload`/
-/// `replace`/`delete`) -- this is the first asset commit reachable from
-/// outside a direct HTTP request, so it must join that same exclusion or an
-/// in-server backup's file-copy could race a half-committed asset. Runs the
+/// asset commit, as `http::assets::upload`/`replace`/`delete` do -- this
+/// commit runs from the post-publish job rather than inside an HTTP handler,
+/// so it must join that same exclusion or an in-server backup's file-copy
+/// could race a half-committed asset. Runs the
 /// WHOLE check-then-fetch-then-set sequence under `preview_fetch_locks`'
 /// per-`preview_url` lock (see `with_preview_url_lock`) so two concurrent
 /// jobs for the identical URL never both observe a cache miss and each
