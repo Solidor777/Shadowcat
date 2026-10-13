@@ -1,4 +1,6 @@
-//! Targeted re-evaluation of an existing roll (reroll/replace/remove).
+//! This module re-evaluates an existing roll after targeted dice operations.
+//!
+//! `RecalcOp` names the operations (reroll, replace, remove) and `recalculate` applies them.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

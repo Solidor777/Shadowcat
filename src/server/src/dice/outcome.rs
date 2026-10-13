@@ -1,4 +1,7 @@
-//! Wire/result types: raw naturals, per-die records, scored outcomes.
+//! This module defines the serializable roll result types.
+//!
+//! They are `RawDie` and `RawRoll` (the natural faces and the records derived from them),
+//! `DieRecord` (one die's pipeline result), `RollOutcome` (the scored outcome) and `RollResult`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -9,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dice::spec::{ConstTerm, DieId, DieKind, RollSpec, Symbol};
 
-/// A single die's natural (RNG) result — the only nondeterministic artifact.
+/// A single die's natural (RNG) result.
 ///
 /// # Examples
 ///

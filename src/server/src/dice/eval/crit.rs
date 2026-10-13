@@ -1,4 +1,7 @@
-//! Per-die crit-event scoring.
+//! This module scores the crit events of one die.
+//!
+//! `score_die` returns the `DieCrit` of one die, and `score_die_net` combines it with the die's
+//! base-success test into a `DieScore`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

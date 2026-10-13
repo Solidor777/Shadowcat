@@ -1,4 +1,5 @@
-//! Deterministic evaluation pipeline (roll + score).
+//! This module holds `roll`, which draws a `RollSpec`'s dice from an `RngSource`, and `evaluate`,
+//! which scores a `RawRoll` without drawing.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -16,7 +17,7 @@ pub mod success;
 pub mod sum;
 
 /// Roll every die in `spec`'s expression, left-to-right, running each group's
-/// pipeline. The ONLY randomness step; `evaluate` reads `raws.records` deterministically.
+/// pipeline. `evaluate` reads `raws.records` deterministically.
 ///
 /// # Examples
 ///

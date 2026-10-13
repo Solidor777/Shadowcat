@@ -1,4 +1,6 @@
-//! SuccessCount-mode scoring.
+//! This module scores a roll in `Mode::SuccessCount`.
+//!
+//! `evaluate_success` is the entry point.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

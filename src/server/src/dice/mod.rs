@@ -1,8 +1,9 @@
 //! Server-authoritative dice engine.
 //!
-//! Pure library: a struct-canonical `RollSpec` is rolled by `roll` (the only randomness step) and
-//! scored by `evaluate` (deterministic). Randomness is a stateless noise function, so any roll is
-//! reproducible from its seed. INVARIANT: (spec, raws) fully determines the outcome.
+//! This module is a pure library: a struct-canonical `RollSpec` is rolled by `roll`, which draws
+//! every die from an `RngSource`, and scored by `evaluate`, which draws nothing. `NoiseRng` derives
+//! each draw from the stateless `noise` function, so a roll made with `NoiseRng::from_seed` is
+//! reproducible from its seed. INVARIANT: `(spec, raws)` fully determines `evaluate`'s outcome.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

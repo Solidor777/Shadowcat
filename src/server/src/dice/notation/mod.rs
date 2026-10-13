@@ -1,4 +1,6 @@
-//! Notation string -> `RollSpec` (lexer + parser).
+//! This module parses a dice notation string into a `RollSpec`.
+//!
+//! It holds `ParseContext`, `ModeKind` and `ParseError`, and the `lexer` and `parser` submodules.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

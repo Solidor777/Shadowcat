@@ -1,4 +1,6 @@
-//! Per-group modifier pipeline (reroll/explode/keep/drop).
+//! This module resolves the modifier pipeline of one dice group: reroll, explode, keep and drop.
+//!
+//! `resolve_group` is the entry point.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,4 +1,7 @@
-//! Seeded noise-function RNG (the only randomness source).
+//! This module holds the randomness primitives of the dice engine.
+//!
+//! They are the stateless `noise` function, the `RngSource` trait, `NoiseRng` (a generator over
+//! `noise`), and `roll_uniform`, an unbiased inclusive-range draw.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,4 +1,7 @@
-//! Expertise-budget allocation (bounded knapsack DP).
+//! This module allocates a roll's expertise budget across its dice with a bounded knapsack dynamic
+//! program.
+//!
+//! `allocate` is the entry point.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

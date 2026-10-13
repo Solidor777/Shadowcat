@@ -1,4 +1,6 @@
-//! Notation tokenizer.
+//! This module tokenizes dice notation.
+//!
+//! `lex` turns a string into `Token`s, and `describe_token` renders a token for error messages.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,4 +1,8 @@
-//! Total-mode arithmetic fold (saturating).
+//! This module scores a roll in `Mode::Total` by folding its expression to a total.
+//!
+//! `evaluate_total` is the entry point. Addition, subtraction and multiplication in the fold
+//! saturate at the `i64` bounds, and an overflowing per-group sum saturates too (and fails a
+//! `debug_assert!`).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

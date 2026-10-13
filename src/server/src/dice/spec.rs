@@ -1,4 +1,7 @@
-//! The canonical roll-parameter types (AST, modes, crit/tier config).
+//! This module defines the canonical roll-parameter types.
+//!
+//! They are the `Expr` AST and its dice groups, `Mode` with its `TotalConfig` and `SuccessConfig`,
+//! and the crit and tier configuration.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

@@ -1,4 +1,7 @@
-//! Margin -> pass/tier ladder classification.
+//! This module classifies a margin against a tier ladder.
+//!
+//! `oriented_margin` orients a margin by `Direction`, and `classify` maps a margin and a tier list
+//! to a pass/fail result or the matching tier.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

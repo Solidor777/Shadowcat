@@ -1,4 +1,6 @@
-//! Recursive-descent parser: tokens -> `RollSpec`.
+//! This module is the recursive-descent parser that turns dice notation into a `RollSpec`.
+//!
+//! `parse` lexes its input and then parses the tokens.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
