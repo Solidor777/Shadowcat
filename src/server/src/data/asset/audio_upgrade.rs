@@ -1,8 +1,9 @@
-//! This module is the background sweep that upgrades old Opus derivatives.
+//! This module is the background sweep that upgrades stale Opus derivatives.
 //!
-//! A derivative is old when an older encoder or muxer wrote it.
+//! A derivative is stale when its WebM head lacks `WEBM_WRITING_APP`, or when its Ogg vendor string
+//! is not `OPUS_VENDOR_MARKER` and its valid-sample count is in the loss range (`loss_range`).
 //!
-//! See `process::audio::upgrade` for what makes a file old and how each is repaired.
+//! See `process::audio::upgrade` for how each stale sibling is repaired.
 //!
 //! The sweep runs once per server start, after the listener is bound, one asset at a time. The
 //! decode and mux work of an asset runs on the blocking pool without any lock, and only the swap
@@ -40,7 +41,8 @@ pub struct UpgradeReport {
     pub examined: usize,
     /// Assets whose siblings were already current.
     pub current: usize,
-    /// Assets whose `.opus.webm` was remuxed from its `.opus.ogg`'s packets.
+    /// Assets whose WebM sibling (`WEBM_SUFFIX`) was remuxed from its Ogg sibling's (`OPUS_SUFFIX`)
+    /// packets.
     pub remuxed: usize,
     /// Assets re-encoded from the stored original (tail-loss assets and WebM-only assets).
     pub retranscoded: usize,
@@ -61,9 +63,9 @@ impl UpgradeReport {
     }
 }
 
-/// Upgrades every stored audio asset's Opus siblings that an older encoder or muxer wrote, one
-/// asset at a time, and reports what it did. `assets_dir` is the asset store root and `barrier`
-/// the write barrier whose read side the swap holds.
+/// Upgrades every stored audio asset's stale Opus siblings, one asset at a time, and reports what
+/// it did. `assets_dir` is the asset store root and `barrier` the write barrier whose read side the
+/// swap holds.
 ///
 /// # Examples
 ///

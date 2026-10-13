@@ -1,24 +1,28 @@
 //! This module is the blocking half of the derivative upgrade sweep.
 //!
-//! For one stored audio asset it decides which of its Opus siblings (`WEBM_SUFFIX`,
-//! `OPUS_SUFFIX`) were written by an encoder or muxer older than the current one, stages the
-//! replacement files beside them and swaps them in.
+//! For one stored audio asset it decides which of its Opus siblings (`WEBM_SUFFIX`, `OPUS_SUFFIX`)
+//! are stale, stages the replacement files beside them and swaps them in.
 //!
-//! Two defects separate an old sibling from a current one. A WebM sibling from the older muxer
-//! lacks `Duration`, `SeekHead`, `Cues` and `DiscardPadding`, and its head carries no
-//! `WEBM_WRITING_APP` marker. An Ogg sibling from before the lookahead flush lacks its
-//! `OPUS_VENDOR_MARKER` and, for the valid-sample counts in the loss range, is missing the last
-//! samples of the audio: the encoder emits each sample `pre_skip` samples late, so a stream of
-//! `ceil(total_valid / 960)` frames covers only `frames * 960 - pre_skip` audible samples.
+//! A marker separates a stale sibling from a current one. A WebM sibling is stale when its head
+//! carries no `WEBM_WRITING_APP` marker; an unmarked WebM also lacks `Duration`, `SeekHead`, `Cues`
+//! and `DiscardPadding`. An Ogg sibling is stale when its vendor string is not `OPUS_VENDOR_MARKER`
+//! and its valid-sample count is in the loss range (`loss_range`). An unmarked Ogg has no lookahead
+//! flush and is missing the last samples of the audio: the encoder emits each sample `pre_skip`
+//! samples late, so a stream of `ceil(total_valid / 960)` frames covers only
+//! `frames * 960 - pre_skip` audible samples.
 //!
-//! The repair depends on what is stored. An Ogg sibling in the loss range cannot be repaired from
-//! its own packets, because the missing samples were never encoded. When the stored original
-//! decodes to the same length, every present sibling is re-encoded from it (`Kind::Retranscode`).
-//! When the original is absent, a stale WebM is remuxed to its decodable length
-//! (`Kind::RemuxToDecodableLength`) and the Ogg is left as it is. When the original decodes to a
-//! different length, the asset is left alone (`Plan::Unrepairable`). Outside the loss range a
-//! stale WebM is remuxed from the Ogg's existing packets (`Kind::Remux`), which keeps the two
-//! siblings one encode; a WebM with no Ogg beside it is re-encoded from the original.
+//! The repair depends on which sibling is stale and what is stored. An Ogg in the loss range cannot
+//! be repaired from its own packets, because the missing samples were never encoded. With the
+//! stored original present, a decode to the same length as the Ogg re-encodes every present sibling
+//! from it (`Kind::Retranscode`), and a decode to a different length leaves the asset alone
+//! (`Plan::Unrepairable`). With the original absent, a stale WebM is remuxed to its decodable
+//! length (`Kind::RemuxToDecodableLength`) and the Ogg is left as it is, while a WebM that is
+//! already current or absent leaves nothing to write (`Plan::Unrepairable`).
+//!
+//! When only the WebM is stale, an Ogg beside it supplies the packets for a remux (`Kind::Remux`),
+//! which keeps the two siblings one encode. A stale WebM with no Ogg is re-encoded from the
+//! original (`Kind::Retranscode`), and with no original either the asset is left alone
+//! (`Plan::Unrepairable`).
 //!
 //! The sweep never writes the database, never bumps a version and never goes through
 //! `reconvert`, `commit_replacement` or `move_asset_files` (which deletes a final sibling that has
@@ -65,11 +69,11 @@ impl OggInfo {
         self.final_granule.checked_sub(self.pre_skip)
     }
 
-    /// Whether the file was written by an encoder without the lookahead flush AND its frame count
-    /// cannot cover `pre_skip + total_valid` samples: for such a file the old encoder wrote
-    /// `ceil(total_valid / 960)` frames, which cover `frames * 960 - pre_skip` audible samples,
-    /// fewer than `total_valid` exactly when `frames * 960 < pre_skip + total_valid`. A marked file
-    /// carries the flush and is never in the range.
+    /// Whether the vendor string is not `OPUS_VENDOR_MARKER` AND the frame count cannot cover
+    /// `pre_skip + total_valid` samples: an unmarked file holds `ceil(total_valid / 960)` frames,
+    /// which cover `frames * 960 - pre_skip` audible samples, fewer than `total_valid` exactly when
+    /// `frames * 960 < pre_skip + total_valid`. A marked file carries the flush and is never in the
+    /// range.
     pub(crate) fn in_loss_range(&self) -> bool {
         if self.vendor == OPUS_VENDOR_MARKER {
             return false;
@@ -348,7 +352,7 @@ pub(crate) fn plan(canonical: &Path) -> Result<Plan, String> {
             staged: vec![staged],
         });
     }
-    // WebM only: the old file carries no valid-sample count, so the original is decoded again.
+    // WebM only: an unmarked WebM carries no valid-sample count, so the original is decoded again.
     if !original_decodes {
         return Ok(Plan::Unrepairable("webm only and the original is missing"));
     }
