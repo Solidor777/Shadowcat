@@ -2201,9 +2201,9 @@ impl SceneEcs {
     /// `None` if `token` is not a token or has no committed `engine` band that decodes as a
     /// `TokenEngine`.
     ///
-    /// `move_exec::execute_move` compares `path[0]` with it. `Room::toggle_door` measures the
-    /// distance from it to the toggled wall's segment for each token the requester effectively
-    /// owns in the wall's scene.
+    /// `move_exec::execute_move` compares `path[0]` with it. For a non-GM requester,
+    /// `Room::toggle_door` measures the distance from it to the toggled wall's segment for each
+    /// token the requester effectively owns in the wall's scene that has a position.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
@@ -2215,13 +2215,15 @@ impl SceneEcs {
     }
 
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
-    /// post_image_end)`. The end is the committed `engine` band with **all** changes applied in
-    /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
-    /// `/engine` write or duplicate `/engine/x` changes cannot evade the collision check by
-    /// presenting a safe target while committing an unsafe one. Reads the authoritative ECS
-    /// state, never the client's `old`. `None` if `token_id` is not a token, the token has no
-    /// `parent_id`, it has no committed `engine` band that decodes as a `TokenEngine`, or the
-    /// post-image has no numeric `/engine/x` and `/engine/y`.
+    /// post_image_end)`.
+    ///
+    /// The end is the committed `engine` band with **all** changes applied in array order
+    /// (last-write-wins) — exactly what `apply_intent` commits — so a wholesale `/engine` write
+    /// or duplicate `/engine/x` changes cannot evade the collision check by presenting a safe
+    /// target while committing an unsafe one. Reads the authoritative ECS state, never the
+    /// client's `old`. `None` if `token_id` is not a token, the token has no `parent_id`, it has
+    /// no committed `engine` band that decodes as a `TokenEngine`, the document cannot be read or
+    /// serialized, or the post-image lacks a numeric `/engine/x` or `/engine/y`.
     ///
     /// `Room::publish` refuses a non-GM `Update` whose committed start and post-image end
     /// differ, and reads this a second time to collect placement-trigger candidates.
