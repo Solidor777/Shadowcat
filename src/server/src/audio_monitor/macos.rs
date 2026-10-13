@@ -218,13 +218,15 @@ type AudioDeviceIoProc = extern "C" fn(
     client_data: *mut c_void,
 ) -> i32;
 
-/// Mirrors the Core Audio `AudioBufferList` struct: a single-element view is enough here since
-/// this file always taps a single stereo-or-mono process mixdown.
+/// Mirrors the Core Audio `AudioBufferList` struct: a header count followed by a variable-length
+/// array of `number_buffers` `AudioBuffer` entries. The Rust declaration names the first entry
+/// only, so reading any other entry goes through pointer arithmetic from `buffers` (see
+/// `buffer_list_peak`).
 #[repr(C)]
 struct AudioBufferList {
-    /// Number of `AudioBuffer` entries in `buffers`.
+    /// Number of `AudioBuffer` entries in the array that starts at `buffers`.
     number_buffers: u32,
-    /// The first (and, for this file's use, only) buffer.
+    /// The first entry of the variable-length `AudioBuffer` array.
     buffers: [AudioBuffer; 1],
 }
 
@@ -247,9 +249,45 @@ type TapPeaks = Arc<Mutex<HashMap<i32, f32>>>;
 /// mirrors the Linux backend's window-reset shape (`LinuxMonitor`'s `NodeState.peak`).
 static TAP_PEAKS: Mutex<Option<TapPeaks>> = Mutex::new(None);
 
+/// Max-abs-sample over the interleaved `Float32` data of every buffer in `list`. A buffer with a
+/// null `data` pointer or a zero `data_byte_size` contributes nothing; a list with no buffers
+/// reads as 0.
+///
+/// Algorithm: the `AudioBufferList` contract in Core Audio's public headers declares
+/// `mBuffers` as a variable-length array of `mNumberBuffers` `AudioBuffer` elements, so entry `i`
+/// sits `i` elements past the first and the peak is the maximum over all of them; reading only the
+/// first entry would under-report a device that presents several buffers.
+///
+/// # Safety
+///
+/// `list` must be non-null and point at an `AudioBufferList` whose `number_buffers` entries are
+/// all inside one allocation, each entry's `data` null or valid for `data_byte_size` bytes. Only
+/// fields are read through the raw pointer, so no reference to the whole struct forms.
+unsafe fn buffer_list_peak(list: *const AudioBufferList) -> f32 {
+    let number_buffers = (*list).number_buffers as usize;
+    let first = std::ptr::addr_of!((*list).buffers).cast::<AudioBuffer>();
+    let mut peak = 0f32;
+    for index in 0..number_buffers {
+        let entry = first.add(index);
+        let (data, data_byte_size) = ((*entry).data, (*entry).data_byte_size);
+        if data.is_null() || data_byte_size == 0 {
+            continue;
+        }
+        let samples = std::slice::from_raw_parts(data as *const u8, data_byte_size as usize);
+        let buffer_peak = samples
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b).abs())
+            .fold(0f32, f32::max);
+        peak = peak.max(buffer_peak);
+    }
+    peak
+}
+
 /// The IO callback registered on every tapped aggregate device: computes this window's
-/// max-abs-sample over the buffer's interleaved `Float32` data and folds it into `TAP_PEAKS`
-/// under the tap id `client_data` carries.
+/// max-abs-sample over every buffer's interleaved `Float32` data (`buffer_list_peak`) and folds it
+/// into `TAP_PEAKS` under the tap id `client_data` carries.
 extern "C" fn tap_io_proc(
     _device_id: AudioObjectId,
     _now: *const c_void,
@@ -263,31 +301,8 @@ extern "C" fn tap_io_proc(
         return 0;
     }
     // SAFETY: `in_input_data` is non-null and points at an `AudioBufferList` Core Audio keeps
-    // valid for the duration of this call. Only the `number_buffers` header field is read, through
-    // the raw pointer, so no reference to the whole struct forms: the storage of `buffers` is
-    // guaranteed only for its first `number_buffers` entries.
-    let number_buffers = unsafe { (*in_input_data).number_buffers };
-    if number_buffers == 0 {
-        return 0;
-    }
-    // SAFETY: `number_buffers >= 1`, so the first `AudioBuffer` of `buffers` is inside the list;
-    // its two fields are copied out through the raw pointer.
-    let (data, data_byte_size) = unsafe {
-        let first = std::ptr::addr_of!((*in_input_data).buffers).cast::<AudioBuffer>();
-        ((*first).data, (*first).data_byte_size)
-    };
-    if data.is_null() || data_byte_size == 0 {
-        return 0;
-    }
-    // SAFETY: `data`/`data_byte_size` together describe a valid, live `Float32` buffer for the
-    // duration of this callback, per the `AudioDeviceIOProc` contract.
-    let samples = unsafe { std::slice::from_raw_parts(data as *const u8, data_byte_size as usize) };
-    let peak = samples
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| f32::from_le_bytes(*b).abs())
-        .fold(0f32, f32::max);
+    // valid, with its `number_buffers` entries, for the duration of this call.
+    let peak = unsafe { buffer_list_peak(in_input_data) };
     let pid = client_data as usize as i32;
     if let Ok(guard) = TAP_PEAKS.lock() {
         if let Some(peaks) = guard.as_ref() {

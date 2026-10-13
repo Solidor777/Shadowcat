@@ -3,7 +3,7 @@
 //! The smoke test calls `platform_monitor` and accepts a monitor (polled once, result ignored) or
 //! `MonitorError::Unsupported` naming the 14.2 version requirement, and fails on
 //! `MonitorError::Backend`. The pure-helper tests cover `departed_pids`, `untapped_processes`,
-//! `TapRetryBackoff` and `aggregate_description`. The selector tests pin each hand-written Core
+//! `TapRetryBackoff`, `aggregate_description` and `buffer_list_peak`. The selector tests pin each hand-written Core
 //! Audio selector to its four ASCII characters. One test reads a built `CATapDescription` back
 //! through the Objective-C runtime on macOS 14.2 or newer, and asserts the `Unsupported` result
 //! of `MacosMonitor::new` below it.
@@ -21,10 +21,10 @@ use core_foundation::string::{CFString, CFStringRef};
 
 use super::super::{platform_monitor, MonitorError};
 use super::{
-    aggregate_description, build_stereo_mixdown_tap_description, departed_pids,
+    aggregate_description, buffer_list_peak, build_stereo_mixdown_tap_description, departed_pids,
     macos_at_least_14_2, new_tap_uuid, objc_msg_send_0, registered_selector, release_objc_instance,
-    untapped_processes, MacosMonitor, TapRetryBackoff, K_AUDIO_DEVICE_PROPERTY_DEVICE_UID,
-    K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
+    untapped_processes, AudioBuffer, AudioBufferList, MacosMonitor, TapRetryBackoff,
+    K_AUDIO_DEVICE_PROPERTY_DEVICE_UID, K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
     K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST, K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
     K_AUDIO_PROCESS_PROPERTY_PID, TAP_RETRY_DELAY,
 };
@@ -292,4 +292,76 @@ fn tap_description_holds_the_process_object_id_and_the_given_uuid() {
         first.downcast::<CFNumber>().and_then(|n| n.to_i64()),
         Some(42)
     );
+}
+
+/// An `AudioBufferList` over-allocated for `N` entries: the count header followed by `N` entries.
+#[repr(C)]
+struct ListOf<const N: usize> {
+    /// The header count `buffer_list_peak` loops over.
+    number_buffers: u32,
+    /// The `N` entries the header counts.
+    buffers: [AudioBuffer; N],
+}
+
+/// An `AudioBuffer` over `samples`, which must outlive every read of the returned entry.
+fn buffer_over(samples: &mut [f32]) -> AudioBuffer {
+    AudioBuffer {
+        number_channels: 1,
+        data_byte_size: std::mem::size_of_val(samples) as u32,
+        data: samples.as_mut_ptr().cast(),
+    }
+}
+
+/// The peak is the maximum over every buffer in the list, not the first buffer's maximum, and a
+/// negative sample counts by magnitude.
+#[test]
+fn buffer_list_peak_takes_the_maximum_over_every_buffer() {
+    let mut first = [0.1f32, -0.2];
+    let mut second = [0.3f32, -0.9];
+    let list = ListOf::<2> {
+        number_buffers: 2,
+        buffers: [buffer_over(&mut first), buffer_over(&mut second)],
+    };
+    // SAFETY: `list` is a live two-entry list whose entries point at live sample arrays.
+    let peak = unsafe { buffer_list_peak((&list as *const ListOf<2>).cast::<AudioBufferList>()) };
+    assert_eq!(peak, 0.9);
+}
+
+/// A buffer with a null data pointer or zero length is skipped without ending the scan of the
+/// buffers after it.
+#[test]
+fn buffer_list_peak_skips_empty_buffers_and_keeps_scanning() {
+    let mut samples = [0.25f32, -0.5];
+    let empty = AudioBuffer {
+        number_channels: 1,
+        data_byte_size: 8,
+        data: std::ptr::null_mut(),
+    };
+    let zero_length = AudioBuffer {
+        number_channels: 1,
+        data_byte_size: 0,
+        data: samples.as_mut_ptr().cast(),
+    };
+    let list = ListOf::<3> {
+        number_buffers: 3,
+        buffers: [empty, zero_length, buffer_over(&mut samples)],
+    };
+    // SAFETY: `list` is a live three-entry list; the null and zero-length entries are never read
+    // through, and the third points at a live sample array.
+    let peak = unsafe { buffer_list_peak((&list as *const ListOf<3>).cast::<AudioBufferList>()) };
+    assert_eq!(peak, 0.5);
+}
+
+/// A list that declares no buffers reads as silence even though its declared first entry holds
+/// samples.
+#[test]
+fn buffer_list_peak_reads_a_list_with_no_buffers_as_zero() {
+    let mut samples = [0.7f32];
+    let list = ListOf::<1> {
+        number_buffers: 0,
+        buffers: [buffer_over(&mut samples)],
+    };
+    // SAFETY: `list` is a live list; `number_buffers` is 0, so no entry is read.
+    let peak = unsafe { buffer_list_peak((&list as *const ListOf<1>).cast::<AudioBufferList>()) };
+    assert_eq!(peak, 0.0);
 }
