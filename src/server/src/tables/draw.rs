@@ -123,7 +123,7 @@ pub(crate) async fn draw_table(
 
     let notation = match &engine.draw {
         DrawRule::Weighted => {
-            let sum: u32 = engine.rows.iter().map(|r| r.weight).sum();
+            let sum: u64 = engine.rows.iter().map(|r| u64::from(r.weight)).sum();
             format!("1d{sum}")
         }
         DrawRule::Formula { notation } => notation.clone(),

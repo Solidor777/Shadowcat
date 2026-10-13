@@ -89,7 +89,7 @@ fn die_values_lowwins_moves_toward_low_target() {
 
 #[test]
 fn run_dp_lexicographic_prefers_net_then_counters_then_low_index() {
-    let lex = |a: (i32, i32), b: (i32, i32)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
+    let lex = |a: (i64, i64), b: (i64, i64)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
     // Two identical dice, each: k0=(0,0), k1=(1,0). One point, either die gives +1 net.
     let dies = vec![vec![(0, 0), (1, 0)], vec![(0, 0), (1, 0)]];
     let (alloc, achieved) = run_dp(&dies, 1, lex);
@@ -100,7 +100,7 @@ fn run_dp_lexicographic_prefers_net_then_counters_then_low_index() {
 
 #[test]
 fn run_dp_allocates_the_more_valuable_die() {
-    let lex = |a: (i32, i32), b: (i32, i32)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
+    let lex = |a: (i64, i64), b: (i64, i64)| a.0 > b.0 || (a.0 == b.0 && a.1 > b.1);
     // die0: one point -> +1 net. die1: one point -> +2 net. Budget 1 -> spend on die1.
     let dies = vec![vec![(0, 0), (1, 0)], vec![(0, 0), (2, 0)]];
     let (alloc, achieved) = run_dp(&dies, 1, lex);
@@ -143,13 +143,13 @@ fn raws_of(values: &[i32], min: i32, max: i32) -> RawRoll {
 }
 
 /// Re-score a pool exactly as `evaluate_success` will: clamped net + counters.
-fn score_pool(direction: Direction, cfg: &SuccessConfig, records: &[DieRecord]) -> (i32, i32) {
-    let (mut raw, mut pos, mut neg) = (0, 0, 0);
+fn score_pool(direction: Direction, cfg: &SuccessConfig, records: &[DieRecord]) -> (i64, i64) {
+    let (mut raw, mut pos, mut neg) = (0i64, 0i64, 0i64);
     for r in records.iter().filter(|r| r.kept) {
         let scored = crit::score_die_net(direction, cfg, r.value, &r.symbols);
         raw += scored.net();
-        pos += scored.crit.positive_counter;
-        neg += scored.crit.negative_counter;
+        pos += i64::from(scored.crit.positive_counter);
+        neg += i64::from(scored.crit.negative_counter);
     }
     let allow_neg = cfg
         .crit_fail
@@ -260,14 +260,14 @@ fn oracle(
     cfg: &SuccessConfig,
     records: &[DieRecord],
     bounds: &std::collections::HashMap<DieId, (i32, i32)>,
-) -> ((i32, i32), Vec<u32>) {
+) -> ((i64, i64), Vec<u32>) {
     let kept: Vec<usize> = records
         .iter()
         .enumerate()
         .filter(|(_, r)| r.kept)
         .map(|(i, _)| i)
         .collect();
-    let mut best: Option<((i32, i32), Vec<u32>)> = None;
+    let mut best: Option<((i64, i64), Vec<u32>)> = None;
     for alloc in allocations_within_budget(kept.len(), cfg.expertise) {
         let mut copy = records.to_vec();
         for (pos, &idx) in kept.iter().enumerate() {
@@ -594,4 +594,16 @@ fn expertise_result_is_between_greedy_and_max_bounds() {
     let ceiling = score_pool(Direction::HighWins, &c, &all_max).0;
     assert!(got >= base, "expertise never worsens the outcome");
     assert!(got <= ceiling, "expertise never beats every-die-maxed");
+}
+
+#[test]
+fn adjust_is_exact_at_the_i32_rails() {
+    assert_eq!(adjust(Direction::HighWins, i32::MIN, 1, 6, 3), i32::MIN + 3);
+    assert_eq!(adjust(Direction::HighWins, i32::MAX, 1, 6, 3), i32::MAX);
+    assert_eq!(adjust(Direction::LowWins, i32::MIN, 1, 6, 3), i32::MIN);
+    assert_eq!(adjust(Direction::LowWins, i32::MAX, 1, 6, 3), i32::MAX - 3);
+    assert_eq!(
+        adjust(Direction::HighWins, i32::MIN, i32::MIN, i32::MAX, u32::MAX),
+        i32::MAX
+    );
 }

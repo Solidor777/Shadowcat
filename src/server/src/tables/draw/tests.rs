@@ -518,3 +518,24 @@ async fn a_nested_draw_fans_out_count_times_in_order() {
         assert_eq!(n.table_id, child_id);
     }
 }
+
+#[tokio::test]
+async fn a_weight_sum_past_u32_is_refused_by_the_roll_not_by_an_overflow() {
+    let (repo, world, _gm, player) = test_world().await;
+    let table_id = Uuid::new_v4();
+    let doc = weighted_table_doc(
+        table_id,
+        world,
+        serde_json::json!([
+            { "weight": u32::MAX, "label": "a", "results": [] },
+            { "weight": u32::MAX, "label": "b", "results": [] }
+        ]),
+        DocRole::Observer,
+    );
+    repo.seed_document_unvalidated(&doc).await.unwrap();
+
+    let ctx = player_ctx(player);
+    let mut cx = base_cx(&repo, &ctx, world).await;
+    let err = draw_table(&mut cx, table_id, 0).await.unwrap_err();
+    assert!(matches!(err, DrawTableError::Roll(_)), "{err:?}");
+}

@@ -162,3 +162,45 @@ fn symbol_crit_trigger_is_direction_insensitive() {
     assert!(score_die(Direction::HighWins, 5, &symbols, &c).is_success);
     assert!(score_die(Direction::LowWins, 5, &symbols, &c).is_success);
 }
+
+#[test]
+fn die_net_is_the_exact_sum_before_any_clamp() {
+    // base +1, crit extra i32::MAX, crit lost i32::MAX: the exact sum is 1, which a stepwise
+    // saturating fold (extra first, then lost) reports as 0.
+    let c = SuccessConfig {
+        success: SuccessRule::Numeric {
+            comp: Comparator::Gte,
+            target: 1,
+        },
+        required_successes: None,
+        tiers: vec![],
+        crit_success: Some(CritSuccess {
+            trigger: CritTrigger::AtLeast(1),
+            extra_successes: i32::MAX,
+            positive_counter: 0,
+        }),
+        crit_fail: Some(CritFail {
+            trigger: CritTrigger::AtLeast(10),
+            lost: i32::MAX,
+            negative_counter: 0,
+            allow_negative: true,
+        }),
+        expertise: 0,
+    };
+    let scored = score_die_net(Direction::HighWins, &c, 5, &[]);
+    assert!(scored.crit.is_success && scored.crit.is_fail);
+    assert_eq!(scored.net(), 1);
+}
+
+#[test]
+fn die_net_is_exact_below_the_i32_range() {
+    let negative = DieScore {
+        base_success: false,
+        crit: DieCrit {
+            lost: i32::MAX,
+            extra_successes: i32::MIN,
+            ..Default::default()
+        },
+    };
+    assert_eq!(negative.net(), i64::from(i32::MIN) - i64::from(i32::MAX));
+}

@@ -162,7 +162,8 @@ pub struct DieScore {
 }
 
 impl DieScore {
-    /// This die's net success delta: base (0/1) + crit extra − crit lost.
+    /// This die's net success delta: base (0/1) + crit extra − crit lost, summed in `i64` so the
+    /// result is exact for every `i32` input.
     ///
     /// # Examples
     ///
@@ -174,10 +175,9 @@ impl DieScore {
     /// };
     /// assert_eq!(scored.net(), 2); // 1 (base) + 2 (extra) - 1 (lost)
     /// ```
-    pub fn net(&self) -> i32 {
-        i32::from(self.base_success)
-            .saturating_add(self.crit.extra_successes)
-            .saturating_sub(self.crit.lost)
+    pub fn net(&self) -> i64 {
+        i64::from(self.base_success) + i64::from(self.crit.extra_successes)
+            - i64::from(self.crit.lost)
     }
 }
 
