@@ -3,8 +3,9 @@
 //! They call `handle_send_message`/`handle_edit_message` directly, exactly like `chat::tests`, but
 //! against a real stub `axum` target on `127.0.0.1`, through the same `build_client_allow_loopback`
 //! seam `link_preview`'s own fetcher tests use. They live in their own `mod` (not folded into
-//! `chat::tests`) because every test here needs `hyperlinks: true` and a stub server, unlike the
-//! tests in `chat::tests`.
+//! `chat::tests`) because the link-preview tests need a stub server and a hyperlink-enabling policy
+//! (`hyperlinks_on`) that `chat::tests` does not set up. The same fixture also drives the oEmbed
+//! segment tests and the per-channel dice-mode tests.
 
 use super::*;
 use crate::auth::role::ServerRole;

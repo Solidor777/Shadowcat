@@ -1,11 +1,16 @@
-//! This module resolves oEmbed provider embeds for allowlisted provider HOSTS only, never by
-//! autodiscovery.
+//! This module holds the oEmbed provider allowlist and the structured-fields-only oEmbed types.
 //!
+//! `match_provider` admits allowlisted provider HOSTS only, and `OEmbedProvider::endpoint` builds
+//! the provider's oEmbed endpoint from the posted URL, so no endpoint is ever discovered.
 //! Autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
-//! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. The module
-//! accepts structured fields only (`title`, `author_name`, `provider_name`, `thumbnail_asset_id`)
+//! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. The fetch
+//! itself runs in `chat::post_publish`.
+//!
+//! The accepted input, `OEmbedResponse`, carries `title`, `author_name` and `thumbnail_url` only,
 //! and never a provider's raw `html` field, which is third-party-controlled markup and a direct
-//! stored-XSS vector this server does not control.
+//! stored-XSS vector this server does not control. The output, `OEmbedSegment`, carries the posted
+//! `url`, this server's fixed `OEmbedProvider::name` as `provider_name` (the provider's own
+//! self-reported name is never used), `title`, `author_name` and `thumbnail_asset_id`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

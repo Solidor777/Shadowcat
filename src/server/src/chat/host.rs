@@ -1,5 +1,4 @@
-//! This module picks the document a roll's references resolve against for a message's actor
-//! binding.
+//! This module picks the document a roll's references resolve against for an actor binding.
 //!
 //! It applies when the send carries an `ActorOwnerRef`. The precedence rule, that a token's
 //! embedded actor copy beats its linked actor, is the one `combat::eval::formula_host` declares for

@@ -1,7 +1,7 @@
-//! This module runs image fetches in the background AFTER a message's synchronous send/edit has
-//! returned and broadcast.
+//! This module runs image and oEmbed fetches after a message's send or edit has broadcast.
 //!
-//! The fetches never run on the request path. The one entry point here re-publishes via
+//! The fetches run in the background AFTER the synchronous send/edit has returned, never on the
+//! request path. The one entry point here re-publishes via
 //! `WriteOrigin::ServerMessageRevision`, the SAME chokepoint
 //! `handle_edit_message`/`handle_delete_message` use for their own message revisions (it is that
 //! origin's fourth producer, after edit, delete and `handle_recalc_roll`).

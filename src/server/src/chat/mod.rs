@@ -9,19 +9,20 @@
 //! Three chokepoints jointly enforce this. The create-gate baseline-message exemption
 //! (`apply_intent`'s `is_baseline_message` check) ties a Create to its authenticated author. The
 //! ingress guard (`ops_target_message`) rejects any client-authored `message` Create/Delete op at
-//! the WS/HTTP boundary. `apply_intent`'s `Update` branch blanket-rejects every client
-//! (`WriteOrigin::Client`) Update targeting a stored `message` doc; Updates carry no `doc_type`, so
-//! `ops_target_message` cannot classify them and they must be blocked against the authoritative
-//! stored document instead.
+//! the WS/HTTP boundary. `apply_intent`'s `Update` branch (`authorize_update_access`) rejects every
+//! Update targeting a stored `message` doc unless its origin is
+//! `WriteOrigin::ServerMessageRevision`; Updates carry no `doc_type`, so `ops_target_message`
+//! cannot classify them and they must be blocked against the authoritative stored document
+//! instead.
 //!
-//! That Update rejection exempts ONLY `WriteOrigin::ServerMessageRevision`, a marker no wire frame
-//! can set. It has four producers: `handle_edit_message` and `handle_delete_message`, each after
-//! its own owner-or-GM check; `handle_recalc_roll`, after its own GM-only check (never owner-or-GM;
-//! see `RecalcRollError::Forbidden`); and the post-publish enrichment republish
+//! `WriteOrigin::ServerMessageRevision` is a marker no wire frame can set. It has four producers:
+//! `handle_edit_message` and `handle_delete_message`, each after its own owner-or-GM check;
+//! `handle_recalc_roll`, after its own GM-only check (never owner-or-GM; see
+//! `RecalcRollError::Forbidden`); and the post-publish enrichment republish
 //! (`chat::post_publish::run_pending_enrichments`), after its own tombstone/OCC checks. The origin
 //! is granted a scoped `Access` (`READ`+`WRITE_FIELDS` only), plus an exact-path admission in
-//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a message doc (needed by
-//! `handle_recalc_roll`), never any other `/permissions` subpath and never `/embedded`.
+//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a message doc, which
+//! `handle_recalc_roll` needs. No other `/permissions` subpath and no `/embedded` path is admitted.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

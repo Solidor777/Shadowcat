@@ -1,16 +1,18 @@
 //! This module is the SSRF-guarded outbound HTTP fetcher for chat link previews.
 //!
-//! It is the server's FIRST outbound HTTP surface, so every guard here is load-bearing. The client
-//! never fetches link previews itself; ONLY the server fetches, behind this module's address guard,
-//! and stores the result.
+//! It is the server's only outbound HTTP client, so every guard here is load-bearing. The browser
+//! client never fetches link previews itself; ONLY the server fetches, behind this module's
+//! address guard, and stores the result.
 //!
-//! The guards run in this order, and each is a hard fail-closed reject. URL validation checks
-//! scheme, userinfo and host; a literal-IP host is checked against the blocked ranges HERE because
-//! hyper's connector short-circuits DNS for IP literals, so the resolver only ever sees
-//! `Host::Domain`. Address validation for domain hosts follows (`GuardedResolver`, DNS-rebind-safe
-//! because reqwest connects to EXACTLY the IPs the resolver validated, with no second resolution).
-//! The remaining guards are manual per-hop redirect re-validation, a single deadline over the whole
-//! redirect chain, a streamed size cap, a content-type check, and bounded text extraction.
+//! Each guard is a hard fail-closed reject. URL validation (`validate_url`) checks scheme, userinfo
+//! and host; a literal-IP host is checked against the blocked ranges THERE because hyper's
+//! connector short-circuits DNS for IP literals, so the resolver only ever sees `Host::Domain`.
+//! Address validation for domain hosts is `GuardedResolver`, DNS-rebind-safe because reqwest
+//! connects to EXACTLY the IPs the resolver validated, with no second resolution. `guarded_get`
+//! then re-validates every redirect hop manually, rejects a response whose content type is not the
+//! expected one, rejects a declared `Content-Length` over the cap, and streams the body under the
+//! size cap. The whole chain runs under one deadline (`fetch_preview_with_deadline`), and the
+//! preview fetch ends with bounded text extraction.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

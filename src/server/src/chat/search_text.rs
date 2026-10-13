@@ -1,7 +1,8 @@
-//! This module extracts the one reader-facing text from a segment list.
+//! This module extracts the reader-facing text of a segment list.
 //!
-//! It is shared by `data::engine::search_text`'s `note` and `message` arms so the FTS projection is
-//! never duplicated across the two doc types.
+//! `segments_search_text` is the one extraction that both the `note` and the `message` arm of
+//! `data::engine::search_text` call, so the full-text-search projection is never duplicated across
+//! the two doc types.
 
 use crate::chat::{DrawnRow, Segment, TableDrawSegment};
 
