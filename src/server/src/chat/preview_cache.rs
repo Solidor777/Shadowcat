@@ -46,7 +46,8 @@ pub const PREVIEW_FETCH_PER_MIN: usize = 20;
 /// logic in it. `PingRateLimiter` is the shared implementation.
 pub type PreviewRateLimiter = PingRateLimiter;
 
-/// Caches `fetch_preview` outcomes keyed on the exact fetched URL string.
+/// Caches `fetch_preview` outcomes keyed on the candidate URL `enrich` extracted from the message,
+/// not on the post-redirect address the stored outcome carries.
 /// `None` stored against a URL is a NEGATIVE cache entry (a prior fetch
 /// failed); `Some(preview)` is a positive one. Both are read through `get`,
 /// which additionally applies the TTL appropriate to which kind is stored.

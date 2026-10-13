@@ -293,11 +293,14 @@ pub async fn enrich(
         }
     }
 
-    let mut previews: Vec<LinkPreview> = Vec::with_capacity(urls.len());
+    // Each preview travels with the candidate URL its cache rows are keyed on: a fresh fetch
+    // that redirected carries the post-redirect address in `LinkPreview.url`, while
+    // `link_preview_cache` is written and read under the candidate.
+    let mut previews: Vec<(String, LinkPreview)> = Vec::with_capacity(urls.len());
     let mut misses: Vec<String> = Vec::new();
     for url in urls {
         match cached_or_fetch(repo, cache, &url, now, now_ms).await {
-            Some(Some(preview)) => previews.push(preview),
+            Some(Some(preview)) => previews.push((url, preview)),
             Some(None) => {} // live cached negative: skip silently, no re-fetch
             None => misses.push(url),
         }
@@ -340,7 +343,7 @@ pub async fn enrich(
                         // at risk, which is worth an operator-visible signal.
                         tracing::warn!(?e, %url, "link-preview cache persist failed");
                     }
-                    previews.push(preview);
+                    previews.push((url, preview));
                 }
                 Err(_) => {
                     cache.insert(url.clone(), None, now);
@@ -355,7 +358,7 @@ pub async fn enrich(
         }
     }
 
-    for preview in previews {
+    for (cache_url, preview) in previews {
         if let Some(asset_id) = preview.image_asset_id {
             segments.push(Segment::LinkPreview {
                 url: preview.url,
@@ -366,6 +369,7 @@ pub async fn enrich(
         } else {
             if let Some(image_url) = preview.image_url.clone() {
                 pending.push(PendingEnrichment::PreviewImage {
+                    cache_url,
                     preview_url: preview.url.clone(),
                     image_url,
                 });

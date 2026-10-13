@@ -31,7 +31,7 @@ use crate::data::sqlite::SqliteRepository;
 use crate::ws::room::Room;
 
 /// Process-wide registry of per-URL fetch locks: `resolve_preview_image`/
-/// `resolve_thumbnail_asset` key on the target URL (the `preview_url`/
+/// `resolve_thumbnail_asset` key on the target URL (the `cache_url`/
 /// `thumbnail_url` each already keys the persisted `link_preview_cache` table
 /// by) so two concurrent post-publish jobs racing to resolve the identical
 /// URL serialize into one fetch+asset-create instead of each creating its own
@@ -107,7 +107,12 @@ pub enum PendingEnrichment {
     /// concurrent edit reordered) whose synchronous scrape found an image
     /// candidate not yet fetched.
     PreviewImage {
-        /// The `Segment::LinkPreview.url` this job targets.
+        /// The candidate URL `enrich` extracted from the message: the key of the persisted
+        /// `link_preview_cache` row the job reads and writes. Differs from `preview_url` when
+        /// the fetch redirected.
+        cache_url: String,
+        /// The `url` of the `Segment::LinkPreview` this job patches: the post-redirect address
+        /// after a fresh fetch that redirected, otherwise equal to `cache_url`.
         preview_url: String,
         /// The extracted (not yet fetched) image URL.
         image_url: String,
@@ -373,9 +378,10 @@ async fn resolve_job(
 ) -> Option<ResolvedEnrichment> {
     match job {
         PendingEnrichment::PreviewImage {
+            cache_url,
             preview_url,
             image_url,
-        } => resolve_preview_image(deps, world_id, preview_url, image_url).await,
+        } => resolve_preview_image(deps, world_id, cache_url, preview_url, image_url).await,
         PendingEnrichment::OEmbed { post_url, provider } => {
             resolve_oembed(deps, world_id, post_url, provider).await
         }
@@ -386,7 +392,7 @@ async fn resolve_job(
 }
 
 /// De-dup-then-fetch for one `PreviewImage` job: checks the persisted
-/// `link_preview_cache` row for `preview_url` FIRST and reuses an existing
+/// `link_preview_cache` row for `cache_url` FIRST and reuses an existing
 /// `image_asset_id` verbatim on a hit -- never re-fetching or re-creating an
 /// asset for a link this or any other message already imaged. On a miss,
 /// fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
@@ -399,12 +405,13 @@ async fn resolve_job(
 /// commit runs from the post-publish job rather than inside an HTTP handler,
 /// so it must join that same exclusion or an in-server backup's file-copy
 /// could race a half-committed asset. Runs the WHOLE check-then-fetch-then-set
-/// sequence under `preview_fetch_locks`' per-`preview_url` lock (see
+/// sequence under `preview_fetch_locks`' per-`cache_url` lock (see
 /// `with_preview_url_lock`) so two concurrent jobs for the identical URL never
 /// both observe a cache miss and each create their own orphaned `Asset`.
 async fn resolve_preview_image(
     deps: FetchDeps,
     world_id: Uuid,
+    cache_url: String,
     preview_url: String,
     image_url: String,
 ) -> Option<ResolvedEnrichment> {
@@ -417,14 +424,14 @@ async fn resolve_preview_image(
         preview_fetch_locks,
     } = deps;
     // Locks for the ENTIRE check-then-fetch-then-set sequence -- a concurrent
-    // waiter for the identical `preview_url` must observe a persisted-cache
+    // waiter for the identical `cache_url` must observe a persisted-cache
     // HIT here and skip the fetch entirely, never just serialize into a
     // second redundant fetch+asset-create for the same link. Keyed on a
-    // clone (not `&preview_url`) so the closure below can move the original
-    // `preview_url` into its `ResolvedEnrichment` without a borrow conflict.
-    let lock_key = preview_url.clone();
+    // clone (not `&cache_url`) so the closure below can move the original
+    // `cache_url` without a borrow conflict.
+    let lock_key = cache_url.clone();
     with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
-        if let Ok(Some(row)) = repo.get_link_preview_cache(&preview_url).await {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(&cache_url).await {
             if let Some(asset_id) = row.image_asset_id {
                 return Some(ResolvedEnrichment::ImageForPreview {
                     preview_url,
@@ -456,9 +463,12 @@ async fn resolve_preview_image(
             .await
             .ok()?
         };
-        let _ = repo
-            .set_link_preview_cache_image(&preview_url, asset.id)
-            .await;
+        if let Err(e) = repo
+            .set_link_preview_cache_image(&cache_url, asset.id)
+            .await
+        {
+            tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
+        }
         Some(ResolvedEnrichment::ImageForPreview {
             preview_url,
             asset_id: asset.id,
