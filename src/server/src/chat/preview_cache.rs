@@ -124,9 +124,9 @@ impl LinkPreviewCache {
 
 /// Deletes persisted `link_preview_cache` rows with no asset whose `fetched_at` is more than
 /// `POSITIVE_TTL` before `now_ms`, returning the number deleted. A row past its TTL is already a
-/// miss in `cached_or_fetch`; the delete bounds table growth. A row
-/// holding an `image_asset_id` stays: it carries the asset a later message reuses, and once the
-/// asset is deleted the column is null and the row is swept like any other.
+/// miss in `cached_or_fetch`; the delete bounds table growth. A row holding an `image_asset_id`
+/// stays: it carries the asset a later message reuses, and once the asset is deleted the column is
+/// null and the row is swept like any other.
 pub(crate) async fn sweep_expired_link_previews(
     pool: &sqlx::SqlitePool,
     now_ms: i64,

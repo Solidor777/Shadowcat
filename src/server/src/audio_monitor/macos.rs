@@ -514,10 +514,10 @@ fn read_tap_format(tap_id: AudioObjectId) -> Result<AudioStreamBasicDescription,
 /// channel, the layout `buffer_list_peak` decodes. Packed holds when the flag is set or when the
 /// implied-packed relation holds: the channels' sample bytes equal the frame size. The check
 /// extends that relation to non-interleaved descriptions by counting one channel per frame, since
-/// the `AudioStreamBasicDescription` field documentation in the CoreAudio base-types header says
-/// their fields describe one buffer. Channel layout is not otherwise checked: the peak is a
-/// maximum over every buffer's samples, interleaved or not. The error states the observed
-/// format id, flags, sample width and channel count.
+/// the `AudioStreamBasicDescription` documentation in the CoreAudio base-types header says that in
+/// non-interleaved audio the per frame fields identify one channel. Channel layout is not
+/// otherwise checked: the peak is a maximum over every buffer's samples, interleaved or not. The
+/// error states the observed format id, flags, sample width and channel count.
 fn verify_tap_format(format: &AudioStreamBasicDescription) -> Result<(), String> {
     let channels_per_frame = if format.format_flags & K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED != 0 {
         1
