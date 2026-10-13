@@ -62,8 +62,9 @@ pub enum MonitorError {
 /// Polled at 10 Hz by `server::run`'s loop. Every platform backend implements this the same
 /// poll-shape way: each backend runs its own dedicated background thread internally
 /// (COM-apartment-safe on Windows, event-loop-driven on Linux/PipeWire) and publishes its
-/// latest reading into shared state; `poll` just reads the latest published value, so the
-/// caller never branches on OS and never blocks waiting on a platform API call.
+/// latest reading into shared state; `poll` reads the latest published state (the Linux
+/// backend's `poll` also resets each node's peak window), so the caller never branches on OS and
+/// never blocks waiting on a platform API call.
 ///
 /// # Examples
 ///

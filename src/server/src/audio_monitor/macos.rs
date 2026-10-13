@@ -142,15 +142,14 @@ extern "C" {
     /// before the `objc_msgSend` that sends `initStereoMixdownOfProcesses:`, so an absent
     /// selector returns `None` instead of raising `doesNotRecognizeSelector:`.
     fn class_respondsToSelector(cls: *mut c_void, sel: *mut c_void) -> i8;
-    /// `objc_msgSend`, the Objective-C runtime's message dispatch. Declared ONCE at its minimal
+    /// `objc_msgSend`, the Objective-C runtime's message dispatch. Declared once at its minimal
     /// (0-argument-selector) arity: Objective-C calls this same C symbol with a different
     /// effective signature per invocation depending on the target method's real argument count,
-    /// which `extern "C"` cannot express as two declarations of one link name (`E0308`
-    /// `clashing_extern_declarations`) — every wider-arity call site instead takes this
-    /// declaration's function pointer and `transmute`s it to the specific
-    /// `unsafe extern "C" fn(...)` type that call needs (`objc_msg_send_1`), the standard
-    /// pattern for calling variable-arity `objc_msgSend` from Rust without the `objc`/`objc2`
-    /// crates.
+    /// and a second `extern "C"` declaration of the same link name with a different signature
+    /// trips rustc's `clashing_extern_declarations` lint (warn by default, an error under
+    /// `cargo clippy -D warnings`). A wider-arity call site instead takes this declaration's
+    /// function pointer and `transmute`s it to the `unsafe extern "C" fn(...)` type that call
+    /// needs (`objc_msg_send_1`), which avoids the `objc`/`objc2` crates.
     fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void;
 }
 
@@ -489,8 +488,12 @@ unsafe fn release_objc_instance(instance: *mut c_void) {
 /// `objc_msgSend` calls (the module doc states why no Objective-C crate is used). Returns the
 /// owned Objective-C instance pointer, to be released with `release_objc_instance`.
 fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
-    // SAFETY: every Objective-C runtime function here is declared in this file's `extern "C"`
-    // block; each class and selector name is a NUL-terminated `CString` that outlives its call.
+    // SAFETY: `class` and `instance` are null-checked before they are used as receivers. Each
+    // `CString` name is NUL-terminated and alive across the call that takes its pointer. `pids`,
+    // the `CFArray` passed to `initStereoMixdownOfProcesses:`, stays alive until after that send.
+    // `objc_msg_send_1` reinterprets `objc_msgSend` as (receiver, selector, one object argument)
+    // returning an object; that is the shape this code assumes for the initializer, and
+    // `class_respondsToSelector` confirms the selector exists, not its signature.
     unsafe {
         let class_name = CString::new("CATapDescription").ok()?;
         let class = objc_getClass(class_name.as_ptr());

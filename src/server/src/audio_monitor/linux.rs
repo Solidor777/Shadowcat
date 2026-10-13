@@ -2,8 +2,8 @@
 //!
 //! PipeWire's API is event-loop driven, so this backend runs its own dedicated OS thread owning a
 //! `pipewire::main_loop::MainLoop` for its entire lifetime and publishes the latest per-node peak
-//! into shared state. `poll` only reads that state, so it stays synchronous and non-blocking like
-//! every other backend (`SessionMonitor`'s doc).
+//! into shared state. `poll` reads that state and resets each node's peak window, so it stays
+//! synchronous and non-blocking like every other backend (`SessionMonitor`'s doc).
 //!
 //! Node discovery considers nodes whose `media.class` property is `"Stream/Output/Audio"` and names
 //! each from its `application.process.binary` property. The name is reduced to a basename
@@ -121,21 +121,28 @@ impl SessionMonitor for LinuxMonitor {
     }
 }
 
-/// One capture stream's live PipeWire resources. Field order is load-bearing: struct fields
-/// drop in declaration order, and `StreamListener::drop` (`spa::utils::hook::remove`) patches
-/// pointers within the stream's own internal listener list — it must run before `Stream::drop`
-/// (`pw_stream_destroy`) can free that memory. The `audio-capture` example in the `pipewire` 0.8.0
-/// crate binds its `stream` variable before its `_listener` variable, so scope exit drops the
-/// listener first.
+/// One capture stream's live PipeWire resources.
+///
+/// `StreamListener::drop` (`spa::utils::hook::remove`) patches pointers within the stream's own
+/// internal listener list, so it must run before `Stream::drop` (`pw_stream_destroy`) can free
+/// that memory. The `Drop` impl takes and drops `listener` explicitly, ahead of the field drops
+/// that follow it, so the order does not depend on field declaration order. The
+/// `audio-capture` example in the `pipewire` 0.8.0 crate binds its `stream` variable before its
+/// `_listener` variable, so scope exit drops the listener first.
 struct CaptureStream {
-    /// Dropped FIRST — unregisters the `process` callback from the stream's listener list.
-    /// Held only for its `Drop` side effect (`StreamListener` exposes no other API over its
-    /// opaque internal hook); leading underscore is rustc's own recognized idiom for a binding
-    /// kept solely for drop-order, exempting it from `dead_code` without a suppression attribute.
-    _listener: pw::stream::StreamListener<()>,
-    /// Dropped SECOND — destroys the underlying `pw_stream`, safe only once no listener still
-    /// points into it.
+    /// Unregisters the `process` callback from the stream's listener list when dropped.
+    /// `StreamListener` exposes no other API over its opaque internal hook, so `Drop` is its
+    /// only use.
+    listener: Option<pw::stream::StreamListener<()>>,
+    /// Destroys the underlying `pw_stream` when dropped, which is safe only once no listener
+    /// still points into it.
     stream: pw::stream::Stream,
+}
+
+impl Drop for CaptureStream {
+    fn drop(&mut self) {
+        drop(self.listener.take());
+    }
 }
 
 impl CaptureStream {
@@ -281,7 +288,7 @@ fn run_pipewire_loop(
     main_loop.run();
 }
 
-/// Creates a `Stream::Input` connected directly to node `node_id`'s own ports
+/// Creates a `Stream` with `Direction::Input` connected directly to node `node_id`'s own ports
 /// (`StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS`), whose `process` callback folds each
 /// buffer's interleaved `F32LE` samples into that node's `peak` field via
 /// `max-abs-sample`. Returns `None` on any negotiation failure (logged by discarding — a
@@ -362,7 +369,7 @@ fn attach_monitor_stream(
         .ok()?;
 
     Some(CaptureStream {
-        _listener: listener,
+        listener: Some(listener),
         stream,
     })
 }

@@ -1,9 +1,9 @@
 //! The macOS-only enumeration smoke test runs on the macOS matrix leg.
 //!
-//! `platform_monitor` never panics. It either returns a working monitor whose first `poll()`
-//! succeeds, or (on a macOS version below 14.2, if the runner image is ever older)
-//! `MonitorError::Unsupported` naming the version requirement. The module also unit-tests the pid
-//! diff of `departed_pids`.
+//! The smoke test calls `platform_monitor` and accepts a monitor (polled once, result ignored) or
+//! `MonitorError::Unsupported` naming the 14.2 version requirement, and fails on
+//! `MonitorError::Backend`. The other tests exercise the pid diff of `departed_pids` and pin each
+//! hand-written Core Audio selector to its four ASCII characters.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -30,10 +30,9 @@ fn platform_monitor_never_panics_and_reports_a_sane_result() {
     }
 }
 
-/// The pid diff `teardown_departed_taps` runs before every teardown call: a pid present in the
-/// tap map but absent from the current live set is "departed" and must be torn down. Exercises
-/// the LOGIC in isolation (`departed_pids` takes no real `TapHandle`/Core Audio resource); the
-/// diff decides which taps `run_process_tap_loop` releases through `teardown_departed_taps`.
+/// A pid present in the tap map but absent from the current live set is "departed" and must be
+/// torn down. `departed_pids` takes no real `TapHandle` or Core Audio resource, so the diff
+/// `teardown_departed_taps` runs is exercised in isolation.
 #[test]
 fn departed_pids_reports_exactly_the_pids_missing_from_live() {
     let live: HashSet<i32> = [2].into_iter().collect();
