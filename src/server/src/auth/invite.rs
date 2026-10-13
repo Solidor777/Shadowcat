@@ -1,16 +1,15 @@
-//! Invite-code mint/verify.
+//! This module mints and parses world-invite bearer codes.
 //!
 //! A code is `<invite-id>.<secret>`: a public **selector** (the invite row's UUID, used for the
 //! lookup and for the GM's revoke route) and a secret **verifier** the server stores only as an
 //! Argon2id PHC hash, mirroring `users.password_hash`. The database therefore never holds a value
-//! that can be replayed as a credential, and the row lookup keys on a non-secret column — no secret
-//! is ever compared by SQLite's index machinery.
+//! that can be replayed as a credential, and the row lookup keys on a non-secret column, so no
+//! secret is ever compared by SQLite's index machinery.
 //!
-//! Entropy: the verifier is `SECRET_BYTES` = 16 CSPRNG bytes = 128 bits, so a
-//! blind guess succeeds with probability 2^-128 per attempt. Even at an absurd
-//! 10^9 online attempts per second against a server that did no rate limiting
-//! at all, the expected time to a first hit is 2^127 / 10^9 s ≈ 5.4 x 10^21
-//! years. Each attempt additionally costs a full Argon2id verify, so the real
+//! Entropy: the verifier is `SECRET_BYTES` = 16 CSPRNG bytes = 128 bits, so a blind guess succeeds
+//! with probability 2^-128 per attempt. Even at an absurd 10^9 online attempts per second against a
+//! server that did no rate limiting at all, the expected time to a first hit is 2^127 / 10^9 s ≈
+//! 5.4 x 10^21 years. Each attempt additionally costs a full Argon2id verify, so the real
 //! attainable rate is lower by ~7 orders of magnitude.
 
 #![deny(missing_docs)]

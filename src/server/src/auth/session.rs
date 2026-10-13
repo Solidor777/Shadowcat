@@ -1,4 +1,5 @@
-//! DB-backed sessions + the `AuthUser`/`AdminUser` extractors.
+//! This module provides the DB-backed session store, the per-scheme session layers, and the
+//! `AuthUser`/`AdminUser` extractors.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

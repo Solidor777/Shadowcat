@@ -1,4 +1,4 @@
-//! Throwaway WS server for manual/external clients and the Node<->Rust e2e harness.
+//! This throwaway WS server serves manual/external clients and the Node<->Rust e2e harness.
 //!
 //! The server runs on an in-memory DB seeded with a GM (gm/pw) and a player (pl/pw), one world, a
 //! player-owned document, and a declarative capability requirement on `/engine/vision`. It prints
