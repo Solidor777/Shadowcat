@@ -1032,14 +1032,16 @@ async fn repo_and_world() -> (crate::data::sqlite::SqliteRepository, Uuid) {
     (repo, world.id)
 }
 
+/// An in-memory hit answers over the persisted row's own title and description.
 #[tokio::test]
-async fn cached_or_fetch_hits_in_memory_tier_without_touching_repo() {
+async fn cached_or_fetch_hits_in_memory_tier_over_the_persisted_row() {
     let (repo, world_id) = repo_and_world().await;
     let cache = LinkPreviewCache::new();
     let now = Instant::now();
-    // Never upserted into the DB table; the in-memory tier must still
-    // resolve it, proving in-memory precedence over the persisted tier.
     let url = "https://mem-hit.example/";
+    repo.upsert_link_preview_cache(world_id, url, Some("row"), Some("row"), 1_000)
+        .await
+        .unwrap();
     let preview = LinkPreview {
         url: url.to_string(),
         title: "t".to_string(),
@@ -1105,9 +1107,10 @@ async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
     assert_eq!(result, None);
 }
 
-/// A persisted-row read failure behind an in-memory hit leaves the hit as cached.
+/// A persisted-row read failure behind an in-memory hit leaves the hit as cached, asset id
+/// included.
 #[tokio::test]
-async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() {
+async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_persisted_row_read_fails() {
     let (repo, world_id) = repo_and_world().await;
     sqlx::query("DROP TABLE link_preview_cache")
         .execute(repo.pool())
@@ -1121,7 +1124,7 @@ async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() 
         title: "t".to_string(),
         description: "d".to_string(),
         image_url: None,
-        image_asset_id: None,
+        image_asset_id: Some(Uuid::new_v4()),
     };
     cache.insert(world_id, url.to_string(), Some(preview.clone()), now);
     let result = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
@@ -1180,26 +1183,33 @@ async fn cached_or_fetch_memory_hit_drops_a_deleted_asset_id() {
     assert_eq!(second.image_asset_id, None);
 }
 
-/// An in-memory hit carrying an asset id whose persisted row is absent has no asset.
+/// An in-memory positive hit whose persisted row is absent is a miss, so the caller's fetch
+/// writes the row again; a negative hit with no row stays a hit.
 #[tokio::test]
-async fn cached_or_fetch_memory_hit_without_a_row_has_no_asset() {
+async fn cached_or_fetch_memory_hit_without_a_row_is_a_miss() {
     let (repo, world_id) = repo_and_world().await;
-    let url = "https://no-row.example/";
     let cache = LinkPreviewCache::new();
     let now = Instant::now();
+    let positive = "https://no-row.example/";
     let preview = LinkPreview {
-        url: url.to_string(),
+        url: positive.to_string(),
         title: "t".to_string(),
         description: "d".to_string(),
-        image_url: None,
-        image_asset_id: Some(Uuid::new_v4()),
+        image_url: Some("https://no-row.example/i.png".to_string()),
+        image_asset_id: None,
     };
-    cache.insert(world_id, url.to_string(), Some(preview), now);
-    let hit = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(hit.image_asset_id, None);
+    cache.insert(world_id, positive.to_string(), Some(preview), now);
+    let negative = "https://no-row-negative.example/";
+    cache.insert(world_id, negative.to_string(), None, now);
+
+    assert_eq!(
+        cached_or_fetch(&repo, &cache, world_id, positive, now, 1_000).await,
+        None
+    );
+    assert_eq!(
+        cached_or_fetch(&repo, &cache, world_id, negative, now, 1_000).await,
+        Some(None)
+    );
 }
 
 /// `set_link_preview_cache_image` records only an asset of the row's own world.
@@ -1368,6 +1378,9 @@ async fn cached_or_fetch_does_not_answer_for_another_world() {
         image_asset_id: None,
     };
     cache.insert(world_a, memory_url.to_string(), Some(preview), now);
+    repo.upsert_link_preview_cache(world_a, memory_url, Some("t"), Some("d"), 1_000)
+        .await
+        .unwrap();
     repo.upsert_link_preview_cache(world_a, persisted_url, Some("T"), Some("D"), 1_000)
         .await
         .unwrap();

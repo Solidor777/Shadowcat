@@ -151,7 +151,8 @@ fn rate_limiter_allows_up_to_per_min_then_rejects_and_recovers() {
     assert!(lim.check(u, recovered_at, PREVIEW_FETCH_PER_MIN));
 }
 
-/// The sweep deletes imageless rows past `POSITIVE_TTL` and keeps fresh rows and imaged rows.
+/// The sweep deletes imageless rows (negative rows included) older than `POSITIVE_TTL`, compares
+/// `fetched_at` as a number, and keeps a row at exactly the cutoff, fresh rows and imaged rows.
 #[tokio::test]
 async fn sweep_deletes_only_expired_imageless_rows() {
     use crate::data::asset::{Asset, AssetMeta};
@@ -162,6 +163,7 @@ async fn sweep_deletes_only_expired_imageless_rows() {
     let now_ms: i64 = 10 * POSITIVE_TTL.as_millis() as i64;
     let stale_ms = now_ms - POSITIVE_TTL.as_millis() as i64 - 1;
     let fresh_ms = now_ms - POSITIVE_TTL.as_millis() as i64 + 1;
+    let cutoff_ms = now_ms - POSITIVE_TTL.as_millis() as i64;
     let asset = Uuid::new_v4();
     repo.insert_asset(&Asset {
         id: asset,
@@ -184,11 +186,17 @@ async fn sweep_deletes_only_expired_imageless_rows() {
         ("https://stale.example/", stale_ms),
         ("https://fresh.example/", fresh_ms),
         ("https://imaged.example/", stale_ms),
+        ("https://boundary.example/", cutoff_ms),
+        // Fewer digits than the cutoff: a text comparison would order it after the cutoff.
+        ("https://short.example/", 9),
     ] {
         repo.upsert_link_preview_cache(world, url, Some("t"), Some("d"), at)
             .await
             .unwrap();
     }
+    repo.upsert_link_preview_cache(world, "https://negative.example/", None, None, stale_ms)
+        .await
+        .unwrap();
     repo.set_link_preview_cache_image(world, "https://imaged.example/", asset)
         .await
         .unwrap();
@@ -197,9 +205,12 @@ async fn sweep_deletes_only_expired_imageless_rows() {
         .await
         .unwrap();
 
-    assert_eq!(deleted, 1);
+    assert_eq!(deleted, 3);
     for (url, kept) in [
         ("https://stale.example/", false),
+        ("https://negative.example/", false),
+        ("https://short.example/", false),
+        ("https://boundary.example/", true),
         ("https://fresh.example/", true),
         ("https://imaged.example/", true),
     ] {
