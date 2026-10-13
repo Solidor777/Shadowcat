@@ -2,7 +2,7 @@
 import type { ConditionFx } from "./ConditionFx";
 
 /**
- * A status condition's display (mirrors the client's `Condition`). `icon`
+ * A status condition's display (exported to the client as `Condition`). `icon`
  * is a short glyph (emoji) rendered as a token badge.
  *
  * # Examples

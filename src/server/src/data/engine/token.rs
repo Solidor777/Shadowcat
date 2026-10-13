@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::data::engine::scene::LightEmission;
 
-/// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
+/// A token's transform + visual (exported to the client as `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
 ///
@@ -803,9 +803,9 @@ impl AnimatedSource {
     }
 }
 
-/// An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
-/// `name` which moves to the envelope). Every other field of `ActorEngine`
-/// (inventory, stats, …) lives in `system` — this is a SPLIT type.
+/// An actor's engine-owned body (exported to the client as `ActorEngine`).
+/// `name` lives on the envelope and the actor's other data (inventory,
+/// stats, …) lives in `system` — this is a SPLIT type.
 ///
 /// # Examples
 ///

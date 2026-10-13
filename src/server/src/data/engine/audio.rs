@@ -19,8 +19,9 @@ use uuid::Uuid;
 
 /// Doc_type for a playlist: a standalone world document, standard write rules.
 pub const PLAYLIST_DOC_TYPE: &str = "playlist";
-/// Doc_type for the world's singleton transport-state document. Writable only by
-/// `WriteOrigin::AudioTransport` — see `data::sqlite::SqliteRepository::apply_intent`'s guard.
+/// Doc_type for the world's singleton transport-state document. `WriteOrigin::ConfigSeed` alone
+/// creates and deletes it and `WriteOrigin::AudioTransport` alone updates it; the module doc names
+/// the guards.
 pub const AUDIO_STATE_DOC_TYPE: &str = "audio-state";
 /// `PlaylistEngine::validate`'s track-count cap.
 pub const MAX_PLAYLIST_TRACKS: usize = 512;

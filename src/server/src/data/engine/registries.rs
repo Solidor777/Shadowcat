@@ -5,7 +5,7 @@
 //!
 //! The client's `Channel`, `FactionStance`, `Faction`, `Condition`, `ChatSettingsEngine`,
 //! `DiceSettingsEngine` and `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value
-//! type) are the TypeScript types generated from these structs.
+//! type) are the TypeScript types generated from these structs and enums.
 //!
 //! `chat::settings::ChatContentPolicy` is a type alias onto `ChatSettingsEngine`, and
 //! `chat::settings::resolve_dice_context` reads `DiceSettingsEngine` directly. Both bodies live on
@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::MAX_CHANNEL_CHARS;
 
-/// A chat channel's display config (mirrors the client's `Channel`).
+/// A chat channel's display config (exported to the client as `Channel`).
 ///
 /// # Examples
 ///
@@ -119,7 +119,7 @@ impl ChannelRegistryEngine {
     }
 }
 
-/// A faction's stance toward the party (mirrors the client's `FactionStance`).
+/// A faction's stance toward the party (exported to the client as `FactionStance`).
 ///
 /// # Examples
 ///
@@ -141,7 +141,7 @@ pub enum FactionStance {
     Hostile,
 }
 
-/// A faction's display + stance (mirrors the client's `Faction`). `color`
+/// A faction's display + stance (exported to the client as `Faction`). `color`
 /// is "#rrggbb" (the token border color).
 ///
 /// # Examples
@@ -214,9 +214,8 @@ impl FactionRegistryEngine {
         Ok(())
     }
 
-    /// Default three-faction world seed (friendly / neutral / hostile). The
-    /// engine definition — the client's faction UI mirrors these ids and
-    /// colors rather than declaring its own seed.
+    /// Default three-faction world seed (friendly / neutral / hostile); the
+    /// client declares no seed of its own.
     ///
     /// # Examples
     ///
@@ -260,7 +259,7 @@ impl FactionRegistryEngine {
     }
 }
 
-/// A status condition's display (mirrors the client's `Condition`). `icon`
+/// A status condition's display (exported to the client as `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
 ///
 /// # Examples
@@ -405,7 +404,7 @@ impl ConditionRegistryEngine {
     }
 }
 
-/// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).
+/// GM-configured chat content policy (exported to the client as `ChatSettingsEngine`).
 /// Every field optional/absent-safe; a partial body is a valid engine band.
 ///
 /// # Examples
@@ -506,7 +505,7 @@ pub struct ChannelDiceOverride {
     pub direction: DiceDirectionSetting,
 }
 
-/// GM-configured ambient dice-notation context (mirrors the client's
+/// GM-configured ambient dice-notation context (exported to the client as
 /// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
 /// or absent body fills the rest with the safe default (Total + HighWins,
 /// empty `channel_overrides`).

@@ -8,9 +8,9 @@ import type { VfxEmission } from "./VfxEmission";
 import type { VisionAssignment } from "./VisionAssignment";
 
 /**
- * An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
- * `name` which moves to the envelope). Every other field of `ActorEngine`
- * (inventory, stats, …) lives in `system` — this is a SPLIT type.
+ * An actor's engine-owned body (exported to the client as `ActorEngine`).
+ * `name` lives on the envelope and the actor's other data (inventory,
+ * stats, …) lives in `system` — this is a SPLIT type.
  *
  * # Examples
  *

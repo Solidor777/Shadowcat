@@ -4,7 +4,7 @@ import type { DiceDirectionSetting } from "./DiceDirectionSetting";
 import type { DiceModeSetting } from "./DiceModeSetting";
 
 /**
- * GM-configured ambient dice-notation context (mirrors the client's
+ * GM-configured ambient dice-notation context (exported to the client as
  * `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
  * or absent body fills the rest with the safe default (Total + HighWins,
  * empty `channel_overrides`).
