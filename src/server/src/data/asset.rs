@@ -339,10 +339,11 @@ pub async fn process_staged_blocking(
 /// `store_streamed` (avoiding a second in-memory buffer for an arbitrarily
 /// large GM upload), processes it in place, and calls this directly, as does
 /// `http::assets::uploads::complete_session`; `create_asset_from_bytes` stages
-/// + processes `bytes` itself first and then calls this — so every caller's
-/// resulting `Asset` row is committed through the same ordering logic. A row-insert failure removes every
-/// file just moved; a tag-write failure after the row is in leaves the asset
-/// untagged (`refresh_derived_tags` repairs it) rather than orphaning files.
+/// and processes `bytes` itself first and then calls this — so every caller's
+/// resulting `Asset` row is committed through the same ordering logic. A
+/// row-insert failure removes every file just moved; a tag-write failure after
+/// the row is in leaves the asset untagged (`refresh_derived_tags` repairs it)
+/// rather than orphaning files.
 ///
 /// # Examples
 ///

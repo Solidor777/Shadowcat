@@ -1046,7 +1046,7 @@ fn validate_containment_forbids_embedding_an_asset_folder() {
 }
 
 /// A stored `world-settings` document serialized the way `apply_intent`'s
-/// Phase 1 serializes the current row (`whole`).
+/// validation pass serializes the current row (`whole`).
 fn stored_world_settings(combat: serde_json::Value) -> serde_json::Value {
     let mut d = doc_with_system(serde_json::json!({}));
     d.doc_type = "world-settings".into();

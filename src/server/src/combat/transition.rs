@@ -555,7 +555,7 @@ impl Working {
     /// more than one `resolve_event` deletion in one walk — are folded
     /// into ONE `FieldChange` via `merge_field_changes`, never left as two
     /// separate entries. INVARIANT this exists to satisfy:
-    /// `SqliteRepository::apply_intent`'s Phase 1 snapshots ONE whole-document
+    /// `SqliteRepository::apply_intent`'s validation pass snapshots ONE whole-document
     /// `Value` per `Operation::Update` and checks every `FieldChange` in its
     /// `changes` list against that SAME fixed snapshot — so two separate
     /// entries at one path would have the second checked against the

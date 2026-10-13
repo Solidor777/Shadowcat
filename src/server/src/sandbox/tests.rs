@@ -289,7 +289,7 @@ async fn a_structural_failure_never_reaches_or_faults_a_validator() {
 
     let err = validate_document(&registry, &ids, &mut d, None, true, world, &schemas)
         .await
-        .expect_err("a tier-2 schema violation must surface as Phase 1's own error");
+        .expect_err("a tier-2 schema violation must surface as the validation pass's own error");
     assert!(
         matches!(err, crate::data::DataError::SchemaViolation { .. }),
         "expected SchemaViolation, got {err:?}"

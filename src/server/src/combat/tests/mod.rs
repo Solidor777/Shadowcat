@@ -247,7 +247,7 @@ fn validate_persisted(doc: &Document) {
 /// new map — lets a test chain transitions. Mirrors the real repository's own per-doc field
 /// apply (`data::command::apply_field_change`), never re-deriving the mutation semantics.
 ///
-/// Also performs a real OCC check, mirroring `SqliteRepository::apply_intent`'s Phase 1: every
+/// Also performs a real OCC check, mirroring `SqliteRepository::apply_intent`'s validation pass: every
 /// `FieldChange.old` is compared against the document's value at that path as it stood at the
 /// START of this whole `ops` batch — never a sibling op's already-applied intermediate value,
 /// since the real repository loads each `Operation::Update`'s target fresh from the DB before

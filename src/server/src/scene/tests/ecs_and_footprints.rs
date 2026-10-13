@@ -731,7 +731,7 @@ fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new()
     }];
 
     // What the AUTHORITATIVE store reaches. Calls the hoisted rule
-    // (`command::apply_field_change`) that `apply_intent` Phase 2 itself calls, so
+    // (`command::apply_field_change`) that `apply_intent`'s apply pass itself calls, so
     // this oracle cannot drift from the store — hand-copying the remove/set branch
     // here would silently go stale the moment `apply_intent` changed. NOT tautological
     // with respect to what this test pins: reverting the ECS mirror to an

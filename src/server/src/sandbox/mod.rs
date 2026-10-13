@@ -191,16 +191,16 @@ struct ValidatedNode<'a> {
     name: Option<&'a str>,
 }
 
-/// Runs Phase 1's own pure structural validators against `doc` in place, in the EXACT order
-/// `SqliteRepository::apply_intent`'s Create and Update arms each run before their own Phase 2
+/// Runs the validation pass's own pure structural validators against `doc` in place, in the EXACT order
+/// `SqliteRepository::apply_intent`'s Create and Update arms each run before their own apply pass
 /// write: `validate_system_size`, `validate_property_overrides`, `validate_engine_tree`,
 /// `validate_system_size` again (the engine/note-derivation re-check both arms perform), then
 /// `validate_containment` and `validate_system_schema_tree` — every one of which already
 /// recurses `doc.embedded` on its own, so this runs once at the tree root, never per node.
-/// Returns Phase 1's own error on the first failure: a document that fails here would fail
-/// Phase 1 identically once it reaches the write transaction, so `validate_document` returns
+/// Returns the validation pass's own error on the first failure: a document that fails here would fail
+/// the validation pass identically once it reaches the write transaction, so `validate_document` returns
 /// before consulting any validator — a malformed submission never reaches, and never faults, a
-/// validator. Phase 1 inside the transaction re-runs this exact chain, unchanged, and remains
+/// validator. The validation pass inside the transaction re-runs this exact chain, unchanged, and remains
 /// the sole authority over what actually commits.
 fn validate_structural(doc: &mut Document, schemas: &[SchemaDeclaration]) -> Result<(), DataError> {
     validation::validate_system_size(doc)?;
@@ -235,7 +235,7 @@ fn collect_validated_nodes<'a>(
     }
 }
 
-/// First runs `validate_structural` (Phase 1's own pure structural chain) against `doc`,
+/// First runs `validate_structural` (the validation pass's own pure structural chain) against `doc`,
 /// returning its error untouched on failure without consulting any validator. Only a
 /// structurally valid `doc` reaches the wasm pass below: every matching enabled+opted-in
 /// validator, against `doc` and its embedded descendants, in ASCENDING module-id order —
