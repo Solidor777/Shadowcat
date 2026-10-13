@@ -30,7 +30,7 @@
 //! fails closed. If a signature changes, the dedicated-thread, process-object-list and
 //! aggregate-device-with-tap shape must be preserved.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -262,22 +262,26 @@ extern "C" fn tap_io_proc(
     if in_input_data.is_null() {
         return 0;
     }
-    // SAFETY: Core Audio guarantees a valid `AudioBufferList` for the lifetime of this call.
-    let list = unsafe { &*in_input_data };
-    // `number_buffers` counts the valid entries of the variable-length `buffers` array, so
-    // `buffers[0]` is readable only when it is at least 1.
-    if list.number_buffers == 0 {
+    // SAFETY: `in_input_data` is non-null and points at an `AudioBufferList` Core Audio keeps
+    // valid for the duration of this call. Only the `number_buffers` header field is read, through
+    // the raw pointer, so no reference to the whole struct forms: the storage of `buffers` is
+    // guaranteed only for its first `number_buffers` entries.
+    let number_buffers = unsafe { (*in_input_data).number_buffers };
+    if number_buffers == 0 {
         return 0;
     }
-    let buffer = &list.buffers[0];
-    if buffer.data.is_null() || buffer.data_byte_size == 0 {
+    // SAFETY: `number_buffers >= 1`, so the first `AudioBuffer` of `buffers` is inside the list;
+    // its two fields are copied out through the raw pointer.
+    let (data, data_byte_size) = unsafe {
+        let first = std::ptr::addr_of!((*in_input_data).buffers).cast::<AudioBuffer>();
+        ((*first).data, (*first).data_byte_size)
+    };
+    if data.is_null() || data_byte_size == 0 {
         return 0;
     }
     // SAFETY: `data`/`data_byte_size` together describe a valid, live `Float32` buffer for the
     // duration of this callback, per the `AudioDeviceIOProc` contract.
-    let samples = unsafe {
-        std::slice::from_raw_parts(buffer.data as *const u8, buffer.data_byte_size as usize)
-    };
+    let samples = unsafe { std::slice::from_raw_parts(data as *const u8, data_byte_size as usize) };
     let peak = samples
         .as_chunks::<4>()
         .0
@@ -510,7 +514,9 @@ fn run_process_tap_loop(
                     }
                 }
                 Err(failure) => {
-                    if !output_uid_failure_logged {
+                    if output_uid_failure_logged {
+                        tracing::debug!(%failure, "default system output device unreadable");
+                    } else {
                         tracing::warn!(%failure, "default system output device unreadable");
                     }
                     output_uid_failure_logged = true;
@@ -548,9 +554,9 @@ fn teardown_departed_taps(taps: &mut HashMap<i32, TapHandle>, live: &HashMap<i32
 
 /// Pure diff: which of the `present` (pid, process object id) taps no longer match `live`, either
 /// because the pid is absent or because it now enumerates under a different process object id (a
-/// tap built from the old id points at a different object than the live process). Split out from
-/// `teardown_departed_taps` so the "which taps get torn down" decision is unit-testable without a
-/// real Core Audio device/aggregate/tap to release.
+/// tap created from an object id that no longer names that pid is torn down and becomes eligible
+/// for a new tap). Split out from `teardown_departed_taps` so the "which taps get torn down"
+/// decision is unit-testable without a real Core Audio device/aggregate/tap to release.
 fn departed_pids(
     present: impl Iterator<Item = (i32, AudioObjectId)>,
     live: &HashMap<i32, AudioObjectId>,
@@ -568,7 +574,7 @@ fn untapped_processes(
     live: &HashMap<i32, AudioObjectId>,
     tapped: impl Iterator<Item = (i32, AudioObjectId)>,
 ) -> Vec<(i32, AudioObjectId)> {
-    let tapped: std::collections::HashSet<(i32, AudioObjectId)> = tapped.collect();
+    let tapped: HashSet<(i32, AudioObjectId)> = tapped.collect();
     let mut pairs: Vec<(i32, AudioObjectId)> = live
         .iter()
         .map(|(pid, object_id)| (*pid, *object_id))
@@ -669,10 +675,10 @@ fn new_ns_uuid(uuid_string: &str) -> Option<*mut c_void> {
 /// Builds a `CATapDescription` mixing down the audio of the process whose Core Audio process
 /// object id is `process_object_id`, with `tap_uuid` as the description's `UUID`, via
 /// hand-transcribed `objc_msgSend` calls (the module doc states why no Objective-C crate is
-/// used). `initStereoMixdownOfProcesses:` takes process `AudioObjectID`s, not pids. Every
-/// selector it sends is checked before `alloc`, and the `NSUUID` is built before `alloc`, so a
-/// failure on either leaves no description to release. Returns the owned Objective-C instance
-/// pointer, to be released with `release_objc_instance`.
+/// used). `initStereoMixdownOfProcesses:` takes process `AudioObjectID`s, not pids. The
+/// initializer and `setUUID:` selectors are checked before `alloc`, and the `NSUUID` is built
+/// before `alloc`, so a failure of either leaves no description to release. Returns the owned
+/// Objective-C instance pointer, to be released with `release_objc_instance`.
 fn build_stereo_mixdown_tap_description(
     process_object_id: AudioObjectId,
     tap_uuid: &str,

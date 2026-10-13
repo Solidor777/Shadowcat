@@ -56,7 +56,7 @@ fn departed_pids_reports_exactly_the_taps_missing_from_live() {
 }
 
 /// A pid that stays live but now enumerates under a different process object id is "departed":
-/// the tap built from the old id points at a different object than the live process.
+/// a tap created from an object id that no longer names that pid is torn down.
 #[test]
 fn departed_pids_reports_a_live_pid_whose_process_object_id_changed() {
     let live: HashMap<i32, u32> = [(7, 99), (8, 80)].into_iter().collect();
@@ -160,6 +160,21 @@ fn tap_retry_backoff_delays_a_failed_process_until_the_retry_delay_elapses() {
     assert!(
         backoff.should_attempt(key, start),
         "a pid now enumerating under another object id drops the old key's record"
+    );
+
+    assert!(backoff.record_failure(key, start));
+    let live_same: HashMap<i32, u32> = [(11, 110)].into_iter().collect();
+    backoff.retain_live(&live_same);
+    assert!(
+        !backoff.should_attempt(key, start),
+        "a pair still live under the same object id keeps its delay"
+    );
+
+    let empty: HashMap<i32, u32> = HashMap::new();
+    backoff.retain_live(&empty);
+    assert!(
+        backoff.should_attempt(key, start),
+        "a pid absent from the live map drops its record"
     );
 }
 
