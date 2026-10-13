@@ -34,7 +34,7 @@ export type InstalledModuleInfo = {
  */
 id: string, 
 /**
- * The raw module.json, byte-for-byte (the client's Zod schema reads it).
+ * The raw module manifest, byte-for-byte (the client's Zod schema reads it).
  */
 manifest: unknown, 
 /**
