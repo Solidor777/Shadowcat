@@ -561,3 +561,71 @@ async fn asset_without_sheet_round_trips_to_none_not_zeroed_fields() {
     let got = repo.get_asset(a.id).await.unwrap().unwrap();
     assert_eq!(got.meta.sheet, None);
 }
+
+/// Names spanning ASCII, non-ASCII uppercase and mixed scripts for the sort-key equivalence tests.
+const SORT_NAMES: &[&str] = &[
+    "Map.png",
+    "ÉCLAIR.png",
+    "Éclair",
+    "Élan",
+    "élan",
+    "Zürich",
+    "ΑΒΓ",
+    "İstanbul",
+    "straße",
+    "日本語",
+];
+
+#[tokio::test]
+async fn name_sort_key_of_equals_the_sql_lower_for_every_name() {
+    use crate::data::asset::query::{sort_key_of, AssetSort};
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    for name in SORT_NAMES {
+        let mut a = sample(world.id);
+        a.original_name = (*name).into();
+        let sql: String = sqlx::query_scalar("SELECT lower(?)")
+            .bind(*name)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(sort_key_of(&a, AssetSort::Name), sql, "name {name:?}");
+    }
+}
+
+#[tokio::test]
+async fn name_sort_cursor_walk_visits_every_non_ascii_row_once() {
+    use crate::data::asset::query::{sort_key_of, AssetCursor, AssetSort};
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    for (i, name) in SORT_NAMES.iter().enumerate() {
+        let mut a = sample(world.id);
+        a.original_name = (*name).into();
+        a.created_at = i as i64;
+        repo.insert_asset(&a).await.unwrap();
+    }
+    let mut visited = Vec::new();
+    let mut cursor: Option<AssetCursor> = None;
+    for _ in 0..=SORT_NAMES.len() {
+        let rows = repo
+            .query_assets(
+                world.id,
+                &AssetFilter::default(),
+                AssetSort::Name,
+                cursor.as_ref(),
+                1,
+            )
+            .await
+            .unwrap();
+        let Some(last) = rows.last() else { break };
+        cursor = Some(AssetCursor {
+            sort_key: sort_key_of(last, AssetSort::Name),
+            id: last.id,
+        });
+        visited.push(last.original_name.clone());
+    }
+    let mut want: Vec<String> = SORT_NAMES.iter().map(|s| (*s).to_string()).collect();
+    visited.sort();
+    want.sort();
+    assert_eq!(visited, want);
+}

@@ -408,3 +408,14 @@ async fn regex_page_filling_on_the_last_sql_page_still_returns_a_cursor() {
     let visited = walk_cursor_chain(&h, "limit=3&name_regex=hit").await;
     assert_eq!(visited, vec!["hit-1", "hit-4", "hit-5", "hit-6"]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn name_sort_cursor_chain_visits_every_non_ascii_uppercase_name_once() {
+    let h = spawn().await;
+    seed_named(&h, &["Éclair", "Élan", "Zed", "Álamo", "apple"]).await;
+    let mut visited = walk_cursor_chain(&h, "sort=name&limit=1").await;
+    visited.sort();
+    let mut want = vec!["Éclair", "Élan", "Zed", "Álamo", "apple"];
+    want.sort();
+    assert_eq!(visited, want);
+}

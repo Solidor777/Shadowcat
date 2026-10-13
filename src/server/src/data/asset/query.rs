@@ -153,7 +153,7 @@ pub enum AssetKind {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AssetSort {
-    /// `lower(original_name)`, then id.
+    /// `lower(original_name)`, then id. SQLite's `lower` folds ASCII letters only.
     Name,
     /// `created_at`, then id (the default).
     #[default]
@@ -276,6 +276,9 @@ pub struct AssetCursor {
 
 /// The sort key of `asset` under `sort`, in the textual form `AssetCursor` carries.
 ///
+/// The `AssetSort::Name` key is the ASCII-lowercased name, the same function as SQLite's `lower`
+/// in `AssetSort::sql_key`, so a cursor built from a row compares equal to that row's SQL key.
+///
 /// # Examples
 ///
 /// ```
@@ -303,7 +306,7 @@ pub struct AssetCursor {
 /// ```
 pub fn sort_key_of(asset: &super::Asset, sort: AssetSort) -> String {
     match sort {
-        AssetSort::Name => asset.original_name.to_lowercase(),
+        AssetSort::Name => asset.original_name.to_ascii_lowercase(),
         AssetSort::Created => asset.created_at.to_string(),
         AssetSort::Size => asset.byte_size.to_string(),
     }
