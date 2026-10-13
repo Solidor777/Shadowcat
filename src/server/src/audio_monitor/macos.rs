@@ -34,10 +34,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use core_foundation::array::CFArray;
-use core_foundation::base::TCFType;
+use core_foundation::base::{CFType, TCFType};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringRef};
 
 use super::{reduce_to_basename, MonitorError, SessionLevel, SessionMonitor};
 
@@ -49,7 +49,13 @@ const K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST: u32 = 0x70_72_73_23; // 'pr
 /// `kAudioProcessPropertyPID`'s numeric selector, the four-char code `'ppid'`. The object id
 /// Core Audio enumerates is its own opaque `AudioObjectID`, never a POSIX pid, so the pid is read
 /// back through this property before `proc_pidpath` can resolve it.
-const K_AUDIO_PROCESS_PROPERTY_PID: u32 = 0x70_70_69_64; // 'ppid'
+const K_AUDIO_PROCESS_PROPERTY_PID: u32 = 0x7070_6964; // 'ppid'
+/// `kAudioHardwarePropertyDefaultSystemOutputDevice`'s numeric selector, the four-char code
+/// `'sOut'`: the `AudioObjectID` of the output device the system uses for system sounds.
+const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE: u32 = 0x73_4f_75_74; // 'sOut'
+/// `kAudioDevicePropertyDeviceUID`'s numeric selector, the four-char code `'uid '` (trailing
+/// space): the device's persistent UID as a `CFString` the caller owns.
+const K_AUDIO_DEVICE_PROPERTY_DEVICE_UID: u32 = 0x75_69_64_20; // 'uid '
 /// The global audio-hardware object id every `AudioObjectGetPropertyData` call against a
 /// hardware-scoped selector targets.
 const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectId = 1;
@@ -70,6 +76,28 @@ struct AudioObjectPropertyAddress {
 const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = 0x676c_6f62;
 /// Core Audio's main (non-channel-specific) property element.
 const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
+
+/// `kAudioAggregateDeviceUIDKey`, `kAudioSubDeviceUIDKey` and `kAudioSubTapUIDKey`: all three
+/// Core Audio constants spell the string `"uid"`.
+const KEY_UID: &str = "uid";
+/// `kAudioAggregateDeviceNameKey`: the aggregate device's human-readable name.
+const KEY_NAME: &str = "name";
+/// `kAudioAggregateDeviceMainSubDeviceKey`: the UID of the sub-device that is the aggregate's
+/// time source.
+const KEY_MAIN_SUB_DEVICE: &str = "master";
+/// `kAudioAggregateDeviceIsPrivateKey`: `1` keeps the aggregate private to the creating process.
+const KEY_PRIVATE: &str = "private";
+/// `kAudioAggregateDeviceIsStackedKey`: `0` feeds every sub-device output stream the same data.
+const KEY_STACKED: &str = "stacked";
+/// `kAudioAggregateDeviceTapAutoStartKey`: non-zero makes `AudioDeviceStart` wait for the first
+/// tapped audio; the Core Audio header requires `KEY_PRIVATE` to accompany it.
+const KEY_TAP_AUTO_START: &str = "tapautostart";
+/// `kAudioAggregateDeviceSubDeviceListKey`: the array of sub-device description dictionaries.
+const KEY_SUB_DEVICE_LIST: &str = "subdevices";
+/// `kAudioAggregateDeviceTapListKey`: the array of sub-tap description dictionaries.
+const KEY_TAP_LIST: &str = "taps";
+/// `kAudioSubTapDriftCompensationKey`: non-zero enables drift compensation for the sub-tap.
+const KEY_DRIFT_COMPENSATION: &str = "drift";
 
 #[link(name = "CoreAudio", kind = "framework")]
 extern "C" {
@@ -393,14 +421,13 @@ fn run_process_tap_loop(
     let mut taps: HashMap<i32, TapHandle> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
-        let (result, pids) = enumerate_processes(&peaks);
-        let live: std::collections::HashSet<i32> = pids.into_iter().collect();
+        let (result, processes) = enumerate_processes(&peaks);
+        let live_objects: HashMap<i32, AudioObjectId> = processes.into_iter().collect();
+        let live: std::collections::HashSet<i32> = live_objects.keys().copied().collect();
         teardown_departed_taps(&mut taps, &live);
-        for pid in &live {
-            if !taps.contains_key(pid) {
-                if let Some(handle) = create_tap_for_pid(*pid) {
-                    taps.insert(*pid, handle);
-                }
+        for (pid, process_object_id) in untapped_processes(&live_objects, taps.keys().copied()) {
+            if let Some(handle) = create_tap_for_pid(pid, process_object_id) {
+                taps.insert(pid, handle);
             }
         }
         peaks
@@ -441,9 +468,26 @@ fn departed_pids(
     present.filter(|pid| !live.contains(pid)).collect()
 }
 
-/// Reads `pid`'s own `kAudioProcessPropertyPID` property off its Core Audio process object —
-/// the object id Core Audio enumerates is its own opaque id, never a pid, so this call is
-/// required before `proc_pidpath` can resolve anything real.
+/// Pure selection: the live processes, as (pid, process object id) pairs ordered by pid, whose
+/// pid is absent from `tapped`. Split out from `run_process_tap_loop` so the pid-to-object-id
+/// pairing handed to `create_tap_for_pid` is unit-testable without Core Audio.
+fn untapped_processes(
+    live: &HashMap<i32, AudioObjectId>,
+    tapped: impl Iterator<Item = i32>,
+) -> Vec<(i32, AudioObjectId)> {
+    let tapped: std::collections::HashSet<i32> = tapped.collect();
+    let mut pairs: Vec<(i32, AudioObjectId)> = live
+        .iter()
+        .filter(|(pid, _)| !tapped.contains(*pid))
+        .map(|(pid, object_id)| (*pid, *object_id))
+        .collect();
+    pairs.sort_unstable();
+    pairs
+}
+
+/// Reads a Core Audio process object's `kAudioProcessPropertyPID` property. The object id Core
+/// Audio enumerates is its own opaque id, never a pid, so this call is required before
+/// `proc_pidpath` can resolve anything real.
 fn read_process_pid(process_object_id: AudioObjectId) -> Option<i32> {
     let address = AudioObjectPropertyAddress {
         selector: K_AUDIO_PROCESS_PROPERTY_PID,
@@ -484,16 +528,66 @@ unsafe fn release_objc_instance(instance: *mut c_void) {
     }
 }
 
-/// Builds a `CATapDescription` mixing down `pid`'s own audio, via hand-transcribed
-/// `objc_msgSend` calls (the module doc states why no Objective-C crate is used). Returns the
+/// Returns the Objective-C selector registered under `name`, or `None` if `name` holds a NUL.
+fn registered_selector(name: &str) -> Option<*mut c_void> {
+    let name = CString::new(name).ok()?;
+    // SAFETY: `name` is NUL-terminated and alive across the call.
+    Some(unsafe { sel_registerName(name.as_ptr()) })
+}
+
+/// Returns a fresh upper-case hyphenated UUID string, the spelling `NSUUID`'s `UUIDString`
+/// produces. It is the tap description's `UUID` and the aggregate sub-tap's `uid`.
+fn new_tap_uuid() -> String {
+    uuid::Uuid::new_v4().to_string().to_uppercase()
+}
+
+/// Builds an `NSUUID` holding `uuid_string` through `initWithUUIDString:`. Returns the +1-owned
+/// instance, to be released with `release_objc_instance`, or `None` when the class or selector is
+/// absent or the string does not parse as a UUID.
+fn new_ns_uuid(uuid_string: &str) -> Option<*mut c_void> {
+    let class_name = CString::new("NSUUID").ok()?;
+    let init_sel = registered_selector("initWithUUIDString:")?;
+    let alloc_sel = registered_selector("alloc")?;
+    let uuid_string = CFString::new(uuid_string);
+    // SAFETY: `class` is null-checked before use as a receiver, `class_name` is NUL-terminated and
+    // alive across the lookup, and `uuid_string` stays alive until after the send.
+    // `class_respondsToSelector` confirms `initWithUUIDString:` exists; `objc_msg_send_1`
+    // reinterprets `objc_msgSend` as (receiver, selector, one object argument) returning an
+    // object, the shape of that initializer.
+    unsafe {
+        let class = objc_getClass(class_name.as_ptr());
+        if class.is_null() || class_respondsToSelector(class, init_sel) == 0 {
+            return None;
+        }
+        let instance = objc_msg_send_0(class, alloc_sel);
+        if instance.is_null() {
+            return None;
+        }
+        let initialized = objc_msg_send_1(
+            instance,
+            init_sel,
+            uuid_string.as_CFTypeRef() as *mut c_void,
+        );
+        (!initialized.is_null()).then_some(initialized)
+    }
+}
+
+/// Builds a `CATapDescription` mixing down the audio of the process whose Core Audio process
+/// object id is `process_object_id`, with `tap_uuid` as the description's `UUID`, via
+/// hand-transcribed `objc_msgSend` calls (the module doc states why no Objective-C crate is
+/// used). `initStereoMixdownOfProcesses:` takes process `AudioObjectID`s, not pids. Returns the
 /// owned Objective-C instance pointer, to be released with `release_objc_instance`.
-fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
+fn build_stereo_mixdown_tap_description(
+    process_object_id: AudioObjectId,
+    tap_uuid: &str,
+) -> Option<*mut c_void> {
     // SAFETY: `class` and `instance` are null-checked before they are used as receivers. Each
-    // `CString` name is NUL-terminated and alive across the call that takes its pointer. `pids`,
+    // `CString` name is NUL-terminated and alive across the call that takes its pointer. `ids`,
     // the `CFArray` passed to `initStereoMixdownOfProcesses:`, stays alive until after that send.
     // `objc_msg_send_1` reinterprets `objc_msgSend` as (receiver, selector, one object argument)
-    // returning an object; that is the shape this code assumes for the initializer, and
-    // `class_respondsToSelector` confirms the selector exists, not its signature.
+    // returning an object; that is the shape this code assumes for the initializer and for
+    // `setUUID:` (whose return value is ignored), and `class_respondsToSelector` confirms each
+    // selector exists, not its signature.
     unsafe {
         let class_name = CString::new("CATapDescription").ok()?;
         let class = objc_getClass(class_name.as_ptr());
@@ -516,22 +610,152 @@ fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
             release_objc_instance(instance);
             return None;
         }
-        let pid_number = CFNumber::from(pid);
-        let pids = CFArray::from_CFTypes(&[pid_number]);
-        let described = objc_msg_send_1(instance, init_sel, pids.as_CFTypeRef() as *mut c_void);
+        let ids = CFArray::from_CFTypes(&[CFNumber::from(i64::from(process_object_id))]);
+        let described = objc_msg_send_1(instance, init_sel, ids.as_CFTypeRef() as *mut c_void);
         if described.is_null() {
             return None;
         }
+        let Some(set_uuid_sel) = registered_selector("setUUID:") else {
+            release_objc_instance(described);
+            return None;
+        };
+        if class_respondsToSelector(class, set_uuid_sel) == 0 {
+            release_objc_instance(described);
+            return None;
+        }
+        let Some(ns_uuid) = new_ns_uuid(tap_uuid) else {
+            release_objc_instance(described);
+            return None;
+        };
+        // `UUID` is a `copy` property: the description keeps its own copy, so `ns_uuid` is
+        // released right after the send.
+        objc_msg_send_1(described, set_uuid_sel, ns_uuid);
+        release_objc_instance(ns_uuid);
         Some(described)
     }
 }
 
-/// Attempts to create a full tap → aggregate-device → running-IO-proc chain for `pid`.
-/// Returns `None` on any negotiation failure — a single process's tap failing must never take
-/// down the whole enumeration loop, mirroring the Linux backend's per-node
-/// `attach_monitor_stream` failure shape.
-fn create_tap_for_pid(pid: i32) -> Option<TapHandle> {
-    let description = build_stereo_mixdown_tap_description(pid)?;
+/// Reads the persistent UID string of the system's default system-output device, the sub-device
+/// the aggregate takes its clock from. Returns `None` when either property read fails or yields
+/// no device.
+fn read_default_system_output_uid() -> Option<String> {
+    let device_address = AudioObjectPropertyAddress {
+        selector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
+        scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut device_id: AudioObjectId = 0;
+    let mut size = std::mem::size_of::<AudioObjectId>() as u32;
+    // SAFETY: `device_id` is a valid `AudioObjectId` out-param sized exactly to `size`.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            K_AUDIO_OBJECT_SYSTEM_OBJECT,
+            &device_address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut device_id as *mut AudioObjectId as *mut c_void,
+        )
+    };
+    if status != 0 || device_id == 0 {
+        return None;
+    }
+
+    let uid_address = AudioObjectPropertyAddress {
+        selector: K_AUDIO_DEVICE_PROPERTY_DEVICE_UID,
+        scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut uid_ref: CFStringRef = std::ptr::null();
+    let mut size = std::mem::size_of::<CFStringRef>() as u32;
+    // SAFETY: `uid_ref` is a valid pointer-sized out-param sized exactly to `size`.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            device_id,
+            &uid_address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut uid_ref as *mut CFStringRef as *mut c_void,
+        )
+    };
+    if status != 0 || uid_ref.is_null() {
+        return None;
+    }
+    // SAFETY: a successful read of `kAudioDevicePropertyDeviceUID` hands the caller one owned
+    // reference to the `CFString`, which the create rule adopts.
+    Some(unsafe { CFString::wrap_under_create_rule(uid_ref) }.to_string())
+}
+
+/// Builds the `AudioHardwareCreateAggregateDevice` description of a private aggregate device
+/// named and identified `shadowcat-tap-{pid}`. Its time source is the sub-device `output_uid`,
+/// and its one sub-tap has `uid` `tap_uuid` (the tap description's `UUID`) with drift
+/// compensation enabled.
+fn aggregate_description(
+    pid: i32,
+    output_uid: &str,
+    tap_uuid: &str,
+) -> CFDictionary<CFType, CFType> {
+    let aggregate_uid = format!("shadowcat-tap-{pid}");
+    let sub_device = CFDictionary::from_CFType_pairs(&[(
+        CFString::new(KEY_UID).as_CFType(),
+        CFString::new(output_uid).as_CFType(),
+    )]);
+    let sub_tap = CFDictionary::from_CFType_pairs(&[
+        (
+            CFString::new(KEY_UID).as_CFType(),
+            CFString::new(tap_uuid).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_DRIFT_COMPENSATION).as_CFType(),
+            CFNumber::from(1i32).as_CFType(),
+        ),
+    ]);
+    CFDictionary::from_CFType_pairs(&[
+        (
+            CFString::new(KEY_NAME).as_CFType(),
+            CFString::new(&aggregate_uid).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_UID).as_CFType(),
+            CFString::new(&aggregate_uid).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_MAIN_SUB_DEVICE).as_CFType(),
+            CFString::new(output_uid).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_PRIVATE).as_CFType(),
+            CFNumber::from(1i32).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_STACKED).as_CFType(),
+            CFNumber::from(0i32).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_TAP_AUTO_START).as_CFType(),
+            CFNumber::from(1i32).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_SUB_DEVICE_LIST).as_CFType(),
+            CFArray::from_CFTypes(&[sub_device]).as_CFType(),
+        ),
+        (
+            CFString::new(KEY_TAP_LIST).as_CFType(),
+            CFArray::from_CFTypes(&[sub_tap]).as_CFType(),
+        ),
+    ])
+}
+
+/// Attempts to create a full tap → aggregate-device → running-IO-proc chain for the process with
+/// POSIX pid `pid` and Core Audio process object id `process_object_id`. Returns `None` on any
+/// negotiation failure — a single process's tap failing must never take down the whole
+/// enumeration loop, mirroring the Linux backend's per-node `attach_monitor_stream` failure
+/// shape.
+fn create_tap_for_pid(pid: i32, process_object_id: AudioObjectId) -> Option<TapHandle> {
+    let output_uid = read_default_system_output_uid()?;
+    let tap_uuid = new_tap_uuid();
+    let description = build_stereo_mixdown_tap_description(process_object_id, &tap_uuid)?;
     let mut tap_id: AudioObjectId = 0;
     // SAFETY: `description` is a live, owned `CATapDescription*` from the call above;
     // `tap_id` is a valid `AudioObjectID` out-param.
@@ -545,23 +769,7 @@ fn create_tap_for_pid(pid: i32) -> Option<TapHandle> {
         return None;
     }
 
-    let uid = CFString::new(&format!("shadowcat-tap-{pid}"));
-    let is_private = CFNumber::from(1i32);
-    let auto_start = CFNumber::from(1i32);
-    let sub_tap = CFDictionary::from_CFType_pairs(&[(
-        CFString::new("uid").as_CFType(),
-        uid.clone().as_CFType(),
-    )]);
-    let tap_list = CFArray::from_CFTypes(&[sub_tap]);
-    let description_dict = CFDictionary::from_CFType_pairs(&[
-        (CFString::new("uid").as_CFType(), uid.as_CFType()),
-        (CFString::new("private").as_CFType(), is_private.as_CFType()),
-        (
-            CFString::new("tapautostart").as_CFType(),
-            auto_start.as_CFType(),
-        ),
-        (CFString::new("taps").as_CFType(), tap_list.as_CFType()),
-    ]);
+    let description_dict = aggregate_description(pid, &output_uid, &tap_uuid);
 
     let mut aggregate_id: AudioObjectId = 0;
     // SAFETY: `description_dict` is a live `CFDictionaryRef` for the duration of this call;
@@ -616,14 +824,20 @@ fn create_tap_for_pid(pid: i32) -> Option<TapHandle> {
     })
 }
 
+/// The result of one `enumerate_processes` pass: the per-process levels, and every resolved
+/// (pid, process object id) pair.
+type ProcessScan = (
+    Result<Vec<SessionLevel>, MonitorError>,
+    Vec<(i32, AudioObjectId)>,
+);
+
 /// One enumeration pass: `kAudioHardwarePropertyProcessObjectList` -> real pid per object (via
 /// `read_process_pid`) -> `proc_pidpath` reduced to a basename, with `peak` read from `peaks`
 /// (populated by each tap's `tap_io_proc` callback) and reset for the next window, mirroring
-/// the Linux backend's window-reset shape. Also returns every resolved pid, so
-/// `run_process_tap_loop` can diff live taps against the current process set.
-fn enumerate_processes(
-    peaks: &Arc<Mutex<HashMap<i32, f32>>>,
-) -> (Result<Vec<SessionLevel>, MonitorError>, Vec<i32>) {
+/// the Linux backend's window-reset shape. Also returns every resolved (pid, process object id)
+/// pair, so `run_process_tap_loop` can diff live taps against the current process set and hand
+/// each new tap its process object id.
+fn enumerate_processes(peaks: &Arc<Mutex<HashMap<i32, f32>>>) -> ProcessScan {
     let address = AudioObjectPropertyAddress {
         selector: K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST,
         scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
@@ -671,7 +885,7 @@ fn enumerate_processes(
     }
 
     let mut levels = Vec::new();
-    let mut pids = Vec::new();
+    let mut processes = Vec::new();
     for id in ids {
         let Some(pid) = read_process_pid(id) else {
             continue;
@@ -687,13 +901,13 @@ fn enumerate_processes(
             .ok()
             .and_then(|mut guard| guard.insert(pid, 0.0))
             .unwrap_or(0.0);
-        pids.push(pid);
+        processes.push((pid, id));
         levels.push(SessionLevel {
             process: reduce_to_basename(&path),
             peak,
         });
     }
-    (Ok(levels), pids)
+    (Ok(levels), processes)
 }
 
 #[cfg(test)]
