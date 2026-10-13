@@ -32,14 +32,14 @@ use crate::ws::room::Room;
 
 /// Process-wide registry of per-URL fetch locks, keyed by the URL a persisted
 /// `link_preview_cache` row is stored under. `resolve_preview_image` keys on the job's
-/// `cache_urls` and `resolve_thumbnail_asset`/`resolve_inline_image` on the image URL, so two
-/// concurrent post-publish jobs racing on a shared key run one after the other, and the second
-/// reads the asset id the first recorded instead of creating an orphaned `Asset` row and file
-/// (see `with_preview_url_locks` for the concurrency argument, including why an entry is removed
-/// without a race). The map has the keyed-registry shape of `ws::room::RoomRegistry.rooms`. That
-/// map holds one entry per world, while this one would gain an entry for every distinct
-/// link-preview URL seen, so `release_preview_lock` removes an entry once its last holder
-/// releases.
+/// `cache_urls` and `preview_url` and `resolve_thumbnail_asset`/`resolve_inline_image` on the
+/// image URL, so two concurrent post-publish jobs racing on a shared key run one after the other,
+/// and the second reads the asset id the first recorded instead of creating an orphaned `Asset`
+/// row and file (see `with_preview_url_locks` for the concurrency argument, including why an
+/// entry is removed without a race). The map has the keyed-registry shape of
+/// `ws::room::RoomRegistry.rooms`. That map holds one entry per world, while this one would gain
+/// an entry for every distinct link-preview URL seen, so `release_preview_lock` removes an entry
+/// once its last holder releases.
 pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 
 /// Runs `f` while holding the lock of every distinct key in `keys`, get-or-inserting a fresh
@@ -163,6 +163,10 @@ pub enum PendingEnrichment {
         /// `cache_urls` entry whenever the fetch's final address differs from the extracted
         /// href.
         preview_url: String,
+        /// The `title` of that segment, stored on the `preview_url` row when none exists.
+        title: String,
+        /// The `description` of that segment, stored on the `preview_url` row when none exists.
+        description: String,
         /// The extracted (not yet fetched) image URL.
         image_url: String,
     },
@@ -429,8 +433,21 @@ async fn resolve_job(
         PendingEnrichment::PreviewImage {
             cache_urls,
             preview_url,
+            title,
+            description,
             image_url,
-        } => resolve_preview_image(deps, world_id, cache_urls, preview_url, image_url).await,
+        } => {
+            resolve_preview_image(
+                deps,
+                world_id,
+                cache_urls,
+                preview_url,
+                title,
+                description,
+                image_url,
+            )
+            .await
+        }
         PendingEnrichment::OEmbed { post_url, provider } => {
             resolve_oembed(deps, world_id, post_url, provider).await
         }
@@ -448,11 +465,13 @@ async fn resolve_job(
 /// miss, fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
 /// (`link_preview::fetch_image_bytes`), asset-ifies it via `create_asset_from_bytes`
 /// (`created_by: None`: no user account backs a server-fetched image), and records the asset id
-/// on the rows that exist and hold no id, so the patched segment carries the job's asset even
-/// when a write that does not take the lock recorded another id on a row first. Holds
-/// `write_barrier`'s read side around the asset commit, as `http::assets::upload`/`replace`/
-/// `delete` do: this commit runs from the post-publish job rather than an HTTP handler, so it
-/// joins the same exclusion or an in-server backup's file copy could race a half-committed
+/// on the rows that hold no id, so the patched segment carries the job's asset even when a write
+/// that does not take the lock recorded another id on a row first; that row keeps its id. A
+/// `preview_url` row that does not exist is first created from the job's `title` and
+/// `description` (a failed write is logged), so a later post of that address reuses the asset.
+/// Holds `write_barrier`'s read side around the asset commit, as `http::assets::upload`/
+/// `replace`/`delete` do: this commit runs from the post-publish job rather than an HTTP handler,
+/// so it joins the same exclusion or an in-server backup's file copy could race a half-committed
 /// asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
 /// the rows' URLs (see `with_preview_url_locks`), so when the first of two concurrent jobs
 /// sharing a row succeeds, the second finds its recorded asset id instead of creating another
@@ -462,6 +481,8 @@ async fn resolve_preview_image(
     world_id: Uuid,
     cache_urls: Vec<String>,
     preview_url: String,
+    title: String,
+    description: String,
     image_url: String,
 ) -> Option<ResolvedEnrichment> {
     let FetchDeps {
@@ -491,6 +512,25 @@ async fn resolve_preview_image(
                     }
                     None => unset.push(cache_url),
                 },
+                Ok(None) if *cache_url == preview_url => {
+                    // The row is created from the preview the job carries, so a later post of
+                    // the landed address reads the recorded asset instead of fetching it again.
+                    let now_ms = crate::ws::time::now_millis();
+                    match repo
+                        .upsert_link_preview_cache(
+                            cache_url,
+                            Some(&title),
+                            Some(&description),
+                            now_ms,
+                        )
+                        .await
+                    {
+                        Ok(()) => unset.push(cache_url),
+                        Err(e) => {
+                            tracing::warn!(?e, %cache_url, "link-preview cache persist failed");
+                        }
+                    }
+                }
                 _ => unset.push(cache_url),
             }
         }
@@ -534,11 +574,11 @@ async fn resolve_preview_image(
     .await
 }
 
-/// Records `asset_id` on the `link_preview_cache` row of each of `cache_urls` that has no asset
+/// Records `asset_id` on the `link_preview_cache` row of each of `row_urls` that has no asset
 /// id yet (`set_link_preview_cache_image` leaves an existing id); a failed write is logged and the
 /// remaining rows are still written.
-async fn record_preview_image(repo: &SqliteRepository, cache_urls: Vec<&String>, asset_id: Uuid) {
-    for cache_url in cache_urls {
+async fn record_preview_image(repo: &SqliteRepository, row_urls: Vec<&String>, asset_id: Uuid) {
+    for cache_url in row_urls {
         if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {
             tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
         }

@@ -148,6 +148,8 @@ async fn resolve_preview_image_cache_hit_skips_network_fetch() {
         world.id,
         vec![preview_url.to_string()],
         preview_url.to_string(),
+        String::new(),
+        String::new(),
         "https://cached.example/og.png".to_string(),
     )
     .await
@@ -205,6 +207,8 @@ async fn resolve_preview_image_cache_miss_fetches_and_creates_asset() {
         world.id,
         vec![preview_url.to_string()],
         preview_url.to_string(),
+        String::new(),
+        String::new(),
         image_url,
     )
     .await
@@ -263,6 +267,8 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
         world.id,
         vec![cache_url.to_string()],
         preview_url.to_string(),
+        String::new(),
+        String::new(),
         format!("http://stub.test:{port}/img.png"),
     )
     .await
@@ -284,10 +290,12 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
         .unwrap()
         .unwrap();
     assert_eq!(row.image_asset_id, Some(asset_id));
-    assert_eq!(
-        repo.get_link_preview_cache(preview_url).await.unwrap(),
-        None
-    );
+    let landed = repo
+        .get_link_preview_cache(preview_url)
+        .await
+        .unwrap()
+        .expect("the landed address row is created");
+    assert_eq!(landed.image_asset_id, Some(asset_id));
 
     // A second message reaching the same candidate hits the persisted row and never fetches:
     // the client below cannot reach any image host.
@@ -301,6 +309,8 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
         world.id,
         vec![cache_url.to_string()],
         preview_url.to_string(),
+        String::new(),
+        String::new(),
         "https://unreachable.example/img.png".to_string(),
     )
     .await
@@ -611,6 +621,8 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
     let jobs = vec![PendingEnrichment::PreviewImage {
         cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
+        title: String::new(),
+        description: String::new(),
         image_url: "https://match.example/og.png".into(),
     }];
     // Pre-seed the persisted cache row so resolution never touches the
@@ -704,6 +716,8 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
     let jobs = vec![PendingEnrichment::PreviewImage {
         cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
+        title: String::new(),
+        description: String::new(),
         image_url: "https://match.example/og.png".into(),
     }];
     repo.upsert_link_preview_cache("https://match.example/", None, None, 0)
@@ -833,6 +847,8 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
     let jobs = vec![PendingEnrichment::PreviewImage {
         cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
+        title: String::new(),
+        description: String::new(),
         image_url: "https://match.example/og.png".into(),
     }];
     repo.upsert_link_preview_cache("https://match.example/", None, None, 0)
@@ -1094,6 +1110,8 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
                 world_id,
                 vec![preview_url.clone()],
                 preview_url,
+                String::new(),
+                String::new(),
                 image_url,
             )
             .await
@@ -1113,6 +1131,8 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
                 world_id,
                 vec![preview_url.clone()],
                 preview_url,
+                String::new(),
+                String::new(),
                 image_url,
             )
             .await
@@ -1199,6 +1219,8 @@ async fn preview_fetch_locks_does_not_retain_entries_after_resolvers_complete() 
             world.id,
             vec![preview_url.clone()],
             preview_url,
+            String::new(),
+            String::new(),
             image_url,
         )
         .await
@@ -1330,6 +1352,8 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
         vec![PendingEnrichment::PreviewImage {
             cache_urls: cache_urls.clone(),
             preview_url: preview_url.into(),
+            title: String::new(),
+            description: String::new(),
             image_url: format!("http://stub.test:{port}/img.png"),
         }],
     )
@@ -1354,10 +1378,15 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
             "the row of {cache_url} receives the asset id"
         );
     }
+    let landed = repo
+        .get_link_preview_cache(preview_url)
+        .await
+        .unwrap()
+        .expect("the preview url row is created");
     assert_eq!(
-        repo.get_link_preview_cache(preview_url).await.unwrap(),
-        None,
-        "no row is written under the preview url"
+        landed.image_asset_id,
+        Some(assets[0].id),
+        "the preview url row receives the asset id"
     );
     let stored = repo.get_document(message_id).await.unwrap().unwrap();
     let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
@@ -1420,6 +1449,8 @@ async fn resolve_preview_image_propagates_a_known_asset_id_to_the_candidates_lac
         world.id,
         vec![lacking.to_string(), known.to_string()],
         "https://landed.example/".to_string(),
+        String::new(),
+        String::new(),
         "https://unreachable.example/img.png".to_string(),
     )
     .await
@@ -1505,6 +1536,8 @@ async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetche
         world.id,
         vec![cache_url.to_string()],
         cache_url.to_string(),
+        String::new(),
+        String::new(),
         format!("http://stub.test:{port}/img.png"),
     )
     .await
@@ -1554,6 +1587,8 @@ async fn resolve_preview_image_reuses_an_asset_recorded_on_the_landed_address_ro
         world.id,
         vec![candidate.to_string()],
         landed.to_string(),
+        String::new(),
+        String::new(),
         "https://unreachable.example/img.png".to_string(),
     )
     .await
@@ -1612,6 +1647,8 @@ async fn resolve_preview_image_records_a_new_asset_on_a_landed_address_row_witho
         world.id,
         vec![candidate.to_string()],
         landed.to_string(),
+        String::new(),
+        String::new(),
         format!("http://stub.test:{port}/img.png"),
     )
     .await
@@ -1623,6 +1660,91 @@ async fn resolve_preview_image_records_a_new_asset_on_a_landed_address_row_witho
         let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
         assert_eq!(row.image_asset_id, Some(asset_id), "{url}");
     }
+}
+
+/// A job whose landed address has no row creates it from the preview the job carries and records
+/// the new asset on it, so a later post of the landed address reuses that asset without a fetch.
+#[tokio::test]
+async fn resolve_preview_image_creates_the_landed_address_row_that_a_later_post_reuses() {
+    let router = Router::new().route(
+        "/img.png",
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                vec![7u8, 7, 7],
+            )
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let candidate = "https://posted.example/short";
+    let landed = "https://landed.example/final";
+    repo.upsert_link_preview_cache(candidate, Some("T"), Some("D"), 0)
+        .await
+        .unwrap();
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let root = tempfile::tempdir().unwrap();
+    let locks = test_preview_fetch_locks();
+    let first = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            locks.clone(),
+        ),
+        world.id,
+        vec![candidate.to_string()],
+        landed.to_string(),
+        "MOCK_TITLE".to_string(),
+        "MOCK_DESCRIPTION".to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("a miss fetches and creates an asset");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = first else {
+        panic!("expected ImageForPreview");
+    };
+    let row = repo
+        .get_link_preview_cache(landed)
+        .await
+        .unwrap()
+        .expect("the landed address row exists");
+    assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    assert_eq!(row.description.as_deref(), Some("MOCK_DESCRIPTION"));
+    assert_eq!(row.image_asset_id, Some(asset_id));
+
+    let later = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            Arc::new(build_link_preview_client()),
+            root.path().to_path_buf(),
+            locks,
+        ),
+        world.id,
+        vec![landed.to_string()],
+        landed.to_string(),
+        String::new(),
+        String::new(),
+        "https://unreachable.example/img.png".to_string(),
+    )
+    .await
+    .expect("the landed row's asset resolves without a fetch");
+    let ResolvedEnrichment::ImageForPreview {
+        asset_id: reused, ..
+    } = later
+    else {
+        panic!("expected ImageForPreview");
+    };
+    assert_eq!(reused, asset_id);
+    assert_eq!(repo.list_assets_by_world(world.id).await.unwrap().len(), 1);
 }
 
 /// Callers whose key sets overlap and list the shared keys in opposite orders all complete, and

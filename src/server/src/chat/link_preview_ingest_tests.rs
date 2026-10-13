@@ -361,6 +361,8 @@ async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candi
     let PendingEnrichment::PreviewImage {
         cache_urls,
         preview_url,
+        title,
+        description,
         ..
     } = &pending[0]
     else {
@@ -373,7 +375,17 @@ async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candi
     );
     let sys = f.stored_engine(&cmd).await;
     match sys.content.last() {
-        Some(Segment::LinkPreview { url, .. }) => assert_eq!(url, preview_url),
+        Some(Segment::LinkPreview {
+            url,
+            title: segment_title,
+            description: segment_description,
+            ..
+        }) => {
+            assert_eq!(url, preview_url);
+            assert_eq!(segment_title, title);
+            assert_eq!(segment_description, description);
+            assert_eq!(title, "Landed");
+        }
         other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
     }
     assert!(

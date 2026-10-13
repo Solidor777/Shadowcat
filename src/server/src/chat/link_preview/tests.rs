@@ -1080,6 +1080,53 @@ async fn cached_or_fetch_cold_start_falls_through_to_persisted_row() {
     assert_eq!(second, first);
 }
 
+/// A persisted-row read failure on an in-memory miss reads as a miss.
+#[tokio::test]
+async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE link_preview_cache")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let result = cached_or_fetch(
+        &repo,
+        &LinkPreviewCache::new(),
+        "https://unreadable.example/",
+        Instant::now(),
+        1_000,
+    )
+    .await;
+    assert_eq!(result, None);
+}
+
+/// A persisted-row read failure behind an in-memory hit without an asset id leaves the hit as
+/// cached.
+#[tokio::test]
+async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE link_preview_cache")
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let cache = LinkPreviewCache::new();
+    let now = Instant::now();
+    let url = "https://unreadable-hit.example/";
+    let preview = LinkPreview {
+        url: url.to_string(),
+        title: "t".to_string(),
+        description: "d".to_string(),
+        image_url: None,
+        image_asset_id: None,
+    };
+    cache.insert(url.to_string(), Some(preview.clone()), now);
+    let result = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+    assert_eq!(result, Some(Some(preview)));
+}
+
 #[tokio::test]
 async fn cached_or_fetch_ttl_expired_persisted_row_falls_through_to_miss() {
     let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")

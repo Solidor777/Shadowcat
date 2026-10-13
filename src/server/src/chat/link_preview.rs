@@ -379,8 +379,8 @@ pub async fn enrich(
     }
 
     previews.sort_by_key(|(index, _, _)| *index);
-    // Candidates ending on an address a persisted row already has an asset for reuse that asset
-    // instead of queueing a job that fetches and asset-ifies the image again.
+    // A candidate whose preview ended on an address that another preview of this message already
+    // has an asset id for reuses that id instead of queueing a job.
     let mut known_assets: std::collections::HashMap<String, Uuid> =
         std::collections::HashMap::new();
     for (_, _, preview) in &previews {
@@ -416,6 +416,8 @@ pub async fn enrich(
             pending.push(PendingEnrichment::PreviewImage {
                 cache_urls: Vec::new(),
                 preview_url: preview.url.clone(),
+                title: preview.title.clone(),
+                description: preview.description.clone(),
                 image_url: image_url.clone(),
             });
         }
