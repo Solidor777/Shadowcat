@@ -842,8 +842,8 @@ pub trait Repository: Send + Sync {
     ) -> Result<(), DataError>;
 
     /// Sets `image_asset_id` on an EXISTING `url` row of `world_id` that has none (a no-op if
-    /// the row is absent, and a no-op if it already holds an id, so concurrent writers leave the
-    /// first id in place).
+    /// the row is absent, a no-op if it already holds an id, so concurrent writers leave the
+    /// first id in place, and a no-op if the asset does not exist in `world_id`).
     ///
     /// # Examples
     ///

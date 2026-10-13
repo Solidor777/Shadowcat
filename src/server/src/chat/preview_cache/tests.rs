@@ -150,3 +150,60 @@ fn rate_limiter_allows_up_to_per_min_then_rejects_and_recovers() {
     let recovered_at = last_hit + 60_001;
     assert!(lim.check(u, recovered_at, PREVIEW_FETCH_PER_MIN));
 }
+
+/// The sweep deletes imageless rows past `POSITIVE_TTL` and keeps fresh rows and imaged rows.
+#[tokio::test]
+async fn sweep_deletes_only_expired_imageless_rows() {
+    use crate::data::asset::{Asset, AssetMeta};
+    use crate::data::sqlite::SqliteRepository;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = repo.create_world("w", 0).await.unwrap().id;
+    let now_ms: i64 = 10 * POSITIVE_TTL.as_millis() as i64;
+    let stale_ms = now_ms - POSITIVE_TTL.as_millis() as i64 - 1;
+    let fresh_ms = now_ms - POSITIVE_TTL.as_millis() as i64 + 1;
+    let asset = Uuid::new_v4();
+    repo.insert_asset(&Asset {
+        id: asset,
+        world_id: world,
+        storage_key: format!("{world}/{asset}"),
+        original_name: "preview.png".to_string(),
+        content_type: "image/png".to_string(),
+        byte_size: 10,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: AssetMeta::unprocessed("image/png", 1),
+    })
+    .await
+    .unwrap();
+    for (url, at) in [
+        ("https://stale.example/", stale_ms),
+        ("https://fresh.example/", fresh_ms),
+        ("https://imaged.example/", stale_ms),
+    ] {
+        repo.upsert_link_preview_cache(world, url, Some("t"), Some("d"), at)
+            .await
+            .unwrap();
+    }
+    repo.set_link_preview_cache_image(world, "https://imaged.example/", asset)
+        .await
+        .unwrap();
+
+    let deleted = sweep_expired_link_previews(repo.pool(), now_ms)
+        .await
+        .unwrap();
+
+    assert_eq!(deleted, 1);
+    for (url, kept) in [
+        ("https://stale.example/", false),
+        ("https://fresh.example/", true),
+        ("https://imaged.example/", true),
+    ] {
+        let row = repo.get_link_preview_cache(world, url).await.unwrap();
+        assert_eq!(row.is_some(), kept, "{url}");
+    }
+}

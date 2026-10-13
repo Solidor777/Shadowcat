@@ -1105,8 +1105,7 @@ async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
     assert_eq!(result, None);
 }
 
-/// A persisted-row read failure behind an in-memory hit without an asset id leaves the hit as
-/// cached.
+/// A persisted-row read failure behind an in-memory hit leaves the hit as cached.
 #[tokio::test]
 async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() {
     let (repo, world_id) = repo_and_world().await;
@@ -1127,6 +1126,113 @@ async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() 
     cache.insert(world_id, url.to_string(), Some(preview.clone()), now);
     let result = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
     assert_eq!(result, Some(Some(preview)));
+}
+
+/// Inserts a minimal asset row in `world_id` and returns its id.
+async fn insert_test_asset(repo: &crate::data::sqlite::SqliteRepository, world_id: Uuid) -> Uuid {
+    let id = Uuid::new_v4();
+    repo.insert_asset(&crate::data::asset::Asset {
+        id,
+        world_id,
+        storage_key: format!("{world_id}/{id}"),
+        original_name: "preview.png".to_string(),
+        content_type: "image/png".to_string(),
+        byte_size: 10,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// An in-memory hit that carries an asset id takes the persisted row's current id: once the
+/// asset is deleted the row's column is null, and the hit no longer names the deleted asset.
+#[tokio::test]
+async fn cached_or_fetch_memory_hit_drops_a_deleted_asset_id() {
+    let (repo, world_id) = repo_and_world().await;
+    let url = "https://deleted-asset.example/";
+    let asset = insert_test_asset(&repo, world_id).await;
+    repo.upsert_link_preview_cache(world_id, url, Some("t"), Some("d"), 1_000)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(world_id, url, asset)
+        .await
+        .unwrap();
+    let cache = LinkPreviewCache::new();
+    let now = Instant::now();
+    let first = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.image_asset_id, Some(asset));
+
+    repo.delete_asset(asset).await.unwrap();
+    let second = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.image_asset_id, None);
+}
+
+/// An in-memory hit carrying an asset id whose persisted row is absent has no asset.
+#[tokio::test]
+async fn cached_or_fetch_memory_hit_without_a_row_has_no_asset() {
+    let (repo, world_id) = repo_and_world().await;
+    let url = "https://no-row.example/";
+    let cache = LinkPreviewCache::new();
+    let now = Instant::now();
+    let preview = LinkPreview {
+        url: url.to_string(),
+        title: "t".to_string(),
+        description: "d".to_string(),
+        image_url: None,
+        image_asset_id: Some(Uuid::new_v4()),
+    };
+    cache.insert(world_id, url.to_string(), Some(preview), now);
+    let hit = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hit.image_asset_id, None);
+}
+
+/// `set_link_preview_cache_image` records only an asset of the row's own world.
+#[tokio::test]
+async fn set_link_preview_cache_image_ignores_a_foreign_world_asset() {
+    let (repo, world_a) = repo_and_world().await;
+    let world_b = repo.create_world("b", 0).await.unwrap().id;
+    let url = "https://foreign-asset.example/";
+    let foreign = insert_test_asset(&repo, world_b).await;
+    let own = insert_test_asset(&repo, world_a).await;
+    repo.upsert_link_preview_cache(world_a, url, Some("t"), Some("d"), 1_000)
+        .await
+        .unwrap();
+
+    repo.set_link_preview_cache_image(world_a, url, foreign)
+        .await
+        .unwrap();
+    let row = repo
+        .get_link_preview_cache(world_a, url)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, None);
+
+    repo.set_link_preview_cache_image(world_a, url, own)
+        .await
+        .unwrap();
+    let row = repo
+        .get_link_preview_cache(world_a, url)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, Some(own));
 }
 
 #[tokio::test]

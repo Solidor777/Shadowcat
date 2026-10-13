@@ -1,4 +1,5 @@
-//! This module holds the link-preview fetcher's per-URL result cache and per-user rate limiter.
+//! This module holds the link-preview fetcher's per-(world, URL) result cache and per-user rate
+//! limiter.
 //!
 //! It is separate from `link_preview` because the cache has NO SSRF-guard responsibility of its
 //! own: it stores outcomes the guarded fetcher produced and the outcomes `cached_or_fetch`
@@ -119,6 +120,26 @@ impl LinkPreviewCache {
         }
         g.insert(key, (now, result));
     }
+}
+
+/// Deletes persisted `link_preview_cache` rows with no asset whose `fetched_at` is more than
+/// `POSITIVE_TTL` before `now_ms`, returning the number deleted. A row past its TTL is already a
+/// miss in `cached_or_fetch`; the delete bounds table growth. A row
+/// holding an `image_asset_id` stays: it carries the asset a later message reuses, and once the
+/// asset is deleted the column is null and the row is swept like any other.
+pub(crate) async fn sweep_expired_link_previews(
+    pool: &sqlx::SqlitePool,
+    now_ms: i64,
+) -> Result<u64, sqlx::Error> {
+    let cutoff = now_ms - POSITIVE_TTL.as_millis() as i64;
+    let res = sqlx::query(
+        "DELETE FROM link_preview_cache \
+         WHERE image_asset_id IS NULL AND CAST(fetched_at AS INTEGER) < ?",
+    )
+    .bind(cutoff)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
 }
 
 #[cfg(test)]

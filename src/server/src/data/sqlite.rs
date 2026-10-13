@@ -556,11 +556,14 @@ impl SqliteRepository {
     ) -> Result<(), DataError> {
         sqlx::query(
             "UPDATE link_preview_cache SET image_asset_id = ? \
-             WHERE world_id = ? AND url = ? AND image_asset_id IS NULL",
+             WHERE world_id = ? AND url = ? AND image_asset_id IS NULL \
+             AND EXISTS (SELECT 1 FROM assets WHERE id = ? AND world_id = ?)",
         )
         .bind(image_asset_id.to_string())
         .bind(world_id.to_string())
         .bind(url)
+        .bind(image_asset_id.to_string())
+        .bind(world_id.to_string())
         .execute(&self.pool)
         .await?;
         Ok(())

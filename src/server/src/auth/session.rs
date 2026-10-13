@@ -251,11 +251,11 @@ pub(crate) async fn sweep_spent_invites(
     Ok(res.rows_affected())
 }
 
-/// Spawn a background task that periodically deletes expired session rows
-/// and spent world-invite rows. Housekeeping, not correctness: expired rows
-/// are already unloadable/unredeemable; the sweep bounds unbounded table
-/// growth. Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A
-/// failed sweep is logged and retried next tick — it never aborts the server.
+/// Spawn a background task that periodically deletes expired session rows,
+/// spent world-invite rows and expired link-preview cache rows. Housekeeping, not correctness:
+/// expired rows are already unloadable/unredeemable; the sweep bounds unbounded table growth.
+/// Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A failed sweep is logged and
+/// retried next tick — it never aborts the server.
 ///
 /// # Examples
 ///
@@ -292,6 +292,9 @@ pub fn spawn_session_sweep(repo: &SqliteRepository) {
                 .as_millis() as i64;
             if let Err(e) = sweep_spent_invites(&pool, now).await {
                 tracing::warn!(error = %e, "invite sweep failed");
+            }
+            if let Err(e) = crate::chat::sweep_expired_link_previews(&pool, now).await {
+                tracing::warn!(error = %e, "link-preview cache sweep failed");
             }
         }
     });

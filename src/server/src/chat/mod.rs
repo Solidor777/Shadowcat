@@ -61,6 +61,7 @@ pub use oembed::{
 pub use post_publish::{
     run_pending_enrichments, PendingEnrichment, PostPublishDeps, PreviewFetchLocks,
 };
+pub(crate) use preview_cache::sweep_expired_link_previews;
 pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,

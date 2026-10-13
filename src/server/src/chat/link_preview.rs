@@ -166,9 +166,8 @@ pub struct EnrichDeps<'a> {
 /// to the world, so an outcome or asset id of another world is never returned.
 /// `None` return means BOTH tiers missed (or a persisted row expired past
 /// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
-/// memory hit whose preview has no asset id reads the persisted row's, which a background job may
-/// have recorded since. A failed persisted-row read counts as a miss and leaves a memory hit as
-/// cached.
+/// memory hit with a preview takes the persisted row's current asset id, or none when the row is
+/// absent. A failed persisted-row read counts as a miss and leaves a memory hit as cached.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
@@ -178,11 +177,11 @@ async fn cached_or_fetch(
     now_ms: i64,
 ) -> Option<Option<LinkPreview>> {
     if let Some(mut hit) = cache.get(world_id, url, now) {
-        // A background job records an asset on the persisted row without updating this entry.
-        if let Some(preview) = hit.as_mut().filter(|p| p.image_asset_id.is_none()) {
+        // The persisted row owns the asset id: a background job records one on it, and deleting
+        // the asset nulls it, neither updating this entry.
+        if let Some(preview) = hit.as_mut() {
             match repo.get_link_preview_cache(world_id, url).await {
-                Ok(Some(row)) => preview.image_asset_id = row.image_asset_id,
-                Ok(None) => {}
+                Ok(row) => preview.image_asset_id = row.and_then(|r| r.image_asset_id),
                 Err(e) => tracing::warn!(?e, %url, "link-preview cache row read failed"),
             }
         }

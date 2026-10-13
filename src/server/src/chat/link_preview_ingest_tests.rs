@@ -639,6 +639,51 @@ async fn edit_re_derives_preview_from_new_content() {
     );
 }
 
+/// An edit's preview fetch is cached under the room's world, not under another world or the nil
+/// world.
+#[tokio::test]
+async fn edit_caches_its_preview_under_the_rooms_world_only() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async { axum::response::Html("<title>Edited</title>") }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let other_world = f.repo.create_world("other", 0).await.unwrap().id;
+    let sent = f.send("no links yet", 1).await.unwrap();
+    let doc_id = match &sent.ops[0] {
+        Operation::Create { doc } => doc.id,
+        _ => unreachable!(),
+    };
+    let url = format!("http://stub.test:{addr}/");
+
+    f.edit(doc_id, &format!("now [link]({url})"), 2)
+        .await
+        .unwrap();
+
+    let row = f
+        .repo
+        .get_link_preview_cache(f.room.world_id, &url)
+        .await
+        .unwrap();
+    assert_eq!(
+        row.expect("row under the room's world").title.as_deref(),
+        Some("Edited")
+    );
+    assert!(f
+        .repo
+        .get_link_preview_cache(other_world, &url)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(f
+        .repo
+        .get_link_preview_cache(Uuid::nil(), &url)
+        .await
+        .unwrap()
+        .is_none());
+}
+
 /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
 /// segment: its content is exactly one `RollEmbed`. Pins the
 /// EXPLICIT `kind != MessageKind::Roll` enrich guard — a successful roll
