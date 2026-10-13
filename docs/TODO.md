@@ -66,6 +66,10 @@ capability already exists — but are deferred as out-of-scope-for-now work.
     state read `buffer_ratio` 0.946 to 1.309 per run across nine runs. No fast-regime reading of
     the ladder at 4 workers exists (the gate already gives a fast 4-worker buffer ratio of 0.954 to
     0.958).
+  - Six alternating pairs of fresh single-run processes of `layers` (three rungs each): 4 workers
+    read 25.7 to 33.3 ms and 2 workers read 11.6 to 12.4 ms, so the 4-worker reading is slow even
+    as run 1 of a fresh process and worker count is not cleanly separable from run position or
+    regime.
 
   Whether to measure it is the owner's decision. Host observation, not a blocker and with no
   diagnosed cause: a 2-worker process of these servers runs about 11.6 ms per download in the
