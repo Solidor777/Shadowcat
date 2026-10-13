@@ -65,9 +65,15 @@ test("a triple-slash line inside a plain block comment is not a doc", () => {
   expect(scanModuleDocs("/* /// not a doc */\nmod a;\n")).toEqual([]);
 });
 
-test("a block-doc opener inside a plain block comment is not a doc", () => {
+test("a closed block-doc opener on a line inside a plain block comment is not a doc", () => {
   expect(scanModuleDocs("/*\n/** x */\nmod a;\n*/\n")).toEqual([]);
+});
+
+test("a closed block-doc opener inside a plain block comment does not doc the mod after the comment", () => {
   expect(scanModuleDocs("/*\n/** x */\n*/\nmod a;\n")).toEqual([]);
+});
+
+test("an unclosed block-doc opener inside a plain block comment does not doc the mod after the comment", () => {
   expect(scanModuleDocs("/*\n/** x\n*/\nmod a;\n")).toEqual([]);
 });
 

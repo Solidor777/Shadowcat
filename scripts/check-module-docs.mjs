@@ -14,7 +14,9 @@
 // further attributes; leading `#[...]` groups are stripped from a code line (a `#[doc = "..."]`
 // group is itself a doc) and the remainder is tested for a `mod` item, which consumes the pending
 // state whether or not it reports. Bound: no string state crosses a line, so a triple-slash line
-// inside a multi-line raw string literal is read as a doc.
+// inside a multi-line raw string literal is read as a doc. Bound: `splitLine` does not model nested
+// block comments, so the first `*/` closes the outermost `/*` even where rustc nests; text that
+// rustc reads inside a nested comment is read as code after that first `*/`.
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
