@@ -23,32 +23,55 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   difference noise: there is no open reconciliation and nothing to rerun. The ruling does not cover
   the buffer-ratio difference: the gate reads `buffer_ratio` 0.954 to 0.958 and the ladder reads the
   same quantity (default-buffer median over 64 KiB median) 0.995 for the `bare-64k` rung
-  (`bare-64k+full-router` prints 0.996). That difference is an unexplained observation with at
-  least two uncontrolled factors:
-  - Worker count: `egress_measure layers` defaults to 2 workers and the gate runs 4, and `layers`
-    accepts a worker argument.
-  - Host regime, read as per-run download medians. Fast: the default-buffer rung reads 11.58 to
-    11.71 ms in the 2-worker ladder and 11.94 to 12.07 ms in the 4-worker gate (the `VE-f2-*`
-    records); the 64 KiB rung reads 11.64 to 11.74 ms in the ladder and 12.52 to 12.59 ms in the
-    gate. Slow: the default-buffer rung reads 27.5 to 54.9 ms at 4 workers (the
-    `VEfix3-T1-F4-layers-*` records) and 38.3 to 42.9 ms at 2 workers (runs 2 and 3 of the
-    `VEfix2-T3-subset-w2-rep*` records); the 64 KiB rung reads 20.7 to 41.7 ms at 4 workers and
-    33.9 to 36.7 ms at 2 workers.
-  - The 2-worker `layers` reading is 0.995 in the fast-regime record, per file, over five runs
-    (per run 0.994 to 0.997; 150 downloads, full ladder), and 1.10 to 1.25 per file in three
-    slow-regime subset records (100 downloads). Within each slow file, run 1 reads 0.991 to 0.997
-    and runs 2 and 3 read 1.06 to 1.27 at identical workers, downloads and rungs.
+  (`bare-64k+full-router` prints 0.996). That difference is an unexplained observation. The figures
+  below are the durable copy (per-run medians of per-download times); the records they were taken
+  from live in the ignored, ephemeral debug dump directory. Regenerate them with `cargo run
+  --release -p shadowcat-test-support --bin egress_measure -- layers <downloads> <runs> <workers>`
+  and `cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture`.
+  Differences between the two instruments, none isolated; candidates, not causes:
+  - Worker count: the gate runs 4 and `layers` defaults to 2 (it accepts a worker argument).
+  - Host regime, which co-occurs with the shift but is confounded with run position. Within each
+    of three 2-worker subset records of `layers` (3 runs, 100 downloads, three rungs), run 1 is
+    in the fast regime (default-buffer 11.47 to 11.66 ms, 64 KiB 11.57 to 11.71 ms) and reads
+    0.991 to 0.997, and runs 2 and 3 are in the slow regime and read 1.06 to 1.27, at identical
+    workers, downloads and rungs. That is the one controlled observation, and run 1 is fast in
+    all three files.
+  - Downloads per run: gate 100; the fast-regime `layers` ladder record 150; the slow subset
+    records 100.
+  - Rung set: the fast-regime `layers` record runs the full 11-rung ladder; the slow records run
+    three rungs (`bare-default-buf`, `bare-64k`, `serve_router+full-router+observed-source`).
+  - Binary: in the fast regime the gate's 64 KiB leg reads 12.52 to 12.59 ms against 11.64 to
+    11.74 ms in the `layers` ladder.
+
+  Ranges are per-run medians, each named by instrument, workers and rung:
+  - `layers`, 2 workers, `bare-default-buf`: fast 11.47 to 11.71 ms (150-download ladder 11.58 to
+    11.71; subset run 1 11.47 to 11.66); slow 38.3 to 42.9 ms (subset runs 2 and 3).
+  - `layers`, 2 workers, `bare-64k`: fast 11.57 to 11.74 ms (ladder 11.64 to 11.74; subset run 1
+    11.57 to 11.71); slow 29.2 to 36.7 ms (subset runs 2 and 3, and a separate 8-run
+    `bare-64k`-only record whose first two runs read 11.73 and 11.79 and the other six 29.24 to
+    36.62).
+  - `layers`, 4 workers, `bare-default-buf`: 25.0 to 54.9 ms over six 3-run, 100-download files
+    (no fast-regime record exists at 4 workers); the three files taken last read 27.5 to 54.9.
+  - `layers`, 4 workers, `bare-64k`: 16.4 to 41.7 ms over the same six files; the last three read
+    20.7 to 41.7.
+  - Gate (`h2_send_buf_gate`), 4 workers, default-buffer leg: fast 11.94 to 12.07 ms; slow 26.9 to
+    49.6 ms (nine runs). Buffer leg: fast 12.52 to 12.59 ms; slow 26.1 to 41.8 ms.
+
+  Readings:
+  - 2-worker `layers` reads 0.995 in the fast-regime record, per file, over five runs (per run
+    0.994 to 0.997; 150 downloads, full ladder), and 1.10 to 1.25 per file in the three
+    slow-regime subset records (whole files, run 1 included).
   - The only equal-worker (4) `layers` readings were taken in the slow regime: default-buffer over
     64 KiB 1.21 to 1.30 per file (per-run 1.02 to 1.41, nine runs), while the gate in the same
     state read `buffer_ratio` 0.946 to 1.309 per run across nine runs. No fast-regime reading of
     the ladder at 4 workers exists (the gate already gives a fast 4-worker buffer ratio of 0.954 to
     0.958).
-  - Downloads per run differ: gate 100, ladder 150 in the fast-regime record.
-  Whether to measure it is the owner's decision. Host observation, not a blocker and
-  with no diagnosed cause: a 2-worker process of these servers runs about 11.6 ms per download,
-  then 29 to 39 ms after sustained load on the author's host. Then, in the
-  same branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR`
-  set below the worst of the three legs by a stated headroom and the three recorded values written
+
+  Whether to measure it is the owner's decision. Host observation, not a blocker and with no
+  diagnosed cause: a 2-worker process of these servers runs about 11.6 ms per download in the
+  fast regime and reads the slow ranges above in later runs of the same session. Then, in the same
+  branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR` set
+  below the worst of the three legs by a stated headroom and the three recorded values written
   beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
   to 0.79 measured) and `production_ratio` stays recorded.
 
