@@ -859,9 +859,9 @@ pub struct RegionEngine {
     /// still emitted by the default authoring gesture) or a compound list of
     /// parts with per-part hole flags — see `RegionGeometry`.
     pub shape: RegionGeometry,
-    /// "terrain" | "impassable" | "arrest" | "ambient_light". Ingress does not check the
-    /// spelling; `RegionEngine::validate` only requires `"ambient_light"` when
-    /// `ambient_override` is present. `SceneEcs::region_field_if` reads `"impassable"` and
+    /// "terrain" | "impassable" | "arrest" | "ambient_light". Ingress accepts any string except
+    /// that `RegionEngine::validate` requires `"ambient_light"` when `ambient_override` is
+    /// present. `SceneEcs::region_field_if` reads `"impassable"` and
     /// `"arrest"`; it reads `"ambient_light"` only with a finite `ambient_override` (otherwise
     /// the region contributes nothing); every other spelling is read as terrain.
     pub behavior: String,

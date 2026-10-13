@@ -1652,9 +1652,10 @@ impl Room {
     /// explored blob, walls, and regions — is DERIVED from the token's own `parent_id`
     /// (`SceneEcs::token_move`), never taken from the caller's `scene_id`. Gating a token that
     /// lives in scene A against scene B's walls, mask, and regions is a full bypass of the
-    /// movement gate for a token the requester legitimately owns. `Room::publish`'s drag path
-    /// derives the scene the same way. `scene_id` is additionally
-    /// required to agree with the derived scene (defense in depth — it selects nothing).
+    /// movement gate for a token the requester legitimately owns. `Room::publish` reads a
+    /// token's scene from `SceneEcs::token_move` only to compare the start and end positions,
+    /// and refuses a non-GM position write outright. `scene_id` is additionally required to
+    /// agree with the derived scene (defense in depth — it selects nothing).
     ///
     /// # Critical-section invariant (load-bearing)
     ///
@@ -1778,8 +1779,7 @@ impl Room {
             // Resolve the token's OWN scene and its committed position (the `/engine/x,y` band —
             // the sole position source; `/system` never carries position) from one authoritative
             // ECS read. `token_move(token, &[])` is the committed pre-image with no changes
-            // applied, which is exactly how `Room::publish` derives the scene of a dragged token —
-            // the precedent this mirrors, and why the drag path never had to trust a client scene.
+            // applied, so the scene comes from the committed document and never from the client.
             // Fail-closed `None`: not a token entity, no `parent_id` (a parentless doc is never
             // hydrated as a scene entity at all), or no `/engine/x,y`.
             let (owner_scene, committed, _) =

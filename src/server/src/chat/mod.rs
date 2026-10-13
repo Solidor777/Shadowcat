@@ -1616,21 +1616,21 @@ pub async fn handle_send_message(
         }
     };
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    // Link-preview / inline-image enrich stage: only for non-Roll bodies. The `kind != Roll`
-    // guard is explicit: a successful roll falls through here with
-    // `content_segments == [RollEmbed]` (only the roll-execution-failure arm returns early),
-    // so without it a `/roll` on a preview/image-enabled world would enter `enrich`. A roll
-    // body holds only the `RollEmbed` segment and an empty `image_urls`, so `enrich` has
-    // nothing to scan there; the guard keeps outbound-fetched content off a roll message
-    // independent of the body's shape.
-    // The stage runs when either href-preview scanning is enabled (`previews_enabled`, which
-    // requires `hyperlinks`) or the composer already collected inline image sources
-    // (`image_urls`, gated independently on `policy.images()` inside `sanitize`, so a world
-    // can enable images without hyperlinks). Otherwise a body with hyperlinks off but images
-    // on would collect `image_urls` in vain, since only `enrich` turns them into
-    // `PendingEnrichment::InlineImage`
-    // jobs. Synchronous, before publish — no spawned task, no post-publish
-    // revision, no message-deleted-mid-fetch race.
+    // Link-preview / inline-image enrich stage, for non-Roll bodies only. A successful roll
+    // falls through here with `content_segments == [RollEmbed]` (a roll-execution failure
+    // returns early with a System notice), so without the `kind != Roll` guard a `/roll` on a
+    // preview/image-enabled world would enter `enrich`. A roll body holds only the `RollEmbed`
+    // segment and an empty `image_urls`, so `enrich` has nothing to scan there; the guard
+    // keeps outbound-fetched content off a roll message whatever the body's shape.
+    //
+    // The stage runs when href-preview scanning is enabled (`previews_enabled`, which requires
+    // `hyperlinks`) or the composer already collected inline image sources (`image_urls`,
+    // gated independently on `policy.images()` inside `sanitize`, so a world can enable images
+    // without hyperlinks). Otherwise a body with hyperlinks off but images on would collect
+    // `image_urls` in vain, since only `enrich` turns them into `PendingEnrichment::InlineImage`
+    // jobs. The stage joins its preview fetches before publish, so the message is published with
+    // its `LinkPreview` segments in place: no post-publish revision of the message adds them and
+    // no message-deleted-mid-fetch race can touch them.
     if parsed.kind != MessageKind::Roll && (policy.previews_enabled() || !image_urls.is_empty()) {
         pending = link_preview::enrich(
             &mut content_segments,

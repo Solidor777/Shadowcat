@@ -143,7 +143,8 @@ pub(crate) async fn scene_broadcast_permitted(
 }
 
 /// Realtime state shared in `AppState`: the room registry, the rate limiters, the link-preview
-/// and module-scan caches, and the shutdown and connection-drain signals.
+/// fetch client and cache, the module-scan cache, the shutdown and connection-drain signals, and
+/// the pending-send count that the shutdown timeout warning reports.
 ///
 /// # Examples
 ///
