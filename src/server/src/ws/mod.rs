@@ -183,11 +183,10 @@ pub struct WsState {
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production
     /// constructor — never the test-only loopback-permitting one) and
-    /// shared across every connection/world; a preview's target is
-    /// world-independent.
+    /// shared across every connection/world.
     pub link_preview_client: Arc<reqwest::Client>,
-    /// In-memory per-URL preview cache, shared across every
-    /// connection/world (a URL's preview is world-independent).
+    /// In-memory preview cache keyed by world and URL, shared across every
+    /// connection; one world's entries never answer for another world.
     pub link_preview_cache: Arc<crate::chat::LinkPreviewCache>,
     /// Per-user outbound-fetch budget for the link-preview fetcher (shared
     /// across a user's connections, same shape as `message_rate`).

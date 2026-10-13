@@ -293,6 +293,7 @@ pub(crate) async fn handle_draw_table(
     let pending = chat::enrich_link_previews(
         &mut content,
         chat::EnrichDeps {
+            world_id: room.world_id,
             repo,
             fetch: preview,
         },

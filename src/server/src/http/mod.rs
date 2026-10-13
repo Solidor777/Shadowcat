@@ -85,7 +85,7 @@ pub struct AppState {
     pub write_barrier: Arc<tokio::sync::RwLock<()>>,
     /// Process-wide per-URL fetch-lock registry serializing concurrent
     /// `chat::post_publish` link-preview-image/oEmbed-thumbnail resolves for
-    /// the identical URL -- see `chat::post_publish::PreviewFetchLocks`.
+    /// the identical URL in one world -- see `chat::post_publish::PreviewFetchLocks`.
     pub preview_fetch_locks: crate::chat::PreviewFetchLocks,
     /// Permits bounding the asset files held open while streaming to peers
     /// (`assets::permits`); its capacity is the descriptor term `fd_budget` reserves.

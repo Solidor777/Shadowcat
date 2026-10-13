@@ -747,11 +747,11 @@ pub trait Repository: Send + Sync {
         user: Uuid,
     ) -> Result<Option<Vec<u8>>, DataError>;
 
-    /// A persisted `link_preview_cache` row for `url`, or `None` if absent.
-    /// The DB-backed tier BEHIND `chat::LinkPreviewCache`'s in-memory fast
-    /// path — consulted on an in-memory miss so a cold-started process can
-    /// reuse a still-fresh row rather than re-fetching every URL seen since
-    /// the process last started (see `chat::link_preview::cached_or_fetch`).
+    /// A persisted `link_preview_cache` row for `url` in `world_id`, or `None` if absent. Rows
+    /// are world-scoped: a row of another world is never returned. The DB-backed tier BEHIND
+    /// `chat::LinkPreviewCache`'s in-memory fast path, consulted on an in-memory miss so a
+    /// cold-started process can reuse a still-fresh row rather than re-fetching every URL seen
+    /// since the process last started (see `chat::link_preview::cached_or_fetch`).
     ///
     /// # Examples
     ///
@@ -761,19 +761,25 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::repository::Repository;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_link_preview_cache("https://example.com").await?.is_none());
+    /// let world = repo.create_world("w", 0).await?;
+    /// let other = repo.create_world("other", 0).await?;
+    /// repo.upsert_link_preview_cache(world.id, "https://example.com", Some("MOCK_TITLE"), None, 0)
+    ///     .await?;
+    /// assert!(repo.get_link_preview_cache(world.id, "https://example.com").await?.is_some());
+    /// assert!(repo.get_link_preview_cache(other.id, "https://example.com").await?.is_none());
     /// # Ok(())
     /// # }
     /// ```
     async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<LinkPreviewCacheRow>, DataError>;
 
-    /// Upserts `title`/`description`/`fetched_at` for `url`. Leaves any
-    /// existing `image_asset_id` untouched on conflict — an already
-    /// asset-ified image (set by `set_link_preview_cache_image`) must survive
-    /// a later title/description refresh of the same URL.
+    /// Upserts `title`/`description`/`fetched_at` for `url` in `world_id`. Leaves any existing
+    /// `image_asset_id` untouched on conflict — an already asset-ified image (set by
+    /// `set_link_preview_cache_image`) must survive a later title/description refresh of the same
+    /// URL.
     ///
     /// # Examples
     ///
@@ -783,28 +789,61 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::repository::Repository;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
     /// repo.upsert_link_preview_cache(
+    ///     world.id,
     ///     "https://example.com",
     ///     Some("MOCK_TITLE"),
     ///     None,
     ///     0,
     /// ).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let row = repo.get_link_preview_cache(world.id, "https://example.com").await?.unwrap();
     /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
     /// # Ok(())
     /// # }
     /// ```
     async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError>;
 
-    /// Sets `image_asset_id` on an EXISTING `url` row that has none (a no-op if the row is
-    /// absent, and a no-op if it already holds an id, so concurrent writers leave the first id in
-    /// place).
+    /// Inserts a `url` row in `world_id` only when none exists; an existing row is left exactly
+    /// as it is, including its `title`, `description`, `fetched_at` and `image_asset_id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let url = "https://example.com";
+    /// repo.upsert_link_preview_cache(world.id, url, Some("MOCK_TITLE"), None, 7).await?;
+    /// repo.insert_link_preview_cache_if_absent(world.id, url, None, None, 9).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
+    /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    /// assert_eq!(row.fetched_at_ms, 7);
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError>;
+
+    /// Sets `image_asset_id` on an EXISTING `url` row of `world_id` that has none (a no-op if
+    /// the row is absent, and a no-op if it already holds an id, so concurrent writers leave the
+    /// first id in place).
     ///
     /// # Examples
     ///
@@ -836,16 +875,18 @@ pub trait Repository: Send + Sync {
     ///     })
     ///     .await?;
     /// }
-    /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
-    /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
-    /// repo.set_link_preview_cache_image("https://example.com", rival).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let url = "https://example.com";
+    /// repo.upsert_link_preview_cache(world.id, url, None, None, 0).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, asset).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, rival).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
     /// assert_eq!(row.image_asset_id, Some(asset));
     /// # Ok(())
     /// # }
     /// ```
     async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError>;

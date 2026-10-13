@@ -390,14 +390,17 @@ async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candi
     }
     assert!(
         f.repo
-            .get_link_preview_cache(&cache_urls[0])
+            .get_link_preview_cache(f.room.world_id, &cache_urls[0])
             .await
             .unwrap()
             .is_some(),
         "the persisted row is keyed on the posted candidate"
     );
     assert_eq!(
-        f.repo.get_link_preview_cache(preview_url).await.unwrap(),
+        f.repo
+            .get_link_preview_cache(f.room.world_id, preview_url)
+            .await
+            .unwrap(),
         None,
         "no row exists under the post-redirect address"
     );
@@ -929,14 +932,17 @@ async fn unnormalized_candidate_without_a_redirect_keys_its_job_on_the_candidate
     }
     assert!(
         f.repo
-            .get_link_preview_cache(&candidate)
+            .get_link_preview_cache(f.room.world_id, &candidate)
             .await
             .unwrap()
             .is_some(),
         "the persisted row is keyed on the candidate as posted"
     );
     assert_eq!(
-        f.repo.get_link_preview_cache(preview_url).await.unwrap(),
+        f.repo
+            .get_link_preview_cache(f.room.world_id, preview_url)
+            .await
+            .unwrap(),
         None,
         "no row exists under the normalized address"
     );
@@ -1005,7 +1011,7 @@ async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
     for candidate in [&first, &second] {
         assert!(
             f.repo
-                .get_link_preview_cache(candidate)
+                .get_link_preview_cache(f.room.world_id, candidate)
                 .await
                 .unwrap()
                 .is_some(),
@@ -1070,11 +1076,11 @@ async fn seed_imaged_row(f: &Fixture, known_url: &str) -> Uuid {
     };
     f.repo.insert_asset(&asset).await.unwrap();
     f.repo
-        .upsert_link_preview_cache(known_url, Some("Landed"), Some("D"), 0)
+        .upsert_link_preview_cache(f.room.world_id, known_url, Some("Landed"), Some("D"), 0)
         .await
         .unwrap();
     f.repo
-        .set_link_preview_cache_image(known_url, asset.id)
+        .set_link_preview_cache_image(f.room.world_id, known_url, asset.id)
         .await
         .unwrap();
     asset.id
@@ -1129,7 +1135,7 @@ async fn fresh_candidate_ending_on_a_persisted_imaged_address_reuses_its_asset()
         assert_eq!(ids, vec![Some(asset_id), Some(asset_id)]);
         let row = f
             .repo
-            .get_link_preview_cache(&fresh)
+            .get_link_preview_cache(f.room.world_id, &fresh)
             .await
             .unwrap()
             .unwrap();
@@ -1200,7 +1206,7 @@ async fn fresh_candidate_ending_on_a_persisted_unimaged_address_shares_its_job()
         let persisted = format!("http://stub.test:{addr}/final");
         let fresh = format!("http://stub.test:{addr}/q");
         f.repo
-            .upsert_link_preview_cache(&persisted, Some("Landed"), Some("D"), 0)
+            .upsert_link_preview_cache(f.room.world_id, &persisted, Some("Landed"), Some("D"), 0)
             .await
             .unwrap();
         let body = if persisted_first {

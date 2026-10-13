@@ -1636,6 +1636,7 @@ pub async fn handle_send_message(
         pending = link_preview::enrich(
             &mut content_segments,
             link_preview::EnrichDeps {
+                world_id: room.world_id,
                 repo,
                 fetch: preview,
             },
@@ -1930,6 +1931,7 @@ pub async fn handle_edit_message(
         pending = link_preview::enrich(
             &mut segments,
             link_preview::EnrichDeps {
+                world_id: room.world_id,
                 repo,
                 fetch: preview,
             },

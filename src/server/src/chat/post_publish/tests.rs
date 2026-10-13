@@ -26,6 +26,11 @@ fn test_write_barrier() -> Arc<tokio::sync::RwLock<()>> {
     Arc::new(tokio::sync::RwLock::new(()))
 }
 
+/// The lock key of `url` in the world every lock-registry test below shares.
+fn lock_key(url: &str) -> (Uuid, String) {
+    (crate::test_ids::test_uuid(1), url.to_string())
+}
+
 /// A fresh, empty per-URL fetch-lock registry for tests exercising
 /// `resolve_preview_image`/`resolve_thumbnail_asset` directly.
 fn test_preview_fetch_locks() -> PreviewFetchLocks {
@@ -126,10 +131,10 @@ async fn resolve_preview_image_cache_hit_skips_network_fetch() {
     };
     repo.insert_asset(&asset).await.unwrap();
     let preview_url = "https://cached.example/";
-    repo.upsert_link_preview_cache(preview_url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, preview_url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
-    repo.set_link_preview_cache_image(preview_url, asset.id)
+    repo.set_link_preview_cache_image(world.id, preview_url, asset.id)
         .await
         .unwrap();
 
@@ -193,7 +198,7 @@ async fn resolve_preview_image_cache_miss_fetches_and_creates_asset() {
     // scrape always upserts a row for the previewed URL BEFORE this
     // background job ever runs (production invariant this test mirrors) --
     // `set_link_preview_cache_image` alone is a no-op on an absent row.
-    repo.upsert_link_preview_cache(preview_url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, preview_url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
 
@@ -220,7 +225,7 @@ async fn resolve_preview_image_cache_miss_fetches_and_creates_asset() {
     assert_eq!(asset.created_by, None);
     assert_eq!(asset.byte_size, 3);
     let row = repo
-        .get_link_preview_cache(preview_url)
+        .get_link_preview_cache(world.id, preview_url)
         .await
         .unwrap()
         .unwrap();
@@ -253,7 +258,7 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
     ));
     let cache_url = "https://posted.example/short";
     let preview_url = "https://landed.example/final";
-    repo.upsert_link_preview_cache(cache_url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, cache_url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
 
@@ -285,13 +290,13 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
         "the segment patch targets the post-redirect url"
     );
     let row = repo
-        .get_link_preview_cache(cache_url)
+        .get_link_preview_cache(world.id, cache_url)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(row.image_asset_id, Some(asset_id));
     let landed = repo
-        .get_link_preview_cache(preview_url)
+        .get_link_preview_cache(world.id, preview_url)
         .await
         .unwrap()
         .expect("the landed address row is created");
@@ -377,7 +382,7 @@ async fn resolve_inline_image_cache_miss_fetches_creates_a_chat_image_asset() {
         crate::data::asset::Provenance::ChatImage
     );
     let row = repo
-        .get_link_preview_cache(&image_url)
+        .get_link_preview_cache(world.id, &image_url)
         .await
         .unwrap()
         .unwrap();
@@ -409,10 +414,10 @@ async fn resolve_inline_image_cache_hit_skips_network_fetch() {
     };
     repo.insert_asset(&asset).await.unwrap();
     let image_url = "https://cached.example/pic.png";
-    repo.upsert_link_preview_cache(image_url, None, None, 0)
+    repo.upsert_link_preview_cache(world.id, image_url, None, None, 0)
         .await
         .unwrap();
-    repo.set_link_preview_cache_image(image_url, asset.id)
+    repo.set_link_preview_cache_image(world.id, image_url, asset.id)
         .await
         .unwrap();
 
@@ -627,7 +632,7 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
     }];
     // Pre-seed the persisted cache row so resolution never touches the
     // network -- this test targets the patch-by-url logic, not the fetch.
-    repo.upsert_link_preview_cache("https://match.example/", None, None, 0)
+    repo.upsert_link_preview_cache(world.id, "https://match.example/", None, None, 0)
         .await
         .unwrap();
     let asset = crate::data::asset::Asset {
@@ -646,7 +651,7 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
         meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
-    repo.set_link_preview_cache_image("https://match.example/", asset_id)
+    repo.set_link_preview_cache_image(world.id, "https://match.example/", asset_id)
         .await
         .unwrap();
 
@@ -720,7 +725,7 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
         description: String::new(),
         image_url: "https://match.example/og.png".into(),
     }];
-    repo.upsert_link_preview_cache("https://match.example/", None, None, 0)
+    repo.upsert_link_preview_cache(world.id, "https://match.example/", None, None, 0)
         .await
         .unwrap();
     let asset = crate::data::asset::Asset {
@@ -739,7 +744,7 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
         meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
-    repo.set_link_preview_cache_image("https://match.example/", asset.id)
+    repo.set_link_preview_cache_image(world.id, "https://match.example/", asset.id)
         .await
         .unwrap();
 
@@ -851,7 +856,7 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
         description: String::new(),
         image_url: "https://match.example/og.png".into(),
     }];
-    repo.upsert_link_preview_cache("https://match.example/", None, None, 0)
+    repo.upsert_link_preview_cache(world.id, "https://match.example/", None, None, 0)
         .await
         .unwrap();
     let asset = crate::data::asset::Asset {
@@ -870,7 +875,7 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
         meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
-    repo.set_link_preview_cache_image("https://match.example/", asset_id)
+    repo.set_link_preview_cache_image(world.id, "https://match.example/", asset_id)
         .await
         .unwrap();
 
@@ -1090,7 +1095,7 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
     let image_url = format!("http://stub.test:{port}/img.png");
     // Mirrors the production invariant: `enrich`'s synchronous scrape
     // always upserts the row before a background job runs.
-    repo.upsert_link_preview_cache(&preview_url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, &preview_url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
 
@@ -1205,7 +1210,7 @@ async fn preview_fetch_locks_does_not_retain_entries_after_resolvers_complete() 
 
     for i in 0..25 {
         let preview_url = format!("https://distinct-{i}.example/");
-        repo.upsert_link_preview_cache(&preview_url, Some("T"), Some("D"), 0)
+        repo.upsert_link_preview_cache(world.id, &preview_url, Some("T"), Some("D"), 0)
             .await
             .unwrap();
         let image_url = format!("http://stub.test:{port}/img.png");
@@ -1329,7 +1334,7 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
     )
     .await;
     for cache_url in &cache_urls {
-        repo.upsert_link_preview_cache(cache_url, Some("T"), Some("D"), 0)
+        repo.upsert_link_preview_cache(world.id, cache_url, Some("T"), Some("D"), 0)
             .await
             .unwrap();
     }
@@ -1368,7 +1373,7 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
     assert_eq!(assets.len(), 1, "one job creates one asset");
     for cache_url in &cache_urls {
         let row = repo
-            .get_link_preview_cache(cache_url)
+            .get_link_preview_cache(world.id, cache_url)
             .await
             .unwrap()
             .unwrap();
@@ -1379,7 +1384,7 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
         );
     }
     let landed = repo
-        .get_link_preview_cache(preview_url)
+        .get_link_preview_cache(world.id, preview_url)
         .await
         .unwrap()
         .expect("the preview url row is created");
@@ -1430,11 +1435,11 @@ async fn resolve_preview_image_propagates_a_known_asset_id_to_the_candidates_lac
     let known = "https://known.example/a";
     let lacking = "https://lacking.example/b";
     for url in [known, lacking] {
-        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
             .await
             .unwrap();
     }
-    repo.set_link_preview_cache_image(known, asset.id)
+    repo.set_link_preview_cache_image(world.id, known, asset.id)
         .await
         .unwrap();
 
@@ -1459,7 +1464,11 @@ async fn resolve_preview_image_propagates_a_known_asset_id_to_the_candidates_lac
         panic!("expected ImageForPreview");
     };
     assert_eq!(asset_id, asset.id);
-    let row = repo.get_link_preview_cache(lacking).await.unwrap().unwrap();
+    let row = repo
+        .get_link_preview_cache(world.id, lacking)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row.image_asset_id, Some(asset.id));
 }
 
@@ -1498,7 +1507,7 @@ async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetche
     let world = repo.create_world_owned("w", owner, 0).await.unwrap();
     let rival = insert_test_asset(&repo, world.id).await;
     let cache_url = "https://posted.example/page";
-    repo.upsert_link_preview_cache(cache_url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, cache_url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
 
@@ -1510,7 +1519,7 @@ async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetche
         get(move || {
             let repo = rival_repo.clone();
             async move {
-                repo.set_link_preview_cache_image(cache_url, rival)
+                repo.set_link_preview_cache_image(world.id, cache_url, rival)
                     .await
                     .unwrap();
                 (
@@ -1547,7 +1556,7 @@ async fn resolve_preview_image_does_not_overwrite_an_id_recorded_while_it_fetche
     };
     assert_ne!(asset_id, rival, "the job created its own asset");
     let row = repo
-        .get_link_preview_cache(cache_url)
+        .get_link_preview_cache(world.id, cache_url)
         .await
         .unwrap()
         .unwrap();
@@ -1568,11 +1577,11 @@ async fn resolve_preview_image_reuses_an_asset_recorded_on_the_landed_address_ro
     let candidate = "https://posted.example/short";
     let landed = "https://landed.example/final";
     for url in [candidate, landed] {
-        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
             .await
             .unwrap();
     }
-    repo.set_link_preview_cache_image(landed, known)
+    repo.set_link_preview_cache_image(world.id, landed, known)
         .await
         .unwrap();
 
@@ -1598,7 +1607,7 @@ async fn resolve_preview_image_reuses_an_asset_recorded_on_the_landed_address_ro
     };
     assert_eq!(asset_id, known);
     let row = repo
-        .get_link_preview_cache(candidate)
+        .get_link_preview_cache(world.id, candidate)
         .await
         .unwrap()
         .unwrap();
@@ -1629,7 +1638,7 @@ async fn resolve_preview_image_records_a_new_asset_on_a_landed_address_row_witho
     let candidate = "https://posted.example/short";
     let landed = "https://landed.example/final";
     for url in [candidate, landed] {
-        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
             .await
             .unwrap();
     }
@@ -1657,7 +1666,11 @@ async fn resolve_preview_image_records_a_new_asset_on_a_landed_address_row_witho
         panic!("expected ImageForPreview");
     };
     for url in [candidate, landed] {
-        let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+        let row = repo
+            .get_link_preview_cache(world.id, url)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.image_asset_id, Some(asset_id), "{url}");
     }
 }
@@ -1685,7 +1698,7 @@ async fn resolve_preview_image_creates_the_landed_address_row_that_a_later_post_
     let world = repo.create_world_owned("w", owner, 0).await.unwrap();
     let candidate = "https://posted.example/short";
     let landed = "https://landed.example/final";
-    repo.upsert_link_preview_cache(candidate, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, candidate, Some("T"), Some("D"), 0)
         .await
         .unwrap();
     let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
@@ -1713,7 +1726,7 @@ async fn resolve_preview_image_creates_the_landed_address_row_that_a_later_post_
         panic!("expected ImageForPreview");
     };
     let row = repo
-        .get_link_preview_cache(landed)
+        .get_link_preview_cache(world.id, landed)
         .await
         .unwrap()
         .expect("the landed address row exists");
@@ -1756,10 +1769,10 @@ async fn with_preview_url_locks_overlapping_key_sets_in_opposite_orders_do_not_d
     for i in 0..16 {
         let locks = locks.clone();
         tasks.push(tokio::spawn(async move {
-            let keys: Vec<String> = if i % 2 == 0 {
-                vec!["a".into(), "b".into(), "c".into()]
+            let keys = if i % 2 == 0 {
+                vec![lock_key("a"), lock_key("b"), lock_key("c")]
             } else {
-                vec!["c".into(), "b".into(), "a".into()]
+                vec![lock_key("c"), lock_key("b"), lock_key("a")]
             };
             with_preview_url_locks(&locks, &keys, || async {
                 tokio::task::yield_now().await;
@@ -1786,7 +1799,7 @@ async fn with_preview_url_locks_overlapping_key_sets_in_opposite_orders_do_not_d
 #[tokio::test]
 async fn with_preview_url_locks_duplicate_keys_lock_once_and_reclaim_the_entry() {
     let locks = test_preview_fetch_locks();
-    let keys: Vec<String> = vec!["a".into(), "a".into()];
+    let keys = vec![lock_key("a"), lock_key("a")];
     let run = with_preview_url_locks(&locks, &keys, || async { 7 });
     let out = tokio::time::timeout(std::time::Duration::from_secs(10), run)
         .await
@@ -1802,24 +1815,57 @@ async fn with_preview_url_locks_duplicate_keys_lock_once_and_reclaim_the_entry()
 async fn release_preview_lock_removes_the_entry_only_for_the_last_holder() {
     let locks = test_preview_fetch_locks();
     let caller = locks
-        .entry("a".to_string())
+        .entry(lock_key("a"))
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
-    let other = locks.get("a").unwrap().clone();
-    release_preview_lock(&locks, "a".to_string(), caller);
+    let other = locks.get(&lock_key("a")).unwrap().clone();
+    release_preview_lock(&locks, lock_key("a"), caller);
     assert_eq!(locks.len(), 1, "another holder remains, so the entry stays");
-    release_preview_lock(&locks, "a".to_string(), other);
+    release_preview_lock(&locks, lock_key("a"), other);
     assert!(
         locks.is_empty(),
         "the last holder to release removes the entry"
     );
 }
 
+/// The same URL in two worlds is two keys: one caller's hold does not block the other's.
+#[tokio::test]
+async fn with_preview_url_locks_same_url_in_different_worlds_does_not_contend() {
+    let locks = test_preview_fetch_locks();
+    let url = "https://shared.example/".to_string();
+    let first = (crate::test_ids::test_uuid(1), url.clone());
+    let second = (crate::test_ids::test_uuid(2), url);
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let holder = {
+        let locks = locks.clone();
+        let first = first.clone();
+        tokio::spawn(async move {
+            with_preview_url_locks(&locks, &[first], || async {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+            })
+            .await;
+        })
+    };
+    entered_rx.await.unwrap();
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        with_preview_url_locks(&locks, &[second], || async { 7 }),
+    )
+    .await
+    .expect("the other world's key is not held");
+    assert_eq!(out, 7);
+    release_tx.send(()).unwrap();
+    holder.await.unwrap();
+    assert!(locks.is_empty());
+}
+
 /// A caller whose future is dropped inside `f` releases its entry.
 #[tokio::test]
 async fn with_preview_url_locks_dropped_inside_f_reclaims_the_entry() {
     let locks = test_preview_fetch_locks();
-    let keys: Vec<String> = vec!["a".into()];
+    let keys = vec![lock_key("a")];
     let run = with_preview_url_locks(&locks, &keys, std::future::pending::<()>);
     tokio::time::timeout(std::time::Duration::from_millis(50), run)
         .await
@@ -1837,7 +1883,7 @@ async fn with_preview_url_locks_dropped_while_awaiting_a_key_reclaims_the_held_k
     let holder = {
         let locks = locks.clone();
         tokio::spawn(async move {
-            with_preview_url_locks(&locks, &["b".to_string()], || async {
+            with_preview_url_locks(&locks, &[lock_key("b")], || async {
                 entered_tx.send(()).unwrap();
                 release_rx.await.unwrap();
             })
@@ -1845,17 +1891,282 @@ async fn with_preview_url_locks_dropped_while_awaiting_a_key_reclaims_the_held_k
         })
     };
     entered_rx.await.unwrap();
-    let keys: Vec<String> = vec!["a".into(), "b".into()];
+    let keys = vec![lock_key("a"), lock_key("b")];
     let waiter = with_preview_url_locks(&locks, &keys, || async {});
     tokio::time::timeout(std::time::Duration::from_millis(50), waiter)
         .await
         .expect_err("key b is held, so the timeout drops the waiting future");
     assert!(
-        !locks.contains_key("a"),
+        !locks.contains_key(&lock_key("a")),
         "the key the dropped caller held is reclaimed"
     );
-    assert!(locks.contains_key("b"), "the other caller still holds b");
+    assert!(
+        locks.contains_key(&lock_key("b")),
+        "the other caller still holds b"
+    );
     release_tx.send(()).unwrap();
     holder.await.unwrap();
     assert!(locks.is_empty(), "the remaining holder removes its entry");
+}
+
+/// Seeds two worlds on one repository and serves a PNG from a stub host; returns the repository,
+/// the two worlds, a client that resolves the stub host, and the stub's port and task handle.
+async fn two_worlds_and_a_png_stub() -> (
+    Arc<SqliteRepository>,
+    crate::data::document::World,
+    crate::data::document::World,
+    Arc<reqwest::Client>,
+    u16,
+    tokio::task::JoinHandle<()>,
+) {
+    let router = Router::new().route(
+        "/img.png",
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                vec![5u8, 5, 5],
+            )
+        }),
+    );
+    let (addr, handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world_a = repo.create_world_owned("a", owner, 0).await.unwrap();
+    let world_b = repo.create_world_owned("b", owner, 0).await.unwrap();
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    (repo, world_a, world_b, client, port, handle)
+}
+
+/// A preview image another world already recorded for the address is not reused: the job creates
+/// its own asset in its own world.
+#[tokio::test]
+async fn resolve_preview_image_does_not_reuse_another_worlds_asset() {
+    let (repo, world_a, world_b, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let url = "https://shared.example/page";
+    let foreign = insert_test_asset(&repo, world_a.id).await;
+    for world in [&world_a, &world_b] {
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+    repo.set_link_preview_cache_image(world_a.id, url, foreign)
+        .await
+        .unwrap();
+
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world_b.id,
+        vec![url.to_string()],
+        url.to_string(),
+        "T".to_string(),
+        "D".to_string(),
+        format!("http://stub.test:{port}/img.png"),
+    )
+    .await
+    .expect("the job resolves with an asset of its own");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    assert_ne!(asset_id, foreign);
+    let asset = repo.get_asset(asset_id).await.unwrap().unwrap();
+    assert_eq!(asset.world_id, world_b.id);
+    let row_a = repo.get_link_preview_cache(world_a.id, url).await.unwrap();
+    assert_eq!(row_a.unwrap().image_asset_id, Some(foreign));
+    let row_b = repo.get_link_preview_cache(world_b.id, url).await.unwrap();
+    assert_eq!(row_b.unwrap().image_asset_id, Some(asset_id));
+}
+
+/// An inline image another world already recorded for the address is not reused.
+#[tokio::test]
+async fn resolve_inline_image_does_not_reuse_another_worlds_asset() {
+    let (repo, world_a, world_b, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let image_url = format!("http://stub.test:{port}/img.png");
+    let foreign = insert_test_asset(&repo, world_a.id).await;
+    repo.upsert_link_preview_cache(world_a.id, &image_url, None, None, 0)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(world_a.id, &image_url, foreign)
+        .await
+        .unwrap();
+
+    let resolved = resolve_inline_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world_b.id,
+        image_url,
+        "alt".to_string(),
+    )
+    .await
+    .expect("the job resolves with an asset of its own");
+    let ResolvedEnrichment::NewImageSegment(Segment::Image { asset_id, .. }) = resolved else {
+        panic!("expected a new Image segment");
+    };
+    assert_ne!(asset_id, foreign);
+    let asset = repo.get_asset(asset_id).await.unwrap().unwrap();
+    assert_eq!(asset.world_id, world_b.id);
+}
+
+/// An oEmbed thumbnail another world already recorded for the address is not reused.
+#[tokio::test]
+async fn resolve_thumbnail_asset_does_not_reuse_another_worlds_asset() {
+    let (repo, world_a, world_b, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let thumbnail_url = format!("http://stub.test:{port}/img.png");
+    let foreign = insert_test_asset(&repo, world_a.id).await;
+    repo.upsert_link_preview_cache(world_a.id, &thumbnail_url, None, None, 0)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(world_a.id, &thumbnail_url, foreign)
+        .await
+        .unwrap();
+
+    let asset_id = resolve_thumbnail_asset(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world_b.id,
+        thumbnail_url,
+    )
+    .await
+    .expect("the job resolves with an asset of its own");
+    assert_ne!(asset_id, foreign);
+    let asset = repo.get_asset(asset_id).await.unwrap().unwrap();
+    assert_eq!(asset.world_id, world_b.id);
+}
+
+/// Deleting a world removes its cache rows and leaves another world's rows, asset ids included.
+#[tokio::test]
+async fn deleting_a_world_leaves_another_worlds_cache_rows() {
+    let (repo, world_a, world_b, _client, _port, _stub) = two_worlds_and_a_png_stub().await;
+    let url = "https://shared.example/page";
+    let kept = insert_test_asset(&repo, world_b.id).await;
+    for world in [&world_a, &world_b] {
+        repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+    repo.set_link_preview_cache_image(world_b.id, url, kept)
+        .await
+        .unwrap();
+
+    repo.delete_world(world_a.id).await.unwrap();
+
+    assert_eq!(
+        repo.get_link_preview_cache(world_a.id, url).await.unwrap(),
+        None
+    );
+    let row = repo
+        .get_link_preview_cache(world_b.id, url)
+        .await
+        .unwrap()
+        .expect("the other world's row stays");
+    assert_eq!(row.image_asset_id, Some(kept));
+}
+
+/// Holds the fetch lock of `key` until the returned sender fires or drops.
+async fn hold_fetch_lock(
+    locks: &PreviewFetchLocks,
+    key: PreviewLockKey,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let locks = locks.clone();
+    let handle = tokio::spawn(async move {
+        with_preview_url_locks(&locks, &[key], || async {
+            entered_tx.send(()).unwrap();
+            let _ = release_rx.await;
+        })
+        .await;
+    });
+    entered_rx.await.unwrap();
+    (release_tx, handle)
+}
+
+/// Each resolver takes the lock of its URL in its own world: the lock held for the same URL in the
+/// job's world blocks the job, and the lock held for that URL in another world does not.
+#[tokio::test]
+async fn resolvers_lock_their_url_in_their_own_world() {
+    let (repo, world_a, world_b, client, port, _stub) = two_worlds_and_a_png_stub().await;
+    let root = tempfile::tempdir().unwrap();
+    let locks = test_preview_fetch_locks();
+    let deps = || {
+        test_fetch_deps(
+            repo.clone(),
+            client.clone(),
+            root.path().to_path_buf(),
+            locks.clone(),
+        )
+    };
+    let image_url = format!("http://stub.test:{port}/img.png");
+    let blocked = std::time::Duration::from_millis(200);
+    let open = std::time::Duration::from_secs(10);
+
+    for (holder_world, window, completes) in
+        [(world_b.id, blocked, false), (world_a.id, open, true)]
+    {
+        let (release, held) = hold_fetch_lock(&locks, (holder_world, image_url.clone())).await;
+        let inline = tokio::time::timeout(
+            window,
+            resolve_inline_image(deps(), world_b.id, image_url.clone(), String::new()),
+        )
+        .await;
+        assert_eq!(
+            inline.is_ok(),
+            completes,
+            "inline image, holder {holder_world}"
+        );
+        let thumbnail = tokio::time::timeout(
+            window,
+            resolve_thumbnail_asset(deps(), world_b.id, image_url.clone()),
+        )
+        .await;
+        assert_eq!(
+            thumbnail.is_ok(),
+            completes,
+            "thumbnail, holder {holder_world}"
+        );
+        let preview = tokio::time::timeout(
+            window,
+            resolve_preview_image(
+                deps(),
+                world_b.id,
+                vec![image_url.clone()],
+                image_url.clone(),
+                String::new(),
+                String::new(),
+                image_url.clone(),
+            ),
+        )
+        .await;
+        assert_eq!(
+            preview.is_ok(),
+            completes,
+            "preview image, holder {holder_world}"
+        );
+        let _ = release.send(());
+        held.await.unwrap();
+    }
 }

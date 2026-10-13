@@ -30,17 +30,21 @@ use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::ws::room::Room;
 
-/// Process-wide registry of per-URL fetch locks, keyed by the URL a persisted
+/// Process-wide registry of per-URL fetch locks, keyed by the world and the URL a persisted
 /// `link_preview_cache` row is stored under. `resolve_preview_image` keys on the job's
 /// `cache_urls` and `preview_url` and `resolve_thumbnail_asset`/`resolve_inline_image` on the
-/// image URL, so two concurrent post-publish jobs racing on a shared key run one after the other,
-/// and the second reads the asset id the first recorded instead of creating an orphaned `Asset`
-/// row and file (see `with_preview_url_locks` for the concurrency argument, including why an
-/// entry is removed without a race). The map has the keyed-registry shape of
+/// image URL, each under the job's world, so two concurrent post-publish jobs of one world racing
+/// on a shared key run one after the other, and the second reads the asset id the first recorded
+/// instead of creating an orphaned `Asset` row and file (see `with_preview_url_locks` for the
+/// concurrency argument, including why an entry is removed without a race). Jobs of different
+/// worlds never share a key. The map has the keyed-registry shape of
 /// `ws::room::RoomRegistry.rooms`. That map holds one entry per world, while this one would gain
 /// an entry for every distinct link-preview URL seen, so `release_preview_lock` removes an entry
 /// once its last holder releases.
-pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+pub type PreviewFetchLocks = Arc<DashMap<PreviewLockKey, Arc<tokio::sync::Mutex<()>>>>;
+
+/// The (world, URL) key of a `PreviewFetchLocks` entry.
+pub type PreviewLockKey = (Uuid, String);
 
 /// Runs `f` while holding the lock of every distinct key in `keys`, get-or-inserting a fresh
 /// `Mutex` per key on first use and removing each entry no other caller holds once `f` returns,
@@ -48,7 +52,7 @@ pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 ///
 /// # Lock order
 ///
-/// Keys are acquired in ascending string order. Two callers whose key sets overlap therefore
+/// Keys are acquired in ascending order. Two callers whose key sets overlap therefore
 /// acquire the shared keys in the same relative order, so neither can hold a key the other
 /// awaits while awaiting a key the first holds.
 ///
@@ -71,12 +75,16 @@ pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 ///
 /// `HeldPreviewLocks` runs that release from `Drop`, so a caller whose future is dropped while
 /// awaiting a lock or inside `f` (an aborted task) releases the same way a completed one does.
-async fn with_preview_url_locks<F, Fut, T>(locks: &PreviewFetchLocks, keys: &[String], f: F) -> T
+async fn with_preview_url_locks<F, Fut, T>(
+    locks: &PreviewFetchLocks,
+    keys: &[PreviewLockKey],
+    f: F,
+) -> T
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    let mut sorted: Vec<&String> = keys.iter().collect();
+    let mut sorted: Vec<&PreviewLockKey> = keys.iter().collect();
     sorted.sort();
     sorted.dedup();
     let entries = sorted
@@ -107,7 +115,7 @@ struct HeldPreviewLocks<'a> {
     /// The registry the entries were cloned from.
     locks: &'a PreviewFetchLocks,
     /// Each distinct key with this caller's clone of its map entry, in ascending key order.
-    entries: Vec<(String, Arc<tokio::sync::Mutex<()>>)>,
+    entries: Vec<(PreviewLockKey, Arc<tokio::sync::Mutex<()>>)>,
     /// The guards acquired so far, in `entries` order.
     guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
 }
@@ -130,7 +138,11 @@ impl Drop for HeldPreviewLocks<'_> {
 /// a count of 1, whichever order they release in. Counting while still holding `arc` would leave
 /// two holders that each release while the other's clone is alive both seeing a higher count,
 /// and the entry would never be removed.
-fn release_preview_lock(locks: &PreviewFetchLocks, key: String, arc: Arc<tokio::sync::Mutex<()>>) {
+fn release_preview_lock(
+    locks: &PreviewFetchLocks,
+    key: PreviewLockKey,
+    arc: Arc<tokio::sync::Mutex<()>>,
+) {
     drop(arc);
     if let Entry::Occupied(occ) = locks.entry(key) {
         if Arc::strong_count(occ.get()) == 1 {
@@ -458,11 +470,11 @@ async fn resolve_job(
 }
 
 /// De-dup-then-fetch for one `PreviewImage` job over its rows: the persisted
-/// `link_preview_cache` rows of every `cache_urls` entry and of `preview_url`. Reads them FIRST
-/// and, when any row carries an `image_asset_id`, reuses it verbatim, recording it on the rows
-/// that lack one -- no refetch and no second asset for a link this or another message already
-/// imaged, including a link whose final address another message imaged under its own row. On a
-/// miss, fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
+/// `link_preview_cache` rows in `world_id` of every `cache_urls` entry and of `preview_url`. Reads
+/// them FIRST and, when any row carries an `image_asset_id`, reuses it verbatim, recording it on
+/// the rows that lack one -- no refetch and no second asset for a link this or another message
+/// already imaged, including a link whose final address another message imaged under its own row.
+/// On a miss, fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
 /// (`link_preview::fetch_image_bytes`), asset-ifies it via `create_asset_from_bytes`
 /// (`created_by: None`: no user account backs a server-fetched image), and records the asset id
 /// on the rows that hold no id, so the patched segment carries the job's asset even when a write
@@ -499,13 +511,13 @@ async fn resolve_preview_image(
     if !row_urls.contains(&preview_url) {
         row_urls.push(preview_url.clone());
     }
-    // The closure moves `row_urls`, so the lock keys are a separate clone.
-    let lock_keys = row_urls.clone();
+    // The closure moves `row_urls`, so the lock keys are a separate list.
+    let lock_keys: Vec<PreviewLockKey> = row_urls.iter().map(|u| (world_id, u.clone())).collect();
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         let mut known: Option<Uuid> = None;
         let mut unset: Vec<&String> = Vec::new();
         for cache_url in &row_urls {
-            match repo.get_link_preview_cache(cache_url).await {
+            match repo.get_link_preview_cache(world_id, cache_url).await {
                 Ok(Some(row)) => match row.image_asset_id {
                     Some(id) => {
                         known.get_or_insert(id);
@@ -518,6 +530,7 @@ async fn resolve_preview_image(
                     let now_ms = crate::ws::time::now_millis();
                     match repo
                         .upsert_link_preview_cache(
+                            world_id,
                             cache_url,
                             Some(&title),
                             Some(&description),
@@ -535,7 +548,7 @@ async fn resolve_preview_image(
             }
         }
         if let Some(asset_id) = known {
-            record_preview_image(&repo, unset, asset_id).await;
+            record_preview_image(&repo, world_id, unset, asset_id).await;
             return Some(ResolvedEnrichment::ImageForPreview {
                 preview_url,
                 asset_id,
@@ -565,7 +578,7 @@ async fn resolve_preview_image(
             .await
             .ok()?
         };
-        record_preview_image(&repo, row_urls.iter().collect(), asset.id).await;
+        record_preview_image(&repo, world_id, row_urls.iter().collect(), asset.id).await;
         Some(ResolvedEnrichment::ImageForPreview {
             preview_url,
             asset_id: asset.id,
@@ -574,19 +587,27 @@ async fn resolve_preview_image(
     .await
 }
 
-/// Records `asset_id` on the `link_preview_cache` row of each of `row_urls` that has no asset
-/// id yet (`set_link_preview_cache_image` leaves an existing id); a failed write is logged and the
-/// remaining rows are still written.
-async fn record_preview_image(repo: &SqliteRepository, row_urls: Vec<&String>, asset_id: Uuid) {
+/// Records `asset_id` on the `link_preview_cache` row in `world_id` of each of `row_urls` that has
+/// no asset id yet (`set_link_preview_cache_image` leaves an existing id); a failed write is
+/// logged and the remaining rows are still written.
+async fn record_preview_image(
+    repo: &SqliteRepository,
+    world_id: Uuid,
+    row_urls: Vec<&String>,
+    asset_id: Uuid,
+) {
     for cache_url in row_urls {
-        if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {
+        if let Err(e) = repo
+            .set_link_preview_cache_image(world_id, cache_url, asset_id)
+            .await
+        {
             tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
         }
     }
 }
 
 /// De-dup-then-fetch for one `InlineImage` job: checks the persisted
-/// `link_preview_cache` row for `image_url` FIRST (same table, keyed here by
+/// `link_preview_cache` row in `world_id` for `image_url` FIRST (same table, keyed here by
 /// the chat image's own URL rather than a previewed page's URL) and reuses an
 /// existing `image_asset_id` verbatim on a hit -- never re-fetching or
 /// re-creating an asset for a URL some other message already imaged. On a
@@ -623,9 +644,9 @@ async fn resolve_inline_image(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    let lock_keys = [image_url.clone()];
+    let lock_keys = [(world_id, image_url.clone())];
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
-        if let Ok(Some(row)) = repo.get_link_preview_cache(&image_url).await {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(world_id, &image_url).await {
             if let Some(asset_id) = row.image_asset_id {
                 return Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
                     asset_id,
@@ -682,10 +703,10 @@ async fn resolve_inline_image(
         // before `set_link_preview_cache_image` can attach an asset id to
         // it. Same two-call shape as `resolve_thumbnail_asset`.
         let _ = repo
-            .upsert_link_preview_cache(&image_url, None, None, now)
+            .upsert_link_preview_cache(world_id, &image_url, None, None, now)
             .await;
         let _ = repo
-            .set_link_preview_cache_image(&image_url, asset.id)
+            .set_link_preview_cache_image(world_id, &image_url, asset.id)
             .await;
         Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
             asset_id: asset.id,
@@ -738,7 +759,7 @@ async fn resolve_oembed(
 }
 
 /// De-dup-then-fetch for one oEmbed thumbnail: checks the persisted
-/// `link_preview_cache` row for `thumbnail_url` FIRST (the same table
+/// `link_preview_cache` row in `world_id` for `thumbnail_url` FIRST (the same table
 /// `resolve_preview_image` uses, keyed here by the thumbnail's own URL
 /// rather than the previewed page's URL) and reuses an existing
 /// `image_asset_id` verbatim on a hit. On a miss, fetches `thumbnail_url`
@@ -768,9 +789,9 @@ async fn resolve_thumbnail_asset(
     // space `resolve_preview_image` uses -- a page previewed AND oEmbed-
     // thumbnailed via the identical image URL serializes against itself
     // too).
-    let lock_keys = [thumbnail_url.clone()];
+    let lock_keys = [(world_id, thumbnail_url.clone())];
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
-        if let Ok(Some(row)) = repo.get_link_preview_cache(&thumbnail_url).await {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(world_id, &thumbnail_url).await {
             if let Some(asset_id) = row.image_asset_id {
                 return Some(asset_id);
             }
@@ -804,10 +825,10 @@ async fn resolve_thumbnail_asset(
             .ok()?
         };
         let _ = repo
-            .upsert_link_preview_cache(&thumbnail_url, None, None, now)
+            .upsert_link_preview_cache(world_id, &thumbnail_url, None, None, now)
             .await;
         let _ = repo
-            .set_link_preview_cache_image(&thumbnail_url, asset.id)
+            .set_link_preview_cache_image(world_id, &thumbnail_url, asset.id)
             .await;
         Some(asset.id)
     })

@@ -319,12 +319,24 @@ impl Repository for StubRepo {
     }
     async fn get_link_preview_cache(
         &self,
+        _world_id: Uuid,
         _url: &str,
     ) -> Result<Option<LinkPreviewCacheRow>, DataError> {
         unimplemented!()
     }
     async fn upsert_link_preview_cache(
         &self,
+        _world_id: Uuid,
+        _url: &str,
+        _title: Option<&str>,
+        _description: Option<&str>,
+        _fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        unimplemented!()
+    }
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        _world_id: Uuid,
         _url: &str,
         _title: Option<&str>,
         _description: Option<&str>,
@@ -334,6 +346,7 @@ impl Repository for StubRepo {
     }
     async fn set_link_preview_cache_image(
         &self,
+        _world_id: Uuid,
         _url: &str,
         _image_asset_id: Uuid,
     ) -> Result<(), DataError> {

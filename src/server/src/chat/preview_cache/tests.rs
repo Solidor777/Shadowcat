@@ -1,5 +1,12 @@
 use super::*;
 
+use crate::test_ids::test_uuid;
+
+/// The world every test below stores into unless it names another.
+fn world() -> Uuid {
+    test_uuid(1)
+}
+
 fn preview(url: &str) -> LinkPreview {
     LinkPreview {
         url: url.to_string(),
@@ -15,6 +22,7 @@ fn hits_within_positive_ttl() {
     let cache = LinkPreviewCache::new();
     let t0 = Instant::now();
     cache.insert(
+        world(),
         "https://a.example/".to_string(),
         Some(preview("https://a.example/")),
         t0,
@@ -22,7 +30,7 @@ fn hits_within_positive_ttl() {
 
     let just_under = t0 + POSITIVE_TTL - Duration::from_secs(1);
     assert_eq!(
-        cache.get("https://a.example/", just_under),
+        cache.get(world(), "https://a.example/", just_under),
         Some(Some(preview("https://a.example/")))
     );
 }
@@ -32,33 +40,37 @@ fn misses_after_positive_ttl_expiry() {
     let cache = LinkPreviewCache::new();
     let t0 = Instant::now();
     cache.insert(
+        world(),
         "https://a.example/".to_string(),
         Some(preview("https://a.example/")),
         t0,
     );
 
     let after = t0 + POSITIVE_TTL;
-    assert_eq!(cache.get("https://a.example/", after), None);
+    assert_eq!(cache.get(world(), "https://a.example/", after), None);
 }
 
 #[test]
 fn negative_hit_within_negative_ttl_then_miss_after() {
     let cache = LinkPreviewCache::new();
     let t0 = Instant::now();
-    cache.insert("https://bad.example/".to_string(), None, t0);
+    cache.insert(world(), "https://bad.example/".to_string(), None, t0);
 
     let just_under = t0 + NEGATIVE_TTL - Duration::from_secs(1);
-    assert_eq!(cache.get("https://bad.example/", just_under), Some(None));
+    assert_eq!(
+        cache.get(world(), "https://bad.example/", just_under),
+        Some(None)
+    );
 
     let after = t0 + NEGATIVE_TTL;
-    assert_eq!(cache.get("https://bad.example/", after), None);
+    assert_eq!(cache.get(world(), "https://bad.example/", after), None);
 }
 
 #[test]
 fn unknown_url_is_a_miss() {
     let cache = LinkPreviewCache::new();
     assert_eq!(
-        cache.get("https://never-inserted.example/", Instant::now()),
+        cache.get(world(), "https://never-inserted.example/", Instant::now()),
         None
     );
 }
@@ -70,24 +82,46 @@ fn eviction_drops_the_oldest_entry_past_the_cap() {
 
     for i in 0..MAX_CACHE_ENTRIES {
         let url = format!("https://u{i}.example/");
-        cache.insert(url, None, base + Duration::from_millis(i as u64));
+        cache.insert(world(), url, None, base + Duration::from_millis(i as u64));
     }
     // The oldest entry (u0) is still present at exactly the cap.
     assert!(cache
-        .get("https://u0.example/", base + Duration::from_millis(1))
+        .get(
+            world(),
+            "https://u0.example/",
+            base + Duration::from_millis(1)
+        )
         .is_some());
 
     // One more insert must evict u0 (the oldest by stamped time) to stay
     // opportunistically bounded.
     let newest_stamp = base + Duration::from_millis(MAX_CACHE_ENTRIES as u64);
-    cache.insert("https://uNEW.example/".to_string(), None, newest_stamp);
+    cache.insert(
+        world(),
+        "https://uNEW.example/".to_string(),
+        None,
+        newest_stamp,
+    );
 
     assert_eq!(
-        cache.get("https://u0.example/", newest_stamp),
+        cache.get(world(), "https://u0.example/", newest_stamp),
         None,
         "oldest entry should have been evicted"
     );
-    assert!(cache.get("https://uNEW.example/", newest_stamp).is_some());
+    assert!(cache
+        .get(world(), "https://uNEW.example/", newest_stamp)
+        .is_some());
+}
+
+#[test]
+fn an_entry_is_a_miss_for_another_world() {
+    let cache = LinkPreviewCache::new();
+    let t0 = Instant::now();
+    let url = "https://a.example/";
+    cache.insert(world(), url.to_string(), Some(preview(url)), t0);
+
+    assert_eq!(cache.get(test_uuid(2), url, t0), None);
+    assert_eq!(cache.get(world(), url, t0), Some(Some(preview(url))));
 }
 
 #[test]

@@ -1023,11 +1023,18 @@ async fn repeated_calls_do_not_share_hidden_state() {
 
 // -- cached_or_fetch: two-tier cache lookup ------------------------------
 
-#[tokio::test]
-async fn cached_or_fetch_hits_in_memory_tier_without_touching_repo() {
+/// A fresh in-memory repository with one world, the scope of the cache rows a test writes.
+async fn repo_and_world() -> (crate::data::sqlite::SqliteRepository, Uuid) {
     let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
         .await
         .unwrap();
+    let world = repo.create_world("w", 0).await.unwrap();
+    (repo, world.id)
+}
+
+#[tokio::test]
+async fn cached_or_fetch_hits_in_memory_tier_without_touching_repo() {
+    let (repo, world_id) = repo_and_world().await;
     let cache = LinkPreviewCache::new();
     let now = Instant::now();
     // Never upserted into the DB table; the in-memory tier must still
@@ -1040,25 +1047,23 @@ async fn cached_or_fetch_hits_in_memory_tier_without_touching_repo() {
         image_url: None,
         image_asset_id: None,
     };
-    cache.insert(url.to_string(), Some(preview.clone()), now);
+    cache.insert(world_id, url.to_string(), Some(preview.clone()), now);
 
-    let result = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+    let result = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
     assert_eq!(result, Some(Some(preview)));
 }
 
 #[tokio::test]
 async fn cached_or_fetch_cold_start_falls_through_to_persisted_row() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let cache = LinkPreviewCache::new();
     let now = Instant::now();
     let url = "https://cold.example/";
-    repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 1_000)
+    repo.upsert_link_preview_cache(world_id, url, Some("T"), Some("D"), 1_000)
         .await
         .unwrap();
 
-    let first = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+    let first = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
     assert_eq!(
         first,
         Some(Some(LinkPreview {
@@ -1073,19 +1078,17 @@ async fn cached_or_fetch_cold_start_falls_through_to_persisted_row() {
     // Mutate the underlying row directly; a second call must still
     // return the FIRST value, proving it now comes from the in-memory
     // tier the first call backfilled rather than re-reading the DB.
-    repo.upsert_link_preview_cache(url, Some("CHANGED"), Some("CHANGED"), 1_000)
+    repo.upsert_link_preview_cache(world_id, url, Some("CHANGED"), Some("CHANGED"), 1_000)
         .await
         .unwrap();
-    let second = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+    let second = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
     assert_eq!(second, first);
 }
 
 /// A persisted-row read failure on an in-memory miss reads as a miss.
 #[tokio::test]
 async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     sqlx::query("DROP TABLE link_preview_cache")
         .execute(repo.pool())
         .await
@@ -1093,6 +1096,7 @@ async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
     let result = cached_or_fetch(
         &repo,
         &LinkPreviewCache::new(),
+        world_id,
         "https://unreadable.example/",
         Instant::now(),
         1_000,
@@ -1105,9 +1109,7 @@ async fn cached_or_fetch_treats_an_unreadable_persisted_row_as_a_miss() {
 /// cached.
 #[tokio::test]
 async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     sqlx::query("DROP TABLE link_preview_cache")
         .execute(repo.pool())
         .await
@@ -1122,26 +1124,24 @@ async fn cached_or_fetch_keeps_an_in_memory_hit_when_the_asset_row_read_fails() 
         image_url: None,
         image_asset_id: None,
     };
-    cache.insert(url.to_string(), Some(preview.clone()), now);
-    let result = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+    cache.insert(world_id, url.to_string(), Some(preview.clone()), now);
+    let result = cached_or_fetch(&repo, &cache, world_id, url, now, 1_000).await;
     assert_eq!(result, Some(Some(preview)));
 }
 
 #[tokio::test]
 async fn cached_or_fetch_ttl_expired_persisted_row_falls_through_to_miss() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let cache = LinkPreviewCache::new();
     let now = Instant::now();
     let url = "https://stale.example/";
     let fetched_at_ms = 1_000;
-    repo.upsert_link_preview_cache(url, Some("T"), Some("D"), fetched_at_ms)
+    repo.upsert_link_preview_cache(world_id, url, Some("T"), Some("D"), fetched_at_ms)
         .await
         .unwrap();
 
     let expired_now_ms = fetched_at_ms + POSITIVE_TTL.as_millis() as i64;
-    let result = cached_or_fetch(&repo, &cache, url, now, expired_now_ms).await;
+    let result = cached_or_fetch(&repo, &cache, world_id, url, now, expired_now_ms).await;
     assert_eq!(
         result, None,
         "caller must fetch on an expired persisted row"
@@ -1150,21 +1150,35 @@ async fn cached_or_fetch_ttl_expired_persisted_row_falls_through_to_miss() {
 
 #[tokio::test]
 async fn cached_or_fetch_negative_row_honors_negative_ttl() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let now = Instant::now();
     let url = "https://negative.example/";
     let fetched_at_ms = 1_000;
-    repo.upsert_link_preview_cache(url, None, None, fetched_at_ms)
+    repo.upsert_link_preview_cache(world_id, url, None, None, fetched_at_ms)
         .await
         .unwrap();
 
-    let live = cached_or_fetch(&repo, &LinkPreviewCache::new(), url, now, fetched_at_ms).await;
+    let live = cached_or_fetch(
+        &repo,
+        &LinkPreviewCache::new(),
+        world_id,
+        url,
+        now,
+        fetched_at_ms,
+    )
+    .await;
     assert_eq!(live, Some(None));
 
     let expired_now_ms = fetched_at_ms + NEGATIVE_TTL.as_millis() as i64;
-    let expired = cached_or_fetch(&repo, &LinkPreviewCache::new(), url, now, expired_now_ms).await;
+    let expired = cached_or_fetch(
+        &repo,
+        &LinkPreviewCache::new(),
+        world_id,
+        url,
+        now,
+        expired_now_ms,
+    )
+    .await;
     assert_eq!(expired, None);
 }
 
@@ -1187,9 +1201,7 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
     let (addr, _handle) = spawn_stub(router).await;
     let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
     let client = stub_client("stub.test");
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let cache = LinkPreviewCache::new();
     let rate = PreviewRateLimiter::new();
     let url = format!("http://stub.test:{port}/");
@@ -1201,6 +1213,7 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
     enrich(
         &mut segments,
         EnrichDeps {
+            world_id,
             repo: &repo,
             fetch: LinkPreviewDeps {
                 client: &client,
@@ -1216,9 +1229,12 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
     )
     .await;
 
-    assert!(cache.get(&url, now).is_some(), "in-memory tier not written");
+    assert!(
+        cache.get(world_id, &url, now).is_some(),
+        "in-memory tier not written"
+    );
     let row = repo
-        .get_link_preview_cache(&url)
+        .get_link_preview_cache(world_id, &url)
         .await
         .unwrap()
         .expect("persisted tier not written");
@@ -1226,17 +1242,153 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
     assert_eq!(row.description.as_deref(), Some("Fresh Description"));
 }
 
+// -- world scope ------------------------------------------------------------
+
+/// Neither tier answers for another world: an in-memory entry and a persisted row of one world
+/// are a miss in another.
+#[tokio::test]
+async fn cached_or_fetch_does_not_answer_for_another_world() {
+    let (repo, world_a) = repo_and_world().await;
+    let world_b = repo.create_world("b", 0).await.unwrap().id;
+    let cache = LinkPreviewCache::new();
+    let now = Instant::now();
+    let memory_url = "https://memory.example/";
+    let persisted_url = "https://persisted.example/";
+    let preview = LinkPreview {
+        url: memory_url.to_string(),
+        title: "t".to_string(),
+        description: "d".to_string(),
+        image_url: None,
+        image_asset_id: None,
+    };
+    cache.insert(world_a, memory_url.to_string(), Some(preview), now);
+    repo.upsert_link_preview_cache(world_a, persisted_url, Some("T"), Some("D"), 1_000)
+        .await
+        .unwrap();
+
+    for url in [memory_url, persisted_url] {
+        assert_eq!(
+            cached_or_fetch(&repo, &cache, world_b, url, now, 1_000).await,
+            None,
+            "{url} is cached for world A only"
+        );
+        assert!(
+            cached_or_fetch(&repo, &cache, world_a, url, now, 1_000)
+                .await
+                .is_some(),
+            "{url} still answers for world A"
+        );
+    }
+}
+
+/// The asset another world recorded for an address is neither carried by the segment nor
+/// recorded on the new world's row: the message queues its own image job. The same world's
+/// recorded asset is reused.
+#[tokio::test]
+async fn enrich_does_not_reuse_another_worlds_asset() {
+    use crate::data::asset::Asset;
+
+    let router = Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<html><head>
+                    <meta property="og:title" content="Title">
+                    <meta property="og:description" content="Description">
+                    <meta property="og:image" content="https://img.example/a.png">
+                </head></html>"#,
+            )
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let client = stub_client("stub.test");
+    let (repo, world_a) = repo_and_world().await;
+    let world_b = repo.create_world("b", 0).await.unwrap().id;
+    let url = format!("http://stub.test:{port}/");
+    let asset_id = Uuid::new_v4();
+    repo.insert_asset(&Asset {
+        id: asset_id,
+        world_id: world_a,
+        storage_key: format!("{world_a}/{asset_id}"),
+        original_name: "og.png".to_string(),
+        content_type: "image/png".to_string(),
+        byte_size: 10,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    })
+    .await
+    .unwrap();
+    repo.upsert_link_preview_cache(world_a, &url, Some("Title"), Some("Description"), 1_000)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(world_a, &url, asset_id)
+        .await
+        .unwrap();
+    let cache = LinkPreviewCache::new();
+    let rate = PreviewRateLimiter::new();
+    let now = Instant::now();
+
+    let run = |world_id: Uuid| {
+        let (repo, cache, rate, client, url) = (&repo, &cache, &rate, &client, url.clone());
+        async move {
+            let mut segments = vec![Segment::Html {
+                sanitized_html: format!(r#"<a href="{url}">link</a>"#),
+            }];
+            let pending = enrich(
+                &mut segments,
+                EnrichDeps {
+                    world_id,
+                    repo,
+                    fetch: LinkPreviewDeps {
+                        client,
+                        cache,
+                        rate,
+                    },
+                },
+                Uuid::new_v4(),
+                1_000,
+                now,
+                &[],
+                true,
+            )
+            .await;
+            (segments, pending)
+        }
+    };
+
+    let (segments_b, pending_b) = run(world_b).await;
+    let Segment::LinkPreview { image_asset_id, .. } = &segments_b[1] else {
+        panic!("expected a LinkPreview segment, got {:?}", segments_b[1]);
+    };
+    assert_eq!(*image_asset_id, None);
+    assert_eq!(pending_b.len(), 1, "world B queues its own image job");
+    let row_b = repo.get_link_preview_cache(world_b, &url).await.unwrap();
+    assert_eq!(row_b.unwrap().image_asset_id, None);
+
+    let (segments_a, pending_a) = run(world_a).await;
+    let Segment::LinkPreview { image_asset_id, .. } = &segments_a[1] else {
+        panic!("expected a LinkPreview segment, got {:?}", segments_a[1]);
+    };
+    assert_eq!(*image_asset_id, Some(asset_id));
+    assert!(pending_a.is_empty(), "world A reuses its own asset");
+}
+
 // -- enrich: inline chat image queueing -----------------------------------
 
 #[tokio::test]
 async fn enrich_queues_an_inline_image_job_for_a_valid_image_source() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let mut segments = Vec::new();
     let pending = enrich(
         &mut segments,
         EnrichDeps {
+            world_id,
             repo: &repo,
             fetch: LinkPreviewDeps {
                 client: &build_client_allow_loopback(),
@@ -1266,13 +1418,12 @@ async fn enrich_queues_an_inline_image_job_for_a_valid_image_source() {
 
 #[tokio::test]
 async fn enrich_skips_an_inline_image_source_with_a_blocked_url() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let mut segments = Vec::new();
     let pending = enrich(
         &mut segments,
         EnrichDeps {
+            world_id,
             repo: &repo,
             fetch: LinkPreviewDeps {
                 client: &build_client_allow_loopback(),
@@ -1298,9 +1449,7 @@ async fn enrich_skips_an_inline_image_source_with_a_blocked_url() {
 
 #[tokio::test]
 async fn enrich_caps_inline_image_jobs_at_max_inline_images() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let mut segments = Vec::new();
     let sources: Vec<ImageSource> = (0..MAX_INLINE_IMAGES + 3)
         .map(|i| ImageSource {
@@ -1311,6 +1460,7 @@ async fn enrich_caps_inline_image_jobs_at_max_inline_images() {
     let pending = enrich(
         &mut segments,
         EnrichDeps {
+            world_id,
             repo: &repo,
             fetch: LinkPreviewDeps {
                 client: &build_client_allow_loopback(),
@@ -1337,15 +1487,14 @@ async fn enrich_with_scan_previews_false_queues_the_image_but_skips_the_hyperlin
     // `image_urls` alone triggers the call into `enrich`, but the href/oEmbed
     // scan over the message's own `Html` run must NOT run -- previews and
     // images are independent toggles.
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let mut segments = vec![Segment::Html {
         sanitized_html: r#"<a href="https://example.com/page">a link</a>"#.to_string(),
     }];
     let pending = enrich(
         &mut segments,
         EnrichDeps {
+            world_id,
             repo: &repo,
             fetch: LinkPreviewDeps {
                 client: &build_client_allow_loopback(),
@@ -1411,17 +1560,21 @@ async fn upsert_link_preview_cache_preserves_existing_image_asset_id_on_conflict
     repo.insert_asset(&asset).await.unwrap();
 
     let url = "https://image.example/";
-    repo.upsert_link_preview_cache(url, Some("Title One"), Some("Desc One"), 1_000)
+    repo.upsert_link_preview_cache(world.id, url, Some("Title One"), Some("Desc One"), 1_000)
         .await
         .unwrap();
-    repo.set_link_preview_cache_image(url, asset_id)
+    repo.set_link_preview_cache_image(world.id, url, asset_id)
         .await
         .unwrap();
-    repo.upsert_link_preview_cache(url, Some("Title Two"), Some("Desc Two"), 2_000)
+    repo.upsert_link_preview_cache(world.id, url, Some("Title Two"), Some("Desc Two"), 2_000)
         .await
         .unwrap();
 
-    let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+    let row = repo
+        .get_link_preview_cache(world.id, url)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row.image_asset_id, Some(asset_id));
     assert_eq!(row.title.as_deref(), Some("Title Two"));
     assert_eq!(row.description.as_deref(), Some("Desc Two"));
@@ -1429,14 +1582,15 @@ async fn upsert_link_preview_cache_preserves_existing_image_asset_id_on_conflict
 
 #[tokio::test]
 async fn set_link_preview_cache_image_is_a_noop_on_absent_row() {
-    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let (repo, world_id) = repo_and_world().await;
     let url = "https://never-upserted.example/";
-    repo.set_link_preview_cache_image(url, Uuid::new_v4())
+    repo.set_link_preview_cache_image(world_id, url, Uuid::new_v4())
         .await
         .unwrap();
-    assert_eq!(repo.get_link_preview_cache(url).await.unwrap(), None);
+    assert_eq!(
+        repo.get_link_preview_cache(world_id, url).await.unwrap(),
+        None
+    );
 }
 
 /// An id already recorded on a row stays: a second `set_link_preview_cache_image` with another
@@ -1477,16 +1631,20 @@ async fn set_link_preview_cache_image_keeps_the_id_already_recorded() {
         ids.push(id);
     }
     let url = "https://image.example/";
-    repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+    repo.upsert_link_preview_cache(world.id, url, Some("T"), Some("D"), 0)
         .await
         .unwrap();
-    repo.set_link_preview_cache_image(url, ids[0])
+    repo.set_link_preview_cache_image(world.id, url, ids[0])
         .await
         .unwrap();
-    repo.set_link_preview_cache_image(url, ids[1])
+    repo.set_link_preview_cache_image(world.id, url, ids[1])
         .await
         .unwrap();
 
-    let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+    let row = repo
+        .get_link_preview_cache(world.id, url)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row.image_asset_id, Some(ids[0]));
 }

@@ -389,17 +389,21 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_link_preview_cache("https://example.com").await?.is_none());
+    /// let world = repo.create_world("w", 0).await?;
+    /// assert!(repo.get_link_preview_cache(world.id, "https://example.com").await?.is_none());
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
         let row = sqlx::query(
-            "SELECT title, description, image_asset_id, fetched_at FROM link_preview_cache WHERE url = ?",
+            "SELECT title, description, image_asset_id, fetched_at FROM link_preview_cache \
+             WHERE world_id = ? AND url = ?",
         )
+        .bind(world_id.to_string())
         .bind(url)
         .fetch_optional(&self.pool)
         .await?;
@@ -429,25 +433,72 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// repo.upsert_link_preview_cache("https://example.com", Some("MOCK_TITLE"), None, 0).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let world = repo.create_world("w", 0).await?;
+    /// repo.upsert_link_preview_cache(world.id, "https://example.com", Some("MOCK_TITLE"), None, 0)
+    ///     .await?;
+    /// let row = repo.get_link_preview_cache(world.id, "https://example.com").await?.unwrap();
     /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
     /// # Ok(())
     /// # }
     /// ```
     pub async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
         sqlx::query(
-            "INSERT INTO link_preview_cache (url, title, description, fetched_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(url) DO UPDATE SET \
-               title = excluded.title, description = excluded.description, fetched_at = excluded.fetched_at",
+            "INSERT INTO link_preview_cache (world_id, url, title, description, fetched_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(world_id, url) DO UPDATE SET \
+               title = excluded.title, description = excluded.description, \
+               fetched_at = excluded.fetched_at",
         )
+        .bind(world_id.to_string())
+        .bind(url)
+        .bind(title)
+        .bind(description)
+        .bind(fetched_at_ms.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// See `Repository::insert_link_preview_cache_if_absent`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let url = "https://example.com";
+    /// repo.insert_link_preview_cache_if_absent(world.id, url, Some("MOCK_TITLE"), None, 7).await?;
+    /// repo.insert_link_preview_cache_if_absent(world.id, url, None, None, 9).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
+    /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    /// assert_eq!(row.fetched_at_ms, 7);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO link_preview_cache (world_id, url, title, description, fetched_at) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(world_id, url) DO NOTHING",
+        )
+        .bind(world_id.to_string())
         .bind(url)
         .bind(title)
         .bind(description)
@@ -488,24 +539,27 @@ impl SqliteRepository {
     ///     })
     ///     .await?;
     /// }
-    /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
-    /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
-    /// repo.set_link_preview_cache_image("https://example.com", rival).await?;
-    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// let url = "https://example.com";
+    /// repo.upsert_link_preview_cache(world.id, url, None, None, 0).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, asset).await?;
+    /// repo.set_link_preview_cache_image(world.id, url, rival).await?;
+    /// let row = repo.get_link_preview_cache(world.id, url).await?.unwrap();
     /// assert_eq!(row.image_asset_id, Some(asset));
     /// # Ok(())
     /// # }
     /// ```
     pub async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
         sqlx::query(
             "UPDATE link_preview_cache SET image_asset_id = ? \
-             WHERE url = ? AND image_asset_id IS NULL",
+             WHERE world_id = ? AND url = ? AND image_asset_id IS NULL",
         )
         .bind(image_asset_id.to_string())
+        .bind(world_id.to_string())
         .bind(url)
         .execute(&self.pool)
         .await?;
@@ -2879,28 +2933,57 @@ impl Repository for SqliteRepository {
 
     async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
-        SqliteRepository::get_link_preview_cache(self, url).await
+        SqliteRepository::get_link_preview_cache(self, world_id, url).await
     }
 
     async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
-        SqliteRepository::upsert_link_preview_cache(self, url, title, description, fetched_at_ms)
-            .await
+        SqliteRepository::upsert_link_preview_cache(
+            self,
+            world_id,
+            url,
+            title,
+            description,
+            fetched_at_ms,
+        )
+        .await
+    }
+
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        SqliteRepository::insert_link_preview_cache_if_absent(
+            self,
+            world_id,
+            url,
+            title,
+            description,
+            fetched_at_ms,
+        )
+        .await
     }
 
     async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
-        SqliteRepository::set_link_preview_cache_image(self, url, image_asset_id).await
+        SqliteRepository::set_link_preview_cache_image(self, world_id, url, image_asset_id).await
     }
 
     async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {

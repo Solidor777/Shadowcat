@@ -146,22 +146,24 @@ pub struct LinkPreviewDeps<'a> {
 }
 
 /// Borrow-bundle of everything `enrich` needs beyond `segments`/`user`/the
-/// two timestamps: the document repository (the persisted `link_preview_cache`
-/// tier) alongside the existing fetch-dependency bundle. Keeps `enrich`'s own
-/// parameter count from crossing the too-many-arguments threshold now that a
-/// persisted-cache lookup needs a repository handle in addition to the
-/// in-memory cache. Not stored — constructed inline at each call site.
+/// two timestamps: the world the message belongs to and the document repository (the persisted
+/// `link_preview_cache` tier) alongside the existing fetch-dependency bundle. Keeps `enrich`'s
+/// own parameter count from crossing the too-many-arguments threshold. Not stored — constructed
+/// inline at each call site.
 pub struct EnrichDeps<'a> {
+    /// The world of the message being enriched: the scope of every cache read and write.
+    pub world_id: Uuid,
     /// The document repository, for the persisted `link_preview_cache` tier.
     pub repo: &'a dyn crate::data::repository::Repository,
     /// The shared preview-fetch HTTP client, in-memory cache, and rate limiter.
     pub fetch: LinkPreviewDeps<'a>,
 }
 
-/// Two-tier cache lookup for `url`: the in-memory `cache` first, then the persisted
+/// Two-tier cache lookup for `url` in `world_id`: the in-memory `cache` first, then the persisted
 /// `link_preview_cache` table (survives a restart) on a miss — checked BEFORE any network fetch
 /// is attempted, so a cold-started process can reuse a still-fresh row
-/// rather than re-fetching every URL seen since the process last started.
+/// rather than re-fetching every URL seen since the process last started. Both tiers are scoped
+/// to the world, so an outcome or asset id of another world is never returned.
 /// `None` return means BOTH tiers missed (or a persisted row expired past
 /// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
 /// memory hit whose preview has no asset id reads the persisted row's, which a background job may
@@ -169,14 +171,15 @@ pub struct EnrichDeps<'a> {
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
+    world_id: Uuid,
     url: &str,
     now: Instant,
     now_ms: i64,
 ) -> Option<Option<LinkPreview>> {
-    if let Some(mut hit) = cache.get(url, now) {
+    if let Some(mut hit) = cache.get(world_id, url, now) {
         // A background job records an asset on the persisted row without updating this entry.
         if let Some(preview) = hit.as_mut().filter(|p| p.image_asset_id.is_none()) {
-            match repo.get_link_preview_cache(url).await {
+            match repo.get_link_preview_cache(world_id, url).await {
                 Ok(Some(row)) => preview.image_asset_id = row.image_asset_id,
                 Ok(None) => {}
                 Err(e) => tracing::warn!(?e, %url, "link-preview cache row read failed"),
@@ -184,7 +187,7 @@ async fn cached_or_fetch(
         }
         return Some(hit);
     }
-    let row = match repo.get_link_preview_cache(url).await {
+    let row = match repo.get_link_preview_cache(world_id, url).await {
         Ok(row) => row?,
         Err(e) => {
             tracing::warn!(?e, %url, "link-preview cache row read failed");
@@ -220,7 +223,7 @@ async fn cached_or_fetch(
     let backfill_at = now
         .checked_sub(Duration::from_millis(age_ms.max(0) as u64))
         .unwrap_or(now);
-    cache.insert(url.to_string(), outcome.clone(), backfill_at);
+    cache.insert(world_id, url.to_string(), outcome.clone(), backfill_at);
     Some(outcome)
 }
 
@@ -271,6 +274,7 @@ pub async fn enrich(
     scan_previews: bool,
 ) -> Vec<PendingEnrichment> {
     let EnrichDeps {
+        world_id,
         repo,
         fetch: LinkPreviewDeps {
             client,
@@ -319,7 +323,7 @@ pub async fn enrich(
     let mut previews: Vec<(usize, String, LinkPreview)> = Vec::with_capacity(urls.len());
     let mut misses: Vec<(usize, String)> = Vec::new();
     for (index, url) in urls.into_iter().enumerate() {
-        match cached_or_fetch(repo, cache, &url, now, now_ms).await {
+        match cached_or_fetch(repo, cache, world_id, &url, now, now_ms).await {
             Some(Some(preview)) => previews.push((index, url, preview)),
             Some(None) => {} // live cached negative: skip silently, no re-fetch
             None => misses.push((index, url)),
@@ -347,9 +351,10 @@ pub async fn enrich(
             };
             match result {
                 Ok(preview) => {
-                    cache.insert(url.clone(), Some(preview.clone()), now);
+                    cache.insert(world_id, url.clone(), Some(preview.clone()), now);
                     if let Err(e) = repo
                         .upsert_link_preview_cache(
+                            world_id,
                             &url,
                             Some(&preview.title),
                             Some(&preview.description),
@@ -366,9 +371,9 @@ pub async fn enrich(
                     previews.push((index, url, preview));
                 }
                 Err(_) => {
-                    cache.insert(url.clone(), None, now);
+                    cache.insert(world_id, url.clone(), None, now);
                     if let Err(e) = repo
-                        .upsert_link_preview_cache(&url, None, None, now_ms)
+                        .upsert_link_preview_cache(world_id, &url, None, None, now_ms)
                         .await
                     {
                         tracing::warn!(?e, %url, "link-preview negative-cache persist failed");
@@ -391,7 +396,10 @@ pub async fn enrich(
     for (_, cache_url, preview) in &mut previews {
         if preview.image_asset_id.is_none() {
             if let Some(&asset_id) = known_assets.get(&preview.url) {
-                if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {
+                if let Err(e) = repo
+                    .set_link_preview_cache_image(world_id, cache_url, asset_id)
+                    .await
+                {
                     tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
                 }
                 preview.image_asset_id = Some(asset_id);

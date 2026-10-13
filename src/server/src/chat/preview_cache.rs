@@ -2,10 +2,10 @@
 //!
 //! It is separate from `link_preview` because the cache has NO SSRF-guard responsibility of its
 //! own: it stores outcomes the guarded fetcher produced and the outcomes `cached_or_fetch`
-//! backfills from a persisted row (a preview, or a negative entry), keyed on the CANDIDATE URL
-//! the ingest stage extracted from the message. `cached_or_fetch` reads and backfills, and
-//! `enrich` inserts fetch outcomes, all under the same pre-fetch href; the address the fetcher
-//! ends on is stored in the outcome and is not the key.
+//! backfills from a persisted row (a preview, or a negative entry), keyed on the world and the
+//! CANDIDATE URL the ingest stage extracted from the message. `cached_or_fetch` reads and
+//! backfills, and `enrich` inserts fetch outcomes, all under the same world and pre-fetch href;
+//! the address the fetcher ends on is stored in the outcome and is not the key.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -13,6 +13,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use uuid::Uuid;
 
 use super::LinkPreview;
 use crate::ws::PingRateLimiter;
@@ -27,11 +29,10 @@ pub const POSITIVE_TTL: Duration = Duration::from_secs(60 * 60);
 /// same bad link must not re-run the full guarded-fetch pipeline on every
 /// occurrence either.
 pub const NEGATIVE_TTL: Duration = Duration::from_secs(5 * 60);
-/// Opportunistic cap on the number of cached URLs. `insert` evicts the
-/// single oldest entry (by stamped `Instant`, ignoring TTL) once this many
-/// entries are already present — bounds unbounded memory growth from a
-/// world where many distinct URLs get pasted, without needing a background
-/// sweep task.
+/// Opportunistic cap on the number of cached (world, URL) entries, across all worlds. `insert`
+/// evicts the single oldest entry (by stamped `Instant`, ignoring TTL) once this many entries are
+/// already present — bounds unbounded memory growth from a world where many distinct URLs get
+/// pasted, without needing a background sweep task.
 pub const MAX_CACHE_ENTRIES: usize = 2048;
 
 /// Per-user fetch budget for the link-preview fetcher. 20/min is generous
@@ -47,20 +48,23 @@ pub const PREVIEW_FETCH_PER_MIN: usize = 20;
 /// logic in it. `PingRateLimiter` is the shared implementation.
 pub type PreviewRateLimiter = PingRateLimiter;
 
+/// A stored outcome and the `Instant` it was stored at; `None` outcome = negative entry.
+type CacheEntry = (Instant, Option<LinkPreview>);
+
 /// Caches `fetch_preview` outcomes and the outcomes `cached_or_fetch` builds from persisted rows,
-/// keyed on the candidate URL `enrich` extracted from the message, not on the address the stored
-/// outcome carries. `None` stored against a URL is a NEGATIVE cache entry (a prior fetch failed,
-/// or a persisted row has no title and no description); `Some(preview)` is a positive one. Both
-/// are read through `get`, which additionally applies the TTL appropriate to which kind is
-/// stored.
+/// keyed on the world and the candidate URL `enrich` extracted from the message, not on the
+/// address the stored outcome carries; an outcome of one world is never returned for another.
+/// `None` stored against a key is a NEGATIVE cache entry (a prior fetch failed, or a persisted
+/// row has no title and no description); `Some(preview)` is a positive one. Both are read through
+/// `get`, which additionally applies the TTL appropriate to which kind is stored.
 #[derive(Default)]
 pub struct LinkPreviewCache {
-    /// URL -> (store time, outcome); `None` outcome = negative entry.
-    entries: Mutex<HashMap<String, (Instant, Option<LinkPreview>)>>,
+    /// (world, URL) -> (store time, outcome); `None` outcome = negative entry.
+    entries: Mutex<HashMap<(Uuid, String), CacheEntry>>,
 }
 
 impl LinkPreviewCache {
-    /// An empty cache (one per server, shared across worlds).
+    /// An empty cache (one per server; entries are keyed by world).
     ///
     /// # Examples
     ///
@@ -71,18 +75,18 @@ impl LinkPreviewCache {
         Self::default()
     }
 
-    /// Looks up `url` at time `now`. Returns:
+    /// Looks up `url` of `world_id` at time `now`. Returns:
     /// - `None` — no entry, or the entry expired (TTL selected by whether
     ///   the stored value is a hit or a cached negative).
     /// - `Some(Some(preview))` — a live positive hit.
     /// - `Some(None)` — a live cached-negative hit (caller should not
     ///   re-fetch; the URL is known-bad within `NEGATIVE_TTL`).
-    pub fn get(&self, url: &str, now: Instant) -> Option<Option<LinkPreview>> {
+    pub fn get(&self, world_id: Uuid, url: &str, now: Instant) -> Option<Option<LinkPreview>> {
         let g = self
             .entries
             .lock()
             .expect("link-preview cache mutex poisoned");
-        let (stamped, value) = g.get(url)?;
+        let (stamped, value) = g.get(&(world_id, url.to_string()))?;
         let ttl = if value.is_some() {
             POSITIVE_TTL
         } else {
@@ -94,16 +98,17 @@ impl LinkPreviewCache {
         Some(value.clone())
     }
 
-    /// Records the outcome of fetching `url` at time `now`. Evicts the
+    /// Records the outcome of fetching `url` for `world_id` at time `now`. Evicts the
     /// single oldest entry first when already at `MAX_CACHE_ENTRIES` (an
     /// opportunistic bound, not a precise LRU) so an `insert` on a full
     /// cache never grows it past the cap.
-    pub fn insert(&self, url: String, result: Option<LinkPreview>, now: Instant) {
+    pub fn insert(&self, world_id: Uuid, url: String, result: Option<LinkPreview>, now: Instant) {
         let mut g = self
             .entries
             .lock()
             .expect("link-preview cache mutex poisoned");
-        if g.len() >= MAX_CACHE_ENTRIES && !g.contains_key(&url) {
+        let key = (world_id, url);
+        if g.len() >= MAX_CACHE_ENTRIES && !g.contains_key(&key) {
             if let Some(oldest_key) = g
                 .iter()
                 .min_by_key(|(_, (stamped, _))| *stamped)
@@ -112,7 +117,7 @@ impl LinkPreviewCache {
                 g.remove(&oldest_key);
             }
         }
-        g.insert(url, (now, result));
+        g.insert(key, (now, result));
     }
 }
 

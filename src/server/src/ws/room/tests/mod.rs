@@ -218,28 +218,43 @@ impl Repository for DeleteMidHydration<'_> {
     }
     async fn get_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
     ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
-        self.inner.get_link_preview_cache(url).await
+        self.inner.get_link_preview_cache(world_id, url).await
     }
     async fn upsert_link_preview_cache(
         &self,
+        world_id: Uuid,
         url: &str,
         title: Option<&str>,
         description: Option<&str>,
         fetched_at_ms: i64,
     ) -> Result<(), DataError> {
         self.inner
-            .upsert_link_preview_cache(url, title, description, fetched_at_ms)
+            .upsert_link_preview_cache(world_id, url, title, description, fetched_at_ms)
+            .await
+    }
+    async fn insert_link_preview_cache_if_absent(
+        &self,
+        world_id: Uuid,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        self.inner
+            .insert_link_preview_cache_if_absent(world_id, url, title, description, fetched_at_ms)
             .await
     }
     async fn set_link_preview_cache_image(
         &self,
+        world_id: Uuid,
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError> {
         self.inner
-            .set_link_preview_cache_image(url, image_asset_id)
+            .set_link_preview_cache_image(world_id, url, image_asset_id)
             .await
     }
     async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
