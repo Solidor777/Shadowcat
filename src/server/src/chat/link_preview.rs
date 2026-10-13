@@ -168,8 +168,8 @@ pub struct EnrichDeps<'a> {
 /// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
 /// memory hit with a preview takes the persisted row's current asset id, which costs one row read
 /// per such hit; when the row is absent the hit counts as a miss, so the caller's fetch writes the
-/// row again and a background image job always finds a row to record its asset on. A failed
-/// persisted-row read leaves a memory hit as cached and counts as a miss when no hit exists.
+/// row again. A failed persisted-row read leaves a memory hit as cached and counts as a miss when
+/// no hit exists.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
