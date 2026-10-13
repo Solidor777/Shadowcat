@@ -10,6 +10,12 @@ pub mod parser;
 
 pub use parser::parse;
 
+/// Deepest nesting of parentheses, unary `-` and function-call arguments `parse` accepts.
+///
+/// The parser recurses once per nesting level, so the cap bounds its stack use independently of
+/// the input length.
+pub const MAX_NESTING_DEPTH: usize = 128;
+
 use crate::dice::spec::Direction;
 
 /// Which `Mode` a notation string should parse into when the string itself
@@ -115,6 +121,8 @@ pub enum ParseError {
     /// A second `xf<N>` crit-fail trigger appeared in one roll. Same reasoning as
     /// `DuplicateCritSuccess`.
     DuplicateCritFail,
+    /// Parentheses, unary `-` and function-call arguments nest deeper than `MAX_NESTING_DEPTH`.
+    TooDeeplyNested,
 }
 
 /// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
@@ -154,6 +162,12 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::DuplicateCritFail => {
                 write!(f, "a roll can only set one crit-fail trigger (xf<N>)")
+            }
+            ParseError::TooDeeplyNested => {
+                write!(
+                    f,
+                    "the dice expression is nested more than {MAX_NESTING_DEPTH} levels deep"
+                )
             }
         }
     }

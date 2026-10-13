@@ -626,3 +626,63 @@ fn xs_and_xf_under_total_ambient_are_silently_dropped() {
         other => panic!("expected Total, got {other:?}"),
     }
 }
+
+/// Runs `input` through parse, roll and evaluate on a thread with the default spawned-thread
+/// stack size.
+fn parse_roll_evaluate_on_default_stack(input: String) -> Result<(), ParseError> {
+    std::thread::spawn(move || {
+        let spec = parse(&input, ParseContext::default())?;
+        let mut rng = crate::dice::rng::NoiseRng::from_seed(1);
+        let raws = crate::dice::eval::roll(&spec, &mut rng);
+        let _ = crate::dice::eval::evaluate(&spec, &raws);
+        Ok(())
+    })
+    .join()
+    .unwrap()
+}
+
+#[test]
+fn nesting_at_the_cap_parses_and_evaluates_on_a_default_stack() {
+    use crate::dice::notation::MAX_NESTING_DEPTH;
+    // `MAX_NESTING_DEPTH` counts every `factor` entry, including the innermost leaf.
+    let minus = format!("{}1", "-".repeat(MAX_NESTING_DEPTH - 1));
+    assert_eq!(parse_roll_evaluate_on_default_stack(minus), Ok(()));
+    let parens = format!(
+        "{}1{}",
+        "(".repeat(MAX_NESTING_DEPTH - 1),
+        ")".repeat(MAX_NESTING_DEPTH - 1)
+    );
+    assert_eq!(parse_roll_evaluate_on_default_stack(parens), Ok(()));
+    let calls = format!(
+        "{}1{}",
+        "abs(".repeat(MAX_NESTING_DEPTH - 1),
+        ")".repeat(MAX_NESTING_DEPTH - 1)
+    );
+    assert_eq!(parse_roll_evaluate_on_default_stack(calls), Ok(()));
+}
+
+#[test]
+fn nesting_past_the_cap_is_refused_on_a_default_stack() {
+    use crate::dice::notation::MAX_NESTING_DEPTH;
+    let too_deep = [
+        format!("{}1", "-".repeat(MAX_NESTING_DEPTH)),
+        format!("{}1", "-".repeat(4095)),
+        format!(
+            "{}1{}",
+            "(".repeat(MAX_NESTING_DEPTH),
+            ")".repeat(MAX_NESTING_DEPTH)
+        ),
+        format!("{}1{}", "(".repeat(2047), ")".repeat(2047)),
+        format!(
+            "{}1{}",
+            "abs(".repeat(MAX_NESTING_DEPTH),
+            ")".repeat(MAX_NESTING_DEPTH)
+        ),
+    ];
+    for input in too_deep {
+        assert_eq!(
+            parse_roll_evaluate_on_default_stack(input),
+            Err(ParseError::TooDeeplyNested)
+        );
+    }
+}

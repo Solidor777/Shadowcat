@@ -22,10 +22,11 @@ fn every_parse_error_variant_displays_without_debug_artifacts() {
         ParseError::InvalidLabelChar,
         ParseError::DuplicateCritSuccess,
         ParseError::DuplicateCritFail,
+        ParseError::TooDeeplyNested,
     ];
     assert_eq!(
         variants.len(),
-        12,
+        13,
         "update this test if a ParseError variant is added or removed"
     );
     for v in variants {

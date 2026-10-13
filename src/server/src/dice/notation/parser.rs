@@ -6,22 +6,15 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::dice::notation::lexer::{describe_token, lex, Token};
-use crate::dice::notation::{ModeKind, ParseContext, ParseError};
+use crate::dice::notation::{ModeKind, ParseContext, ParseError, MAX_NESTING_DEPTH};
 use crate::dice::spec::{
     BinOp, Comparator, ConstTerm, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind,
     Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, RollSpec, SuccessConfig,
     SuccessRule, Tier, TotalConfig,
 };
 
-/// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
-/// nested `(...)` groups or a `-` chain) is bounded ONLY by input length --
-/// there is no explicit depth counter or recursion-depth cap in this parser.
-/// A caller exposing `parse` to untrusted input relies entirely on its own
-/// length cap to keep worst-case nesting (and therefore stack usage) bounded.
-/// Chat's `chat::MAX_MESSAGE_CHARS = 4096` caps a single formula at
-/// well under that, so worst-case nesting is roughly ~2k levels (each `(` or
-/// unary `-` costs at least 2 input chars) -- a few thousand light recursive-
-/// descent frames, safe on all three target OSes' default thread stacks.
+/// Parser state for one `parse` call: the token stream, the cursor and the roll-level scratch
+/// fields. `factor` counts its recursion depth and refuses past `MAX_NESTING_DEPTH`.
 struct P {
     /// The full token stream.
     toks: Vec<Token>,
@@ -60,6 +53,8 @@ struct P {
     /// Crit-fail trigger from an `xf<N>[:<lost>[:<counter>]][!]`. Same sharing/mode-gating as
     /// `crit_success`.
     crit_fail: Option<CritFail>,
+    /// Current `factor` recursion depth, checked against `MAX_NESTING_DEPTH`.
+    depth: usize,
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
@@ -98,6 +93,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         tiers: Vec::new(),
         crit_success: None,
         crit_fail: None,
+        depth: 0,
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
@@ -227,6 +223,19 @@ impl P {
     /// dice factors continue into `modifiers`; `fn_call` is `ident '(' expr (',' expr)*
     /// ')'` (see `fn_call`).
     fn factor(&mut self) -> Result<Expr, ParseError> {
+        // Every recursion (`-`, `(`, function arguments) re-enters through here, so one counter
+        // bounds them all. A failed parse is abandoned, so the early return needs no decrement.
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return Err(ParseError::TooDeeplyNested);
+        }
+        let factor = self.factor_unbounded();
+        self.depth -= 1;
+        factor
+    }
+
+    /// The body of `factor`, without the nesting-depth accounting.
+    fn factor_unbounded(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Token::Minus) => {
                 self.bump();
