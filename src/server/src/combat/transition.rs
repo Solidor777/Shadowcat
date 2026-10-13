@@ -6,8 +6,8 @@
 //! caller commits the returned ops. The one other thing a transition hands back is a RECORD, not an
 //! effect: `start_with_trigger_plan`/`advance_with_trigger_plan` also return the turn/round
 //! boundaries the walk crossed (`TurnRoundBoundary`), the firing plan the room applies
-//! turn/round-scoped region triggers from. Recording stays pure, since region rows and region
-//! membership never reach this module.
+//! turn/round-scoped region triggers from. Recording stays pure, since region rows, region
+//! membership and trigger-effect application never reach this module.
 //!
 //! `advance`/`start` share one core mechanism (`settle_turn`). Entering a combatant runs its
 //! `turn_start` boundary; an `Event` combatant, or a hidden combatant under

@@ -1,8 +1,8 @@
 //! This module loads a `CombatSnapshot`, the state a pure `transition` runs against.
 //!
-//! The snapshot holds one combat document, its combatants, their hosts, optional history/registry,
-//! sibling active combats on the scene, and the resolved-rules override chain — everything a pure
-//! `transition` needs.
+//! The snapshot holds one combat document, its combatants, their hosts, the optional history and
+//! registry documents, the sibling active combats on the scene and the resolved-rules override
+//! chain.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -71,8 +71,7 @@ pub struct Combatant {
     pub engine: CombatantEngine,
 }
 
-/// Everything a pure `transition` needs for one command against one combat,
-/// read once.
+/// Everything a pure `transition` needs for one command against one combat.
 ///
 /// # Examples
 ///
