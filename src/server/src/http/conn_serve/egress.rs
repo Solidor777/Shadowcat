@@ -9,9 +9,10 @@
 //! fewer than `egress_floor` bytes while its writer is parked (the connection unit), or an ended
 //! response whose own stream's queued tail makes less than `min(egress_floor, remaining)` bytes of
 //! progress (the ended-unflushed unit, tracked by the `table` module), for
-//! [`ConnLimits::egress_window`](super::ConnLimits). Each cut is counted under exactly one
-//! [`StallUnit`], through [`StallCounters::record_stall`] and nothing else, so the serve loop's
-//! closing report ([`DrainReport::stall_cuts`](super::DrainReport)) says which bound fired.
+//! [`ConnLimits::egress_window`](super::ConnLimits::egress_window). Each cut is counted under
+//! exactly one [`StallUnit`], through [`StallCounters::record_stall`] and nothing else, so the
+//! serve loop's closing report ([`DrainReport::stall_cuts`](super::DrainReport::stall_cuts)) says
+//! which bound fired.
 //!
 //! The connection unit measures the socket, not the application: [`WriteCounter`] sits in the
 //! connection's IO and adds the response bytes the socket accepted to [`Egress`]; [`Sampler`], run

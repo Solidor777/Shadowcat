@@ -44,7 +44,7 @@ use crate::http::AppState;
 pub struct InstalledModuleInfo {
     /// The install FOLDER name — the authoritative enablement key.
     pub id: String,
-    /// The raw module manifest, byte-for-byte (the client's Zod schema reads it).
+    /// The module manifest (the client's Zod schema reads it).
     #[ts(type = "unknown")]
     pub manifest: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.

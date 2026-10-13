@@ -54,6 +54,10 @@ fn a_terminal_event_for_an_absent_id_changes_nothing() {
     t.read_reset(1);
     t.write_ended(5);
     t.write_continuation_end(7);
+    t.write_headers_continue(9);
+    t.write_continuation_end(9);
+    t.register_final(11);
+    t.hand_over(13, 0, tokio::time::Instant::now());
     assert_eq!(t.ids(), [3]);
 }
 

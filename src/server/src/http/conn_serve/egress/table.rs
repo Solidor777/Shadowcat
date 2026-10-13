@@ -25,12 +25,12 @@
 //! never aged: while the last chunk waits at zero credit, the stream marker (see the `live`
 //! module) cuts that one stream and not the connection.
 //!
-//! [`StreamState::Queued`] is entered when [`StreamTable::hand_over`] sees the body dropped, which
-//! is hyper's hand-over of every byte to h2's send buffer (or the drop of a cut stream). The entry
-//! ages unless the stream's own DATA progresses ([`StreamTable::scan`]).
+//! [`StreamState::Queued`] is entered when [`StreamTable::hand_over`] sees the body of a `Final`
+//! entry dropped, which is hyper's hand-over of every byte to h2's send buffer (or the drop of a
+//! cut stream). The entry ages unless the stream's own DATA progresses ([`StreamTable::scan`]).
 //!
-//! INVARIANT: Every operation except `read_headers` is a no-op for an id with no entry, so a
-//! terminal event can never be undone by a later registration or hand-over.
+//! INVARIANT: Only `read_headers` inserts an entry, so a terminal event can never be undone by a
+//! later registration or hand-over.
 //!
 //! INVARIANT: The cap fails closed: an insert beyond it inserts nothing and reports
 //! [`ParseOutcome::Overflow`], because an entry count above what the h2 limits and the parse lag
@@ -301,12 +301,12 @@ impl StreamTable {
     /// finds.
     ///
     /// An entry that reached its threshold starts a new window now, and nothing else refreshes it
-    /// (only a stream's own written DATA is its progress). `floor` is the connection unit's own floor, so both units judge
-    /// "too slow" by one number. A tail smaller than the floor that the reader drains within the
-    /// window leaves at its END_STREAM write; one only partly drained when the window ends is cut.
-    /// An entry with nothing left to write (only its END_STREAM frame is outstanding) is always at
-    /// its threshold: it waits on the socket, which the connection unit bounds, not on the peer's
-    /// credit.
+    /// (only a stream's own written DATA is its progress). `floor` is the connection unit's own
+    /// floor, so both units judge "too slow" by one number. A tail smaller than the floor that the
+    /// reader drains within the window leaves at its END_STREAM write; one only partly drained when
+    /// the window ends is cut. An entry with nothing left to write (only its END_STREAM frame is
+    /// outstanding) is always at its threshold: it waits on the socket, which the connection unit
+    /// bounds, not on the peer's credit.
     pub(super) fn scan(
         &mut self,
         now: Instant,

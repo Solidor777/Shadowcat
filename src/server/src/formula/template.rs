@@ -12,7 +12,7 @@
 //!
 //! INVARIANT: nothing here panics on any input; every failure is a `FormulaError` value.
 //! INVARIANT: the author's case and labels pass through verbatim; the rewrite replaces identifier
-//! claims and inserts a `1` before a dice operator that no integer claim precedes.
+//! claims and inserts a `1` before a dice operator that does not immediately follow an integer run.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

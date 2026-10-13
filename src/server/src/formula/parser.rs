@@ -5,8 +5,8 @@
 //!
 //! The grammar is `additive := multiplicative (('+'|'-') multiplicative)*`, then
 //! `multiplicative := unary (('*'|'/'|'%') unary)*`, then `unary := '-' unary | primary`, then
-//! `primary := num | '(' additive ')' | word ('(' args ')')? ('.' word)*`. A word followed by the
-//! token `(` must be a known function name; a dotted segment is never a call.
+//! `primary := num | '(' additive ')' | word ( '(' args ')' | ('.' word)* )`. A word followed by
+//! the token `(` must be a known function name; a dotted segment is never a call.
 //!
 //! INVARIANT: `depth` counts structural-nesting boundaries only (paren-open, call-argument,
 //! unary-minus), so a flat operator chain never trips the depth cap and the parser's own recursion
@@ -267,7 +267,7 @@ impl Parser {
         self.primary(depth)
     }
 
-    /// `primary := num | '(' additive ')' | word ('(' args ')')? ('.' word)*`.
+    /// `primary := num | '(' additive ')' | word ( '(' args ')' | ('.' word)* )`.
     fn primary(&mut self, depth: usize) -> Result<Expr, FormulaError> {
         let Some(t) = self.peek().cloned() else {
             return Err(parse_err("unexpected end of formula".to_string()));

@@ -39,10 +39,10 @@
 //! [`ConnLimits::max_live`] and [`ConnLimits::max_live_per_peer`] cap connections from hand-off
 //! until the connection task AND every [`ConnLease`] taken from its requests have ended, keyed and
 //! exempted exactly like the accept-time caps ([`crate::http::peer_slots::PeerSlots`],
-//! `ConnMeta::cap_exempt`, decided once by `Config::is_cap_exempt`); a connection over a cap is
-//! closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in
-//! flight for that long. A lease held by a WebSocket session is released when the session ends,
-//! and a session whose peer has stopped reading ends at the per-send stall bound
+//! `ConnMeta::cap_exempt`, set by the listener that admits the connection); a connection over a cap
+//! is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in
+//! flight for that long. A lease held by a WebSocket session is released when the session ends, and
+//! a session whose peer has stopped reading ends at the per-send stall bound
 //! ([`crate::ws::bounded_sink::BoundedSink::for_config`]), so a lease cannot pin a slot for longer
 //! than that bound past the peer's last read.
 //!
@@ -377,8 +377,8 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// The cost is download throughput on a fast link. Measured on Windows loopback with the `h2`
 /// client (24 MiB bodies, 6 MiB stream window, a bare hyper server, 100 downloads per setting, 3
 /// runs): 64 KiB reaches 0.94 to 0.97 of the 400 KiB default's median in an optimised build and
-/// 0.66 to 0.79 in an unoptimised one, where per-wake-up cost is not hidden. Public so the throughput gate (`h2_send_buf_gate`) serves a
-/// bare HTTP/2 connection with this very value.
+/// 0.66 to 0.79 in an unoptimised one, where per-wake-up cost is not hidden. Public so the
+/// throughput gate (`h2_send_buf_gate`) serves a bare HTTP/2 connection with this very value.
 ///
 /// # Examples
 ///
@@ -926,9 +926,9 @@ struct Watch {
 /// [`KillReason::Stall`]; otherwise, unless the writer is parked, it scans the table of ended
 /// responses (a connection cut) and then the stream markers (a stream cut). A parked writer means
 /// the socket, not the peer's credit, is what the response is waiting on, and that case belongs to
-/// the connection unit: a stream cut could not even deliver its `RST_STREAM`. The loop then re-polls `conn`, which retries a
-/// parked write (hyper's HTTP/1 and HTTP/2 flush paths both retry on a poll), so a parked writer
-/// is re-observed each tick with no other wake source.
+/// the connection unit: a stream cut could not even deliver its `RST_STREAM`. The loop then
+/// re-polls `conn`, which retries a parked write (hyper's HTTP/1 and HTTP/2 flush paths both
+/// retry on a poll), so a parked writer is re-observed each tick with no other wake source.
 async fn drive<C>(
     conn: C,
     signal_tx: watch::Sender<()>,

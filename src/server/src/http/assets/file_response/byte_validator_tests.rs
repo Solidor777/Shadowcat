@@ -1,6 +1,6 @@
 //! These tests cover `Validator::OfFile`, whose validator is derived from the opened file's bytes.
 //!
-//! A GET's validator hit is answered after the open, under a permit, a HEAD takes no permit, and a
+//! A GET's validator hit is answered after the open, under a permit. A HEAD takes no permit. A
 //! rewrite of the file changes the validator.
 
 use std::sync::Arc;

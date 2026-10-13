@@ -60,7 +60,7 @@ pub struct AssetQuery {
     pub recursive: Option<bool>,
     /// Comma-separated tags; every one must be present.
     pub tags: Option<String>,
-    /// `image` | `other`.
+    /// `image` | `audio` | `other`.
     pub kind: Option<String>,
     /// Full-text query over the display name and every tag (explicit and
     /// derived), sanitized by `data::search::build_match`.
@@ -76,7 +76,7 @@ pub struct AssetQuery {
 }
 
 impl AssetQuery {
-    /// Whether no parameter at all was given (the bare-listing contract).
+    /// Whether every field is `None` (the bare-listing contract).
     fn is_bare(&self) -> bool {
         self.folder.is_none()
             && self.recursive.is_none()

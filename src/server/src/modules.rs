@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::data::document::CapabilityRequirement;
 
-/// Minimal fields the server reads from a community `module.json`.
+/// Minimal fields the server reads from a community module manifest.
 /// `deny_unknown_fields` is NOT used: the manifest is community-authored and
 /// carries client-only fields (name, dependencies, capabilities, hooks,
 /// provides, requires) the server never interprets — unknown keys are
@@ -49,7 +49,7 @@ struct ModuleManifestMirror {
     validators: Vec<ValidatorDecl>,
 }
 
-/// The `engines` object of a community `module.json`.
+/// The `engines` object of a community module manifest.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ModuleEngines {
     /// Semver range the running server version must satisfy (exact / `^` / `~` / `*`).
@@ -173,7 +173,7 @@ pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 
 /// One validly-discovered installed module: typed fields the server needs
 /// (id, requirements, engine-compat range) plus the raw manifest JSON — served
-/// byte-for-byte at `GET /api/modules` so the client's own Zod schema sees
+/// at `GET /api/modules` so the client's own Zod schema sees
 /// every field a community author declared (dependencies, hooks, provides,
 /// requires, ...), not just the subset this mirror extracts.
 ///
@@ -206,7 +206,7 @@ pub struct InstalledModule {
     pub requirements: Vec<CapabilityRequirement>,
     /// Declared `engines.shadowcat` range; `None` fails the enable gate closed.
     pub engines_shadowcat: Option<String>,
-    /// The raw `module.json`, served byte-for-byte at `GET /api/modules`.
+    /// The parsed module manifest, served at `GET /api/modules`.
     pub manifest_json: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
     pub entry_url: String,
@@ -224,13 +224,12 @@ pub struct InstalledModule {
     pub validators: Vec<ValidatorDecl>,
 }
 
-/// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
+/// Scan each module folder under `modules_dir`, parsing and validating its manifest. An invalid
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
 /// others. This fail-open-on-discovery behavior is a deliberate design choice,
 /// separate from the server's purely structural authority over a
-/// community-authored manifest body (`manifest_json` is served byte-for-byte,
-/// never semantically interpreted). A missing `modules_dir`
+/// community-authored manifest body. A missing `modules_dir`
 /// (nothing installed yet) yields an empty list, not an error. Deterministic
 /// id-sorted order.
 ///
@@ -432,7 +431,7 @@ pub fn engine_compat_ok(m: &InstalledModule) -> bool {
 /// modules directory's own mtime (bumped by the OS on any entry add/remove —
 /// operators install/uninstall modules by dropping/removing folders directly
 /// on disk; there is no server-side install route to hook a cache
-/// invalidation into) AND each cached module's `module.json` mtime (catches
+/// invalidation into) AND each cached module's manifest-file mtime (catches
 /// an in-place manifest edit to an already-installed module, which does NOT
 /// change the parent directory's own mtime). One instance shared across every
 /// WS connection on the server (see `crate::ws::WsState::module_scan_cache`).
@@ -458,7 +457,7 @@ pub struct ModuleScanCache {
 struct CachedScan {
     /// `modules_dir`'s own mtime at scan time.
     dir_mtime: std::time::SystemTime,
-    /// Each cached module's id -> its `module.json`'s mtime at scan time.
+    /// Each cached module's id -> its manifest file's mtime at scan time.
     manifest_mtimes: std::collections::BTreeMap<String, std::time::SystemTime>,
     /// The scan result itself.
     modules: Vec<InstalledModule>,
@@ -477,7 +476,7 @@ impl ModuleScanCache {
     }
 
     /// Returns the cached scan if `modules_dir` and every cached module's
-    /// `module.json` mtime are unchanged since the cache was populated;
+    /// manifest-file mtime are unchanged since the cache was populated;
     /// otherwise rescans (`scan_installed_modules`) and replaces the cache.
     /// Blocking filesystem I/O — call only from within `spawn_blocking`.
     ///
@@ -536,7 +535,8 @@ impl ModuleScanCache {
         modules
     }
 
-    /// `<modules_dir>/<id>/module.json`'s mtime, or `None` if it can't be stat'd.
+    /// The mtime of module `id`'s manifest file under `modules_dir`, or `None` if it can't be
+    /// stat'd.
     fn manifest_mtime(modules_dir: &Path, id: &str) -> Option<std::time::SystemTime> {
         std::fs::metadata(modules_dir.join(id).join("module.json"))
             .and_then(|m| m.modified())

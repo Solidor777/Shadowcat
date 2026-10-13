@@ -12,8 +12,8 @@
 //! response pipe (the same `poll` as the service future in hyper's `H2Stream`) reads it with
 //! [`current_cut`]. A task spawned any other way has no scope, so nothing registers a cut for it.
 //!
-//! INVARIANT: Only a future that runs a `LeasedBody` registers a marker, so a tunnel (no
-//! `LeasedBody`) is never cut by this unit, and the wrapper need not tell the two apart.
+//! INVARIANT: Only a future that runs a `LeasedBody` registers a marker, so a tunnel's upgrade
+//! task (no `LeasedBody`) is never cut by this unit, and the wrapper need not tell the two apart.
 //!
 //! INVARIANT: A cut fired before the future's first poll still drops it: the race is `biased`
 //! toward the cut, and a `watch` value is not lost to a late subscriber.

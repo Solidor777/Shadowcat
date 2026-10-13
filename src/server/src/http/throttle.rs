@@ -46,7 +46,7 @@ const WINDOW_MS: i64 = 60_000;
 /// use shadowcat::http::throttle::AuthThrottle;
 ///
 /// let throttle = AuthThrottle::default();
-/// assert!(throttle.check("login:user:example", 0, 1));
+/// assert!(throttle.check("login:u:example", 0, 1));
 /// ```
 pub struct AuthThrottle {
     /// Per-key hit timestamps within the window.
@@ -62,7 +62,7 @@ impl AuthThrottle {
     ///
     /// ```
     /// let t = shadowcat::http::throttle::AuthThrottle::new();
-    /// assert!(t.check("login:user:testuser-01", 0, 5)); // first hit within budget
+    /// assert!(t.check("login:u:testuser-01", 0, 5)); // first hit within budget
     /// ```
     pub fn new() -> Self {
         Self {
@@ -89,11 +89,11 @@ impl AuthThrottle {
     /// use shadowcat::http::throttle::AuthThrottle;
     ///
     /// let t = AuthThrottle::new();
-    /// assert!(t.check("login:user:example", 0, 3));
-    /// assert!(t.check("login:user:example", 100, 3));
-    /// assert!(t.check("login:user:example", 200, 3));
+    /// assert!(t.check("login:u:example", 0, 3));
+    /// assert!(t.check("login:u:example", 100, 3));
+    /// assert!(t.check("login:u:example", 200, 3));
     /// // A 4th hit within the trailing 60s window exceeds the per_min=3 budget.
-    /// assert!(!t.check("login:user:example", 300, 3));
+    /// assert!(!t.check("login:u:example", 300, 3));
     /// ```
     pub fn check(&self, key: &str, now_ms: i64, per_min: usize) -> bool {
         let cutoff = now_ms - WINDOW_MS;

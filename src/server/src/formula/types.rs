@@ -55,7 +55,9 @@ pub enum FormulaErrorKind {
     /// tag parity with the client, which reserves it the same way). Neither
     /// implementation's evaluator produces it; `graph::resolve_all` uses it
     /// for its internal restart placeholder, which never reaches a caller
-    /// (`graph/tests.rs` pins that).
+    /// (the graph test
+    /// `the_restart_placeholder_never_reaches_a_caller_even_when_a_node_returns_it_verbatim`
+    /// pins that).
     RefError,
     /// A resolver returned a malformed value.
     ResolverError,
@@ -100,7 +102,8 @@ impl FormulaError {
     }
 }
 
-/// A finite number, or a `FormulaError`. INVARIANT: an `Ok` is always finite.
+/// A number, or a `FormulaError`. INVARIANT: `evaluate` returns a finite `Ok` for an `Expr` that
+/// `parse` produced.
 pub type FormulaValue = Result<f64, FormulaError>;
 
 /// Renders a number the way JavaScript's template interpolation does for the

@@ -9,10 +9,10 @@
 //! WHY the end is delivered as an IO error and not by aborting the connection task: an HTTP/2
 //! extended-CONNECT tunnel (a WebSocket) runs as a task hyper detaches from its connection, and
 //! aborting the connection task while such a tunnel is live drops the h2 connection's state out
-//! from under it, which trips a debug assertion in h2's stream counting (`Counts::drop`) in debug
-//! builds. An IO error instead makes the h2 codec end the connection through its own error path:
-//! every stream, tunnels included, is reset by the protocol. The drop and the abort remain only as
-//! counted last resorts for a connection that does not end.
+//! from under it, which trips the debug assertion in `Counts::drop` of the vendored h2 0.4.19 in
+//! debug builds. An IO error instead makes the h2 codec end the connection through its own error
+//! path: every stream, tunnels included, is reset by the protocol. The drop and the abort remain
+//! only as counted last resorts for a connection that does not end.
 //!
 //! INVARIANT: After [`ConnKill::fire`], every poll of an IO method of a [`Replay`](super::Replay)
 //! holding that [`ConnKill`] returns an error. All five methods must check it (`poll_read`,
