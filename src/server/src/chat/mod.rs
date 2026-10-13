@@ -370,8 +370,8 @@ pub enum Segment {
     /// after every other segment the send/edit pipeline produced (`enrich`
     /// never reorders or removes an existing segment).
     LinkPreview {
-        /// The address of the preview this segment was built from; see `LinkPreview.url` for
-        /// which address each way of building the preview stores.
+        /// The address the fetch ended on (normalized, and post-redirect when it redirected)
+        /// when a fetch built the preview, or the candidate URL when a persisted row built it.
         url: String,
         /// Server-extracted title.
         title: String,
@@ -379,13 +379,12 @@ pub enum Segment {
         description: String,
         /// The asset-ified `og:image`/canonical-image. `enrich` appends `Some` when the persisted
         /// `link_preview_cache` row that built the preview already carries an asset id, and
-        /// `None` otherwise. A `None` segment gets its id later, once the post-publish pipeline
-        /// (`chat::post_publish`) resolves the `PendingEnrichment::PreviewImage` job `enrich`
-        /// queued for it, ONLY via a `WriteOrigin::ServerMessageRevision` republish
-        /// (`run_pending_enrichments`), the same chokepoint
-        /// `handle_edit_message`/`handle_delete_message` use.
-        /// `#[serde(default)]`: every `LinkPreview` segment persisted before
-        /// this field existed has no `image_asset_id` key on disk.
+        /// `None` otherwise. A `None` segment whose preview has an image candidate gets its id
+        /// when the post-publish pipeline (`chat::post_publish`) resolves the
+        /// `PendingEnrichment::PreviewImage` job `enrich` queued for it, through a
+        /// `WriteOrigin::ServerMessageRevision` republish (`run_pending_enrichments`). A preview
+        /// with no image candidate queues no job, and a job that fails leaves `None`.
+        /// `#[serde(default)]`: a stored segment may omit the key, which reads as `None`.
         #[serde(default)]
         image_asset_id: Option<Uuid>,
     },

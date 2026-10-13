@@ -397,7 +397,9 @@ export type ChatSegment =
   | {
       /** A server-fetched, SSRF-guarded preview of a link in the message. */
       kind: "link_preview";
-      /** The previewed URL as posted. */
+      /** The address the preview was built from: the address the server's fetch ended on
+       * (normalized, and after any redirect) when a fetch built it, or the URL as posted when a
+       * stored cache row built it. */
       url: string;
       /** Server-extracted title. */
       title: string;

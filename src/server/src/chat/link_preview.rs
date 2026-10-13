@@ -34,8 +34,8 @@ use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
 /// A server-fetched link preview. `enrich` copies `url`, `title`, `description` and
-/// `image_asset_id` into a `Segment::LinkPreview`, and queues `image_url` as a
-/// `PendingEnrichment::PreviewImage` instead of storing it.
+/// `image_asset_id` into a `Segment::LinkPreview`. When `image_asset_id` is `None` and `image_url`
+/// is `Some`, it queues `image_url` as a `PendingEnrichment::PreviewImage` instead of storing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
     /// The address the preview describes. A preview from `fetch_preview` carries the address the
