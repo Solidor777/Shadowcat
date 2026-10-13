@@ -1,8 +1,11 @@
-//! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation` engine bands.
+//! This module defines the engine bands of scenes, world settings, lights and vision.
 //!
-//! Field shapes mirror the client's re-exported `SceneEngine`, `WorldSceneDefaults`,
-//! `WorldSettingsEngine`, `LightEngine`, `VisionMode`, and `GradationBand` (minus `name`, which
-//! lives on the envelope instead).
+//! The doc_types are `scene`, `world-settings`, `light`, `vision-modes` and `light-gradation`.
+//!
+//! The client's `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
+//! `VisionMode` and `GradationBand` are the TypeScript types generated from these structs. A
+//! scene's or light's name lives on the envelope `name`, so neither `SceneEngine` nor `LightEngine`
+//! carries one.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

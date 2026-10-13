@@ -1,7 +1,7 @@
-//! Engine band for `system-defaults`: the active system module's declared defaults for every world
-//! setting.
+//! This module defines the engine band for `system-defaults`.
 //!
-//! The band is resolved as the innermost non-engine layer of every settings chain (engine literal →
+//! The band holds the active system module's declared defaults for every world setting. It is
+//! resolved as the innermost non-engine layer of every settings chain (engine literal →
 //! system → world → scene). Every leaf is optional; absent and `null` both mean "fall through".
 
 #![deny(missing_docs)]

@@ -1,7 +1,7 @@
-//! Asset query filters and ordering.
+//! This module defines the asset query filters and ordering.
 //!
-//! They are the data-layer vocabulary `SqliteRepository::query_assets` accepts (the HTTP layer
-//! parses query strings into these; regex matching stays above the repository).
+//! The types are the data-layer vocabulary `SqliteRepository::query_assets` accepts. The HTTP
+//! layer parses query strings into them, and regex matching stays above the repository.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -245,8 +245,7 @@ pub struct AssetFilter {
     /// Content class.
     pub kind: Option<AssetKind>,
     /// Full-text query over `original_name` and every tag (explicit and
-    /// derived), sanitized by `data::search::build_match`. Replaces the
-    /// former `lower(...) LIKE '%…%'` substring over `original_name` alone.
+    /// derived), sanitized by `data::search::build_match`.
     pub query: Option<String>,
 }
 

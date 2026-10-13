@@ -1,13 +1,16 @@
-//! The background sweep that upgrades stored Opus derivatives written by an older encoder or muxer.
+//! This module is the background sweep that upgrades old Opus derivatives.
+//!
+//! A derivative is old when an older encoder or muxer wrote it.
 //!
 //! See `process::audio::upgrade` for what makes a file old and how each is repaired.
 //!
-//! The sweep runs once per server start, after the listener is bound, one asset at a time: the
+//! The sweep runs once per server start, after the listener is bound, one asset at a time. The
 //! decode and mux work of an asset runs on the blocking pool without any lock, and only the swap
 //! (a rename of a staged file over each sibling) holds the read side of the write barrier, like
 //! every other commit-and-file-move pair. It writes no database row, bumps no asset version and
 //! broadcasts nothing: the derivative's `ETag` is derived from the served file's bytes, so a
 //! rewritten sibling is a new validator for every cache without a version change.
+
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

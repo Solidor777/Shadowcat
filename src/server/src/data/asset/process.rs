@@ -1,9 +1,11 @@
-//! Image processing for the asset pipeline.
+//! This module converts image uploads and writes their derivatives.
 //!
-//! It covers WebP conversion of a staged upload (original retained beside it when configured) plus
-//! thumb/preview derivatives, and the audio transcode in the `audio` submodule (a sibling
-//! derivative off the untouched canonical). Every function here is BLOCKING (`image` decode/encode
-//! is CPU-bound) — callers run it under `tokio::task::spawn_blocking`.
+//! `process_staged` dispatches audio uploads to the `audio` submodule. Image conversion re-encodes
+//! a staged upload as WebP (original retained beside it when configured) and writes thumb/preview
+//! derivatives. The audio transcode writes sibling derivatives off the untouched canonical. The
+//! decode and encode functions (`process_staged`, `write_derivatives`, `generate_grid_sheet`) are
+//! BLOCKING (`image` decode/encode is CPU-bound), so callers run them under
+//! `tokio::task::spawn_blocking`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

@@ -1,13 +1,13 @@
-//! The WebM (EBML) muxer for the Opus derivative.
+//! This module is the WebM (EBML) muxer for the Opus derivative.
 //!
 //! It writes a minimal single-audio-track file from the encoded packets, plus the helpers the
 //! upgrade sweep uses to recognise the layout it wrote.
 //!
-//! Layout: EBML header, then one Segment of KNOWN size holding, in this order, `SeekHead`, `Info`,
-//! `Tracks`, `Cues`, then the Clusters. Segment, Cluster and every other size is computed, never
-//! the unknown-size marker. `SeekHead` and `Cues` carry fixed-width positions, so their sizes do
-//! not depend on the values they hold and the cluster positions they point at are computed in one
-//! pass without iterating.
+//! The file is an EBML header followed by one Segment of KNOWN size holding, in this order,
+//! `SeekHead`, `Info`, `Tracks`, `Cues`, then the Clusters. The size of the Segment, of each
+//! Cluster and of every other element is computed, never the unknown-size marker. `SeekHead` and
+//! `Cues` carry fixed-width positions, so their sizes do not depend on the values they hold and
+//! the cluster positions they point at are computed in one pass without iterating.
 
 use super::{opus_head, OpusStream, OPUS_FRAME_MS, OPUS_FRAME_SAMPLES, OPUS_TARGET_SAMPLE_RATE};
 

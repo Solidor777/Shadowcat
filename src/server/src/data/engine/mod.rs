@@ -1,4 +1,4 @@
-//! Typed `engine` band structs + the doc_type registry.
+//! This module declares the typed `engine` band structs and the doc_type registry.
 //!
 //! The engine band exists iff `doc_type` is engine-defined, and its stored JSON must deserialize
 //! into that doc_type's struct — a strict ingress gate rather than an opaque pointer-walked body.

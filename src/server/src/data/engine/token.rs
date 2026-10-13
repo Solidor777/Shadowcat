@@ -1,7 +1,7 @@
-//! `token`/`actor` engine bands.
+//! This module defines the `token` and `actor` engine bands.
 //!
-//! Field shapes mirror the client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
-//! lives on the envelope instead).
+//! The client's `TokenEngine` and `ActorEngine` are the TypeScript types generated from these
+//! structs. Neither carries a `name` field, because the envelope `name` holds it.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

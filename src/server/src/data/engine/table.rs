@@ -1,4 +1,4 @@
-//! Engine body for a rollable table (`TABLE_DOC_TYPE`).
+//! This module defines the engine body of a rollable table (`TABLE_DOC_TYPE`).
 //!
 //! A table is a set of weighted or formula-ranged rows a `DrawTable` frame draws from server-side
 //! (see `crate::tables`). Envelope `name` is the table's display name; this module owns only the

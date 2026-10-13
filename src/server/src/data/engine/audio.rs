@@ -1,11 +1,12 @@
-//! `playlist`/`audio-state` engine bands.
+//! This module defines the `playlist` and `audio-state` engine bands.
 //!
-//! `playlist` is a standard-write-rules document (owner + WRITE_FIELDS, same as `table`/`note`);
-//! `audio-state` is the world's singleton transport state, writable only by
-//! `WriteOrigin::AudioTransport` (the guard lives in
-//! `data::sqlite::SqliteRepository::apply_intent`, mirroring the
-//! `system-defaults`/`WriteOrigin::ConfigSeed` guard exactly — see that guard's own doc for why this is NOT a
-//! `validate_engine`/`normalize_engine` rule).
+//! `playlist` is a standard-write-rules document (owner + `WRITE_FIELDS`, same as `table`/`note`).
+//! `audio-state` is the world's singleton transport state: `WriteOrigin::ConfigSeed` alone creates
+//! and deletes it, and `WriteOrigin::AudioTransport` alone updates it. The guards live in
+//! `data::sqlite::authorize_create_intent`, `data::sqlite::authorize_update_access` and the delete
+//! arm of `SqliteRepository::apply_intent`, beside the `system-defaults`/`ConfigSeed` guards. They
+//! are not a `validate_engine`/`normalize_engine` rule, because those validators receive only the
+//! doc_type and the engine value, never the write origin.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

@@ -1,9 +1,10 @@
-//! Engine bands for the combat clock.
+//! This module defines the engine bands for the combat clock.
 //!
-//! `combat` (a world document bound to a scene), `combatant` (a child document of a combat),
-//! `resource-registry` (the singleton turn-resource definitions), `effect` (clock-bound expiry) and
-//! `combat-history` (the per-turn snapshot log of one combat). A `Formula::Text` is engine-grammar
-//! source the server evaluates through `crate::formula`; ingress requires it to parse.
+//! The bands are `combat` (a world document bound to a scene), `combatant` (a child document of a
+//! combat), `resource-registry` (the singleton turn-resource definitions), `effect` (clock-bound
+//! expiry) and `combat-history` (the per-turn snapshot log of one combat). A `Formula::Text` is
+//! engine-grammar source the server evaluates through `crate::formula`; ingress requires it to
+//! parse.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

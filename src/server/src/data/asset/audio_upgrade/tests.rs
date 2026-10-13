@@ -1,7 +1,8 @@
-//! The sweep over stored assets.
+//! These tests cover `upgrade_audio_derivatives`.
 //!
-//! The tests cover selection from the database, the swap under the write barrier, the counts it
-//! reports, and its one-file-at-a-time retry of a failed swap.
+//! They check the database listing that selects only transcoded audio assets, the upgrade of old
+//! assets with a second pass that rewrites nothing, the skip of a failed swap and its completion by
+//! the next pass, and the swap's wait on the write barrier.
 
 use std::path::Path;
 use std::time::Duration;

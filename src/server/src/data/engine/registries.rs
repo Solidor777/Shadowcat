@@ -1,14 +1,15 @@
-//! Singleton config-document engine bands: `channel-registry`, `faction-registry`,
-//! `condition-registry`, `chat-settings`, `dice-settings`.
+//! This module defines the engine bands of the singleton config documents.
 //!
-//! Field shapes mirror the client's re-exported `Channel`, `FactionStance`, `Faction`, `Condition`,
-//! `ChatSettingsEngine`, `DiceSettingsEngine`, and `ChannelDiceOverride`
-//! (`DiceSettingsEngine.channel_overrides`'s value type).
+//! The doc_types are `channel-registry`, `faction-registry`, `condition-registry`, `chat-settings`
+//! and `dice-settings`.
 //!
-//! `chat::settings::ChatContentPolicy` is a type alias onto
-//! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`
-//! directly. Both bodies live on the `engine` band, ingress-validated same as
-//! every other engine-defined doc_type (see `chat::settings::ChatContentPolicy`).
+//! The client's `Channel`, `FactionStance`, `Faction`, `Condition`, `ChatSettingsEngine`,
+//! `DiceSettingsEngine` and `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value
+//! type) are the TypeScript types generated from these structs.
+//!
+//! `chat::settings::ChatContentPolicy` is a type alias onto `ChatSettingsEngine`, and
+//! `chat::settings::resolve_dice_context` reads `DiceSettingsEngine` directly. Both bodies live on
+//! the `engine` band, ingress-validated like every other engine-defined doc_type.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

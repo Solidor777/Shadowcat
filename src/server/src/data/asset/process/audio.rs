@@ -1,4 +1,4 @@
-//! Audio transcode: a stored upload becomes Opus sibling derivatives.
+//! This module transcodes an uploaded audio file into Opus sibling derivatives.
 //!
 //! It sniffs the real container/codec via `symphonia`'s probe (never trusting the client-declared
 //! `content_type`), decodes, resamples to 48 kHz via `rubato`, encodes Opus (VBR) via `opus`, and
@@ -6,12 +6,12 @@
 //! via the `webm` submodule's own minimal EBML writer (no extra dependency for a fixed
 //! single-audio-track shape) — each written as a SIBLING derivative.
 //!
-//! It is dispatched from `process_staged` before the image branch. The canonical file is NEVER
-//! rewritten, unlike the image pipeline's canonical swap; the uploaded original stays every non-GM
-//! player's playback fallback on the ordinary serve route. Over-cap input or any pipeline failure
-//! falls back to pass-through with `audio:untranscoded` (tagged by the caller via `tags::derive`,
-//! not here) and no derivative — there is no lazy on-demand regeneration for a minutes-long
-//! transcode.
+//! `process_staged` dispatches an `audio/` upload here before the image branch. The canonical file
+//! is NEVER rewritten, unlike the image pipeline's canonical swap; the uploaded original stays
+//! the playback fallback every client can request on the ordinary serve route. Over-cap input or
+//! any pipeline failure falls back to pass-through with `audio:untranscoded` (tagged by the
+//! caller via `tags::derive`, not here) and no derivative. There is no lazy on-demand
+//! regeneration for a minutes-long transcode.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

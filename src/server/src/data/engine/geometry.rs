@@ -1,9 +1,10 @@
-//! `wall`, `region`, `drawing`, `template` engine bands.
+//! This module defines the `wall`, `region`, `drawing` and `template` engine bands.
 //!
-//! The wall/region shapes match what `SceneEcs::engine_as_cached::<WallEngine>`/`<RegionEngine>`
-//! read (the client has no separately-declared wall/region type to mirror); the drawing/template
-//! shapes mirror the client's re-exported `DrawingEngine`/`TemplateEngine` — the only authoritative
-//! shapes today; scene-tools writers must round-trip byte-identically against these.
+//! Each band struct is exported to TypeScript through ts-rs, and `@shadowcat/core` re-exports the
+//! generated types (`WallEngine`, `RegionEngine`, `DrawingEngine`, `TemplateEngine`). The server
+//! reads walls and regions through `SceneEcs::engine_as_cached::<WallEngine>`/`<RegionEngine>`.
+//! These structs are the only authoritative shapes, and scene-tools writers must round-trip
+//! byte-identically against them.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.

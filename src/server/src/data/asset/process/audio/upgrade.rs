@@ -1,17 +1,24 @@
-//! The blocking half of the derivative upgrade sweep.
+//! This module is the blocking half of the derivative upgrade sweep.
 //!
-//! For one stored audio asset it decides which of its Opus siblings were written by an encoder or
-//! muxer older than the current one, stages the replacement files beside them and swaps them in.
+//! For one stored audio asset it decides which of its Opus siblings (`WEBM_SUFFIX`,
+//! `OPUS_SUFFIX`) were written by an encoder or muxer older than the current one, stages the
+//! replacement files beside them and swaps them in.
 //!
-//! Two defects separate an old sibling from a current one. Every `.opus.webm` written before the
-//! current muxer lacks `Duration`, `SeekHead`, `Cues` and `DiscardPadding`; it carries no
-//! `WEBM_WRITING_APP` marker in its head. Every `.opus.ogg` written before the lookahead flush
-//! lacks its `OPUS_VENDOR_MARKER` and, for the valid-sample counts in the loss range, is missing
-//! the last samples of the audio: the encoder emits each sample `pre_skip` samples late, so a
-//! stream of `ceil(total_valid / 960)` frames covers only `frames * 960 - pre_skip` audible
-//! samples. A file in the loss range cannot be repaired from its own packets (the missing samples
-//! were never encoded), so both siblings are re-encoded from the stored original; every other
-//! file is remuxed from its existing packets, which keeps the two siblings one encode.
+//! Two defects separate an old sibling from a current one. A WebM sibling from the older muxer
+//! lacks `Duration`, `SeekHead`, `Cues` and `DiscardPadding`, and its head carries no
+//! `WEBM_WRITING_APP` marker. An Ogg sibling from before the lookahead flush lacks its
+//! `OPUS_VENDOR_MARKER` and, for the valid-sample counts in the loss range, is missing the last
+//! samples of the audio: the encoder emits each sample `pre_skip` samples late, so a stream of
+//! `ceil(total_valid / 960)` frames covers only `frames * 960 - pre_skip` audible samples.
+//!
+//! The repair depends on what is stored. An Ogg sibling in the loss range cannot be repaired from
+//! its own packets, because the missing samples were never encoded. When the stored original
+//! decodes to the same length, every present sibling is re-encoded from it (`Kind::Retranscode`).
+//! When the original is absent, a stale WebM is remuxed to its decodable length
+//! (`Kind::RemuxToDecodableLength`) and the Ogg is left as it is. When the original decodes to a
+//! different length, the asset is left alone (`Plan::Unrepairable`). Outside the loss range a
+//! stale WebM is remuxed from the Ogg's existing packets (`Kind::Remux`), which keeps the two
+//! siblings one encode; a WebM with no Ogg beside it is re-encoded from the original.
 //!
 //! The sweep never writes the database, never bumps a version and never goes through
 //! `reconvert`, `commit_replacement` or `move_asset_files` (which deletes a final sibling that has
