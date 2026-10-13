@@ -1,4 +1,5 @@
-//! This module resolves a world's chat content policy and per-channel dice context.
+//! This module resolves a world's chat content policy, per-channel dice context and channel
+//! registration, and defines the fixed `NOTE_CONTENT_POLICY`.
 //!
 //! `resolve_content_policy` reads the policy from the world's `chat-settings` config `Document`.
 //! The message sanitizer reads the policy to decide which enrichment producers are allowed.

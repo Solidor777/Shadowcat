@@ -1,10 +1,9 @@
 //! This module runs image and oEmbed fetches after a message's send or edit has broadcast.
 //!
 //! The fetches run in the background AFTER the synchronous send/edit has returned, never on the
-//! request path. The one entry point here re-publishes via
-//! `WriteOrigin::ServerMessageRevision`, the SAME chokepoint
-//! `handle_edit_message`/`handle_delete_message` use for their own message revisions (it is that
-//! origin's fourth producer, after edit, delete and `handle_recalc_roll`).
+//! request path. `run_pending_enrichments` re-publishes under
+//! `WriteOrigin::ServerMessageRevision`, the origin `handle_edit_message` and
+//! `handle_delete_message` also use.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -390,8 +389,8 @@ async fn resolve_job(
 /// `link_preview_cache` row for `preview_url` FIRST and reuses an existing
 /// `image_asset_id` verbatim on a hit -- never re-fetching or re-creating an
 /// asset for a link this or any other message already imaged. On a miss,
-/// fetches `image_url` through the SAME SSRF-guarded client `link_preview.rs`
-/// already built (`fetch_image_bytes`), asset-ifies it via
+/// fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
+/// (through `link_preview::fetch_image_bytes`), asset-ifies it via
 /// `create_asset_from_bytes` (`created_by: None` -- no real user account
 /// backs a server-fetched image, the same generalization
 /// `Asset.created_by`'s own doc comment already covers), and records the

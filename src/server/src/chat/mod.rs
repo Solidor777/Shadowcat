@@ -4,9 +4,9 @@
 //! module's `MessageEngine`); `system` stays reserved-empty (`{}`) for message docs. The server
 //! alone authors and revises them; a client never builds or mutates one directly.
 //!
-//! A `message` doc_type reaches `apply_intent` only via `handle_send_message` (Create),
-//! `handle_edit_message`, or `handle_delete_message` (both Update, the latter a soft tombstone).
-//! Three chokepoints jointly enforce this. The create-gate baseline-message exemption
+//! `handle_send_message` Creates a `message` doc. `handle_edit_message`, `handle_delete_message`
+//! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment Update one.
+//! Three chokepoints keep a client from authoring or mutating a message doc. The create-gate baseline-message exemption
 //! (`apply_intent`'s `is_baseline_message` check) ties a Create to its authenticated author. The
 //! ingress guard (`ops_target_message`) rejects any client-authored `message` Create/Delete op at
 //! the WS/HTTP boundary. `apply_intent`'s `Update` branch (`authorize_update_access`) rejects every
@@ -89,13 +89,12 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 /// message ingest server-authoritative.
 ///
 /// `Operation::Update` carries no `doc_type` (just `doc_id` + field changes),
-/// so it cannot be classified here; every `WriteOrigin::Client` `Update`
-/// targeting a stored `message` doc is instead rejected in `apply_intent`'s
-/// `Update` branch (classified there against the authoritative stored
-/// `doc_type`). That branch exempts ONLY `WriteOrigin::ServerMessageRevision`
-/// — the legitimate message-edit/-delete path
-/// (`handle_edit_message`/`handle_delete_message`), unreachable from any
-/// client transport.
+/// so it cannot be classified here; every `Update` targeting a stored
+/// `message` doc is instead rejected by `authorize_update_access` (reached from
+/// `apply_intent`'s `Update` branch, which classifies against the authoritative
+/// stored `doc_type`) unless its origin is `WriteOrigin::ServerMessageRevision`,
+/// the origin of the server's own message revisions, which no client transport
+/// can set.
 ///
 /// # Examples
 ///

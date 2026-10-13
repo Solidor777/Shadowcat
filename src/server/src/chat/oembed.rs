@@ -1,8 +1,8 @@
 //! This module holds the oEmbed provider allowlist and the structured-fields-only oEmbed types.
 //!
 //! `match_provider` admits allowlisted provider HOSTS only, and `OEmbedProvider::endpoint` builds
-//! the provider's oEmbed endpoint from the posted URL, so no endpoint is ever discovered.
-//! Autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
+//! the request URL from a fixed per-provider base, passing the posted URL only as the `url` query
+//! value, so no endpoint is ever discovered. Autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
 //! posted URL) would reintroduce the arbitrary-host-fetch risk this feature must avoid. The fetch
 //! itself runs in `chat::post_publish`.
 //!

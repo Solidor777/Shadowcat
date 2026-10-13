@@ -33,9 +33,8 @@ use super::preview_cache::{
 use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
-/// A server-fetched preview. Stored verbatim by the ingest stage (a later
-/// checkpoint) as a `Segment::LinkPreview`; the client renders ONLY these
-/// stored strings and never fetches `url` itself.
+/// A server-fetched preview. Stored verbatim by the ingest stage as a `Segment::LinkPreview`;
+/// the client renders ONLY these stored strings and never fetches `url` itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
     /// The URL the fetch ended on — redirects substitute it (`url = next` per
@@ -1585,7 +1584,7 @@ pub async fn fetch_json_bytes(
     }
 }
 
-/// Guard #1: scheme MUST be exactly http/https; reject a URL carrying
+/// Scheme MUST be exactly http/https; reject a URL carrying
 /// `userinfo` (credential confusion); reject a missing/empty host; and — the
 /// SSRF-critical part — validate any literal-IP host HERE, directly. A URL
 /// whose host is an IP literal (incl. url-crate-normalized decimal/hex forms
