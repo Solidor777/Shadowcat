@@ -2198,9 +2198,12 @@ impl SceneEcs {
     }
 
     /// The token's current committed position `(x, y)` in scene coordinates.
-    /// `None` if `token` is not a token entity or has no `(x, y)` in its `engine` band.
-    /// Callers: `move_exec::execute_move` verifies `path[0]` against it; `Room::toggle_door`
-    /// measures its distance to the toggled wall's segment.
+    /// `None` if `token` is not a token or has no committed `engine` band that decodes as a
+    /// `TokenEngine`.
+    ///
+    /// `move_exec::execute_move` compares `path[0]` with it. `Room::toggle_door` measures the
+    /// distance from it to the toggled wall's segment for each token the requester effectively
+    /// owns in the wall's scene.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
@@ -2217,11 +2220,14 @@ impl SceneEcs {
     /// `/engine` write or duplicate `/engine/x` changes cannot evade the collision check by
     /// presenting a safe target while committing an unsafe one. Reads the authoritative ECS
     /// state, never the client's `old`. `None` if `token_id` is not a token, the token has no
-    /// `parent_id`, or its committed or post-image `engine` band lacks a numeric `(x,y)`.
+    /// `parent_id`, it has no committed `engine` band that decodes as a `TokenEngine`, or the
+    /// post-image has no numeric `/engine/x` and `/engine/y`.
     ///
     /// `Room::publish` refuses a non-GM `Update` whose committed start and post-image end
-    /// differ. A `/system/x` write on a token is structurally inert against this `/engine`-only
-    /// read; see the
+    /// differ, and reads this a second time to collect placement-trigger candidates.
+    /// `Room::execute_move` and `SceneEcs::token_footprint_cells` call it with no changes to
+    /// read the token's scene and committed position. A `/system/x` write on a token is
+    /// structurally inert against this `/engine`-only read; see the
     /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// # Examples
