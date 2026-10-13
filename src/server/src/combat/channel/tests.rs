@@ -1,7 +1,7 @@
-//! These tests check the serde tag spelling of `ResourceBindingKind` and the JSON round trip of
-//! `CombatsPayload`.
+//! These tests check the combat channel's wire types.
 //!
-//! They are independent of ECS behavior: the derivation tests are
+//! They cover the serde tag spelling of `ResourceBindingKind` and the JSON round trip of
+//! `CombatsPayload`. They are independent of ECS behavior: the derivation tests are
 //! `scene::tests::combat_index::resolved_combats`.
 use super::*;
 
