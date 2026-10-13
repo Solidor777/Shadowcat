@@ -1,8 +1,8 @@
 //! The pure `audio-state` transport engine: every `AudioOp` reduces to a fresh `AudioStateEngine`.
 //!
 //! The reduction is deterministic and performs no I/O, the same posture `combat::transition`'s pure
-//! functions take, so it runs identically under `apply_intent` and any future replay/simulation
-//! path. The elapsed-duration gate on `AudioOp::TrackEnded` is NOT here (it lives in
+//! functions take, so the caller pre-fetches the playlist and commits the result itself. The
+//! elapsed-duration gate on `AudioOp::TrackEnded` is NOT here (it lives in
 //! `transport::handle_transport_locked`): once `apply` is called, it performs the advance
 //! unconditionally.
 

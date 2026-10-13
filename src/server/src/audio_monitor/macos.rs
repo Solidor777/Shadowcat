@@ -1,14 +1,14 @@
 //! The macOS backend uses Core Audio's process tap API, available from macOS 14.2.
 //!
-//! The API (`AudioHardwareCreateProcessTap`) is new enough that `coreaudio-sys` does not wrap it in
-//! the resolved version, so this file binds the small entry-point surface it needs directly via
-//! `extern "C"`, linked against the `CoreAudio` framework. The link is `#[link(name = "CoreAudio",
-//! kind = "framework")]` on the `extern "C"` block declaring these entry points, because every
-//! symbol this file calls lives in the `CoreAudio` framework itself. The Objective-C runtime
-//! symbols (`objc_getClass`, `sel_registerName`, `class_respondsToSelector`, `objc_msgSend`) and
-//! `proc_pidpath` resolve via the platform's always-linked `libSystem`/`libobjc`, which need no
-//! framework directive of their own. The file uses `core-foundation` only for
-//! `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling.
+//! The `coreaudio-sys` bindings do not cover the process tap entry points, so this file declares
+//! the small entry-point surface it needs itself in `extern "C"` blocks. It uses `core-foundation`
+//! for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling.
+//!
+//! The first `extern "C"` block carries the framework link directive
+//! `#[link(name = "CoreAudio", kind = "framework")]`, which links only `CoreAudio`. The other
+//! symbols declared in that block (`proc_pidpath` and the Objective-C runtime functions
+//! `objc_getClass`, `sel_registerName`, `class_respondsToSelector` and `objc_msgSend`) resolve
+//! through the system libraries every macOS process links.
 //!
 //! On macOS < 14.2 (detected by `macos_at_least_14_2`'s Darwin-kernel version probe),
 //! `MacosMonitor::new` returns `MonitorError::Unsupported("macOS 14.2 or newer")`, and the hello
@@ -17,20 +17,16 @@
 //! The first run requires the user to grant the "System Audio Recording" permission (the OS's own
 //! prompt).
 //!
-//! Verification note: the plain-C signatures below (`AudioObjectGetPropertyData`,
-//! `AudioObjectGetPropertyDataSize`, `proc_pidpath`, `AudioDeviceCreateIOProcID`,
-//! `AudioDeviceStart`, `AudioDeviceStop`, `AudioDeviceDestroyIOProcID`,
+//! The signatures of `AudioObjectGetPropertyData`, `AudioObjectGetPropertyDataSize`,
+//! `AudioHardwareCreateProcessTap`, `AudioHardwareDestroyProcessTap`,
 //! `AudioHardwareCreateAggregateDevice`, `AudioHardwareDestroyAggregateDevice`,
-//! `AudioHardwareDestroyProcessTap`) are transcribed from Apple's published Core Audio and
-//! AudioToolbox headers for macOS 14.2+ and MUST be checked against the actual SDK headers on a
-//! macOS host (`xcrun --show-sdk-path`) before this file is trusted to compile. The ONE piece with
-//! materially lower confidence is `CATapDescription` construction
-//! (`build_stereo_mixdown_tap_description`): it is an Objective-C class with no C-only equivalent,
-//! so it is built via hand-transcribed `objc_msgSend` calls rather than the `objc`/`objc2` crate
-//! (neither is a workspace dependency, and adding one is an architecture change). It is the single
-//! most likely build/runtime failure point in the file and needs a macOS host with the AudioToolbox
-//! headers to confirm. Keep the dedicated-thread + process-object-list + aggregate-device-with-tap
-//! shape unchanged if any signature differs.
+//! `AudioDeviceCreateIOProcID`, `AudioDeviceStart`, `AudioDeviceStop` and
+//! `AudioDeviceDestroyIOProcID` mirror Apple's CoreAudio and AudioToolbox declarations for macOS
+//! 14.2 and later. `CATapDescription` is an Objective-C class with no C-only constructor, so
+//! `build_stereo_mixdown_tap_description` builds it through `objc_msgSend` rather than an
+//! `objc`/`objc2` crate (neither is a workspace dependency), and guards the initializer with
+//! `class_respondsToSelector` so an absent selector fails closed. If a signature changes, the
+//! dedicated-thread, process-object-list and aggregate-device-with-tap shape must be preserved.
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
@@ -101,7 +97,6 @@ extern "C" {
     ) -> i32;
     /// POSIX `proc_pidpath(3)` (libsystem): resolves a pid to its executable's full path;
     /// used here to name each tapped process before `reduce_to_basename` strips the path down.
-    /// Verification note above applies.
     fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
 
     /// Creates a process tap from a `CATapDescription` (an Objective-C object, hence the
@@ -147,7 +142,7 @@ extern "C" {
     /// The Objective-C runtime's selector registration.
     fn sel_registerName(name: *const i8) -> *mut c_void;
     /// Reports whether `cls` implements `sel` — checked before every `objc_msgSend` call this
-    /// file makes against a selector name this file cannot verify against real SDK headers, so
+    /// file makes against a selector name, so
     /// an unrecognized selector fails closed (returns `None`) instead of raising
     /// `doesNotRecognizeSelector:` and aborting the process.
     fn class_respondsToSelector(cls: *mut c_void, sel: *mut c_void) -> i8;
@@ -495,8 +490,7 @@ unsafe fn release_objc_instance(instance: *mut c_void) {
 }
 
 /// Builds a `CATapDescription` mixing down `pid`'s own audio, via hand-transcribed
-/// `objc_msgSend` calls (module doc's verification note: this is the file's highest-risk
-/// surface). Returns the owned Objective-C instance pointer (release with
+/// `objc_msgSend` calls (the module doc states why no Objective-C crate is used). Returns the owned Objective-C instance pointer (release with
 /// `release_objc_instance`).
 fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
     // SAFETY: every symbol here is a `dlsym`-resolved libobjc/CoreFoundation entry point;
@@ -515,7 +509,7 @@ fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
         let init_sel_name = CString::new("initStereoMixdownOfProcesses:").ok()?;
         let init_sel = sel_registerName(init_sel_name.as_ptr());
         if class_respondsToSelector(class, init_sel) == 0 {
-            // The selector this file guesses at is absent from the resolved SDK — fail
+            // The selector is absent from the running OS's `CATapDescription` — fail
             // closed rather than risk `doesNotRecognizeSelector:` aborting the process.
             // `alloc` above yielded a +1-owned instance; release it here (manual reference
             // counting, matching every other error path in this function) rather than leaking

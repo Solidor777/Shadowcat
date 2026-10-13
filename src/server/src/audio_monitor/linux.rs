@@ -11,18 +11,8 @@
 //! it regardless. Peak measurement links a passive capture stream to each node's monitor port and
 //! tracks the maximum absolute sample seen since the last publish.
 //!
-//! Verification note: every `pipewire`/`libspa` 0.8 symbol this file uses was checked against the
-//! resolved crates' own source (`pipewire` 0.8.0 and `libspa` 0.8.0 as the cargo registry holds
-//! them) and the `audio-capture` example and `channel` module of `pipewire`, not merely against
-//! documentation. The symbols are `pipewire::init`,
-//! `main_loop::MainLoop::new`/`run`/`quit`/`loop_`, `context::Context::new`/`connect`,
-//! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`), `GlobalObject`'s
-//! `props`, `spa::utils::dict::DictRef::get`, `stream::Stream::new`/`connect`/`add_local_listener`,
-//! `StreamListener`, `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`,
-//! `Stream::state`, `StreamState`, `Buffer::datas_mut`, `Data::data`/`Data::chunk`,
-//! `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`, `TimerSource::update_timer`,
-//! `spa::param::audio::AudioInfoRaw`, `spa::pod::serialize::PodSerializer` and
-//! `spa::pod::Pod::from_bytes`.
+//! The backend binds the `pipewire` 0.8 and `libspa` 0.8 APIs. Its capture stream follows the
+//! shape of the `audio-capture` example shipped with `pipewire` 0.8.0.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

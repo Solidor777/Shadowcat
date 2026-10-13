@@ -1,5 +1,4 @@
-//! This module handles `AudioTransport` frames and swaps a scene's ambience playlist when the
-//! active scene changes.
+//! This module handles `AudioTransport` frames and the active-scene ambience swap.
 //!
 //! Handling authorizes (every op except the `TrackEnded` report is GM-only), resolves the one
 //! playlist an op could need, applies the pure `state::apply`, and commits the `audio-state` Update
