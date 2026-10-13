@@ -420,7 +420,7 @@ impl SqliteRepository {
         .execute(&mut *tx)
         .await?;
 
-        // The tier-2 structural schema registry `validate_system_schema_tree`
+        // The structural schema registry `validate_system_schema_tree`
         // needs, read from the BUNDLE's own imported `settings` rows rather
         // than `self.world_schema_declarations(world)` — that method queries
         // `self.pool` via a fresh connection, which would deadlock against

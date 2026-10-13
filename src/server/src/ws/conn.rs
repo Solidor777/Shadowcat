@@ -2288,8 +2288,8 @@ async fn egress_loop<S>(
             Vec::new()
         }
     };
-    // Informational/parity for the client (tier-2 is server-enforced; tier-1
-    // validates client-side). Fail open to empty for the advisory copy.
+    // Informational/parity for the client (the structural-schema gate is server-enforced; the client Zod
+    // gate validates client-side). Fail open to empty for the advisory copy.
     let world_schemas = match repo.world_schema_declarations(world_id).await {
         Ok(s) => s,
         Err(e) => {

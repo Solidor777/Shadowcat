@@ -368,7 +368,7 @@ pub fn derive_engine_side_effects(
 /// input: an absent `Option` field is re-serialized as an explicit `null`, so
 /// a client pre-image built from its own optimistic view (carrying only the
 /// keys it set) differs from the stored value by key count alone even when
-/// it is faithful. `SqliteRepository::apply_intent`'s Phase-1 OCC check
+/// it is faithful. `SqliteRepository::apply_intent`'s validation-pass OCC check
 /// therefore reads the pre-image through the SAME normalizer the stored value
 /// came from, by splicing it into a copy of the stored document at `path`
 /// and running `validate_engine_tree` on the result — the very function
@@ -789,7 +789,7 @@ fn check_value(
 /// Validate the POST-IMAGE `system` band against the world's registered
 /// structural schemas, recursing embedded descendants — each
 /// looked up by its OWN `doc_type`. READ-ONLY: unlike `validate_engine_tree`,
-/// there is no normalization; tier-2 only accepts/rejects and must not reshape
+/// there is no normalization; the structural-schema check only accepts/rejects and must not reshape
 /// the opaque `system` body. A subtree registered but absent in this document is
 /// NOT a violation (registering a schema governs shape-when-present, never
 /// compels presence). `subtree_pointer` is a strict `/system/…` descendant

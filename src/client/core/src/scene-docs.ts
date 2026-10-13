@@ -773,7 +773,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
 /** Client-only `item` doc_type: NOT engine-defined (`data::engine::is_engine_doc_type`
  * excludes "item") — the server stays fully structural for an item's body, same as every
  * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
- * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`
+ * `validate_system_schema_tree` enforces any module-registered structural schema for `"item"`
  * (both run unconditionally on every doc_type). `validate_engine_tree` also runs on an item,
  * but only to REJECT one carrying an `engine` body (`normalize_engine_opt`'s
  * `(false, Some(_))` arm: "not engine-defined; `engine` must be absent") — an item never
@@ -789,7 +789,7 @@ export const ITEM_DOC_TYPE = "item";
  * The server enforces an overall size cap unconditionally
  * (`data::validation::validate_system_size`).
  * A game-system module may ADDITIONALLY register a
- * tier-2 JSON Schema for `doc_type: "item"`; when one is registered,
+ * structural JSON Schema for `doc_type: "item"`; when one is registered,
  * `data::validation::validate_system_schema_tree`
  * validates the shape of the subtree it names — but a
  * subtree it names and this document omits is not a violation (the schema governs shape only when

@@ -69,7 +69,7 @@ pub enum DataError {
     #[error("invalid engine body: {0}")]
     BadEngine(String),
     /// A structurally-checked band failed shape validation: a `system`
-    /// subtree against a declared tier-2 structural schema, or the
+    /// subtree against a declared structural schema, or the
     /// server-owned `base` snapshot against the `MergeBase` shape
     /// (`validation::validate_engine_tree`'s base walk).
     #[error("schema violation at {pointer}: {reason}")]

@@ -839,7 +839,7 @@ pub struct Document {
     #[ts(type = "unknown")]
     pub engine: Option<serde_json::Value>,
     /// Opaque game-system band: structurally validated only (size, JSON,
-    /// optional tier-2 shape schema) — the server NEVER interprets its meaning.
+    /// optional structural shape schema) — the server NEVER interprets its meaning.
     #[ts(type = "unknown")]
     pub system: serde_json::Value,
     /// Creation time, Unix epoch milliseconds.

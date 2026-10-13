@@ -2464,7 +2464,7 @@ async fn import_world_rejects_a_schema_violating_bundle_before_any_validator_run
         .unwrap_err();
     assert!(
         matches!(err, DataError::SchemaViolation { .. }),
-        "a tier-2 violation must surface as the structural error, never DataError::Validator: {err:?}"
+        "a structural-schema violation must surface as the structural error, never DataError::Validator: {err:?}"
     );
 }
 

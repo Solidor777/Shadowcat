@@ -276,7 +276,7 @@ async fn a_structural_failure_never_reaches_or_faults_a_validator() {
     )]);
     let world = crate::test_ids::test_uuid(4);
     let ids = vec!["module-a".to_string()];
-    // A tier-2 schema requiring `/system/hp` to be a number; the document violates it.
+    // A structural schema requiring `/system/hp` to be a number; the document violates it.
     let schemas = vec![crate::data::document::SchemaDeclaration {
         module_id: "example-system".into(),
         version: "1".into(),
@@ -289,7 +289,9 @@ async fn a_structural_failure_never_reaches_or_faults_a_validator() {
 
     let err = validate_document(&registry, &ids, &mut d, None, true, world, &schemas)
         .await
-        .expect_err("a tier-2 schema violation must surface as the validation pass's own error");
+        .expect_err(
+            "a structural-schema violation must surface as the validation pass's own error",
+        );
     assert!(
         matches!(err, crate::data::DataError::SchemaViolation { .. }),
         "expected SchemaViolation, got {err:?}"

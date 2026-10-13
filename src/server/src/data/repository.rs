@@ -127,7 +127,7 @@ pub trait Repository: Send + Sync {
     /// pre-images, then sequence + apply + log — all in one transaction.
     /// Field-level optimistic concurrency: an `Update` whose `FieldChange.old`
     /// does not match the current stored value yields `Conflict`. A failure in
-    /// the authorize phase consumes no seq (the transaction rolls back whole).
+    /// the validation pass consumes no seq (the transaction rolls back whole).
     /// `origin` gates the message-Update exemption: a stored `message` doc's
     /// `Update` is blanket-rejected for `WriteOrigin::Client` regardless of the
     /// requester's own `DocRole`; only `WriteOrigin::ServerMessageRevision` —

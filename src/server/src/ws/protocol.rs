@@ -1183,9 +1183,9 @@ pub enum ServerMsg {
         /// The world's UI contract declarations, so the client can validate its
         /// loaded module set against the world's declared topology.
         contract_declarations: Vec<crate::data::document::ContractDeclaration>,
-        /// The world's structural schema declarations (tier-2), so the client
-        /// can mirror expectations. Informational/parity only — tier-1 Zod
-        /// validates client-side; this is NOT a client enforcement gate.
+        /// The world's structural schema declarations, so the client
+        /// can mirror expectations. Informational/parity only — the client Zod
+        /// gate validates client-side; this is NOT a client enforcement gate.
         schema_declarations: Vec<crate::data::document::SchemaDeclaration>,
         /// The connecting user's own world-level capabilities — the `core:create` policy
         /// `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their

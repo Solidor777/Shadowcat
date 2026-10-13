@@ -366,7 +366,7 @@ async fn a_structural_failure_rejects_before_and_without_faulting_any_validator(
         .unwrap_err();
     assert!(
         matches!(err, DataError::SchemaViolation { .. }),
-        "a tier-2 violation must surface as the validation pass's own error, never DataError::Validator: {err:?}"
+        "a structural-schema violation must surface as the validation pass's own error, never DataError::Validator: {err:?}"
     );
 
     // The registry's streak for (world, mod-x) is still zero: `record_fault`

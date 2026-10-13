@@ -695,7 +695,7 @@ pub(crate) const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
 
 /// Structural equality for stored-vs-written JSON value comparisons where a client
 /// round-trip may have shifted the `Number` variant: `SqliteRepository::apply_intent`'s
-/// Phase-1 OCC pre-image check (`actual` vs `FieldChange.old`) and
+/// validation pass's OCC pre-image check (`actual` vs `FieldChange.old`) and
 /// `permission::carried_light_touched`'s ancestor-write subtree comparison. `serde_json::Value::Number`
 /// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
 /// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to

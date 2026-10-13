@@ -237,7 +237,7 @@ export const SchemaTypeSchema = z.enum([
   "null",
 ]);
 
-/** Recursive structural type-tree (tier-2). Absent fields are optional (the server
+/** Recursive structural type-tree. Absent fields are optional (the server
  * omits a `None` via `skip_serializing_if`). Shape only — never a value rule; the grammar
  * has no `enum`, numeric/string bounds, `pattern`, or `anyOf`/`oneOf` combinator. */
 export type WireSchema = {
@@ -274,7 +274,7 @@ export const SchemaSchema: z.ZodType<WireSchema> = z.lazy(() =>
   }),
 );
 
-/** A world's structural schema declaration (tier-2): the `system`-band shape constraint a
+/** A world's structural schema declaration: the `system`-band shape constraint a
  * module attaches to a doc_type's `system` subtree, GM-set and enforced server-side.
  * `schema_format` is the engine-owned vocabulary version; `version` is the module's content
  * version (provenance only). Mirrors `crate::data::document::SchemaDeclaration`. */
@@ -388,7 +388,7 @@ export type WireDocument = {
    * property, so an absent/non-engine doc_type's `engine` key is simply undefined. */
   engine?: unknown;
   /** Opaque `system` body; `z.unknown()` infers an optional property. The server enforces
-   * only structural rules on it (size cap, JSON validity, optional tier-2 shape schema) —
+   * only structural rules on it (size cap, JSON validity, optional structural shape schema) —
    * it never interprets the value semantically. */
   system?: unknown;
   /** Server-set creation timestamp (ms since epoch). */
@@ -843,8 +843,8 @@ export type WireWelcome = {
   /** The world's UI contract declarations, so the client can validate its loaded module
    * set against the world's declared topology. */
   contract_declarations: WireContractDeclaration[];
-  /** The world's structural schema declarations (tier-2), so the client can mirror
-   * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
+  /** The world's structural schema declarations, so the client can mirror
+   * expectations. Informational/parity only — the client Zod gate validates client-side; this is
    * NOT a client enforcement gate. */
   schema_declarations: WireSchemaDeclaration[];
   /** The connecting user's own world-level capabilities — the `core:create` policy

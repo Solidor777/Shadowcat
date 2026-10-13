@@ -584,7 +584,7 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
 }
 
 /// The validation pass's Create authorization, resolved per op through ONE function both the
-/// in-transaction Phase-1 arm and `apply_intent`'s pre-transaction validator screen
+/// in-transaction validation-pass arm and `apply_intent`'s pre-transaction validator screen
 /// call — authz is the codebase's never-fork class, so the screen never re-spells
 /// any of these checks. Returns the resolved `Access` (the screen additionally reads
 /// it for the validator `prior` band's READ gate). `executor` is the write
@@ -954,7 +954,7 @@ impl Repository for SqliteRepository {
         let mut tx = self.pool.begin().await?;
 
         // Allocate the next per-world seq from the single durable source.
-        // Unlike `apply_intent` (seq allocated AFTER Phase-1 validation, so a
+        // Unlike `apply_intent` (seq allocated AFTER the validation pass, so a
         // rejected intent never consumes one), this bump happens BEFORE any
         // op is validated -- safe only because the whole transaction rolls
         // back on any early `?` return below, so a rejected write never
@@ -1287,7 +1287,7 @@ impl Repository for SqliteRepository {
         let world_reqs = self.world_cap_requirements(world_id).await?;
         // Loaded before the transaction (like `world_cap_requirements` above):
         // the single-writer pool would deadlock on a mid-tx settings query.
-        // This is the GM-controlled tier-2 structural schema registry; the
+        // This is the GM-controlled structural schema registry; the
         // writer never supplies its own judging schema.
         let world_schemas = self.world_schema_declarations(world_id).await?;
         // Sandboxed validators run HERE, entirely before the write transaction opens: the
@@ -1516,7 +1516,7 @@ impl Repository for SqliteRepository {
         let mut seeded_scenes: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         // The set of scenes a genuine same-batch active-true-to-false
         // transition will free, computed by a pre-scan over the WHOLE batch
-        // before the Phase-1 per-op loop runs (and before `scene_owner` is
+        // before the validation pass's per-op loop runs (and before `scene_owner` is
         // seeded at all) -- not derived incrementally in op order. A single
         // forward walk of `ops` cannot see a LATER op's deactivation when
         // validating an EARLIER op that claims the same scene (e.g.
@@ -1891,7 +1891,7 @@ impl Repository for SqliteRepository {
                     // deadlock mid-transaction, not race). `claimed_singletons`
                     // additionally covers a second same-batch Create of the
                     // same singleton doc_type, which the DB read alone cannot
-                    // see (see the comment above the Phase-1 loop).
+                    // (see the comment above the validation pass's per-op loop).
                     if SINGLETON_DOC_TYPES.contains(&doc.doc_type.as_str()) {
                         if claimed_singletons.contains(doc.doc_type.as_str())
                             || Self::singleton_doc_exists(&mut *tx, world_id, &doc.doc_type).await?
@@ -1970,7 +1970,7 @@ impl Repository for SqliteRepository {
                     // Recorded for the apply pass's derived-path capability check
                     // before any per-change validation below can reject this
                     // op -- an error return here never reaches the apply pass, so
-                    // pushing early does not desync the two phases' op order.
+                    // pushing early does not desync the validation and apply passes' op order.
                     update_access.push(access.clone());
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
@@ -2306,7 +2306,7 @@ impl Repository for SqliteRepository {
                     // this check exempts the same way `declared_caps_for_path`
                     // is exempted for every other write path in the validation pass above
                     // — a capability-skipping origin's authorization is
-                    // vetted entirely elsewhere (see the Phase-1 doc comments
+                    // vetted entirely elsewhere (see the validation pass's doc comments
                     // beside `origin.skips_capability_gates()`), and a
                     // derived engine path is no exception to that trust.
                     if !origin.skips_capability_gates() {
@@ -2326,17 +2326,17 @@ impl Repository for SqliteRepository {
                         }
                     } else {
                         // Keep the iterator in lockstep with the validation pass's push
-                        // order even when this op's check is skipped — Phase
-                        // 1 still pushed an entry for it.
+                        // order even when this op's check is skipped — the
+                        // validation pass still pushed an entry for it.
                         update_access_iter.next();
                     }
-                    // One-active-combat-per-scene is validated ONLY in Phase
-                    // 1 (see `apply_intent`'s Update arm there, and the
-                    // `scene_owner` doc comment) -- this phase trusts that
+                    // One-active-combat-per-scene is validated ONLY in the validation
+                    // pass (see `apply_intent`'s Update arm there, and the
+                    // `scene_owner` doc comment) -- the apply pass trusts that
                     // decision and performs no recomputation of it, the same
                     // way it trusts the validation pass's OCC/capability/containment/
                     // singleton decisions for every other check.
-                    // Tier-2 structural schema gate on the MERGED post-image
+                    // Structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.
                     validation::validate_system_schema_tree(&doc, &world_schemas)?;

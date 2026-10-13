@@ -957,7 +957,7 @@ async fn create_op_snapshot_in_a_same_command_create_then_update_reflects_the_po
     // state_for_every_op: proves the Create op's OWN persisted OpSnapshot carries the SAME
     // doc_id's later-in-command Update result (a reassigned `/owner`), not the value at the
     // moment the Create ran within the loop. Uses apply_command (the trusted replay
-    // substrate) because apply_intent's Phase-1 OCC pre-image check rejects an Update
+    // substrate) because apply_intent's validation-pass OCC pre-image check rejects an Update
     // targeting a not-yet-committed same-batch Create (see
     // apply_intent_same_batch_create_then_engine_update_is_rejected) — a real op sequence
     // reaching this code path arrives via that substrate, not the client-intent gate.
@@ -2476,7 +2476,7 @@ async fn create_rejects_intra_batch_duplicate_singleton_creates() {
     };
 
     // A single Intent batching TWO Creates of the same singleton doc_type:
-    // neither has been inserted when the other's Phase-1 check runs, so
+    // neither has been inserted when the other's validation-pass check runs, so
     // the DB-only check alone would let both through. The second must be
     // rejected by the intra-batch `claimed_singletons` tracking instead.
     let err = r
