@@ -462,7 +462,8 @@ fn verify_tap_format_accepts_non_interleaved_float32() {
     assert_eq!(verify_tap_format(&format), Ok(()));
 }
 
-/// 16-bit signed integer PCM is refused, and the message names the observed flags and width.
+/// 16-bit signed integer PCM is refused, and the message names the observed flags, width and
+/// channel count.
 #[test]
 fn verify_tap_format_rejects_sixteen_bit_integer_pcm() {
     let format = description(
@@ -473,6 +474,7 @@ fn verify_tap_format_rejects_sixteen_bit_integer_pcm() {
     let refusal = verify_tap_format(&format).expect_err("16-bit integer PCM must be refused");
     assert!(refusal.contains("flags 0xc"), "{refusal}");
     assert!(refusal.contains("16 bits"), "{refusal}");
+    assert!(refusal.contains("2 channels"), "{refusal}");
 }
 
 /// A format id other than linear PCM is refused even when its flags and width look like float32.

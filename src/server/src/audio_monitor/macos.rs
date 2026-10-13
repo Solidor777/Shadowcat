@@ -512,10 +512,11 @@ fn read_tap_format(tap_id: AudioObjectId) -> Result<AudioStreamBasicDescription,
 
 /// Pure check that `format` is packed little-endian 32-bit float linear PCM with at least one
 /// channel, the layout `buffer_list_peak` decodes. Packed holds when the flag is set or when the
-/// header's implied-packed relation holds: the channels' sample bytes equal the frame size. A
-/// non-interleaved description counts one channel per frame, since its per-frame fields describe
-/// one buffer. Channel layout is not otherwise checked: the peak is a maximum over every buffer's
-/// samples, interleaved or not. The error states the observed format id, flags, sample width and channel count.
+/// header's implied-packed relation holds: the channels' sample bytes equal the frame size. The
+/// check extends that relation to non-interleaved descriptions by counting one channel per frame,
+/// since the header says their fields describe one buffer. Channel layout is not otherwise
+/// checked: the peak is a maximum over every buffer's samples, interleaved or not. The error
+/// states the observed format id, flags, sample width and channel count.
 fn verify_tap_format(format: &AudioStreamBasicDescription) -> Result<(), String> {
     let channels_per_frame = if format.format_flags & K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED != 0 {
         1
