@@ -37,10 +37,10 @@
 //!
 //! INVARIANT: Every live connection is bounded, not only the half-open ones.
 //! [`ConnLimits::max_live`] and [`ConnLimits::max_live_per_peer`] cap connections from hand-off
-//! until the connection task AND every [`ConnLease`] taken from its requests have ended, keyed and
-//! exempted exactly like the accept-time caps ([`crate::http::peer_slots::PeerSlots`],
-//! `ConnMeta::cap_exempt`, set by the listener that admits the connection); a connection over a cap
-//! is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in
+//! until the connection task AND every [`ConnLease`] taken from its requests have ended, keyed like
+//! the accept-time caps ([`crate::http::peer_slots::PeerSlots`]) and exempted by the
+//! `ConnMeta::cap_exempt` the listener set (`SniffListener` sets it from `Config::is_cap_exempt`; a
+//! bare `TcpListener` source leaves it false); a connection over a cap is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in
 //! flight for that long. A lease held by a WebSocket session is released when the session ends, and
 //! a session whose peer has stopped reading ends at the per-send stall bound
 //! ([`crate::ws::bounded_sink::BoundedSink::for_config`]), so a lease cannot pin a slot for longer
@@ -485,8 +485,9 @@ pub struct ConnLimits {
     /// Maximum live connections from one [`crate::http::peer_slots::peer_key`]. A table of
     /// players behind one address holds a handful of connections each (one HTTP/2 connection, or
     /// up to about six HTTP/1.1 ones plus a WebSocket), so 256 admits a large shared NAT while
-    /// stopping one host from holding the server. Trusted proxies and loopback peers are exempt
-    /// (`Config::is_cap_exempt`) and stay bound by [`ConnLimits::max_live`].
+    /// stopping one host from holding the server. A connection whose `ConnMeta::cap_exempt` is set
+    /// (`SniffListener` sets it from `Config::is_cap_exempt`) is exempt and stays bound by
+    /// [`ConnLimits::max_live`].
     pub max_live_per_peer: u32,
     /// How long a response may make no progress before it is cut. An HTTP/2 stream whose pending
     /// chunk the peer returns no flow-control credit for is reset (its connection, other streams

@@ -172,7 +172,7 @@ impl WorldModuleEntry {
 pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 
 /// One validly-discovered installed module: typed fields the server needs
-/// (id, requirements, engine-compat range) plus the raw manifest JSON — served
+/// (id, requirements, engine-compat range) plus the manifest as parsed JSON — served
 /// at `GET /api/modules` so the client's own Zod schema sees
 /// every field a community author declared (dependencies, hooks, provides,
 /// requires, ...), not just the subset this mirror extracts.
@@ -206,7 +206,7 @@ pub struct InstalledModule {
     pub requirements: Vec<CapabilityRequirement>,
     /// Declared `engines.shadowcat` range; `None` fails the enable gate closed.
     pub engines_shadowcat: Option<String>,
-    /// The parsed module manifest, served at `GET /api/modules`.
+    /// The manifest as parsed JSON, served at `GET /api/modules`.
     pub manifest_json: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
     pub entry_url: String,
@@ -228,7 +228,7 @@ pub struct InstalledModule {
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
 /// others. This fail-open-on-discovery behavior is a deliberate design choice,
-/// separate from the server's purely structural authority over a
+/// separate from the server's structural authority over a
 /// community-authored manifest body. A missing `modules_dir`
 /// (nothing installed yet) yields an empty list, not an error. Deterministic
 /// id-sorted order.

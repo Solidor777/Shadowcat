@@ -32,11 +32,11 @@ async fn serves_the_spa_index_and_assets() {
 
 #[test]
 fn hashed_asset_path_predicate_matches_only_the_content_hashed_assets_dir() {
-    // The client build's `rollupOptions.output.entryFileNames` writes every non-runtime chunk
-    // to `assets/[name]-[hash].js` — a changed asset therefore gets a new URL, so those paths
-    // alone are safe to cache as `immutable`. `runtime/*.js` chunk names are forced STABLE
-    // (no hash) so `index.html`'s import map can reference them at build time, and root files
-    // (`index.html`, `favicon.ico`) never carry a hash either.
+    // The client build's `rollupOptions.output.entryFileNames` writes entry chunks outside
+    // `runtime/` to `assets/[name]-[hash].js`; the content-hashed `assets/` directory is what the
+    // predicate matches, and a changed file there gets a new URL, so those paths alone are safe to
+    // cache as `immutable`. `runtime/*.js` chunk names are forced STABLE (no hash) so
+    // `index.html`'s import map can reference them at build time.
     assert!(is_hashed_asset_path("assets/main-DSZtRtmZ.css"));
     assert!(is_hashed_asset_path("assets/index-client-BdH11yDY.js"));
     assert!(!is_hashed_asset_path("index.html"));
