@@ -30,67 +30,74 @@ use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::ws::room::Room;
 
-/// Process-wide registry of per-URL fetch locks: `resolve_preview_image`/
-/// `resolve_thumbnail_asset` key on the target URL (the `cache_url`/
-/// `thumbnail_url` each already keys the persisted `link_preview_cache` table
-/// by) so two concurrent post-publish jobs racing to resolve the identical
-/// URL serialize into one fetch+asset-create instead of each creating its own
-/// orphaned `Asset` row/file for the same link (see `with_preview_url_lock`'s
-/// doc for the full concurrency argument, including why the entry is removed
-/// without a race). Same `DashMap`-keyed-registry shape as
-/// `ws::room::RoomRegistry.rooms` -- unlike that map (bounded by world
-/// count), distinct link-preview URLs are unbounded over a long-running
-/// server's lifetime, so THIS map's entries must be reclaimed once no
-/// concurrent caller still needs them.
+/// Process-wide registry of per-URL fetch locks, keyed by the URL a persisted
+/// `link_preview_cache` row is stored under. `resolve_preview_image` keys on the job's
+/// `cache_urls` and `resolve_thumbnail_asset`/`resolve_inline_image` on the image URL, so two
+/// concurrent post-publish jobs racing on a shared key run one after the other, and the second
+/// reads the asset id the first recorded instead of creating an orphaned `Asset` row and file
+/// (see `with_preview_url_locks` for the concurrency argument, including why an entry is removed
+/// without a race). The map has the keyed-registry shape of `ws::room::RoomRegistry.rooms`. That
+/// map holds one entry per world, while this one would gain an entry for every distinct
+/// link-preview URL seen, so the last caller to finish with a key removes its entry.
 pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
 
-/// Runs `f` while holding the per-`key` lock from `locks`, get-or-inserting a
-/// fresh `Mutex` on first use and reclaiming the map entry once no concurrent
-/// caller still references it.
+/// Runs `f` while holding the lock of every distinct key in `keys`, get-or-inserting a fresh
+/// `Mutex` per key on first use and, on return, removing each entry that no other caller
+/// references.
+///
+/// # Lock order
+///
+/// Keys are acquired in ascending string order. Two callers whose key sets overlap therefore
+/// acquire the shared keys in the same relative order, so neither can hold a key the other
+/// awaits while awaiting a key the first holds.
 ///
 /// # Cleanup-race reasoning
 ///
-/// The naive version of this (drop the mutex guard, THEN separately check
-/// whether to remove the map entry) has a TOCTOU gap: a new waiter can call
-/// `locks.entry(key)` between this task's guard-drop and its own removal
-/// check, clone the Arc that is about to be removed, and start waiting on a
-/// `Mutex` instance the map is seconds away from discarding -- while a LATER
-/// caller's `or_insert_with` then manufactures a SECOND, different `Mutex`
-/// instance for the same key, so two callers hold two different mutexes for
-/// one URL and the whole point of this registry (mutual exclusion per URL) is
-/// defeated.
+/// A version that drops the mutex guards and then separately checks whether to remove each map
+/// entry has a TOCTOU gap: a new waiter can call `locks.entry(key)` between the guard drop and
+/// the removal check, clone the `Arc` about to be removed, and wait on a `Mutex` the map is about
+/// to discard, while a later caller's `or_insert_with` creates a second `Mutex` for the same key.
+/// Two callers would then hold two different mutexes for one URL, defeating the registry.
 ///
-/// This avoids that gap by never separating the strong-count check from the
-/// removal: both happen while holding the SAME `DashMap` shard lock, via one
-/// continuous `locks.entry(key)` call after the mutex guard is already
-/// dropped. `DashMap::entry` blocks any other `entry()`/`get()`/`insert()`
-/// call for the same key for as long as the returned `Entry` is alive, so no
-/// concurrent caller can observe or clone the `Arc` between the strong-count
-/// read and the removal. `Arc::strong_count(occ.get()) <= 2` means only the
-/// map's own stored clone (1) plus this function's local `arc` binding (1,
-/// not yet dropped) remain -- nobody else cloned it while we were not holding
-/// the shard lock, so it is safe to remove. A strong count above 2 means a
-/// concurrent waiter already cloned the same `Arc` (either mid-wait on the
-/// mutex, or about to call `.lock().await` on it), so the entry is left in
-/// place for them to keep using -- removing it here would be the exact bug
-/// this reasoning exists to prevent, just triggered from the opposite
-/// direction.
-async fn with_preview_url_lock<F, Fut, T>(locks: &PreviewFetchLocks, key: &str, f: F) -> T
+/// This function never separates the strong-count check from the removal: both happen under the
+/// shard lock of one `locks.entry(key)` call made after the guards are dropped.
+/// `DashMap::entry` blocks any other `entry()`, `get()` or `insert()` for that key while the
+/// returned `Entry` is alive, and this function is the only code that clones an `Arc` out of the
+/// map, so no concurrent caller can clone it between the count read and the removal.
+/// `Arc::strong_count(occ.get()) <= 2` means only the map's clone and this function's own `arcs`
+/// clone remain, so the entry is removed. A higher count means a concurrent waiter already
+/// cloned the `Arc`, and the entry stays for them. Every `Arc` is cloned out of the map before
+/// any lock is awaited, so a concurrent finisher observes a count above 2 for the whole time this
+/// call holds or awaits that key.
+async fn with_preview_url_locks<F, Fut, T>(locks: &PreviewFetchLocks, keys: &[String], f: F) -> T
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    let arc = locks
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
+    let mut sorted: Vec<&String> = keys.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    let arcs: Vec<Arc<tokio::sync::Mutex<()>>> = sorted
+        .iter()
+        .map(|key| {
+            locks
+                .entry((*key).clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        })
+        .collect();
     let result = {
-        let _guard = arc.lock().await;
+        let mut guards = Vec::with_capacity(arcs.len());
+        for arc in &arcs {
+            guards.push(arc.clone().lock_owned().await);
+        }
         f().await
     };
-    if let Entry::Occupied(occ) = locks.entry(key.to_string()) {
-        if Arc::strong_count(occ.get()) <= 2 {
-            occ.remove();
+    for key in sorted {
+        if let Entry::Occupied(occ) = locks.entry(key.clone()) {
+            if Arc::strong_count(occ.get()) <= 2 {
+                occ.remove();
+            }
         }
     }
     result
@@ -105,14 +112,20 @@ pub enum PendingEnrichment {
     /// A `Segment::LinkPreview` (matched by its stored `url`, not an array
     /// index -- this task's own OCC re-read may observe a `content` array a
     /// concurrent edit reordered) whose synchronous scrape found an image
-    /// candidate not yet fetched.
+    /// candidate not yet fetched. One job serves the message's candidate URLs whose previews
+    /// ended on the same `preview_url` and queued an image; the first such preview's
+    /// `image_url` is the one fetched.
     PreviewImage {
-        /// The candidate URL `enrich` extracted from the message: the key of the persisted
-        /// `link_preview_cache` row the job reads and writes. Differs from `preview_url` when
-        /// the fetch redirected.
-        cache_url: String,
-        /// The `url` of the `Segment::LinkPreview` this job patches: the post-redirect address
-        /// after a fresh fetch that redirected, otherwise equal to `cache_url`.
+        /// The candidate URLs `enrich` extracted from the message, in first-seen order, whose
+        /// previews carry this job's `preview_url`: the keys of the persisted
+        /// `link_preview_cache` rows the job reads and writes. `enrich` builds it with at least
+        /// one entry.
+        cache_urls: Vec<String>,
+        /// The `url` of the `Segment::LinkPreview` this job patches: the address the fetch
+        /// ended on after a fresh fetch (normalized by `Url::to_string`, post-redirect), or
+        /// the candidate URL for a preview built from a persisted row. Differs from a
+        /// `cache_urls` entry whenever the fetch's final address differs from the extracted
+        /// href.
         preview_url: String,
         /// The extracted (not yet fetched) image URL.
         image_url: String,
@@ -378,10 +391,10 @@ async fn resolve_job(
 ) -> Option<ResolvedEnrichment> {
     match job {
         PendingEnrichment::PreviewImage {
-            cache_url,
+            cache_urls,
             preview_url,
             image_url,
-        } => resolve_preview_image(deps, world_id, cache_url, preview_url, image_url).await,
+        } => resolve_preview_image(deps, world_id, cache_urls, preview_url, image_url).await,
         PendingEnrichment::OEmbed { post_url, provider } => {
             resolve_oembed(deps, world_id, post_url, provider).await
         }
@@ -391,27 +404,24 @@ async fn resolve_job(
     }
 }
 
-/// De-dup-then-fetch for one `PreviewImage` job: checks the persisted
-/// `link_preview_cache` row for `cache_url` FIRST and reuses an existing
-/// `image_asset_id` verbatim on a hit -- never re-fetching or re-creating an
-/// asset for a link this or any other message already imaged. On a miss,
-/// fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
-/// (through `link_preview::fetch_image_bytes`), asset-ifies it via
-/// `create_asset_from_bytes` (`created_by: None` -- no real user account
-/// backs a server-fetched image, the same generalization
-/// `Asset.created_by`'s own doc comment already covers), and records the
-/// result for future hits. Holds `write_barrier`'s read side around the
-/// asset commit, as `http::assets::upload`/`replace`/`delete` do -- this
-/// commit runs from the post-publish job rather than inside an HTTP handler,
-/// so it must join that same exclusion or an in-server backup's file-copy
-/// could race a half-committed asset. Runs the WHOLE check-then-fetch-then-set
-/// sequence under `preview_fetch_locks`' per-`cache_url` lock (see
-/// `with_preview_url_lock`) so two concurrent jobs for the identical URL never
-/// both observe a cache miss and each create their own orphaned `Asset`.
+/// De-dup-then-fetch for one `PreviewImage` job: reads the persisted `link_preview_cache` row of
+/// every `cache_urls` entry FIRST and, when any row carries an `image_asset_id`, reuses it
+/// verbatim, writing it onto the rows that lack one -- no refetch and no second asset for a link
+/// this or another message already imaged. On a miss, fetches `image_url` through the SAME
+/// SSRF-guarded client `enrich` uses (`link_preview::fetch_image_bytes`), asset-ifies it via
+/// `create_asset_from_bytes` (`created_by: None`: no user account backs a server-fetched image),
+/// and records the asset id on every `cache_urls` row. Holds
+/// `write_barrier`'s read side around the asset commit, as `http::assets::upload`/`replace`/
+/// `delete` do: this commit runs from the post-publish job rather than an HTTP handler, so it
+/// joins the same exclusion or an in-server backup's file copy could race a half-committed
+/// asset. Runs the whole read-fetch-write sequence under the `preview_fetch_locks` locks of all
+/// `cache_urls` (see `with_preview_url_locks`), so when the first of two concurrent jobs sharing
+/// a `cache_urls` entry succeeds, the second finds its recorded asset id instead of creating
+/// another asset.
 async fn resolve_preview_image(
     deps: FetchDeps,
     world_id: Uuid,
-    cache_url: String,
+    cache_urls: Vec<String>,
     preview_url: String,
     image_url: String,
 ) -> Option<ResolvedEnrichment> {
@@ -423,21 +433,28 @@ async fn resolve_preview_image(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    // Locks for the ENTIRE check-then-fetch-then-set sequence -- a concurrent
-    // waiter for the identical `cache_url` must observe a persisted-cache
-    // HIT here and skip the fetch entirely, never just serialize into a
-    // second redundant fetch+asset-create for the same link. Keyed on a
-    // clone (not `&cache_url`) so the closure below can move the original
-    // `cache_url` without a borrow conflict.
-    let lock_key = cache_url.clone();
-    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
-        if let Ok(Some(row)) = repo.get_link_preview_cache(&cache_url).await {
-            if let Some(asset_id) = row.image_asset_id {
-                return Some(ResolvedEnrichment::ImageForPreview {
-                    preview_url,
-                    asset_id,
-                });
+    // The closure moves `cache_urls`, so the lock keys are a separate clone.
+    let lock_keys = cache_urls.clone();
+    with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
+        let mut known: Option<Uuid> = None;
+        let mut unset: Vec<&String> = Vec::new();
+        for cache_url in &cache_urls {
+            match repo.get_link_preview_cache(cache_url).await {
+                Ok(Some(row)) => match row.image_asset_id {
+                    Some(id) => {
+                        known.get_or_insert(id);
+                    }
+                    None => unset.push(cache_url),
+                },
+                _ => unset.push(cache_url),
             }
+        }
+        if let Some(asset_id) = known {
+            record_preview_image(&repo, unset, asset_id).await;
+            return Some(ResolvedEnrichment::ImageForPreview {
+                preview_url,
+                asset_id,
+            });
         }
         let (content_type, bytes) =
             fetch_image_bytes(&client, &image_url, Duration::from_secs(5), MAX_IMAGE_BYTES)
@@ -463,18 +480,23 @@ async fn resolve_preview_image(
             .await
             .ok()?
         };
-        if let Err(e) = repo
-            .set_link_preview_cache_image(&cache_url, asset.id)
-            .await
-        {
-            tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
-        }
+        record_preview_image(&repo, cache_urls.iter().collect(), asset.id).await;
         Some(ResolvedEnrichment::ImageForPreview {
             preview_url,
             asset_id: asset.id,
         })
     })
     .await
+}
+
+/// Writes `asset_id` onto the `link_preview_cache` row of each of `cache_urls`; a failed write
+/// is logged and the remaining rows are still written.
+async fn record_preview_image(repo: &SqliteRepository, cache_urls: Vec<&String>, asset_id: Uuid) {
+    for cache_url in cache_urls {
+        if let Err(e) = repo.set_link_preview_cache_image(cache_url, asset_id).await {
+            tracing::warn!(?e, %cache_url, "link-preview image asset persist failed");
+        }
+    }
 }
 
 /// De-dup-then-fetch for one `InlineImage` job: checks the persisted
@@ -515,8 +537,8 @@ async fn resolve_inline_image(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    let lock_key = image_url.clone();
-    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
+    let lock_keys = [image_url.clone()];
+    with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         if let Ok(Some(row)) = repo.get_link_preview_cache(&image_url).await {
             if let Some(asset_id) = row.image_asset_id {
                 return Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
@@ -660,8 +682,8 @@ async fn resolve_thumbnail_asset(
     // space `resolve_preview_image` uses -- a page previewed AND oEmbed-
     // thumbnailed via the identical image URL serializes against itself
     // too).
-    let lock_key = thumbnail_url.clone();
-    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
+    let lock_keys = [thumbnail_url.clone()];
+    with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         if let Ok(Some(row)) = repo.get_link_preview_cache(&thumbnail_url).await {
             if let Some(asset_id) = row.image_asset_id {
                 return Some(asset_id);

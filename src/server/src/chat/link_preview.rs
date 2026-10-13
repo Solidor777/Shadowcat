@@ -296,8 +296,8 @@ pub async fn enrich(
     }
 
     // Each preview travels with the candidate URL its cache rows are keyed on: a fresh fetch
-    // that redirected carries the post-redirect address in `LinkPreview.url`, while
-    // `link_preview_cache` is written and read under the candidate.
+    // carries the address it ended on in `LinkPreview.url` (normalized, and post-redirect when
+    // it redirected), while `link_preview_cache` is written and read under the candidate.
     let mut previews: Vec<(String, LinkPreview)> = Vec::with_capacity(urls.len());
     let mut misses: Vec<String> = Vec::new();
     for url in urls {
@@ -370,11 +370,25 @@ pub async fn enrich(
             });
         } else {
             if let Some(image_url) = preview.image_url.clone() {
-                pending.push(PendingEnrichment::PreviewImage {
-                    cache_url,
-                    preview_url: preview.url.clone(),
-                    image_url,
+                // Candidates whose previews ended on the same address share one job, so the
+                // image is fetched and asset-ified once and the asset id is recorded on each
+                // candidate's cache row.
+                let shared = pending.iter_mut().find_map(|p| match p {
+                    PendingEnrichment::PreviewImage {
+                        cache_urls,
+                        preview_url,
+                        ..
+                    } if *preview_url == preview.url => Some(cache_urls),
+                    _ => None,
                 });
+                match shared {
+                    Some(cache_urls) => cache_urls.push(cache_url),
+                    None => pending.push(PendingEnrichment::PreviewImage {
+                        cache_urls: vec![cache_url],
+                        preview_url: preview.url.clone(),
+                        image_url,
+                    }),
+                }
             }
             segments.push(Segment::LinkPreview {
                 url: preview.url,

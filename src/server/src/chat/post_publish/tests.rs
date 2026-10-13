@@ -146,7 +146,7 @@ async fn resolve_preview_image_cache_hit_skips_network_fetch() {
             test_preview_fetch_locks(),
         ),
         world.id,
-        preview_url.to_string(),
+        vec![preview_url.to_string()],
         preview_url.to_string(),
         "https://cached.example/og.png".to_string(),
     )
@@ -203,7 +203,7 @@ async fn resolve_preview_image_cache_miss_fetches_and_creates_asset() {
             test_preview_fetch_locks(),
         ),
         world.id,
-        preview_url.to_string(),
+        vec![preview_url.to_string()],
         preview_url.to_string(),
         image_url,
     )
@@ -261,7 +261,7 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
             test_preview_fetch_locks(),
         ),
         world.id,
-        cache_url.to_string(),
+        vec![cache_url.to_string()],
         preview_url.to_string(),
         format!("http://stub.test:{port}/img.png"),
     )
@@ -299,7 +299,7 @@ async fn resolve_preview_image_after_a_redirect_persists_and_dedups_on_the_cache
             test_preview_fetch_locks(),
         ),
         world.id,
-        cache_url.to_string(),
+        vec![cache_url.to_string()],
         preview_url.to_string(),
         "https://unreachable.example/img.png".to_string(),
     )
@@ -609,7 +609,7 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
 
     let asset_id = Uuid::new_v4();
     let jobs = vec![PendingEnrichment::PreviewImage {
-        cache_url: "https://match.example/".into(),
+        cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
         image_url: "https://match.example/og.png".into(),
     }];
@@ -702,7 +702,7 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
 
     let seq_before = room.subscribe().1;
     let jobs = vec![PendingEnrichment::PreviewImage {
-        cache_url: "https://match.example/".into(),
+        cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
         image_url: "https://match.example/og.png".into(),
     }];
@@ -831,7 +831,7 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
 
     let asset_id = Uuid::new_v4();
     let jobs = vec![PendingEnrichment::PreviewImage {
-        cache_url: "https://match.example/".into(),
+        cache_urls: vec!["https://match.example/".into()],
         preview_url: "https://match.example/".into(),
         image_url: "https://match.example/og.png".into(),
     }];
@@ -1092,7 +1092,7 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
             resolve_preview_image(
                 test_fetch_deps(repo, client, root, locks),
                 world_id,
-                preview_url.clone(),
+                vec![preview_url.clone()],
                 preview_url,
                 image_url,
             )
@@ -1111,7 +1111,7 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
             resolve_preview_image(
                 test_fetch_deps(repo, client, root, locks),
                 world_id,
-                preview_url.clone(),
+                vec![preview_url.clone()],
                 preview_url,
                 image_url,
             )
@@ -1146,7 +1146,7 @@ async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset
     );
 
     // The registry itself must not retain the URL's lock once both
-    // resolvers have completed -- see `with_preview_url_lock`'s cleanup
+    // resolvers have completed -- see `with_preview_url_locks`' cleanup
     // reasoning.
     assert!(
         locks.is_empty(),
@@ -1197,7 +1197,7 @@ async fn preview_fetch_locks_does_not_retain_entries_after_resolvers_complete() 
                 locks.clone(),
             ),
             world.id,
-            preview_url.clone(),
+            vec![preview_url.clone()],
             preview_url,
             image_url,
         )
@@ -1210,5 +1210,258 @@ async fn preview_fetch_locks_does_not_retain_entries_after_resolvers_complete() 
         "the lock registry must not retain an entry per distinct URL once each resolver \
          has completed -- it would otherwise grow unboundedly over a long-running server's \
          lifetime"
+    );
+}
+
+/// Appends `segments` to the stored message `message_id` through the same
+/// `WriteOrigin::ServerMessageRevision` republish the pipeline itself uses.
+async fn append_segments(
+    room: &Room,
+    repo: &SqliteRepository,
+    ctx: &PermissionContext,
+    message_id: Uuid,
+    segments: Vec<Segment>,
+) {
+    let cur = repo.get_document(message_id).await.unwrap().unwrap();
+    let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap()).unwrap();
+    sys.content.extend(segments);
+    room.publish(
+        repo,
+        ctx,
+        vec![Operation::Update {
+            doc_id: message_id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/engine".into(),
+                old: cur.engine.unwrap(),
+                new: serde_json::to_value(&sys).unwrap(),
+            }],
+        }],
+        101,
+        WriteOrigin::ServerMessageRevision,
+    )
+    .await
+    .unwrap();
+}
+
+/// Two candidate URLs whose previews ended on one address ride a single job: the run fetches the
+/// image once, creates one asset, patches the segments that carry the shared `preview_url`, and
+/// records the asset id on the `link_preview_cache` row of every candidate.
+#[tokio::test]
+async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_one_asset() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let fetch_count = Arc::new(AtomicUsize::new(0));
+    let fetch_count_for_route = fetch_count.clone();
+    let router = Router::new().route(
+        "/img.png",
+        get(move || {
+            let fetch_count = fetch_count_for_route.clone();
+            async move {
+                fetch_count.fetch_add(1, Ordering::SeqCst);
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    vec![4u8, 4, 4],
+                )
+            }
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ctx = PermissionContext {
+        user_id: owner,
+        world_role: WorldRole::Gm,
+    };
+    let message_id = seed_message(&room, &repo, &ctx).await;
+
+    let cache_urls = vec![
+        "https://first.example/short".to_string(),
+        "https://second.example/other".to_string(),
+    ];
+    let preview_url = "https://landed.example/final/";
+    let preview_segment = |title: &str| Segment::LinkPreview {
+        url: preview_url.into(),
+        title: title.into(),
+        description: String::new(),
+        image_asset_id: None,
+    };
+    append_segments(
+        &room,
+        &repo,
+        &ctx,
+        message_id,
+        vec![preview_segment("A"), preview_segment("B")],
+    )
+    .await;
+    for cache_url in &cache_urls {
+        repo.upsert_link_preview_cache(cache_url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    run_pending_enrichments(
+        PostPublishDeps {
+            room: room.clone(),
+            repo: repo.clone(),
+            client: Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+                |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+            )),
+            assets_root: root.path().to_path_buf(),
+            retain_originals: true,
+            write_barrier: test_write_barrier(),
+            preview_fetch_locks: test_preview_fetch_locks(),
+        },
+        message_id,
+        world.id,
+        vec![PendingEnrichment::PreviewImage {
+            cache_urls: cache_urls.clone(),
+            preview_url: preview_url.into(),
+            image_url: format!("http://stub.test:{port}/img.png"),
+        }],
+    )
+    .await;
+
+    assert_eq!(
+        fetch_count.load(Ordering::SeqCst),
+        1,
+        "one job fetches the image once"
+    );
+    let assets = repo.list_assets_by_world(world.id).await.unwrap();
+    assert_eq!(assets.len(), 1, "one job creates one asset");
+    for cache_url in &cache_urls {
+        let row = repo
+            .get_link_preview_cache(cache_url)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.image_asset_id,
+            Some(assets[0].id),
+            "the row of {cache_url} receives the asset id"
+        );
+    }
+    assert_eq!(
+        repo.get_link_preview_cache(preview_url).await.unwrap(),
+        None,
+        "no row is written under the preview url"
+    );
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    let patched: Vec<Option<Uuid>> = sys
+        .content
+        .iter()
+        .filter_map(|seg| match seg {
+            Segment::LinkPreview { image_asset_id, .. } => Some(*image_asset_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(patched, vec![Some(assets[0].id), Some(assets[0].id)]);
+}
+
+/// A job whose rows partly carry an asset id reuses it without fetching and writes it onto the
+/// rows that lack one.
+#[tokio::test]
+async fn resolve_preview_image_propagates_a_known_asset_id_to_the_candidates_lacking_one() {
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let asset = crate::data::asset::Asset {
+        id: Uuid::new_v4(),
+        world_id: world.id,
+        storage_key: "k".into(),
+        original_name: "og.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 1,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    };
+    repo.insert_asset(&asset).await.unwrap();
+    let known = "https://known.example/a";
+    let lacking = "https://lacking.example/b";
+    for url in [known, lacking] {
+        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+    }
+    repo.set_link_preview_cache_image(known, asset.id)
+        .await
+        .unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let resolved = resolve_preview_image(
+        test_fetch_deps(
+            repo.clone(),
+            Arc::new(build_link_preview_client()),
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        vec![lacking.to_string(), known.to_string()],
+        "https://landed.example/".to_string(),
+        "https://unreachable.example/img.png".to_string(),
+    )
+    .await
+    .expect("a known asset id resolves without a fetch");
+    let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+        panic!("expected ImageForPreview");
+    };
+    assert_eq!(asset_id, asset.id);
+    let row = repo.get_link_preview_cache(lacking).await.unwrap().unwrap();
+    assert_eq!(row.image_asset_id, Some(asset.id));
+}
+
+/// Callers whose key sets overlap and list the shared keys in opposite orders all complete, and
+/// the registry is empty afterwards.
+#[tokio::test]
+async fn with_preview_url_locks_overlapping_key_sets_in_opposite_orders_do_not_deadlock() {
+    let locks = test_preview_fetch_locks();
+    let mut tasks = Vec::new();
+    for i in 0..16 {
+        let locks = locks.clone();
+        tasks.push(tokio::spawn(async move {
+            let keys: Vec<String> = if i % 2 == 0 {
+                vec!["a".into(), "b".into(), "c".into()]
+            } else {
+                vec!["c".into(), "b".into(), "a".into()]
+            };
+            with_preview_url_locks(&locks, &keys, || async {
+                tokio::task::yield_now().await;
+            })
+            .await;
+        }));
+    }
+    let all = async {
+        for task in tasks {
+            task.await.unwrap();
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), all)
+        .await
+        .expect("overlapping key sets must not deadlock");
+    assert!(
+        locks.is_empty(),
+        "every entry is reclaimed once all callers finish"
     );
 }

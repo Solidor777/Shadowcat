@@ -359,14 +359,14 @@ async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candi
         .await
         .unwrap();
     let PendingEnrichment::PreviewImage {
-        cache_url,
+        cache_urls,
         preview_url,
         ..
     } = &pending[0]
     else {
         panic!("expected a PreviewImage job, got {:?}", pending[0]);
     };
-    assert_eq!(*cache_url, candidate);
+    assert_eq!(*cache_urls, vec![candidate.clone()]);
     assert!(
         preview_url.ends_with("/final"),
         "the segment url is the post-redirect address, got {preview_url}"
@@ -378,7 +378,7 @@ async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candi
     }
     assert!(
         f.repo
-            .get_link_preview_cache(cache_url)
+            .get_link_preview_cache(&cache_urls[0])
             .await
             .unwrap()
             .is_some(),
@@ -877,4 +877,122 @@ async fn oembed_and_generic_preview_urls_in_one_message_both_queue_correctly() {
     let (url, title) = generic_preview.unwrap();
     assert!(url.contains(&addr.to_string()));
     assert_eq!(title, "Generic");
+}
+
+#[tokio::test]
+async fn unnormalized_candidate_without_a_redirect_keys_its_job_on_the_candidate() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Bare</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let candidate = format!("http://stub.test:{addr}");
+    let (cmd, pending) = f
+        .send_full(&format!("check out [link]({candidate})"), 1)
+        .await
+        .unwrap();
+    let PendingEnrichment::PreviewImage {
+        cache_urls,
+        preview_url,
+        ..
+    } = &pending[0]
+    else {
+        panic!("expected a PreviewImage job, got {:?}", pending[0]);
+    };
+    assert_eq!(*cache_urls, vec![candidate.clone()]);
+    assert_eq!(
+        *preview_url,
+        format!("{candidate}/"),
+        "the fetch reports the normalized address, which gains the root path"
+    );
+    let sys = f.stored_engine(&cmd).await;
+    match sys.content.last() {
+        Some(Segment::LinkPreview { url, .. }) => assert_eq!(url, preview_url),
+        other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
+    }
+    assert!(
+        f.repo
+            .get_link_preview_cache(&candidate)
+            .await
+            .unwrap()
+            .is_some(),
+        "the persisted row is keyed on the candidate as posted"
+    );
+    assert_eq!(
+        f.repo.get_link_preview_cache(preview_url).await.unwrap(),
+        None,
+        "no row exists under the normalized address"
+    );
+}
+
+#[tokio::test]
+async fn two_candidates_redirecting_to_one_page_share_one_image_job() {
+    let addr = spawn_stub(
+        Router::new()
+            .route(
+                "/a",
+                get(|| async { axum::response::Redirect::to("/final") }),
+            )
+            .route(
+                "/b",
+                get(|| async { axum::response::Redirect::to("/final") }),
+            )
+            .route(
+                "/final",
+                get(|| async {
+                    axum::response::Html(
+                        r#"<title>Landed</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                    )
+                }),
+            ),
+    )
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let first = format!("http://stub.test:{addr}/a");
+    let second = format!("http://stub.test:{addr}/b");
+    let (cmd, pending) = f
+        .send_full(&format!("see [one]({first}) and [two]({second})"), 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "candidates ending on one address share a job"
+    );
+    let PendingEnrichment::PreviewImage {
+        cache_urls,
+        preview_url,
+        ..
+    } = &pending[0]
+    else {
+        panic!("expected a PreviewImage job, got {:?}", pending[0]);
+    };
+    let mut keys = cache_urls.clone();
+    keys.sort();
+    assert_eq!(keys, vec![first.clone(), second.clone()]);
+    let sys = f.stored_engine(&cmd).await;
+    let urls: Vec<&String> = sys
+        .content
+        .iter()
+        .filter_map(|seg| match seg {
+            Segment::LinkPreview { url, .. } => Some(url),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(urls, vec![preview_url, preview_url]);
+    for candidate in [&first, &second] {
+        assert!(
+            f.repo
+                .get_link_preview_cache(candidate)
+                .await
+                .unwrap()
+                .is_some(),
+            "the persisted row of {candidate} is keyed on the candidate"
+        );
+    }
 }
