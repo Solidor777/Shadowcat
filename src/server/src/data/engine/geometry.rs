@@ -859,11 +859,12 @@ pub struct RegionEngine {
     /// still emitted by the default authoring gesture) or a compound list of
     /// parts with per-part hole flags — see `RegionGeometry`.
     pub shape: RegionGeometry,
-    /// "terrain" | "impassable" | "arrest" | "ambient_light". Ingress accepts any string, except
-    /// that `RegionEngine::validate` requires `"ambient_light"` when `ambient_override` is
-    /// present. `SceneEcs::region_field_if` reads `"impassable"` and `"arrest"`; it reads
-    /// `"ambient_light"` only with a finite `ambient_override` (otherwise the region
-    /// contributes nothing); every other spelling is read as terrain.
+    /// "terrain" | "impassable" | "arrest" | "ambient_light". Ingress accepts any string within
+    /// the engine band's `MAX_SYSTEM_BYTES` cap, except that `RegionEngine::validate` requires
+    /// `"ambient_light"` when `ambient_override` is present. `SceneEcs::region_field_if` reads
+    /// `"impassable"` and `"arrest"`; it reads `"ambient_light"` only with a finite
+    /// `ambient_override` (otherwise the region contributes nothing); every other spelling is
+    /// read as terrain.
     pub behavior: String,
     /// Movement-cost multiplier (>= 1, clamped read-side); meaningful only
     /// for `behavior: "terrain"`.
@@ -1043,7 +1044,8 @@ fn validate_trigger_id(id: &str, what: &str) -> Result<(), String> {
 #[serde(deny_unknown_fields)]
 pub struct DrawingShape {
     /// "freehand" | "line" | "polygon" | "rect" | "ellipse" (render-layer vocabulary). The
-    /// server stores any string and does not read it.
+    /// server stores any string within the engine band's `MAX_SYSTEM_BYTES` cap and does not
+    /// read it.
     pub kind: String,
     /// Flat coordinate list in scene units; layout depends on `kind` (see the
     /// struct doc).
@@ -1230,7 +1232,8 @@ impl DrawingEngine {
 #[serde(deny_unknown_fields)]
 pub struct TemplateShape {
     /// "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
-    /// vocabulary). The server stores any string and does not read it.
+    /// vocabulary). The server stores any string within the engine band's
+    /// `MAX_SYSTEM_BYTES` cap and does not read it.
     pub kind: String,
     /// Anchor x, scene units.
     pub x: f64,

@@ -2199,8 +2199,8 @@ impl SceneEcs {
 
     /// The token's current committed position `(x, y)` in scene coordinates.
     /// `None` if `token` is not a token entity or has no `(x, y)` in its `engine` band.
-    /// Coupling: `move_exec::execute_move` calls this to verify `path[0]` against the
-    /// authoritative ECS state.
+    /// Callers: `move_exec::execute_move` verifies `path[0]` against it; `Room::toggle_door`
+    /// measures its distance to the toggled wall's segment.
     pub(crate) fn token_position(&self, token: Uuid) -> Option<(f64, f64)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
@@ -2211,19 +2211,18 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish` compares this call's pre- and post-image to reject a non-GM `Update`
-    /// that changes a token's position. A `/system/x` write on a token is structurally
-    /// inert against this `/engine`-only read; see the
-    /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
-    ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
     /// post_image_end)`. The end is the committed `engine` band with **all** changes applied in
     /// array order (last-write-wins) — exactly what `apply_intent` commits — so a wholesale
     /// `/engine` write or duplicate `/engine/x` changes cannot evade the collision check by
-    /// presenting a safe target while committing an unsafe one. A `/system/x` write on a token
-    /// (game-system data) never reaches this gate — position lives exclusively in `/engine`.
-    /// `None` if `token_id` is not a token with `(x,y)`. Reads the authoritative ECS state,
-    /// never the client's `old`.
+    /// presenting a safe target while committing an unsafe one. Reads the authoritative ECS
+    /// state, never the client's `old`. `None` if `token_id` is not a token, the token has no
+    /// `parent_id`, or its committed or post-image `engine` band lacks a numeric `(x,y)`.
+    ///
+    /// `Room::publish` refuses a non-GM `Update` whose committed start and post-image end
+    /// differ. A `/system/x` write on a token is structurally inert against this `/engine`-only
+    /// read; see the
+    /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// # Examples
     ///

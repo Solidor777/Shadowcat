@@ -49,9 +49,9 @@ visual: TokenVisual | null,
  */
 size: Size | null, 
 /**
- * "square" | "circle" by client convention; ingress accepts any string. A square scene's
- * `resolve_footprint_cells` reads `"circle"` as a disc and every other value as a box; a
- * hex scene ignores it.
+ * "square" | "circle" by client convention; ingress accepts any string within the
+ * engine band's `MAX_SYSTEM_BYTES` cap. A square scene's `resolve_footprint_cells` reads
+ * `"circle"` as a disc and every other value as a box; a hex scene ignores it.
  */
 shape: string | null, 
 /**

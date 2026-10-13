@@ -355,9 +355,9 @@ pub struct TokenOverrides {
     /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     #[serde(default)]
     pub size: Option<Size>,
-    /// "square" | "circle" by client convention; ingress accepts any string. A square scene's
-    /// `resolve_footprint_cells` reads `"circle"` as a disc and every other value as a box; a
-    /// hex scene ignores it.
+    /// "square" | "circle" by client convention; ingress accepts any string within the
+    /// engine band's `MAX_SYSTEM_BYTES` cap. A square scene's `resolve_footprint_cells` reads
+    /// `"circle"` as a disc and every other value as a box; a hex scene ignores it.
     #[serde(default)]
     pub shape: Option<String>,
     /// Per-token vision override: replaces the actor's `vision[]` entirely

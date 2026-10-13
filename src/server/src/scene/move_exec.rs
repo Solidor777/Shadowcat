@@ -41,9 +41,6 @@
 //! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision —
 //! there is no separate gate to keep in sync. The caller pre-computes `visible` off the ECS read
 //! lock, so this executor is pure and imposes no lock ordering.
-//!
-//! Coupling: `token_position` is the ECS committed-position seam; any rename
-//! must update both this caller and `SceneEcs::token_move`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

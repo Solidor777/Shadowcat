@@ -17,7 +17,8 @@
 export type TemplateShape = { 
 /**
  * "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
- * vocabulary). The server stores any string and does not read it.
+ * vocabulary). The server stores any string within the engine band's
+ * `MAX_SYSTEM_BYTES` cap and does not read it.
  */
 kind: string, 
 /**

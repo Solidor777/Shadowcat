@@ -2081,10 +2081,10 @@ impl Room {
         // full duration. The guard was acquired at the top of this function and is still held
         // here — no re-acquisition needed or allowed (tokio Mutex is non-reentrant; re-acquiring
         // would deadlock). The position ops write ONLY `/engine/x,y` — position lives
-        // exclusively in the engine band since this task; `/system` is game-system data and is
-        // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
-        // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
-        // in `apply_intent` passes as defense-in-depth.
+        // exclusively in the engine band; `/system` is game-system data and is never touched by
+        // movement. `old` is keyed on the authoritative ECS-read `start` (the committed start
+        // `SceneEcs::token_move` returns, itself `/engine/x,y`) so the optimistic-concurrency
+        // check in `apply_intent` passes as defense-in-depth.
         let ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
