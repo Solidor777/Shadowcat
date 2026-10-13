@@ -66,6 +66,16 @@ describe("parseFormula", () => {
     });
   });
 
+  it("the deepest nesting that fits the length bound returns a cap error", () => {
+    const parens = "(".repeat(255) + "1" + ")".repeat(255);
+    const calls = "floor(".repeat(73) + "1" + ")".repeat(73);
+    const negs = "-".repeat(511) + "1";
+    for (const src of [parens, calls, negs]) {
+      expect(src.length).toBeLessThanOrEqual(512);
+      expect(parseFormula(src)).toMatchObject({ error: "cap" });
+    }
+  });
+
   describe("sad-path battery", () => {
     it("unterminated paren is a parse error", () => {
       expect(parseFormula("(1+2")).toMatchObject({ error: "parse" });

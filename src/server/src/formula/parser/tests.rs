@@ -154,3 +154,48 @@ fn a_ref_is_one_node_regardless_of_segment_count() {
     let src = (0..120).map(|_| "a").collect::<Vec<_>>().join(".");
     assert!(matches!(parse(&src).unwrap(), Expr::Ref(p) if p.len() == 120));
 }
+
+/// Parses `src` on a thread with the default 2 MiB stack, so a recursion that outgrows the stack
+/// aborts the test process instead of returning.
+fn parse_on_default_stack(src: String) -> Result<Expr, crate::formula::types::FormulaError> {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || parse(&src))
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+#[test]
+fn deepest_nesting_at_the_length_bound_returns_a_cap_error_on_a_default_stack() {
+    use crate::formula::types::MAX_FORMULA_LENGTH;
+    let parens = format!("{}1{}", "(".repeat(255), ")".repeat(255));
+    let calls = format!("{}1{}", "floor(".repeat(73), ")".repeat(73));
+    let negs = format!("{}1", "-".repeat(MAX_FORMULA_LENGTH - 1));
+    for src in [parens, calls, negs] {
+        assert!(
+            src.len() <= MAX_FORMULA_LENGTH,
+            "fixture exceeds the length bound"
+        );
+        assert_eq!(
+            parse_on_default_stack(src).unwrap_err().error,
+            FormulaErrorKind::Cap
+        );
+    }
+}
+
+#[test]
+fn a_left_deep_chain_at_the_node_cap_parses_and_evaluates_on_a_default_stack() {
+    use crate::formula::evaluate::evaluate;
+    let src = format!("1{}", "+1".repeat(127));
+    let value = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let ast = parse(&src).unwrap();
+            evaluate(&ast, &|_: &[String]| Ok(0.0))
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(value, Ok(128.0));
+}
