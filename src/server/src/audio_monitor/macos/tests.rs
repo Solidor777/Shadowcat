@@ -87,8 +87,8 @@ fn departed_pids_is_empty_when_everything_present_still_matches_live() {
     assert!(departed.is_empty());
 }
 
-/// Each hand-written Core Audio selector equals the big-endian value of its four ASCII
-/// characters, so a transposed or mistyped code fails here.
+/// Each hand-written Core Audio selector, and the linear PCM format id, equals the big-endian
+/// value of its four ASCII characters, so a transposed or mistyped code fails here.
 #[test]
 fn selector_constants_equal_their_four_char_codes() {
     assert_eq!(
@@ -450,7 +450,7 @@ fn verify_tap_format_accepts_non_interleaved_float32() {
     assert_eq!(verify_tap_format(&format), Ok(()));
 }
 
-/// 16-bit signed integer PCM is refused, and the message names the observed id, flags and width.
+/// 16-bit signed integer PCM is refused, and the message names the observed flags and width.
 #[test]
 fn verify_tap_format_rejects_sixteen_bit_integer_pcm() {
     let format = description(

@@ -511,9 +511,9 @@ fn read_tap_format(tap_id: AudioObjectId) -> Result<AudioStreamBasicDescription,
 }
 
 /// Pure check that `format` is packed little-endian 32-bit float linear PCM, the layout
-/// `buffer_list_peak` decodes. Packed holds when the flag is set or, as Core Audio's header
-/// defines it, when the frame size equals the channels' sample bytes (one channel per frame for a
-/// non-interleaved description). Channel layout is not otherwise checked: the peak is a maximum
+/// `buffer_list_peak` decodes. Packed holds when the flag is set or, per Core Audio's header, when
+/// the frame size equals the channels' sample bytes, counting one channel per frame for a
+/// non-interleaved description. Channel layout is not otherwise checked: the peak is a maximum
 /// over every buffer's samples, interleaved or not. The error states the observed format id,
 /// flags and sample width.
 fn verify_tap_format(format: &AudioStreamBasicDescription) -> Result<(), String> {
@@ -967,7 +967,8 @@ fn aggregate_description(
 /// Attempts to create a full tap → aggregate-device → running-IO-proc chain for the process with
 /// POSIX pid `pid` and Core Audio process object id `process_object_id`, with `output_uid` (see
 /// `read_default_system_output_uid`) as the aggregate's time source. A tap whose stream format
-/// `verify_tap_format` refuses is destroyed before any aggregate device exists. The error names the
+/// cannot be read, or that `verify_tap_format` refuses, is destroyed before any aggregate device
+/// exists. The error names the
 /// step that failed and its `OSStatus`, or the refused format. A single process's tap failing never
 /// takes down the whole enumeration loop, mirroring the Linux backend's per-node
 /// `attach_monitor_stream` failure shape.

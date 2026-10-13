@@ -148,9 +148,10 @@ pub enum PendingEnrichment {
     /// A `Segment::LinkPreview` (matched by its stored `url`, not an array
     /// index -- this task's own OCC re-read may observe a `content` array a
     /// concurrent edit reordered) whose synchronous scrape found an image
-    /// candidate not yet fetched. One job serves the message's candidate URLs whose previews
-    /// ended on the same `preview_url`; the `image_url` fetched is the first such preview's in
-    /// message order that carries one.
+    /// candidate not yet fetched. One job, queued only when no preview of the message ending on
+    /// `preview_url` has an asset id, serves the candidate URLs whose previews ended on that
+    /// address; the `image_url` fetched is the first of those previews in message order that
+    /// carries an `image_url`.
     PreviewImage {
         /// The candidate URLs `enrich` extracted from the message, in message order, whose
         /// previews carry this job's `preview_url`: the keys of the persisted
@@ -443,8 +444,8 @@ async fn resolve_job(
 /// `link_preview_cache` rows of every `cache_urls` entry and of `preview_url`. Reads them FIRST
 /// and, when any row carries an `image_asset_id`, reuses it verbatim, recording it on the rows
 /// that lack one -- no refetch and no second asset for a link this or another message already
-/// imaged, including a link whose final address another message posted directly. On a miss,
-/// fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
+/// imaged, including a link whose final address another message imaged under its own row. On a
+/// miss, fetches `image_url` through the SAME SSRF-guarded client `enrich` uses
 /// (`link_preview::fetch_image_bytes`), asset-ifies it via `create_asset_from_bytes`
 /// (`created_by: None`: no user account backs a server-fetched image), and records the asset id
 /// on the rows that exist and hold no id, so the patched segment carries the job's asset even
@@ -471,13 +472,13 @@ async fn resolve_preview_image(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    // The landed address's own row joins the read and write set, so an asset a message that
-    // posted that address directly already recorded is reused, and the closure moves `row_urls`,
-    // so the lock keys are a separate clone.
+    // The landed address's own row joins the read and write set, so an asset already recorded
+    // under it is reused and a new asset is recorded on it.
     let mut row_urls = cache_urls;
     if !row_urls.contains(&preview_url) {
         row_urls.push(preview_url.clone());
     }
+    // The closure moves `row_urls`, so the lock keys are a separate clone.
     let lock_keys = row_urls.clone();
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
         let mut known: Option<Uuid> = None;

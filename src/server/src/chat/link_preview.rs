@@ -165,7 +165,7 @@ pub struct EnrichDeps<'a> {
 /// `None` return means BOTH tiers missed (or a persisted row expired past
 /// its TTL) and the caller must actually fetch. A persisted hit backfills the in-memory tier. A
 /// memory hit whose preview has no asset id reads the persisted row's, which a background job may
-/// have recorded since.
+/// have recorded since. A failed persisted-row read is logged at warn.
 async fn cached_or_fetch(
     repo: &dyn crate::data::repository::Repository,
     cache: &LinkPreviewCache,
@@ -380,7 +380,7 @@ pub async fn enrich(
 
     previews.sort_by_key(|(index, _, _)| *index);
     // Candidates ending on an address a persisted row already has an asset for reuse that asset
-    // instead of queueing a job whose result would overwrite it.
+    // instead of queueing a job that fetches and asset-ifies the image again.
     let mut known_assets: std::collections::HashMap<String, Uuid> =
         std::collections::HashMap::new();
     for (_, _, preview) in &previews {
