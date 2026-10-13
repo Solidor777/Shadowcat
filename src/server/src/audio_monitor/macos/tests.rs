@@ -3,9 +3,10 @@
 //! The smoke test calls `platform_monitor` and accepts a monitor (polled once, result ignored) or
 //! `MonitorError::Unsupported` naming the 14.2 version requirement, and fails on
 //! `MonitorError::Backend`. The pure-helper tests cover `departed_pids`, `untapped_processes`,
-//! `TapRetryBackoff`, `aggregate_description` and `buffer_list_peak`. The selector tests pin each
-//! hand-written Core Audio selector to its four ASCII characters, and the layout test pins the
-//! `AudioBuffer` size and the `AudioBufferList` field offset that `buffer_list_peak` indexes with.
+//! `TapRetryBackoff`, `aggregate_description`, `buffer_list_peak` and `verify_tap_format`. The
+//! selector tests pin each hand-written Core Audio selector to its four ASCII characters, and the
+//! layout tests pin the `AudioBuffer` size, the `AudioBufferList` field offset that
+//! `buffer_list_peak` indexes with, and the `AudioStreamBasicDescription` field offsets.
 //! One test reads a built `CATapDescription` back through the Objective-C runtime on macOS 14.2
 //! or newer, and asserts the `Unsupported` result of `MacosMonitor::new` below it.
 
@@ -24,10 +25,13 @@ use super::super::{platform_monitor, MonitorError};
 use super::{
     aggregate_description, buffer_list_peak, build_stereo_mixdown_tap_description, departed_pids,
     macos_at_least_14_2, new_tap_uuid, objc_msg_send_0, registered_selector, release_objc_instance,
-    untapped_processes, AudioBuffer, AudioBufferList, MacosMonitor, TapRetryBackoff,
-    K_AUDIO_DEVICE_PROPERTY_DEVICE_UID, K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
+    untapped_processes, verify_tap_format, AudioBuffer, AudioBufferList,
+    AudioStreamBasicDescription, MacosMonitor, TapRetryBackoff, K_AUDIO_DEVICE_PROPERTY_DEVICE_UID,
+    K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN, K_AUDIO_FORMAT_FLAG_IS_FLOAT,
+    K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED, K_AUDIO_FORMAT_FLAG_IS_PACKED,
+    K_AUDIO_FORMAT_LINEAR_PCM, K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE,
     K_AUDIO_HARDWARE_PROPERTY_PROCESS_OBJECT_LIST, K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
-    K_AUDIO_PROCESS_PROPERTY_PID, TAP_RETRY_DELAY,
+    K_AUDIO_PROCESS_PROPERTY_PID, K_AUDIO_TAP_PROPERTY_FORMAT, TAP_RETRY_DELAY,
 };
 
 #[test]
@@ -104,6 +108,8 @@ fn selector_constants_equal_their_four_char_codes() {
         K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
         u32::from_be_bytes(*b"glob")
     );
+    assert_eq!(K_AUDIO_TAP_PROPERTY_FORMAT, u32::from_be_bytes(*b"tfmt"));
+    assert_eq!(K_AUDIO_FORMAT_LINEAR_PCM, u32::from_be_bytes(*b"lpcm"));
 }
 
 /// The Core Audio headers declare `AudioBuffer` as two `UInt32`s and a pointer and
@@ -375,4 +381,146 @@ fn buffer_list_peak_reads_a_list_with_no_buffers_as_zero() {
     // SAFETY: `list` is a live list; `number_buffers` is 0, so no entry is read.
     let peak = unsafe { buffer_list_peak((&list as *const ListOf<1>).cast::<AudioBufferList>()) };
     assert_eq!(peak, 0.0);
+}
+
+/// The Core Audio headers declare `AudioStreamBasicDescription` as a `Float64` followed by eight
+/// `UInt32`s, so the mirror measures 40 bytes with `mFormatID` at offset 8, `mFormatFlags` at 12
+/// and `mBitsPerChannel` at 32. `kAudioTapPropertyFormat` is read into this struct.
+#[test]
+fn stream_description_layout_matches_the_core_audio_headers() {
+    assert_eq!(std::mem::size_of::<AudioStreamBasicDescription>(), 40);
+    assert_eq!(
+        std::mem::offset_of!(AudioStreamBasicDescription, format_id),
+        8
+    );
+    assert_eq!(
+        std::mem::offset_of!(AudioStreamBasicDescription, format_flags),
+        12
+    );
+    assert_eq!(
+        std::mem::offset_of!(AudioStreamBasicDescription, bits_per_channel),
+        32
+    );
+}
+
+/// `kAudioFormatFlagIsSignedInteger`, used only to build refused descriptions.
+const K_AUDIO_FORMAT_FLAG_IS_SIGNED_INTEGER: u32 = 1 << 2;
+
+/// A stereo 48 kHz interleaved description with the given id, flags and sample width.
+fn description(
+    format_id: u32,
+    format_flags: u32,
+    bits_per_channel: u32,
+) -> AudioStreamBasicDescription {
+    AudioStreamBasicDescription {
+        sample_rate: 48_000.0,
+        format_id,
+        format_flags,
+        bytes_per_packet: 2 * bits_per_channel / 8,
+        frames_per_packet: 1,
+        bytes_per_frame: 2 * bits_per_channel / 8,
+        channels_per_frame: 2,
+        bits_per_channel,
+        reserved: 0,
+    }
+}
+
+/// The packed little-endian 32-bit float description `buffer_list_peak` decodes is accepted.
+#[test]
+fn verify_tap_format_accepts_packed_little_endian_float32() {
+    let format = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_FLOAT | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+        32,
+    );
+    assert_eq!(verify_tap_format(&format), Ok(()));
+}
+
+/// A non-interleaved layout (one mono buffer per channel) is accepted: the peak is a maximum over
+/// every buffer's samples whatever the channel layout.
+#[test]
+fn verify_tap_format_accepts_non_interleaved_float32() {
+    let format = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_FLOAT
+            | K_AUDIO_FORMAT_FLAG_IS_PACKED
+            | K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED,
+        32,
+    );
+    assert_eq!(verify_tap_format(&format), Ok(()));
+}
+
+/// 16-bit signed integer PCM is refused, and the message names the observed id, flags and width.
+#[test]
+fn verify_tap_format_rejects_sixteen_bit_integer_pcm() {
+    let format = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_SIGNED_INTEGER | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+        16,
+    );
+    let refusal = verify_tap_format(&format).expect_err("16-bit integer PCM must be refused");
+    assert!(refusal.contains("flags 0xc"), "{refusal}");
+    assert!(refusal.contains("16 bits"), "{refusal}");
+}
+
+/// A format id other than linear PCM is refused even when its flags and width look like float32.
+#[test]
+fn verify_tap_format_rejects_a_non_linear_pcm_format_id() {
+    let aac = u32::from_be_bytes(*b"aac ");
+    let format = description(
+        aac,
+        K_AUDIO_FORMAT_FLAG_IS_FLOAT | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+        32,
+    );
+    assert!(verify_tap_format(&format).is_err());
+}
+
+/// Big-endian float32 is refused: `buffer_list_peak` decodes little-endian.
+#[test]
+fn verify_tap_format_rejects_big_endian_float32() {
+    let format = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_FLOAT
+            | K_AUDIO_FORMAT_FLAG_IS_PACKED
+            | K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN,
+        32,
+    );
+    assert!(verify_tap_format(&format).is_err());
+}
+
+/// Float PCM of another width is refused.
+#[test]
+fn verify_tap_format_rejects_float64() {
+    let float64 = description(
+        K_AUDIO_FORMAT_LINEAR_PCM,
+        K_AUDIO_FORMAT_FLAG_IS_FLOAT | K_AUDIO_FORMAT_FLAG_IS_PACKED,
+        64,
+    );
+    assert!(verify_tap_format(&float64).is_err());
+}
+
+/// The packed flag may be clear when the frame layout implies it, as the header's description of
+/// `kAudioFormatFlagIsPacked` states: stereo interleaved 32-bit samples in 8-byte frames, or
+/// non-interleaved ones in 4-byte frames.
+#[test]
+fn verify_tap_format_accepts_float32_whose_frame_layout_implies_packed() {
+    let interleaved = description(K_AUDIO_FORMAT_LINEAR_PCM, K_AUDIO_FORMAT_FLAG_IS_FLOAT, 32);
+    assert_eq!(interleaved.bytes_per_frame, 8);
+    assert_eq!(verify_tap_format(&interleaved), Ok(()));
+    let non_interleaved = AudioStreamBasicDescription {
+        format_flags: K_AUDIO_FORMAT_FLAG_IS_FLOAT | K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED,
+        bytes_per_frame: 4,
+        ..interleaved
+    };
+    assert_eq!(verify_tap_format(&non_interleaved), Ok(()));
+}
+
+/// Float32 samples held in a wider container (16-byte stereo frames) are unpacked and refused.
+#[test]
+fn verify_tap_format_rejects_float32_in_a_wider_container() {
+    let wide = AudioStreamBasicDescription {
+        bytes_per_frame: 16,
+        ..description(K_AUDIO_FORMAT_LINEAR_PCM, K_AUDIO_FORMAT_FLAG_IS_FLOAT, 32)
+    };
+    assert!(verify_tap_format(&wide).is_err());
 }

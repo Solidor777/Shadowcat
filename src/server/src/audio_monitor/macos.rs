@@ -29,6 +29,11 @@
 //! `setUUID:`, and `new_ns_uuid` checks `initWithUUIDString:` the same way, so an absent selector
 //! fails closed. If a signature changes, the dedicated-thread, process-object-list and
 //! aggregate-device-with-tap shape must be preserved.
+//!
+//! `AudioObjectGetPropertyData` also reads each new tap's `kAudioTapPropertyFormat`, and
+//! `verify_tap_format` refuses a tap that is not packed little-endian 32-bit float linear PCM, the
+//! layout `buffer_list_peak` decodes. A refusal takes the same retry and logging path as any other
+//! tap-creation failure.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CString};
@@ -59,6 +64,21 @@ const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_SYSTEM_OUTPUT_DEVICE: u32 = 0x734f_7574;
 /// `kAudioDevicePropertyDeviceUID`'s numeric selector, the four-char code `'uid '` (trailing
 /// space): the device's persistent UID as a `CFString` the caller owns.
 const K_AUDIO_DEVICE_PROPERTY_DEVICE_UID: u32 = 0x7569_6420; // 'uid '
+/// `kAudioTapPropertyFormat`'s numeric selector, the four-char code `'tfmt'`: the tap's data
+/// format as an `AudioStreamBasicDescription`, the format of the data accessible in an aggregate
+/// device that contains the tap.
+const K_AUDIO_TAP_PROPERTY_FORMAT: u32 = 0x7466_6d74; // 'tfmt'
+/// `kAudioFormatLinearPCM`, the four-char code `'lpcm'`.
+const K_AUDIO_FORMAT_LINEAR_PCM: u32 = 0x6c70_636d; // 'lpcm'
+/// `kAudioFormatFlagIsFloat`: the samples are floating point.
+const K_AUDIO_FORMAT_FLAG_IS_FLOAT: u32 = 1 << 0;
+/// `kAudioFormatFlagIsBigEndian`: the samples are big-endian.
+const K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN: u32 = 1 << 1;
+/// `kAudioFormatFlagIsPacked`: the sample bits occupy the entire channel container.
+const K_AUDIO_FORMAT_FLAG_IS_PACKED: u32 = 1 << 3;
+/// `kAudioFormatFlagIsNonInterleaved`: each buffer holds one channel, and the per-frame fields of
+/// the description describe that one channel.
+const K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED: u32 = 1 << 5;
 /// The global audio-hardware object id every `AudioObjectGetPropertyData` call against a
 /// hardware-scoped selector targets.
 const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectId = 1;
@@ -241,6 +261,31 @@ struct AudioBuffer {
     data: *mut c_void,
 }
 
+/// Mirrors the Core Audio `AudioStreamBasicDescription` struct: a `Float64` sample rate followed
+/// by eight `UInt32` fields, 40 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct AudioStreamBasicDescription {
+    /// Sample frames per second (`mSampleRate`).
+    sample_rate: f64,
+    /// Four-char code of the data kind (`mFormatID`).
+    format_id: u32,
+    /// Format-specific flags (`mFormatFlags`).
+    format_flags: u32,
+    /// Bytes per packet (`mBytesPerPacket`).
+    bytes_per_packet: u32,
+    /// Sample frames per packet (`mFramesPerPacket`).
+    frames_per_packet: u32,
+    /// Bytes per sample frame (`mBytesPerFrame`).
+    bytes_per_frame: u32,
+    /// Channels per sample frame (`mChannelsPerFrame`).
+    channels_per_frame: u32,
+    /// Bits of sample data per channel (`mBitsPerChannel`).
+    bits_per_channel: u32,
+    /// Padding to 8-byte alignment (`mReserved`).
+    reserved: u32,
+}
+
 /// Shared per-pid running-peak map, published into `TAP_PEAKS` once the dedicated Core Audio
 /// thread starts.
 type TapPeaks = Arc<Mutex<HashMap<i32, f32>>>;
@@ -252,7 +297,8 @@ static TAP_PEAKS: Mutex<Option<TapPeaks>> = Mutex::new(None);
 /// Max-abs-sample over the `Float32` data of every buffer in `list`. A buffer with a null `data`
 /// pointer or a zero `data_byte_size` contributes nothing; a list with no buffers reads as 0.
 ///
-/// The sample format is assumed, not read: nothing in this file queries the tap's stream format.
+/// The decode is little-endian `Float32`; `create_tap_for_pid` returns a tap only after
+/// `verify_tap_format` has found that format.
 ///
 /// Algorithm: the `AudioBufferList` contract in Core Audio's public headers declares
 /// `mBuffers` as a variable-length array of `mNumberBuffers` `AudioBuffer` elements, so entry `i`
@@ -435,6 +481,61 @@ fn teardown_tap(handle: TapHandle) {
         AudioHardwareDestroyAggregateDevice(handle.aggregate_id);
         AudioHardwareDestroyProcessTap(handle.tap_id);
     }
+}
+
+/// Reads the tap's `kAudioTapPropertyFormat` property. The error names the `OSStatus` of the failed
+/// read.
+fn read_tap_format(tap_id: AudioObjectId) -> Result<AudioStreamBasicDescription, String> {
+    let address = AudioObjectPropertyAddress {
+        selector: K_AUDIO_TAP_PROPERTY_FORMAT,
+        scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut format = AudioStreamBasicDescription::default();
+    let mut size = std::mem::size_of::<AudioStreamBasicDescription>() as u32;
+    // SAFETY: `format` is a valid out-param whose size is exactly `size`.
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            tap_id,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut format as *mut AudioStreamBasicDescription as *mut c_void,
+        )
+    };
+    if status != 0 {
+        return Err(format!("reading the tap stream format failed: {status}"));
+    }
+    Ok(format)
+}
+
+/// Pure check that `format` is packed little-endian 32-bit float linear PCM, the layout
+/// `buffer_list_peak` decodes. Packed holds when the flag is set or, as Core Audio's header
+/// defines it, when the frame size equals the channels' sample bytes (one channel per frame for a
+/// non-interleaved description). Channel layout is not otherwise checked: the peak is a maximum
+/// over every buffer's samples, interleaved or not. The error states the observed format id,
+/// flags and sample width.
+fn verify_tap_format(format: &AudioStreamBasicDescription) -> Result<(), String> {
+    let channels_per_frame = if format.format_flags & K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED != 0 {
+        1
+    } else {
+        format.channels_per_frame
+    };
+    let packed = format.format_flags & K_AUDIO_FORMAT_FLAG_IS_PACKED != 0
+        || format.bytes_per_frame == channels_per_frame * (format.bits_per_channel / 8);
+    let accepted = format.format_id == K_AUDIO_FORMAT_LINEAR_PCM
+        && format.format_flags & K_AUDIO_FORMAT_FLAG_IS_FLOAT != 0
+        && packed
+        && format.format_flags & K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN == 0
+        && format.bits_per_channel == 32;
+    if accepted {
+        return Ok(());
+    }
+    Err(format!(
+        "tap format is not packed little-endian 32-bit float linear PCM: id {:#010x}, flags {:#x}, {} bits",
+        format.format_id, format.format_flags, format.bits_per_channel
+    ))
 }
 
 /// Delay before a process whose tap creation failed is tried again.
@@ -865,10 +966,11 @@ fn aggregate_description(
 
 /// Attempts to create a full tap → aggregate-device → running-IO-proc chain for the process with
 /// POSIX pid `pid` and Core Audio process object id `process_object_id`, with `output_uid` (see
-/// `read_default_system_output_uid`) as the aggregate's time source. The error names the step that
-/// failed and its `OSStatus`. A single process's tap failing never takes down the whole
-/// enumeration loop, mirroring the Linux backend's per-node `attach_monitor_stream` failure
-/// shape.
+/// `read_default_system_output_uid`) as the aggregate's time source. A tap whose stream format
+/// `verify_tap_format` refuses is destroyed before any aggregate device exists. The error names the
+/// step that failed and its `OSStatus`, or the refused format. A single process's tap failing never
+/// takes down the whole enumeration loop, mirroring the Linux backend's per-node
+/// `attach_monitor_stream` failure shape.
 fn create_tap_for_pid(
     pid: i32,
     process_object_id: AudioObjectId,
@@ -888,6 +990,15 @@ fn create_tap_for_pid(
     unsafe { release_objc_instance(description) };
     if status != 0 {
         return Err(format!("AudioHardwareCreateProcessTap failed: {status}"));
+    }
+
+    if let Err(refusal) = read_tap_format(tap_id).and_then(|format| verify_tap_format(&format)) {
+        // SAFETY: `tap_id` was returned by the successful `AudioHardwareCreateProcessTap` call
+        // above and has not yet been torn down.
+        unsafe {
+            AudioHardwareDestroyProcessTap(tap_id);
+        }
+        return Err(refusal);
     }
 
     let description_dict = aggregate_description(pid, output_uid, &tap_uuid);
