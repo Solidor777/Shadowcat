@@ -520,8 +520,8 @@ async fn handle_socket(
     // Per-user shared-ruler budget (shared across this user's connections) — its own bucket, so
     // a live ruler drag cannot starve any other relay and vice versa.
     let ruler_rate = state.ws.ruler_rate.clone();
-    // Link-preview fetch client/cache/budget (shared across all connections
-    // and worlds — a preview's target and cached outcome are world-independent).
+    // Link-preview fetch client and budget (shared across all connections and worlds) and the
+    // outcome cache (keyed by world and URL).
     let preview_client = state.ws.link_preview_client.clone();
     let preview_cache = state.ws.link_preview_cache.clone();
     let preview_rate = state.ws.preview_rate.clone();

@@ -247,7 +247,7 @@ pub struct PostPublishDeps {
     /// commit this pipeline performs, same as `http::assets::upload`/
     /// `replace`/`delete`.
     pub write_barrier: Arc<tokio::sync::RwLock<()>>,
-    /// Per-URL fetch-lock registry serializing concurrent
+    /// Per-(world, URL) fetch-lock registry serializing concurrent
     /// `resolve_preview_image`/`resolve_thumbnail_asset` jobs targeting the
     /// identical URL -- see `PreviewFetchLocks`'s doc.
     pub preview_fetch_locks: PreviewFetchLocks,
@@ -427,7 +427,7 @@ struct FetchDeps {
     /// The backup write-quiesce barrier -- held read-side around every asset
     /// commit, same as `PostPublishDeps.write_barrier`.
     write_barrier: Arc<tokio::sync::RwLock<()>>,
-    /// Per-URL fetch-lock registry -- see `PreviewFetchLocks`'s doc.
+    /// Per-(world, URL) fetch-lock registry -- see `PreviewFetchLocks`'s doc.
     preview_fetch_locks: PreviewFetchLocks,
 }
 
@@ -852,7 +852,7 @@ async fn resolve_thumbnail_asset(
         write_barrier,
         preview_fetch_locks,
     } = deps;
-    // Same per-URL exclusion + re-check-after-lock treatment as
+    // Same per-(world, URL) exclusion + re-check-after-lock treatment as
     // `resolve_preview_image`, keyed by the thumbnail's own URL (the same key
     // space `resolve_preview_image` uses -- a page previewed AND oEmbed-
     // thumbnailed via the identical image URL serializes against itself
