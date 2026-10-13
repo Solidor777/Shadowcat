@@ -40,8 +40,9 @@
 //! until the connection task AND every [`ConnLease`] taken from its requests have ended, keyed like
 //! the accept-time caps ([`crate::http::peer_slots::PeerSlots`]) and exempted by the
 //! `ConnMeta::cap_exempt` the listener set (`SniffListener` sets it from `Config::is_cap_exempt`; a
-//! bare `TcpListener` source leaves it false); a connection over a cap is closed unread. [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in
-//! flight for that long. A lease held by a WebSocket session is released when the session ends, and
+//! bare `TcpListener` source leaves it false); a connection over a cap is closed unread.
+//! [`ConnLimits::h2_idle`] closes an HTTP/2 connection that has had no request in flight for that
+//! long. A lease held by a WebSocket session is released when the session ends, and
 //! a session whose peer has stopped reading ends at the per-send stall bound
 //! ([`crate::ws::bounded_sink::BoundedSink::for_config`]), so a lease cannot pin a slot for longer
 //! than that bound past the peer's last read.
