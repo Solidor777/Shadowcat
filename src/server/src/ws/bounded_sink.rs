@@ -1,4 +1,5 @@
-//! Bounded-send `Sink` adapter: a session whose peer stopped reading ends instead of hanging.
+//! This module adapts a `Sink` so that one send stays pending for a bounded time, which ends a
+//! session whose peer stopped reading instead of leaving it hanging.
 //!
 //! WHY: a peer that has stopped reading (a zero flow-control window, a full socket buffer) leaves
 //! `poll_ready` / `poll_flush` of the WebSocket sink pending forever, and a session blocked inside
@@ -9,21 +10,23 @@
 //! rule.
 //!
 //! The bound is on the TIME of one pending flush, not on progress: a frame of F bytes needs at
-//! least 8F / `stall_timeout` bits per second to complete (the largest frame,
-//! `WS_MAX_MESSAGE_BYTES`, about 1.7 Mbps at the 60 s default; ordinary frames under 10 kbps). A
-//! progress-aware bound is not possible through `axum::extract::ws::WebSocket`, which exposes no
-//! byte counter. Inside an HTTP/2 stream a write never goes pending by itself (hyper's tunnel task
-//! absorbs it), so `WsState::bounded_sink` puts a [`TunnelGate`](crate::ws::tunnel_gate::TunnelGate)
-//! under this wrapper: it makes a session that is a send buffer ahead of the wire pending, which
-//! is what starts this bound's timer.
+//! least 8F / `stall_timeout` bits per second to complete (for the largest frame,
+//! `WS_MAX_MESSAGE_BYTES`, about 1.7 Mbps at the 60 s default). A progress-aware bound is not
+//! possible through `axum::extract::ws::WebSocket`, which exposes no byte counter. Inside an HTTP/2
+//! stream a write never goes pending by itself (hyper's tunnel task absorbs it), so
+//! `WsState::bounded_sink` puts a [`TunnelGate`](crate::ws::tunnel_gate::TunnelGate) under this
+//! wrapper: it makes a session that is a send buffer ahead of the wire pending, which is what
+//! starts this bound's timer.
 //!
-//! INVARIANTS:
-//! 1. A send that has been pending for `stall_timeout` fails with [`BoundedSendError::Stalled`];
-//!    callers treat any send error as the end of the session.
-//! 2. Once the shutdown signal is set, a pending send is given at most [`CLOSE_SEND_TIMEOUT`]
-//!    from the moment the signal is observed (or from its start, if later): shutdown must not wait
-//!    a whole `stall_timeout` for a peer that is not reading.
-//! 3. The timer runs only while a poll returned `Pending`; progress (any `Ready`) disarms it.
+//! INVARIANT: a send that has been pending for `stall_timeout` fails with
+//! [`BoundedSendError::Stalled`]; callers treat any send error as the end of the session.
+//!
+//! INVARIANT: once the shutdown signal is set, a pending send is given at most
+//! [`CLOSE_SEND_TIMEOUT`] from the moment the signal is observed (or from its start, if later):
+//! shutdown must not wait a whole `stall_timeout` for a peer that is not reading.
+//!
+//! INVARIANT: the timer runs only while a poll returned `Pending`; progress (any `Ready`) disarms
+//! it.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

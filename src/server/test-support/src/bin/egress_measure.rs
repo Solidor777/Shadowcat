@@ -1,40 +1,48 @@
-//! Measurement program for the egress no-progress bounds.
+//! This program measures the egress no-progress bounds.
 //!
-//! These are measurements, not tests: each prints `RESULT` lines and asserts nothing, and runs only
-//! when invoked.
+//! These are measurements, not tests: each prints `RECORD` or `RESULT` lines, asserts no measured
+//! value, and runs only when invoked.
 //!
 //! ```text
 //! cargo run -p shadowcat-test-support --bin egress_measure -- <subcommand>
 //! ```
 //!
-//! Subcommands:
-//! - `grid`: where the HTTP/2 stream unit starts cutting a paced reader, over stream windows,
-//!   reader rates and no-progress windows, many servers at a time (about a minute).
-//! - `mixed-serial`: the rates `grid` found cut in some runs and not in others, one server at a
-//!   time and repeated, to tell load from the concurrent grid apart from behaviour of the unit
-//!   (about three minutes).
-//! - `h1-progress <windows> <multiples> [windows_per_run [recv_buffer_bytes]]`: an HTTP/1 reader that takes
-//!   `multiple x ConnLimits::egress_floor` bytes per window, for each comma-separated window (in
-//!   seconds) and multiple, one run at a time. Each run prints when, and how many bytes at a
-//!   time, the server's socket accepted writes (the figure the connection unit's sampler reads),
-//!   and whether and when the connection was cut. `recv_buffer_bytes` sets the reader socket's
-//!   receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
+//! The `grid` subcommand finds where the HTTP/2 stream unit starts cutting a paced reader, over
+//! stream windows, reader rates and no-progress windows, with many servers at a time.
 //!
-//! - `layers [downloads [runs [workers [rungs]]]]`: loopback download throughput of a ladder of servers over a bare
-//!   hyper server (the router, the application's middleware, the serve loop, the harness's
-//!   observed source), with a body-producer control and TCP_NODELAY off as controls. The ladder is
-//!   a tree: each rung names the rung it is compared with, and the three `-no-nodelay` rungs
-//!   repeat a nodelay rung with the option off. Run it in a release build. It prints one
-//!   `RECORD layers` line per run and per rung and a `RESULT layers` summary of the median over
-//!   runs, where every rung but the root also prints its `baseline` and
-//!   `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's
-//!   worker thread count (default `DEFAULT_WORKERS`); `rungs` is a comma-separated list of rung
-//!   names that restricts the ladder to those rungs (a rung whose baseline is not listed is compared
-//!   with its nearest listed ancestor). Only the listed rungs are started: a name no rung has
-//!   stops the program before any server starts, and an unlisted rung allocates and binds nothing.
+//! The `mixed-serial` subcommand repeats the reader rates 24,576, 28,672 and 32,768 bytes per
+//! second at a 1 MiB stream window and a 1 s no-progress window, one server at a time, to tell load
+//! from the concurrent `grid` apart from behaviour of the unit.
 //!
-//! The grid's `hypothesis_Bps` column is `measure::hypothesis`. Readers are the `h2` crate's
-//! client over loopback, so a browser's own window and credit batching are not covered.
+//! The `h1-progress <windows> <multiples> [windows_per_run [recv_buffer_bytes]]` subcommand runs an
+//! HTTP/1 reader that takes `multiple x ConnLimits::egress_floor` bytes per window, for each
+//! comma-separated window (in seconds) and multiple, one run at a time. Each run prints when, and
+//! how many bytes at a time, the server's socket accepted writes (the figure the serve loop's
+//! write counter sees), and whether and when the connection was cut. `recv_buffer_bytes` sets the reader
+//! socket's receive buffer. Example: `h1-progress 1,3,10 1.5,2,4`.
+//!
+//! The `socket-grants [send_buffer [recv_buffer [rate [block_len]]]]` subcommand runs a bare
+//! loopback socket pair with no server in the way and prints when, and how many bytes at a time,
+//! the writer was let back in by a reader taking `rate` bytes per second: the operating system's
+//! grant granularity for a slow reader. `send_buffer` and `recv_buffer` (bytes; 0 leaves the
+//! default) set the listener's and the reader's buffers; `block_len` is the size of each write
+//! offered.
+//!
+//! The `layers [downloads [runs [workers [rungs]]]]` subcommand measures loopback download
+//! throughput of a ladder of servers over a bare hyper server (the router, the application's
+//! middleware, the serve loop, the harness's observed source), with a body-producer control and
+//! `TCP_NODELAY` off as controls. The ladder is a tree: each rung names the rung it is compared with,
+//! and the three `-no-nodelay` rungs repeat a nodelay rung with the option off. Run it in a release
+//! build. It prints one `RECORD layers` line per run and per rung and a `RESULT layers` summary of
+//! the median over runs, where every rung that has a baseline also prints its `baseline` and
+//! `throughput_vs_baseline` (the baseline's median over the rung's). `workers` is the runtime's
+//! worker thread count (default `DEFAULT_WORKERS`); `rungs` is a comma-separated list of rung
+//! names that restricts the ladder to those rungs (a rung whose baseline is not listed is compared
+//! with its nearest listed ancestor). Only the listed rungs are started: a name no rung has stops
+//! the program before any server starts, and an unlisted rung allocates and binds nothing.
+//!
+//! The grid's `hypothesis_Bps` column is `measure::hypothesis`. The HTTP/2 readers are the `h2`
+//! crate's client over loopback, so a browser's own window and credit batching are not covered.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;

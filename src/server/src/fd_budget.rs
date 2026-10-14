@@ -1,5 +1,5 @@
-//! The process's open-descriptor budget: raising the soft `RLIMIT_NOFILE` at startup and fitting
-//! the connection caps inside what remains.
+//! This module raises the soft `RLIMIT_NOFILE` at startup and fits the connection caps inside the
+//! descriptors that remain.
 //!
 //! WHY: every admitted connection holds one descriptor, and both connection caps
 //! ([`Limits::global_cap`](crate::tls::listener::Limits::global_cap) before hand-off,
@@ -9,26 +9,29 @@
 //! database, assets or outbound fetches either. The budget makes the caps structurally unable to
 //! promise more descriptors than the process may hold.
 //!
-//! INVARIANTS:
-//! 1. Both caps derive from ONE budget, the effective soft limit read back with `getrlimit` AFTER
-//!    the raise attempt minus [`descriptors_reserved`], never from the value the raise asked for:
-//!    a failed or partial raise must constrain the caps the same way a limit that was never
-//!    raisable does.
-//! 2. A descriptor is held by a connection either before hand-off or after it, never both, but a
-//!    connection is admitted to the next stage before the previous one releases, so the caps are
-//!    fitted to their SUM. The hand-off queue ([`HANDOFF_QUEUE_CAP`]) holds descriptors that belong
-//!    to neither cap, so its capacity is subtracted too, as is [`STREAMED_FILE_PERMITS`], the size of
-//!    the semaphore every streamed asset file takes a permit from, which bounds the asset files held
-//!    open for stalled peers.
-//! 3. The raise and the fit read ONE definition of the need: [`descriptors_needed`] is
-//!    [`descriptors_reserved`] plus the two caps, and `fit_to_descriptor_budget` subtracts
-//!    [`descriptors_reserved`] from the soft limit, so a change to a cap or a reserved term moves
-//!    both.
-//! 4. The platform ceiling is queried at runtime (macOS `kern.maxfilesperproc`), never a
-//!    remembered literal, because `setrlimit` on macOS rejects a soft limit above it even when the
-//!    hard limit is unlimited.
-//! 5. A platform without `RLIMIT_NOFILE` reports no limit and the caps are not clamped; no ceiling
-//!    is claimed for it.
+//! INVARIANT: both caps derive from ONE budget, the effective soft limit read back with `getrlimit`
+//! AFTER the raise attempt minus [`descriptors_reserved`], never from the value the raise asked
+//! for: a failed or partial raise must constrain the caps the same way a limit that was never
+//! raisable does.
+//!
+//! INVARIANT: a descriptor is held by a connection either before hand-off or after it, never both,
+//! but a connection is admitted to the next stage before the previous one releases, so the caps are
+//! fitted to their SUM. The hand-off queue ([`HANDOFF_QUEUE_CAP`]) holds descriptors that belong to
+//! neither cap, so its capacity is subtracted too, as is [`STREAMED_FILE_PERMITS`], the size of the
+//! semaphore every streamed asset file takes a permit from, which bounds the asset files held open
+//! for stalled peers.
+//!
+//! INVARIANT: the raise and the fit read ONE definition of the need: [`descriptors_needed`] is
+//! [`descriptors_reserved`] plus the two caps, and `fit_to_descriptor_budget` subtracts
+//! [`descriptors_reserved`] from the soft limit, so a change to a cap or a reserved term moves
+//! both.
+//!
+//! INVARIANT: the platform ceiling is queried at runtime (macOS `kern.maxfilesperproc`), never a
+//! remembered literal, because `setrlimit` on macOS rejects a soft limit above it even when the
+//! hard limit is unlimited.
+//!
+//! INVARIANT: a platform without `RLIMIT_NOFILE` reports no limit and the caps are not clamped; no
+//! ceiling is claimed for it.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -50,11 +53,8 @@ pub const FD_RESERVE: u64 = 512;
 /// size that `AppState` holds. `http::assets::serve`, `http::assets::mutate::original` and
 /// `http::world_bundle::export_world` each take a permit before opening a file and release it when
 /// the file is closed; a request that cannot get one within `permits::PERMIT_WAIT` is answered
-/// 503 with `Retry-After`. Chosen against a measured workload: a debug-profile gauge of the pool's
-/// peak recorded 3 to 4 permits held while Chromium loaded a scene of 150 distinct token images
-/// over HTTP/1.1 and over HTTP/2, so 256 is far above one scene load, which is the bursty
-/// workload; it is also a table's players times a few concurrent media or download requests, and
-/// small against the connection caps.
+/// 503 with `Retry-After`. Chosen, not derived: sized above a table's players times a few
+/// concurrent media or download requests, and small against the connection caps.
 pub const STREAMED_FILE_PERMITS: usize = 256;
 
 /// Floor of [`Limits::global_cap`] after clamping. A server that admits nothing is not serving;
