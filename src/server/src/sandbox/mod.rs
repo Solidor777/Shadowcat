@@ -1,10 +1,10 @@
-//! Sandboxed third-party server-side validators.
+//! This module runs sandboxed third-party server-side validators.
 //!
-//! They are opt-in, per-world, per-module WASM code run inside `wasmi` over the `system` band only,
-//! after the engine's own validation.
+//! A validator is opt-in, per-world, per-module WASM code run inside `wasmi` over a document's
+//! `system` band and name, after the document passes `validate_structural`.
 //!
-//! A validator can refuse a write (a structured reason) and nothing else — see `runtime` for the
-//! host, `registry` for the compiled-module cache. Every validator call is
+//! A validator can refuse a write (a structured reason) and nothing else; see `runtime` for the
+//! host and `registry` for the compiled validators. Every validator call is
 //! fuel/memory/instance-capped and has no host imports beyond a rate-limited `env.log`;
 //! `VALIDATOR_FAULT_LIMIT` bounds how many consecutive technical failures a module gets before a
 //! caller auto-disables it.

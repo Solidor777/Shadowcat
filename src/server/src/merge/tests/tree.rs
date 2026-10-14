@@ -1,4 +1,4 @@
-//! Unit tests for the single-tree primitives.
+//! These unit tests cover the single-tree primitives.
 //!
 //! The corpus covers their behaviour inside full merges; these pin the edges the corpus cannot
 //! express, like `f64` number equality across JSON's int/float spellings.

@@ -1,7 +1,8 @@
-//! The registry of compiled validators.
+//! This module is the registry of compiled validators.
 //!
-//! It compiles every enabled installed module's declared validators once, cached and invalidated
-//! the same way `crate::modules::ModuleScanCache` invalidates (mtime-keyed).
+//! `ValidatorRegistry` holds the compiled validators of every installed module that declares any.
+//! `ValidatorRegistryCache` rebuilds it when the modules directory's mtime, a cached module's
+//! manifest mtime or a declared validator's wasm file mtime differs from the cached scan.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

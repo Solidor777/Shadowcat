@@ -1,12 +1,16 @@
-//! Per-(scene, player) explored fog memory.
+//! This module holds the per-(scene, player) explored fog memory.
 //!
-//! It is a sparse set of visited grid cells, accumulated monotonically from each vision recompute.
-//! Engine-owned geometry, headless + pure (the DB round-trip lives in the repository). Clean-room.
+//! `ExploredSet` is a sparse set of visited grid cells, accumulated monotonically: its only
+//! writer, `ExploredSet::mark_cells`, adds cells and nothing removes them. The module is
+//! engine-owned geometry, headless and pure (the DB round-trip lives in the repository), and
+//! clean-room.
 //!
-//! A cell `(i, j)` covers world rect `[i*size, (i+1)*size) × [j*size, (j+1)*size)`. A vision
-//! recompute marks every cell whose CENTER lies inside any `visible` polygon (resolution = one
-//! grid cell — sufficient for the dimmed "explored memory" layer). Accumulation is a
-//! set union, so revisiting marks nothing new (bounded by O(explored area), no growth on revisit).
+//! On a square grid a cell `(i, j)` covers world rect
+//! `[i*size, (i+1)*size) × [j*size, (j+1)*size)`.
+//! `ws::conn::enrich_vision_explored` marks the recipient's currently visible cells (the lit mask's
+//! cells, center-sampled through the scene's resolved `GridShape`), so the resolution is one grid
+//! cell. Accumulation is a set union, so revisiting marks nothing new (bounded by O(explored area),
+//! no growth on revisit).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

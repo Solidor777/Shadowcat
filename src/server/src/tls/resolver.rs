@@ -1,6 +1,6 @@
-//! Certificate selection.
+//! This module selects the certificate each TLS connection receives.
 //!
-//! This module holds the immutable [`Snapshot`], its swap cell [`CertResolver`], and the two free
+//! It holds the immutable [`Snapshot`], its swap cell [`CertResolver`], and the two free
 //! functions [`hello_phase`] / [`finish_phase`] that split one TLS accept into "read the
 //! ClientHello and choose" and "complete the handshake with the chosen configuration".
 //!

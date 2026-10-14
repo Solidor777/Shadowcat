@@ -1,5 +1,5 @@
-//! Single-tree 3-way merge primitives: structural diffing, RFC-6901 pointer helpers, and
-//! `merge3_tree`.
+//! This module holds the single-tree 3-way merge primitives: structural diffing, RFC-6901 pointer
+//! helpers, and `merge3_tree`.
 //!
 //! Every value is plain JSON: objects recurse key-by-key, arrays are opaque leaves, scalars are
 //! leaves. Sorted-key traversal keeps the output order-independent (the conformance corpus pins the

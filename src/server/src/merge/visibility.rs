@@ -1,4 +1,5 @@
-//! The visibility oracle: the requester's view of what each document hides, consulted by the merge.
+//! The visibility oracle is the requester's view of what each document hides, consulted by the
+//! merge.
 //!
 //! The oracle is consulted at EVERY recursion level by document IDENTITY — the correlated
 //! `(template child, instance child)` pair the merge is currently inside — never by array index.

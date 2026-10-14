@@ -1,7 +1,7 @@
-//! Merge band types and snapshot builders.
+//! This module defines the merge band types and snapshot builders.
 //!
-//! They are the `MergeBase` stored on a stamped document, the `MergeBands` a merge produces, the
-//! synthetic name/engine/system tree adapters, and the placement exclusion set.
+//! Its contents are the `MergeBase` stored on a stamped document, the `MergeBands` a merge
+//! produces, the synthetic name/engine/system tree adapters, and the placement exclusion set.
 
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;

@@ -1,4 +1,5 @@
-//! Creature senses (tremorsense and kin): the `perceived` half of the vision channel.
+//! This module implements creature senses (tremorsense and kin), the `perceived` half of the
+//! vision channel.
 //!
 //! Where `token_vision_floors` projects a token's vision assignments into illumination floors for
 //! the terrain mask, this module projects the SAME assignments — resolved through the SAME

@@ -1,6 +1,7 @@
-//! Movement-type tags and the reserved-semantics predicate the terrain-cost sites share.
+//! This module resolves a token's effective movement-type tag set and defines the
+//! reserved-semantics predicate the terrain-cost sites share.
 //!
-//! The module resolves a token's effective tag set and defines that predicate. Tags themselves are
+//! Tags themselves are
 //! inert vocabulary carried on `eng::ActorEngine::movement` / `eng::Faction::movement` /
 //! `eng::TokenOverrides::movement`; only the two engine-reserved tags in `TERRAIN_EXEMPT_TAGS`
 //! carry engine meaning, and that meaning is narrow: difficult terrain costs nothing extra — walls,

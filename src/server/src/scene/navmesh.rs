@@ -1,11 +1,14 @@
-//! Continuous (navmesh) pathfinding adapter.
+//! This module is the continuous (navmesh) pathfinding adapter.
 //!
-//! Pure geometry: builds a footprint-inflated `polyanya::Mesh` from a scene's bounds + `blocksMove`
-//! wall segments, and queries any-angle routes over it. Engine-owned geometry, mirroring the grid
-//! A* router's fail-closed discipline (`pathfinding::find`) — the mesh itself carries WALLS ONLY;
-//! impassable/terrain region weighting is handled separately, via `SceneEcs::pathfind`'s dispatch
-//! to the weighted grid A* plus this module's `los_smooth`/`truncate_at_arrest`, never baked into
-//! the mesh.
+//! It is pure, engine-owned geometry: it builds a footprint-inflated `polyanya::Mesh`
+//! from a scene's bounds and `blocksMove` wall segments (`build_navmesh`), and queries any-angle
+//! routes over it (`navmesh_find`). It mirrors the grid A* router's fail-closed discipline
+//! (`pathfinding::find`).
+//!
+//! The mesh carries WALLS ONLY. Under the `Continuous` movement model, `SceneEcs::pathfind` routes
+//! impassable and terrain regions through the weighted grid A* and smooths that route with
+//! `los_smooth`; it applies arrest to a navmesh route with `truncate_at_arrest`. Region weighting
+//! is never baked into the mesh.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

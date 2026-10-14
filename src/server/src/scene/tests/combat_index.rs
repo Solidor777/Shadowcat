@@ -1,7 +1,9 @@
-//! The combat-family side-table hydration and the token-to-combatant lookup.
+//! These tests cover the combat-family side-table hydration and the token-to-combatant lookup.
 //!
-//! The subjects are `SceneEcs::active_combat_for_scene` / `SceneEcs::combatant_for_token`, which
-//! the movement-budget gate reads.
+//! The lookups are `SceneEcs::active_combat_for_scene` and `SceneEcs::combatant_for_token`, which
+//! the movement-budget gate reads. The tests also cover combatant read access per user and the
+//! `"combat"` derived channel payload resolved by `SceneEcs::resolved_combats`.
+
 use super::*;
 use crate::data::document::{DocRole, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;

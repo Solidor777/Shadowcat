@@ -1,4 +1,4 @@
-//! The wasmi host.
+//! This module is the wasmi host.
 //!
 //! It compiles a validator module once (`CompiledValidator`, held by
 //! `super::registry::ValidatorRegistry`) and runs it per call on a fresh `Store` with hard

@@ -1,4 +1,4 @@
-//! Tests for the merge engine.
+//! These tests cover the merge engine.
 //!
 //! They are unit tests per source unit plus the conformance runner that pins this implementation
 //! against the corpus generated from the client engine.

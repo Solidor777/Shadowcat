@@ -1,8 +1,8 @@
-//! The merge entry points.
+//! This module holds the merge entry points.
 //!
-//! `merge3` over the mergeable bands (the `name`+`engine`+`system` synthetic tree, plus
-//! `embedded`), the pull/revert computations, and the emission of merged bands as one whole-band
-//! `Operation::Update`.
+//! The entry points are `merge3` over the mergeable bands (the `name`+`engine`+`system` synthetic
+//! tree, plus `embedded`), the pull/revert computations (`compute_pull`, `compute_revert`), and the
+//! emission of merged bands as one whole-band `Operation::Update` (`plan_to_update`).
 
 use std::collections::BTreeSet;
 

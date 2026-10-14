@@ -1,6 +1,6 @@
-//! Token-carried light emissions.
+//! This module handles token-carried light emissions.
 //!
-//! This module holds the resolver that joins a token to its effective `LightEmission`, and the
+//! It holds the resolver that joins a token to its effective `LightEmission`, and the
 //! union accessor every illumination-field consumer reads.
 //!
 //! A carried emission is the SAME payload as a standalone light's

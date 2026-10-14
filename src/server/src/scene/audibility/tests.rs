@@ -1,6 +1,6 @@
-//! Tests for `scene::audibility`.
+//! These tests cover `scene::audibility`.
 //!
-//! They cover the falloff/pan/occlusion primitives, overlay resolution, carried-emission
+//! They exercise the falloff/pan/occlusion primitives, overlay resolution, carried-emission
 //! precedence, listener selection, and the resolved per-scene slice.
 
 use super::*;
@@ -101,10 +101,10 @@ fn pan_for_truth_table() {
 }
 
 #[test]
-fn segment_occluded_agrees_with_the_sight_primitive() {
+fn segment_occluded_agrees_with_segments_cross() {
     // Anti-drift parity: audibility's occlusion IS `segments_cross` over the caller-filtered
-    // wall set, so a crossing and a non-crossing case must agree with the primitive the sight
-    // raycaster and the movement gate both use, verbatim.
+    // wall set, so a crossing and a non-crossing case must agree with the primitive the movement
+    // gate also uses, verbatim.
     let crossing = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, 5.0),
@@ -121,7 +121,7 @@ fn segment_occluded_agrees_with_the_sight_primitive() {
         ((0.0, 0.0), (10.0, 0.0), crossing),
         ((0.0, 0.0), (3.0, 0.0), crossing),
         ((0.0, 0.0), (10.0, 0.0), clear),
-        // A touching endpoint counts as blocked (the conservative reading both gates share).
+        // A touching endpoint counts as blocked (`segments_cross` reads a touching endpoint as crossing).
         ((0.0, 0.0), (5.0, 5.0), crossing),
     ] {
         assert_eq!(

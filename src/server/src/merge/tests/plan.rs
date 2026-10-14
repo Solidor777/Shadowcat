@@ -1,8 +1,9 @@
-//! Unit tests for the merge entry points.
+//! These unit tests cover the merge entry points.
 //!
-//! They cover the fail-closed corrupt-base rule and the legitimate base-less fallback on
+//! They pin the fail-closed corrupt-base rule and the legitimate base-less fallback on
 //! `compute_pull`, and the pieces of update emission the corpus's placeholder-id normalization
-//! cannot show (real-uuid `doc_id`, the unconditional `/base` refresh).
+//! cannot show (real-uuid `doc_id`, the `/base` refresh emitted only when the stored value
+//! changes).
 
 use std::collections::BTreeSet;
 

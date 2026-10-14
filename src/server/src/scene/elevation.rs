@@ -1,12 +1,12 @@
-//! The elevation model (2.5D).
+//! This module is the 2.5D elevation model.
 //!
 //! Tokens and lights carry an elevation above the ground plane (0 = grounded), a wall optionally
 //! carries the elevation band its occlusion applies to, and a scene optionally declares
 //! `SceneEngine::levels` — named elevation bands (`SceneLevel`) a token's floor is derived from via
-//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light/sound source — the
-//! star-shaped raycast pipeline itself is untouched, and sight/light ranges stay 2D (horizontal).
-//! Environment ambient light is the one exception: it keeps the full wall set at every elevation
-//! (walls always shadow sky-light, or daylight would flood interiors).
+//! `level_of`. Elevation filters which walls occlude a sight/light/sound source
+//! (`walls_at_elevation`), and sight/light ranges stay 2D (horizontal). Environment ambient light
+//! is the one exception to that wall filter: it keeps the full wall set at every elevation (walls
+//! always shadow sky-light, or daylight would flood interiors).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -35,7 +35,7 @@ pub(crate) fn elevation_or_ground(v: Option<f64>) -> f64 {
 /// Whether elevation band `band` contains point `e`: `bottom ≤ e ≤ top`; an
 /// absent end is unbounded, and `band: None` contains every elevation.
 /// Fail-closed: a malformed interval (`bottom > top`) or a non-finite band
-/// endpoint contains everything (the pre-elevation behavior for that wall).
+/// endpoint contains everything.
 /// Shared by `wall_occludes` (vision/light/sound occlusion), the movement gate
 /// (`SceneEcs::move_wall_entries`'s per-mover filter), `SceneEcs::region_field`'s
 /// per-mover selection, `SceneEcs::trigger_regions`'s per-mover selection, and

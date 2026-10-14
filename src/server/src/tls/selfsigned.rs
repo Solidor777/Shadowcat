@@ -1,12 +1,12 @@
-//! The persisted self-signed leaf certificate.
+//! This module manages the persisted self-signed leaf certificate.
 //!
-//! This module holds its attributes, SAN policy, reuse/regeneration rules, and the interface
-//! classifier that decides which local addresses it advertises.
+//! It holds the leaf certificate's attributes, SAN policy, reuse/regeneration rules, and
+//! the interface classifier that decides which local addresses it advertises.
 //!
 //! Algorithm: ECDSA P-256 (`rcgen`'s default key algorithm under the ring backend). Validity
 //! window: `not_before = now - 1 day` (clock-skew tolerance), `not_after = now + 397 days` (the
-//! longest lifetime mainstream browsers accept for a leaf). Attributes set explicitly because
-//! `rcgen::CertificateParams::default()` yields a 1975-4096 validity, no key usages and no
+//! longest lifetime mainstream browsers accept for a leaf). The attributes are set explicitly
+//! because `rcgen::CertificateParams::default()` yields a 1975-4096 validity, no key usages and no
 //! basicConstraints, none of which is acceptable for a served certificate.
 
 #![deny(missing_docs)]

@@ -1,19 +1,17 @@
 //! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs.
 //!
-//! Square and hex scenes share one code path through it rather than each caller branching on grid kind.
-//! `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top axial
-//! implementation mirroring the client's `Grid` class exactly.
+//! Square and hex scenes share one code path through it rather than each caller branching on grid
+//! kind. `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top
+//! axial implementation mirroring the client's `Grid` class exactly.
 //!
-//! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`
-//! and `regions::rasterize`;
-//! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
-//! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
-//! `move_exec::execute_move`; `neighbors_with_cost` is ALSO wired into `move_exec::execute_move`,
-//! which prices its own transitions through it too, so the router's preview cost and the
-//! executor's execution cost are the same number; `cell_of` is wired into
-//! `move_exec::execute_move`'s region-cell lookup (and `HexGrid::cells_in_bounds`'s corner
-//! mapping); `cell_vertices` is wired into `accumulate_visible_cells`'s lenient corner-sampling
-//! branch.
+//! `accumulate_visible_cells`, `player_lit_mask` and `regions::rasterize` call `cell_center` and
+//! `cells_in_bounds`. `pathfinding::astar_leg` enumerates steps with `neighbors_with_cost`, and
+//! `pathfinding::cell_enterable` tests them with `footprint_cells` and `line_traversal`.
+//! `move_exec::execute_move` calls `line_traversal` for its visibility test, `cell_of` for its
+//! region-cell lookup, and, under `MovementModel::GridStepped`, `neighbors_with_cost` to price its
+//! own transitions, so the router's preview cost and the executor's execution cost are the same
+//! number. `HexGrid::cell_bounds` maps the corners of its box with `cell_of`, and
+//! `accumulate_visible_cells` samples cell corners from `cell_vertices` in its lenient branch.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

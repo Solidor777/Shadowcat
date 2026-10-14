@@ -1,11 +1,12 @@
-//! Illumination field + gradation banding.
+//! This module computes the illumination field and its gradation banding.
 //!
-//! Pure, engine-owned, server-authoritative. Clean-room: standard radial light falloff plus
-//! threshold banding of a continuous `[0,1]` illumination field. No proprietary VTT/engine source
-//! consulted.
+//! The module is pure, engine-owned and server-authoritative. It is clean-room: standard radial
+//! light falloff plus threshold banding of a continuous `[0,1]` illumination field, with no
+//! proprietary VTT/engine source behind it.
 //!
-//! The structs mirror the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs`
-//! module; the server stays structural-only (callers parse documents and pass these plain structs).
+//! The structs mirror the client `light-gradation`/`light`/`vision-modes` shapes in the
+//! `scene-docs` module; the server stays structural-only (callers parse documents and pass these
+//! plain structs).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

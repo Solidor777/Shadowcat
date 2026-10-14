@@ -1,14 +1,12 @@
-//! Per-scene visibility/lighting mask computation, split out of `scene::mod` to keep that file
-//! under the repository's file-size gate.
+//! This module computes the per-scene visibility/lighting masks.
 //!
-//! The module owns the shared lighting-input snapshot (`LightingInputs`), the visible-cells
-//! raycast/scan shared by the movement gate and the egress mask
-//! (`accumulate_visible_cells`/`cell_visible`/`source_los_poly`), the segment intersection
-//! primitive every wall-crossing check in the crate shares (`segments_cross`), and
-//! `compute_derived`'s per-channel dispatch. Every name here is re-exported at `scene` module scope
-//! (see `scene::mod`'s `pub(crate) use`/`pub use`), so external callers still address them as
-//! `scene::compute_derived`/`scene::segments_cross` — moving the implementation file never moves
-//! the public path.
+//! It is split out of `scene::mod` to keep that file under the file-size gate. The module owns the
+//! shared lighting-input snapshot (`LightingInputs`), the visible-cells raycast/scan shared by the
+//! movement gate and the egress mask (`accumulate_visible_cells`/`cell_visible`/
+//! `source_los_poly`), the segment intersection primitive `segments_cross`, and
+//! `compute_derived`'s per-channel dispatch. `scene::mod` re-exports `compute_derived` and
+//! `segments_cross`, so external callers address them as `scene::compute_derived` and
+//! `scene::segments_cross`.
 
 use super::*;
 

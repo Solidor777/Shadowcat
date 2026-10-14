@@ -1,6 +1,7 @@
-//! Clean-room 2D visibility-polygon raycaster.
+//! This module is a clean-room 2D visibility-polygon raycaster.
 //!
-//! Engine-owned geometry, server-authoritative. No proprietary VTT/engine source consulted.
+//! It is engine-owned geometry, server-authoritative and clean-room: no proprietary VTT/engine
+//! source informs it.
 //!
 //! Algorithm: the "ray casting to endpoints" angular sweep — for a viewpoint and a set of
 //! occluding segments, cast rays toward every segment endpoint (and ±epsilon, to slip past
