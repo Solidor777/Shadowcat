@@ -1,4 +1,5 @@
-//! The conformance runner for the merge corpus the client package generated from its own engine.
+//! This is the conformance runner for the merge corpus the client package generated from its own
+//! engine.
 //!
 //! Each case runs through this twin and is asserted for exact equality. The corpus's envelope ids
 //! are deterministic placeholders (`t1`, `c1`, …) that are not uuids, so the runner maps them to
@@ -160,7 +161,7 @@ fn map_base_ids(base: &mut Value, table: &BTreeMap<String, Uuid>) {
     }
 }
 
-/// First pass of output normalization: assign `restamped-N` placeholders to
+/// Output normalization, id collection: assigns `restamped-N` placeholders to
 /// every envelope id that is not a mapped input id, in first-seen traversal
 /// order (the envelope's own `id` before its subtrees; object maps iterate
 /// in sorted-key order, arrays positionally — the same order the client
@@ -211,10 +212,10 @@ fn strip_owner_standing(v: &mut Value) {
     }
 }
 
-/// Second pass of output normalization: rewrite mapped uuids back to their
+/// Output normalization, rewrite: rewrites mapped uuids back to their
 /// corpus placeholders and restamped ids to `restamped-N` (everywhere a
 /// string occurs, so a `source.id` pointing at a restamped child rewrites
-/// consistently), and drop `null`-valued `base`/`engine` keys on envelopes.
+/// consistently), and drops `null`-valued `base`/`engine` keys on envelopes.
 fn rewrite_ids(v: &mut Value, reverse: &BTreeMap<String, String>, restamped: &[String]) {
     let envelope = is_envelope(v);
     match v {

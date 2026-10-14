@@ -1,6 +1,6 @@
-//! Per-world derived scene ECS.
+//! This module is the per-world derived scene ECS.
 //!
-//! The ECS is hydrated from documents; never persisted, never authoritative. It holds one hecs
+//! The ECS is hydrated from documents, never persisted and never authoritative. It holds one hecs
 //! entity per scene-entity document so engine-owned systems (vision, pathfinding) can query spatial
 //! state.
 
@@ -4291,9 +4291,9 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         bands: &[Band],
     ) -> Vec<LitScene> {
-        // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
-        //    called exactly once per scene rather than once per token. Collect
-        //    scene ids in a first pass (drops the query borrow before the resolve calls).
+        // Pre-resolve scene settings for every scene that has a token, so resolve_scene is
+        // called exactly once per scene rather than once per token. The scene ids are collected
+        // in a loop of their own, which drops the query borrow before the resolve calls.
         let mut all_scene_ids: Vec<Uuid> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type == "token" {
@@ -4304,12 +4304,13 @@ impl SceneEcs {
         }
         all_scene_ids.sort();
         all_scene_ids.dedup();
-        // Point-lookup only; never iterated into output so HashMap order doesn't affect determinism.
-        let scene_settings: HashMap<Uuid, ResolvedScene> = all_scene_ids
+        // Kept in `all_scene_ids` order (sorted), so the per-scene loop below is deterministic and
+        // reads each scene's settings without a lookup that could miss.
+        let scene_settings: Vec<(Uuid, ResolvedScene)> = all_scene_ids
             .iter()
             .map(|&sid| (sid, self.resolve_scene(sid)))
             .collect();
-        // The declared levels per scene, resolved in the same first pass: each source's cells
+        // The declared levels per scene, resolved from the same scene ids: each source's cells
         // accumulate under the level its own elevation resolves to (`elevation::level_of`), and
         // the illumination field is the level-filtered one (`lighting_inputs`), so a lamp on
         // another floor brightens nothing here.
@@ -4318,11 +4319,11 @@ impl SceneEcs {
             .map(|&sid| (sid, self.scene_levels(sid)))
             .collect();
 
-        // 1. Per scene, gather this user's vision sources through the ONE admission decision
-        //    (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
-        //    movement gate can never disagree about what counts as a source), then accumulate
-        //    that scene's visible cells. `all_scene_ids` is sorted, so scene iteration here is
-        //    deterministic.
+        // Per scene, gather this user's vision sources through the ONE admission decision
+        // (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
+        // movement gate can never disagree about what counts as a source), then accumulate
+        // that scene's visible cells. `all_scene_ids` is sorted, so scene iteration here is
+        // deterministic.
         let grid = self.scene_grid_sizes();
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
@@ -4332,14 +4333,8 @@ impl SceneEcs {
         // level a source occupies — `""` for ground/a level-less scene.
         let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
 
-        for scene in all_scene_ids {
-            // Use the memoized settings; fall back to resolve (unreachable in practice since
-            // `scene_settings` was populated from every source scene, but keeps the code correct
-            // if the map misses).
-            let settings = match scene_settings.get(&scene) {
-                Some(s) => s,
-                None => continue,
-            };
+        for (scene, settings) in &scene_settings {
+            let scene = *scene;
             let sources = self.gather_vision_sources_in_scene(
                 user,
                 world_role,
@@ -4647,7 +4642,9 @@ impl SceneEcs {
         // Deterministic snapshot order: `sources`' emission order follows hecs entity iteration,
         // which is not a stable contract across unrelated entity churn. Sorting avoids a spurious
         // fingerprint mismatch (over-invalidation is merely a perf cost, never a safety one, but
-        // a stable order is what makes the reuse test in Step 6 meaningful).
+        // a stable order is what makes the cache-reuse test
+        // `movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change`
+        // meaningful).
         sources.sort_by_key(|s| s.id);
 
         let all_bright = settings.all_bright();

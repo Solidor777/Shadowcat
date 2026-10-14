@@ -185,7 +185,7 @@ fn cell_enterable_respects_one_way_wall_direction() {
     // (blocking side) and must refuse; the reverse (1,0)->(0,0) step starts at (150,50)
     // (transparent side) and must pass BOTH wall checks' filters — at footprint 0.6 the
     // destination disc reaches 60 units out to the wall's 50, so the disc check alone would
-    // block without the filter, pinning that check (1) honors the direction too.
+    // block without the filter, pinning that the disc clearance honors the direction too.
     let one_way = Seg {
         a: (100.0, 0.0),
         b: (100.0, 200.0),

@@ -1,12 +1,13 @@
-//! Server-authoritative grid A* pathfinder.
+//! This module is the server-authoritative grid A* pathfinder.
 //!
-//! Pure + headless: callers pass parsed inputs (walls, mask, cell size, grid shape, footprint);
-//! this module owns no I/O and borrows no ECS. The `GridShape` (square/hex) is the single source of
-//! the diagonal rule — it owns both the step-cost and the admissible heuristic, so `find` takes no
-//! separate rule argument. Engine-owned geometry; clean-room A* (Hart, Nilsson & Raphael 1968).
+//! It is pure and headless: callers pass parsed inputs (walls, mask, cell size, grid shape,
+//! footprint), and it owns no I/O and borrows no ECS. The `GridShape` (square/hex) is the single
+//! source of the diagonal rule — it owns both the step-cost and the admissible heuristic, so
+//! `find` takes no separate rule argument. It is engine-owned geometry and a clean-room A*
+//! (Hart, Nilsson & Raphael 1968).
 //!
-//! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the
-//! movement gate uses — the route can never thread the unknown nor leak hidden geometry.
+//! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the movement gate uses,
+//! so a route for a requester with a mask never enters a cell outside it.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -185,15 +186,16 @@ pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: 
 }
 
 /// Whether a token may step from `from` into `to`. INVARIANT: full
-/// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
-/// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
-/// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
-/// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
-/// (arrest/terrain apply elsewhere — see this function's region-gate step).
+/// geometric footprint clearance — the footprint disc at `to` clears every `blocksMove` wall (the
+/// disc clearance), every footprint-overlapped cell AND every cell the center-to-center step's
+/// supercover crosses (including diagonal corner-flankers) is in the mask (non-GM) (the mask test),
+/// the center step `from→to` crosses no wall (the step crossing), and no footprint-overlapped cell
+/// is `impassable` in the region field (the region gate; arrest/terrain apply elsewhere — see this
+/// function's region gate).
 ///
-/// One-way walls (`vision::Seg::one_way`) are filtered out of BOTH wall checks (1) and (3)
-/// when the step's origin — the from-cell CENTER, the router's analog of the executor's
-/// pre-step point — sits on the wall's transparent side (`vision::Seg::transparent_from`,
+/// One-way walls (`vision::Seg::one_way`) are filtered out of BOTH wall checks (the disc clearance
+/// and the step crossing) when the step's origin — the from-cell CENTER, the router's analog of
+/// the executor's pre-step point — sits on the wall's transparent side (`vision::Seg::transparent_from`,
 /// the SAME predicate `move_exec` applies per dense step and `vision::nearest_hit` applies
 /// per ray). This is what keeps the GridStepped route⇔gate parity bidirectional across a
 /// one-way wall rather than the router refusing a step the gate would accept.
@@ -214,7 +216,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let ctr = grid.inputs.shape.cell_center(to);
     let a = grid.inputs.shape.cell_center(from);
 
-    // (1) Footprint disc vs every blocksMove wall, one-way-filtered from `a` (see the fn doc).
+    // Disc clearance: footprint disc vs every blocksMove wall, one-way-filtered from `a` (see the fn doc).
     for w in grid.inputs.walls {
         if w.transparent_from(a) {
             continue;
@@ -223,7 +225,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             return false;
         }
     }
-    // (2) Mask: every footprint-overlapped cell, AND every cell the center-to-center step's
+    // Mask test: every footprint-overlapped cell, AND every cell the center-to-center step's
     // supercover crosses, must be visible/revealed (non-GM).
     //
     // INVARIANT: `GridShape::line_traversal` is the SAME primitive the sole move executor
@@ -253,8 +255,8 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             None => return false,
         }
     }
-    // (3) Center-to-center step clears every wall (reuses the segment-cross predicate),
-    // one-way-filtered from `a` like check (1).
+    // Step crossing: center-to-center step clears every wall (reuses the segment-cross
+    // predicate), one-way-filtered from `a` like the disc clearance.
     for w in grid.inputs.walls {
         if w.transparent_from(a) {
             continue;
@@ -263,7 +265,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             return false;
         }
     }
-    // (4) Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
+    // Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
     // rule — membership is any footprint-overlapped cell, not just the destination center, since a
     // wide-bodied token can't fit past impassable terrain any more than a wall.
     // Arrest/terrain are NOT footprint-gated here: they represent effects on the mover's own

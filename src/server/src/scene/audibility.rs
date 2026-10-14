@@ -1,17 +1,16 @@
-//! The `"audibility"` derived channel's pure geometry.
+//! This module is the pure geometry of the `"audibility"` derived channel.
 //!
 //! The module covers distance falloff, wall occlusion, stereo pan, and the per-token carried
-//! `SoundEmission` resolver. The resolver mirrors `scene::emitters`' light-emitter shape exactly
-//! (`token_light_emission`/`scene_lights_excluding`) — a carried sound is the SAME kind of payload
-//! (an engine-band emission resolved at the token's live position), so the resolution precedence
-//! (linked actor + `overrides.sound` wholesale-replace, embedded actor, raw token = no emission) is
-//! copied verbatim rather than re-derived.
+//! `SoundEmission` resolver. The resolver (`SceneEcs::token_sound_emission`) applies the resolution
+//! of `token_light_emission` with `sound` in place of `light`: a linked token's `overrides.sound`
+//! replaces its actor's sound wholesale, an unlinked token reads its embedded actor, and a token
+//! with neither carries no emission.
 //!
-//! Occlusion reuses the EXACT primitives the movement gate and the sight raycaster already use
-//! (`segments_cross`, `elevation::wall_occludes`) — never a second geometry rule. `falloff`/`pan`
-//! are clean-room formulas (no external citation: `falloff(t) = clamp(1 - t², 0, 1)` is a
-//! standard inverse-square-flavored audio rolloff shape, chosen for a smooth zero at the
-//! emitter's own radius with no divide-by-zero at `t = 0`).
+//! Occlusion tests the listener-to-emitter segment with `segments_cross`, the crossing predicate
+//! `move_exec::execute_move` also uses, over walls selected by `elevation::walls_at_elevation`.
+//! `falloff` and `pan_for` are clean-room formulas with no external citation. The formula
+//! `falloff(t) = clamp(1 - t², 0, 1)` is `1.0` at the emitter, `0.0` at the emitter's own radius,
+//! and involves no division.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -52,8 +51,7 @@ pub(crate) fn pan_for(dx: f64, radius_world: f64) -> f64 {
 }
 
 /// Whether any wall in `walls` crosses the listener–emitter segment (`segments_cross`, the SAME
-/// proper-crossing/touching-endpoint test `move_walls`'s reference `blocks_move` and the sight
-/// raycaster both use). `walls` is caller-filtered to the relevant elevation band
+/// proper-crossing/touching-endpoint test `move_exec::execute_move` uses). `walls` is caller-filtered to the relevant elevation band
 /// (`elevation::walls_at_elevation`) before this is called — this function performs no band
 /// test of its own, mirroring `light_polygon`'s own division of labor (caller filters, this
 /// function only crosses segments).
@@ -279,19 +277,18 @@ impl SceneEcs {
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
         let wu_per_cell = self.resolve_grid_shape(scene, cell).world_units_per_cell();
 
-        // The listener's own position + elevation (band-filters the occlusion wall set, mirroring
-        // every other per-source elevation filter in this module). Absent a listener, walls are
-        // irrelevant — every emitter below already reads `listener.is_none()` and produces silence
-        // before consulting them.
-        let listener_geo = listener.and_then(|id| {
+        // The listener's own position and the occlusion wall set band-filtered to its elevation
+        // (mirroring every other per-source elevation filter in this module). Absent a listener,
+        // walls are irrelevant — every emitter below produces silence without consulting them.
+        // Both are invariant across the emitter loop below, so the elevation band filter runs once
+        // here rather than per emitter.
+        let listener_view = listener.and_then(|id| {
             let &e = self.index.get(&id)?;
             let c = self.world.get::<&SceneEntity>(e).ok()?;
             let t = self.engine_as_cached::<eng::TokenEngine>(id, &c.doc)?;
-            Some(((t.x, t.y), elevation::elevation_or_ground(t.elevation)))
+            let walls = self.sound_walls_for(scene, elevation::elevation_or_ground(t.elevation));
+            Some(((t.x, t.y), walls))
         });
-        // Both inputs (the wall set, the listener's elevation) are invariant across the emitter
-        // loop below, so the elevation band filter runs once here rather than per emitter.
-        let listener_walls = listener_geo.map(|(_, l_elev)| self.sound_walls_for(scene, l_elev));
 
         let mut emitters = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -331,9 +328,9 @@ impl SceneEcs {
             let (gain, pan) = if !overlay.spatial {
                 (volume, 0.0)
             } else {
-                match listener_geo {
+                match &listener_view {
                     None => (0.0, 0.0),
-                    Some((lp, _)) => {
+                    Some((lp, walls)) => {
                         let dx = pos.0 - lp.0;
                         let dy = pos.1 - lp.1;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -343,13 +340,11 @@ impl SceneEcs {
                             f64::INFINITY
                         };
                         let mut g = volume * falloff(t);
-                        if g > 0.0 && overlay.occlusion == eng::Occlusion::Walls {
-                            // `Some` whenever `listener_geo` is — this arm's own match
-                            // condition — so the default is never taken.
-                            let walls = listener_walls.as_deref().unwrap_or(&[]);
-                            if segment_occluded(lp, pos, walls) {
-                                g = (g * overlay.through_wall_gain).max(0.0);
-                            }
+                        if g > 0.0
+                            && overlay.occlusion == eng::Occlusion::Walls
+                            && segment_occluded(*lp, pos, walls)
+                        {
+                            g = (g * overlay.through_wall_gain).max(0.0);
                         }
                         (g, pan_for(dx, radius_world))
                     }
