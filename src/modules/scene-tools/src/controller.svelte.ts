@@ -1370,7 +1370,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   /** True when the measure tool's pointer handlers should attempt route mode: exactly one
    * token selected (`ctx.tokenSelection`) AND `ctx.pathfind` provided. Deliberately does NOT
-   * check for an active scene — that is clause 3 of the factory doc's list above, enforced
+   * check for an active scene — that is the active-scene condition the factory doc names above, enforced
    * per-handler instead (each handler resolves `activeScene(ctx)` itself and reacts
    * differently to its absence; see the factory doc).
    * @returns `true` when both conditions hold.
@@ -2149,7 +2149,7 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
 const DRAG_THROTTLE_MS = 50;
 
 /** The reach radius for the click-to-toggle advisory pre-check, in world units: the server's
- * reach constant (1.5 cells — `DOOR_REACH_CELLS`, `Room::toggle_door`'s clause 2) converted
+ * reach constant (1.5 cells — `DOOR_REACH_CELLS`, `Room::toggle_door`'s reach clause) converted
  * through the grid's world-unit cell span: the cell size on square, `size·√3` (the axial
  * neighbor distance — `HexGrid::world_units_per_cell`) on hex. Advisory UX only: the server
  * re-checks reach authoritatively; this mirror exists to spare an obviously-doomed request,

@@ -181,22 +181,22 @@ fn walk_any_host(
 
 /// Collects every effect this combatant's clock moves, along BOTH axes the
 /// shape defines:
-/// - on its OWN host(s) — its linked actor and/or its token's embedded
-///   actor — every effect that is unanchored (`duration.anchor: None`, i.e.
+/// - on its OWN host(s) (the own-host collection) — its linked actor and/or its token's
+///   embedded actor — every effect that is unanchored (`duration.anchor: None`, i.e.
 ///   belonging to whoever hosts it) or explicitly anchored to this
 ///   combatant;
-/// - on ANY OTHER host in the combat, every effect explicitly anchored to
-///   this combatant (`duration.anchor == Some(combatant.doc.id)`).
+/// - on ANY OTHER host in the combat (the other-host collection), every effect
+///   explicitly anchored to this combatant (`duration.anchor == Some(combatant.doc.id)`).
 ///
-/// The second pass is what keeps the host and the anchor independent: an
+/// The other-host collection is what keeps the host and the anchor independent: an
 /// effect physically living on A's actor but anchored to B ticks, expires
 /// and is captured on B's clock, and is claimed by neither combatant twice.
 /// Results are deduplicated by `(host, path)` — the same key
 /// `transition::run_boundary`/`transition::end`/`history::capture` dedup on
-/// — so an effect reachable from both passes is returned once. An
+/// — so an effect reachable from both collections is returned once. An
 /// item-embedded effect still requires its own `transfer` flag. An `Event`
 /// combatant hosts no effects, but may still anchor effects hosted
-/// elsewhere, so both passes run for it too.
+/// elsewhere, so both collections run for it too.
 ///
 /// # Examples
 ///

@@ -3,7 +3,7 @@ import {
   levelFailures,
   parseIntegratedLufs,
   parseMaxVolume,
-  tier2Enforceable,
+  byteEqualityEnforceable,
 } from "./check-audio-fixtures.mjs";
 
 describe("audio fixture level parsing", () => {
@@ -36,12 +36,12 @@ describe("levelFailures", () => {
   });
 });
 
-describe("tier2Enforceable", () => {
+describe("byteEqualityEnforceable", () => {
   const manifest = { ffmpeg_version: "8.1.1", numpy_version: "2.1.2" };
 
   it("holds only when both recorded versions match", () => {
-    expect(tier2Enforceable(manifest, { ffmpeg_version: "8.1.1", numpy_version: "2.1.2" })).toBe(true);
-    expect(tier2Enforceable(manifest, { ffmpeg_version: "6.1.1", numpy_version: "2.1.2" })).toBe(false);
-    expect(tier2Enforceable(manifest, { ffmpeg_version: "8.1.1", numpy_version: "1.26.4" })).toBe(false);
+    expect(byteEqualityEnforceable(manifest, { ffmpeg_version: "8.1.1", numpy_version: "2.1.2" })).toBe(true);
+    expect(byteEqualityEnforceable(manifest, { ffmpeg_version: "6.1.1", numpy_version: "2.1.2" })).toBe(false);
+    expect(byteEqualityEnforceable(manifest, { ffmpeg_version: "8.1.1", numpy_version: "1.26.4" })).toBe(false);
   });
 });

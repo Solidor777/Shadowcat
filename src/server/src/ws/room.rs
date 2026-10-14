@@ -1768,8 +1768,8 @@ impl Room {
         // the token/actor, so a GM moving a flying token is priced as flying too: the GM
         // exemption covers the gameplay GATES, never the cost accounting.
         let move_traits: crate::scene::pathfinding::MoveTraits;
-        // The per-turn movement-budget gate, resolved off this same read guard (combat lookup is
-        // step 2 below, under the same lock as restriction/cell/visible_cells/start). `None` means
+        // The per-turn movement-budget gate, resolved off this same read guard (the combat lookup
+        // below runs under the same lock as restriction/cell/visible_cells/start). `None` means
         // no active combat on the token's scene, or the token names no combatant in it — either
         // way the caller treats that as "moves freely", never a refusal.
         let budget_gate: Option<BudgetGate>;
@@ -1837,7 +1837,7 @@ impl Room {
                 settings.movement_restriction
             };
 
-            // Combat lookup (step 2 under this same read guard): the scene's active combat, if
+            // Combat lookup (under this same read guard): the scene's active combat, if
             // any, and this token's combatant in it, if any. Either miss means no gate applies —
             // there is no active combat on the token's own scene, or the token is not fighting in
             // it. `MoveGateInputs.budget` and the turn/resource checks below are resolved from
@@ -2257,7 +2257,7 @@ impl Room {
     ///    cell boundary);
     /// 4. the requester holds engine-tier visibility on the WALL DOCUMENT ITSELF
     ///    (`engine_tier_visible(&wall_doc, Some(user))` — the same per-requester authority
-    ///    `move_wall_entries`/`region_field` apply). This clause is NOT implied by clause 3:
+    ///    `move_wall_entries`/`region_field` apply). This clause is NOT implied by the visible-cells clause:
     ///    `visible_cells_cached`'s raycast is DELIBERATELY permission-blind (a `gm_only` wall
     ///    still occludes sight for someone who may not know it exists), so a token can be
     ///    geometrically adjacent to and "in sight of" a hidden door's cells while the requester
@@ -2305,7 +2305,7 @@ impl Room {
 
         let _guard = self.publish_guard.lock().await;
 
-        // The world capability defaults feed clause 3's `visible_cells_cached` (its
+        // The world capability defaults feed the visible-cells clause's `visible_cells_cached` (its
         // observer-vision source admission reads them under the scene read guard, and a read
         // guard is never held across an await, so the fetch happens first) — the same call
         // `execute_move` makes for its own mask. A GM skips the positional clauses and never
@@ -2323,7 +2323,7 @@ impl Room {
         {
             let ecs = self.scene.read().await;
 
-            // Step 1: the wall must exist as a scene-hydrated wall document; its scene is
+            // The wall must exist as a scene-hydrated wall document; its scene is
             // DERIVED from its own `parent_id`, and the request's `scene_id` must agree.
             let wall_doc = ecs
                 .scene_entity_doc(wall_id)
@@ -2357,7 +2357,7 @@ impl Room {
                 let seg_a = (wall.seg.x1, wall.seg.y1);
                 let seg_b = (wall.seg.x2, wall.seg.y2);
 
-                // Clauses 1+2: the requester's nearest effectively-owned token in the scene,
+                // The ownership and reach clauses: the requester's nearest effectively-owned token in the scene,
                 // and its reach. The scan pattern is the same one `compute_audibility`'s
                 // emitter loop shaped: enumerate the scene's tokens
                 // (`SceneEcs::scene_token_ids`), filter to the requester's own via the shared
@@ -2383,7 +2383,7 @@ impl Room {
                     return Err(DoorToggleError::OutOfReach);
                 }
 
-                // Clause 3: the door segment's own supercover cells must intersect the
+                // The visible-cells clause: the door segment's own supercover cells must intersect the
                 // requester's visible-cell set — the SAME mask the movement gate reads,
                 // level-scoped to the nearest token's floor exactly as a move of that token
                 // would be.
@@ -2403,15 +2403,15 @@ impl Room {
                     return Err(DoorToggleError::NotVisible);
                 }
 
-                // Clause 4: engine-tier visibility on the wall DOCUMENT — the one clause that
+                // The wall-document-visibility clause: engine-tier visibility on the wall DOCUMENT — the one clause that
                 // reads the wall's own declared visibility tier rather than a geometric
-                // consequence of it (see the method doc for why clause 3 cannot imply it).
+                // consequence of it (see the method doc for why the visible-cells clause cannot imply it).
                 if !crate::scene::engine_tier_visible(&wall_doc, Some(user)) {
                     return Err(DoorToggleError::WallNotVisible);
                 }
 
-                // Clause 5: the state machine — flip `Closed`↔`Open` only, never onto or off
-                // `Locked`, and a doorless wall has nothing to flip.
+                // The state-machine clause: flip `Closed`↔`Open` only, never onto or off `Locked`, and a
+                // doorless wall has nothing to flip.
                 let flippable = matches!(
                     wall.door,
                     Some(eng::DoorState::Closed) | Some(eng::DoorState::Open)
@@ -3870,10 +3870,10 @@ impl RoomRegistry {
                 ))
             })
             .clone();
-        // TOCTOU closure, two layers. (1) A `begin_delete` still in flight
+        // TOCTOU closure, two layers. First, a `begin_delete` still in flight
         // between the tombstone check above and this insert has already
         // removed-and-evicted whatever room it saw — which may not include the
-        // one just inserted; the tombstone re-check catches it. (2) A delete
+        // one just inserted; the tombstone re-check catches it. Second, a delete
         // that COMPLETED entirely inside that window (begin → commit →
         // finish_delete) has already lifted the tombstone, so the flag proves
         // nothing — re-verify the world ROW. That read is serialized after any

@@ -1451,7 +1451,7 @@ async fn handle_pathfind(
         token,
     } = req;
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
-    // Step 0: non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
+    // The non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
     // document scan routed through `token_effective_owner`, so ownership is the same rule the
     // write-authz and vision paths enforce (per-token override, else the linked actor's owner) —
     // and it costs no raycast, which matters because `Pathfind` is unrate-limited and fires
@@ -1491,7 +1491,7 @@ async fn handle_pathfind(
             return path_error(request_id, PathErrorReason::Unreachable);
         }
     };
-    // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
+    // Check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
     // below never re-acquires the lock for it. The mover's level is captured here too: explored
     // memory is keyed per level, and a token-less hypothetical preview routes (and remembers) at
@@ -1516,7 +1516,7 @@ async fn handle_pathfind(
                 .unwrap_or_default(),
         )
     };
-    // Step 2: fetch explored (if needed) after the lock is dropped.
+    // Fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
         match repo.get_explored(scene, &mover_level, ctx.user_id).await {
             Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
@@ -1528,7 +1528,7 @@ async fn handle_pathfind(
     } else {
         None
     };
-    // Step 3: take a fresh read guard to authorize/derive a named token's footprint (if any) and
+    // Take a fresh read guard to authorize/derive a named token's footprint (if any) and
     // call pathfind — folded into the SAME guard so the read count is unchanged.
     //
     // The named token is authorized before it is used: effective ownership (the same

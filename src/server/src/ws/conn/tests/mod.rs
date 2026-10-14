@@ -1958,8 +1958,8 @@ async fn pathfind_refuses_a_scene_the_requester_controls_no_token_in() {
 /// `Pathfind` naming a token the requester does not effectively own is refused generically —
 /// the named token is a footprint SOURCE, not a delegated presence grant, so an attacker
 /// cannot read a stranger's token size (or probe gaps sized to it) by naming an id they do
-/// not control. Both requesters have their OWN token in the scene, so the Step-0 presence
-/// gate passes for both — isolating this test to the token-ownership check (Step 4).
+/// not control. Both requesters have their OWN token in the scene, so the presence gate
+/// passes for both — isolating this test to the named-token ownership check.
 #[tokio::test]
 async fn pathfind_naming_an_unowned_token_is_refused() {
     use crate::auth::role::ServerRole;
@@ -2101,8 +2101,8 @@ async fn pathfind_naming_an_unowned_token_is_refused() {
 }
 
 /// Guards the cross-scene axis: the requester has their OWN token in the named scene (so
-/// Step-0 presence passes), but names a token they own in a DIFFERENT scene — the footprint
-/// derivation (Step 4) must still refuse, isolating this from the presence gate.
+/// the presence gate passes), but names a token they own in a DIFFERENT scene — the footprint
+/// derivation must still refuse, isolating this from the presence gate.
 #[tokio::test]
 async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     use crate::auth::role::ServerRole;
@@ -2204,8 +2204,8 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
     .await
     .unwrap();
 
-    // The player's OWN token in B, so the Step-0 presence gate for B passes independently of
-    // the named token — isolating this test to Step 4's cross-scene check.
+    // The player's OWN token in B, so the presence gate for B passes independently of
+    // the named token — isolating this test to the footprint derivation's cross-scene check.
     let mut tb = wdoc(world.id, token_in_b, "token");
     tb.parent_id = Some(scene_b);
     tb.owner = Some(p);
@@ -2245,8 +2245,8 @@ async fn pathfind_naming_a_token_in_another_scene_is_refused() {
 /// Builds a scene with a 1-cell-wide corridor (walls at x=100 and x=200, cell=100) and one
 /// owned, actor-linked token whose real footprint (radius 1.0 cell, `circle` shape, size
 /// 2.0x2.0) is far too wide for the 100-unit corridor (which admits at most radius 0.5 cell).
-/// Shared by the "ignores a lying wire footprint" (Step 4 derives and refuses) and "no token
-/// honors the wire value" (Step 4 is skipped entirely) tests below.
+/// Shared by the "ignores a lying wire footprint" (the footprint derivation refuses) and "no token
+/// honors the wire value" (the footprint derivation is skipped entirely) tests below.
 async fn harness_with_narrow_corridor_and_large_owned_token() -> (
     Arc<SqliteRepository>,
     Arc<crate::ws::room::Room>,

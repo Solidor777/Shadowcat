@@ -163,7 +163,7 @@ Users pick among built-in themes and can author their own, so **your module must
 not hardcode colors** — a hex literal that looks right today goes dark-on-dark
 under a different theme.
 
-- **Consume the semantic tokens.** Reference the host's tier-2 tokens with plain
+- **Consume the semantic tokens.** Reference the host's semantic tokens with plain
   `var(--*)` in your component styles: `--surface-base` / `--surface-raised` /
   `--surface-overlay` (backgrounds), `--text-primary` / `--text-muted`,
   `--accent` / `--accent-hover` / `--accent-active` / `--on-accent`, `--border`,

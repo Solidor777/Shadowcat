@@ -1,16 +1,16 @@
-// Themes are data, not stylesheets. A `ThemeDefinition` maps every tier-1 and
-// tier-2 token to a literal value; application writes inline styles on each
+// Themes are data, not stylesheets. A `ThemeDefinition` maps every raw primitive
+// and semantic token to a literal value; application writes inline styles on each
 // themed document's root element, which beats both the shell stylesheet and any
 // cloned stylesheets in secondary windows. The shell stylesheets keep declaring
 // the default theme's values for no-JS first paint, and a parity test pins the
 // stylesheet-declared token set equal to `THEME_TOKEN_NAMES`.
 
-/** Every tier-1 and tier-2 theme token name, without the `--` prefix. This is
+/** Every raw primitive and semantic theme token name, without the `--` prefix. This is
  * the single source of truth for the token universe: the shell stylesheets
  * declare defaults for exactly these names, and every `ThemeDefinition.tokens`
  * map covers exactly these names. */
 export const THEME_TOKEN_NAMES = [
-  // Tier 1 — raw primitives.
+  // Raw primitives.
   "slate-950",
   "slate-900",
   "slate-850",
@@ -39,7 +39,7 @@ export const THEME_TOKEN_NAMES = [
   "font-size-sm",
   "font-size-md",
   "input-height-coarse",
-  // Tier 2 — semantic aliases.
+  // Semantic aliases.
   "surface-sunken",
   "surface-base",
   "surface-raised",

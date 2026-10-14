@@ -2342,7 +2342,7 @@ pub async fn handle_recalc_roll(
         .position(|seg| matches!(seg, Segment::RollEmbed { roll_id: rid, .. } if *rid == roll_id))
         .ok_or(RecalcRollError::RollNotFound)?;
 
-    // First pass: read immutably and clone what's needed, so the mutation
+    // Read immutably and clone what's needed, so the mutation
     // below never overlaps a live borrow.
     let (spec_val, raw_val, prev_outcome) = match &sys.content[idx] {
         Segment::RollEmbed {

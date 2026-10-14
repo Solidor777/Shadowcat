@@ -53,7 +53,7 @@
   // accent through this palette (`tabGroupAccent`) and sets it inline as
   // `--dv-tab-group-color`, so mapping the palette skins every chip, swatch,
   // and underline at once. Colors without a semantic counterpart reuse the
-  // nearest tier-2 token — group accents are a dockview surface we do not
+  // nearest semantic token — group accents are a dockview surface we do not
   // assign today.
   --dv-tab-group-color-grey: var(--text-muted);
   --dv-tab-group-color-blue: var(--accent);

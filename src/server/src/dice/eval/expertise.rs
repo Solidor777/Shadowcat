@@ -130,12 +130,12 @@ fn run_dp(
 /// `value` (adjusted face) and `expertise` (points spent). No-op if budget is 0 or
 /// there are no kept dice.
 ///
-/// Two-pass clamp handling: the lexicographic pass maximizes RAW `(net, counter)`.
+/// Clamp handling: the lexicographic pass maximizes RAW `(net, counter)`.
 /// If `allow_negative` OR the achieved net ≥ 1, that pass equals the clamped-lex
 /// optimum (clamp is identity there). Otherwise every allocation clamps to net 0, so
-/// successes tie and the objective degenerates to pure counter-maximization — a second
-/// pass with the first key dropped. Both passes use the same lowest-index-first
-/// tie-break, so the result matches the brute-force oracle exactly.
+/// successes tie and the objective degenerates to pure counter-maximization — a
+/// counter-only pass with the first key dropped. Both passes use the same
+/// lowest-index-first tie-break, so the result matches the brute-force oracle exactly.
 ///
 /// # Examples
 ///

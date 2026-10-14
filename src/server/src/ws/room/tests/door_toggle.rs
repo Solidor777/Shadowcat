@@ -1,6 +1,6 @@
-//! `Room::toggle_door`, the gate behind `ClientMsg::ToggleDoor`.
+//! These tests exercise `Room::toggle_door`, the gate behind `ClientMsg::ToggleDoor`.
 //!
-//! The tests cover the positional reach + visibility gate, its GM bypass, its `Locked` state
+//! They cover the positional reach + visibility gate, its GM bypass, its `Locked` state
 //! machine, and the role-conditioned refusal-wording discipline (`door_toggle_wire_message`).
 //!
 //! Geometry conventions (square grid, cell size 100): the token stands at
@@ -129,7 +129,7 @@ async fn stored_door(h: &MovementHandle, wall_id: Uuid) -> Option<String> {
 async fn toggle_door_refused_when_the_actor_controls_no_token_in_the_scene() {
     let h = movement_scene("visible", true).await;
     let wall_id = place_door_wall(&h, 0xD100, NEAR_SEG, Some("closed"), false).await;
-    // A second world member with NO token in the scene: ownership (clause 1) fails
+    // A second world member with NO token in the scene: the ownership clause fails
     // before reach or visibility are consulted.
     let p2 = h
         .repo
@@ -159,7 +159,7 @@ async fn toggle_door_refused_when_the_actor_controls_no_token_in_the_scene() {
 async fn toggle_door_refused_when_the_nearest_owned_token_is_out_of_door_reach_cells() {
     let h = movement_scene("visible", true).await;
     // The far door's nearest point is ≈ 254.9 world units from the token —
-    // beyond `DOOR_REACH_CELLS` × 100 = 150 (clause 2).
+    // beyond `DOOR_REACH_CELLS` × 100 = 150 (the reach clause).
     let wall_id = place_door_wall(&h, 0xD101, FAR_SEG, Some("closed"), false).await;
     let res = h
         .room
@@ -178,7 +178,7 @@ async fn toggle_door_refused_when_in_reach_but_the_doors_cells_are_outside_the_a
     let h = movement_scene("visible", true).await;
     let wall_id = place_door_wall(&h, 0xD102, NEAR_SEG, Some("closed"), false).await;
     // The sight wall cuts line of sight to the door's cells while reach still
-    // holds (≈ 111.8 ≤ 150): clause 3 alone refuses.
+    // holds (≈ 111.8 ≤ 150): the visible-cells clause alone refuses.
     place_sight_wall(&h, 0xD103).await;
     let res = h
         .room
@@ -191,10 +191,10 @@ async fn toggle_door_refused_when_in_reach_but_the_doors_cells_are_outside_the_a
     assert_eq!(stored_door(&h, wall_id).await.as_deref(), Some("closed"));
 }
 
-/// The clause-(4) pin: clauses 1–3 ALL pass (the token is adjacent, and the
-/// door's cells are inside its visible-cell set — the visibility raycast is
-/// deliberately permission-blind), and the toggle is STILL refused because the
-/// wall's `/engine` tier is `gm_only`. Deleting the `engine_tier_visible` check
+/// The wall-document-visibility pin: the ownership, reach and visible-cells clauses ALL pass
+/// (the token is adjacent, and the door's cells are inside its visible-cell set — the
+/// visibility raycast is deliberately permission-blind), and the toggle is STILL refused
+/// because the wall's `/engine` tier is `gm_only`. Deleting the `engine_tier_visible` check
 /// alone, with every other clause unchanged, flips this test to a pass-through.
 #[tokio::test]
 async fn toggle_door_refused_for_a_gm_only_door_even_when_adjacent_and_in_line_of_sight() {
@@ -317,7 +317,7 @@ async fn toggle_door_never_flips_locked_for_a_non_gm() {
 #[tokio::test]
 async fn toggle_door_gm_flips_from_anywhere_in_the_world() {
     // No GM token, no reach, no geometric visibility, no engine-tier visibility
-    // requirement: the GM bypasses clauses 1–4 entirely.
+    // requirement: the GM bypasses the positional clauses entirely.
     let h = movement_scene("visible", true).await;
     let far_hidden = place_door_wall(&h, 0xD109, FAR_SEG, Some("closed"), true).await;
     h.room
