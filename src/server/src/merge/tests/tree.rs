@@ -203,3 +203,28 @@ fn set_pointer_refuses_instead_of_panicking() {
         Err(PointerError::MissingValue)
     );
 }
+
+#[test]
+fn pointer_primitives_reject_non_canonical_array_index_tokens() {
+    // RFC 6901 array indices carry no leading zero and no sign; `usize` parsing alone accepts both.
+    let tree = json!({ "a": [10, 20, 30] });
+    assert_eq!(get_pointer(&tree, "/a/1"), Some(&json!(20)));
+    assert_eq!(get_pointer(&tree, "/a/01"), None);
+    assert_eq!(get_pointer(&tree, "/a/+1"), None);
+
+    let mut deleted = tree.clone();
+    delete_pointer(&mut deleted, "/a/01").unwrap();
+    delete_pointer(&mut deleted, "/a/+1").unwrap();
+    assert_eq!(deleted, tree);
+
+    let mut set = tree.clone();
+    assert_eq!(
+        set_pointer(&mut set, "/a/01", json!(99)),
+        Err(PointerError::IndexOutOfRange)
+    );
+    assert_eq!(
+        set_pointer(&mut set, "/a/+1", json!(99)),
+        Err(PointerError::IndexOutOfRange)
+    );
+    assert_eq!(set, tree);
+}

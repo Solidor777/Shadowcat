@@ -17,7 +17,7 @@ use crate::merge::bands::{
 };
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
 use crate::merge::tree::{
-    deep_equal, merge3_tree, take_template, tokenize, HiddenPointers, PointerError,
+    array_index, deep_equal, merge3_tree, take_template, tokenize, HiddenPointers, PointerError,
 };
 use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::ParentKind;
@@ -479,9 +479,9 @@ enum PointerToken {
 fn pointer_key(path: &str) -> Vec<PointerToken> {
     tokenize(path)
         .into_iter()
-        .map(|t| match t.parse::<usize>() {
-            Ok(i) if i.to_string() == t => PointerToken::Index(i),
-            _ => PointerToken::Key(t),
+        .map(|t| match array_index(&t) {
+            Some(i) => PointerToken::Index(i),
+            None => PointerToken::Key(t),
         })
         .collect()
 }

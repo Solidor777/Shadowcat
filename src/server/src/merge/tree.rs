@@ -74,6 +74,13 @@ pub(crate) fn tokenize(pointer: &str) -> Vec<String> {
         .collect()
 }
 
+/// The array position a pointer token names, or `None` when the token is not a canonical RFC-6901
+/// array index (no sign, no leading zero). `usize` parsing alone accepts `"+1"` and `"01"`.
+pub(crate) fn array_index(token: &str) -> Option<usize> {
+    let i = token.parse::<usize>().ok()?;
+    (i.to_string() == token).then_some(i)
+}
+
 /// Structural diff of `now` against `base` as one JSON tree, from the root.
 /// The same leaf rules as the client's `structuralDiff`, which the client's
 /// `syncState` badge reads against the stored base this engine writes.
@@ -163,7 +170,7 @@ pub(crate) fn delete_pointer(root: &mut Value, pointer: &str) -> Result<(), Poin
     let mut cur = root;
     for tok in intermediates {
         cur = match cur {
-            Value::Array(arr) => match tok.parse::<usize>().ok().and_then(|i| arr.get_mut(i)) {
+            Value::Array(arr) => match array_index(tok).and_then(|i| arr.get_mut(i)) {
                 Some(v) => v,
                 None => return Ok(()),
             },
@@ -176,7 +183,7 @@ pub(crate) fn delete_pointer(root: &mut Value, pointer: &str) -> Result<(), Poin
     }
     match cur {
         Value::Array(arr) => {
-            if let Ok(i) = last.parse::<usize>() {
+            if let Some(i) = array_index(last) {
                 if i < arr.len() {
                     arr.remove(i);
                 }
@@ -201,7 +208,7 @@ pub(crate) fn get_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Valu
     for tok in tokenize(pointer) {
         cur = match cur {
             Value::Array(arr) => {
-                let i = tok.parse::<usize>().ok().filter(|&i| i < arr.len())?;
+                let i = array_index(&tok).filter(|&i| i < arr.len())?;
                 &arr[i]
             }
             Value::Object(obj) => obj.get(&tok)?,
@@ -236,9 +243,7 @@ pub(crate) fn set_pointer(
     for tok in intermediates {
         cur = match cur {
             Value::Array(arr) => {
-                let i = tok
-                    .parse::<usize>()
-                    .ok()
+                let i = array_index(tok)
                     .filter(|&i| i < arr.len())
                     .ok_or(PointerError::NotAContainer)?;
                 &mut arr[i]
@@ -255,9 +260,7 @@ pub(crate) fn set_pointer(
     }
     match cur {
         Value::Array(arr) => {
-            let i = last
-                .parse::<usize>()
-                .ok()
+            let i = array_index(last)
                 .filter(|&i| i < arr.len())
                 .ok_or(PointerError::IndexOutOfRange)?;
             arr[i] = value;
