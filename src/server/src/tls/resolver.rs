@@ -691,7 +691,7 @@ impl CertResolver {
     }
 }
 
-/// Phase one of a TLS accept: reads the ClientHello from `start` and calls
+/// The hello phase of a TLS accept: reads the ClientHello from `start` and calls
 /// [`Snapshot::select`] exactly once. Touches no shared mutable state.
 ///
 /// # Examples
@@ -716,9 +716,10 @@ where
     snapshot.select(hello.server_name(), &offered)
 }
 
-/// Phase two of a TLS accept: completes the handshake with the configuration `selected` maps to
-/// in `snapshot` and records the single selection outcome in the returned [`ConnMeta`]. Takes the
-/// snapshot by value and has no access to the swap cell, so it cannot select a second time.
+/// The finish phase of a TLS accept: completes the handshake with the configuration `selected`
+/// maps to in `snapshot` and records the single selection outcome in the returned [`ConnMeta`].
+/// Takes the snapshot by value and has no access to the swap cell, so it cannot select a second
+/// time.
 ///
 /// # Examples
 ///
