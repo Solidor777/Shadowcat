@@ -1,40 +1,37 @@
-//! The server-owned template merge engine.
+//! This module is the server-owned template merge engine.
 //!
-//! It is the 3-way merge (`merge3`, `compute_pull`, `compute_revert`, `plan_to_update`,
+//! The engine is the 3-way merge (`merge3`, `compute_pull`, `compute_revert`, `plan_to_update`,
 //! `apply_resolutions`) behind the `MergePull`/`MergePush`/`MergeRevert` intents.
 //!
-//! It is the exact behavioural twin of the client `@shadowcat/core` 3-way merge. Its behaviour is
-//! pinned by one conformance corpus, the shared `merge-conformance` fixture that the client
-//! `@shadowcat/core` package carries (a transcript of its generation run is kept under the
-//! repository's scripts directory); the test suite asserts
-//! value-identical results for every case, so a behavioural change fails the corpus rather than
-//! drifting silently. Every cross-tree value is cloned at its crossing point (owned values, never
-//! aliases), which the corpus's aliasing-sensitive cases pin behaviourally.
+//! Its behaviour is pinned by one conformance corpus, the shared `merge-conformance` fixture that
+//! the client `@shadowcat/core` package carries; the transcript of its generation run is kept under
+//! the repository's scripts directory. The test suite asserts value-identical results for every
+//! case, so a behavioural change fails the corpus rather than drifting silently. Every cross-tree
+//! value is cloned at its crossing point (owned values, never aliases), which the corpus's
+//! aliasing-sensitive cases pin behaviourally.
 //!
 //! # Properties the corpus does not pin
 //!
-//! Three properties are outside what the corpus can observe; none can
-//! change a merge RESULT, only an order or an unreachable input's handling:
+//! Three properties are outside what the corpus can observe; none can change a merge RESULT, only
+//! an order or an unreachable input's handling.
 //!
-//! - **Key sorting is UTF-8 byte order** (Rust `String` `Ord`, via the
-//!   `BTreeSet` traversals in `tree::structural_diff_at`,
-//!   `embedded::merge3_embedded`/`embedded::revert_embedded` and
-//!   `plan::plan_to_update`). Merge results are order-independent by design;
-//!   only diff/conflict/change ORDER within a result depends on it, and a
-//!   UTF-16 ordering would differ only on keys mixing U+E000–U+FFFF with
-//!   astral-plane characters.
-//! - **`tree::get_pointer`/`tree::delete_pointer` reject non-canonical
-//!   array-index tokens** (`"01"`, `"+1"`, …). Merge-generated pointers only
-//!   ever carry canonical indices (`structural_diff` and `prefix_conflicts`
-//!   format `usize` values), so a coercing reading is never needed.
-//! - **Base correlation stringifies `Uuid` canonically**
-//!   (`embedded::merge3_embedded`'s `base_by_source` keys). A non-canonical
-//!   `sourceId` (uppercase hex, braces, …) correlates as
-//!   instance-added — the keep direction, never the drop direction.
+//! **Key sorting is UTF-8 byte order** (Rust `String` `Ord`, via the `BTreeSet` traversals in
+//! `tree::structural_diff_at`, `embedded::merge3_embedded`/`embedded::revert_embedded` and
+//! `plan::plan_to_update`). Merge results are order-independent by design; only diff/conflict/
+//! change ORDER within a result depends on it, and a UTF-16 ordering would differ only on keys
+//! mixing U+E000–U+FFFF with astral-plane characters.
 //!
-//! One deliberate delta from the corpus generator's engine is recorded in
-//! the fixture's own `amendments` key: the `/base` refresh is emitted only
-//! when it differs from the stored value (`plan_to_update`).
+//! **`tree::get_pointer`/`tree::delete_pointer` reject non-canonical array-index tokens** (`"01"`,
+//! `"+1"`, …). Merge-generated pointers only ever carry canonical indices (`structural_diff` and
+//! `prefix_conflicts` format `usize` values), so a coercing reading is never needed.
+//!
+//! **Base correlation stringifies `Uuid` canonically** (`embedded::merge3_embedded`'s
+//! `base_by_source` keys). A non-canonical `sourceId` (uppercase hex, braces, …) correlates as
+//! instance-added — the keep direction, never the drop direction.
+//!
+//! One deliberate delta from the corpus generator's engine is recorded in the fixture's own
+//! `amendments` key: the `/base` refresh is emitted only when it differs from the stored value
+//! (`plan_to_update`).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

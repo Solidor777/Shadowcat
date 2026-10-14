@@ -1,19 +1,21 @@
-//! Owner-only private key files.
+//! This module writes owner-only private key files.
 //!
-//! They have mode 0600 on Unix and a protected owner-only DACL on Windows, in a directory
+//! The key files have mode 0600 on Unix and a protected owner-only DACL on Windows, in a directory
 //! restricted the same way WHEN this module created it.
 //!
-//! INVARIANTS:
-//! 1. A key file is never written unprotected: [`write_private`] restricts the still-empty
-//!    temporary file BEFORE any secret byte is written and returns the error when the OS refuses,
-//!    so the caller degrades to an in-memory certificate (`selfsigned::load_or_generate`'s
-//!    `persist_error`) instead of persisting a key under an inherited ACL.
-//! 2. Directories the operator already had are never re-permissioned: rewriting the ACL or mode of
-//!    an operator-chosen `tls_dir` (or one of its ancestors) could lock out backup agents or the
-//!    operator's own account. Only directories this module creates are restricted; a failure to
-//!    restrict one of those is logged and non-fatal because the key file's own protection is what
-//!    guards the secret.
-//! 3. A failed write leaves no `<key>.tmp` behind.
+//! INVARIANT: A key file is never written unprotected. [`write_private`] restricts the
+//! still-empty temporary file BEFORE any secret byte is written and returns the error when the OS
+//! refuses, so the caller degrades to an in-memory certificate (`selfsigned::load_or_generate`'s
+//! `persist_error`) instead of persisting a key under an inherited ACL.
+//!
+//! INVARIANT: Directories the operator already had are never re-permissioned. Rewriting the ACL or
+//! mode of an operator-chosen `tls_dir` (or one of its ancestors) could lock out backup agents or
+//! the operator's own account. Only directories this module creates are restricted; a failure to
+//! restrict one of those is logged and non-fatal because the key file's own protection is what
+//! guards the secret.
+//!
+//! INVARIANT: A failed write removes its `<key>.tmp` temporary file, which may hold secret bytes.
+//! The removal itself is best-effort.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

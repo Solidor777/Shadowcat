@@ -1,46 +1,48 @@
-//! Pure, lock-free per-path move executor.
-//!
-//! Server-authoritative movement, engine-agnostic.
+//! This module executes one move along a path: pure, lock-free, server-authoritative and
+//! engine-agnostic.
 //!
 //! `execute_move` is built on `gate_walk`, which subdivides ANY input polyline — grid A*
 //! cell-center vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart —
 //! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
 //! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
 //! dense walk, validating each dense sub-step against the SAME predicate set
-//! `pathfinding::cell_enterable` uses for routing:
-//! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
-//!   `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
-//!   (`ecs.move_walls(scene, None, mover_elevation)`), minus per step any one-way wall whose
-//!   transparent side faces the pre-step point (`vision::Seg::transparent_from` — the shared
-//!   predicate the sight raycast and the router read, so the three never disagree on which
-//!   side of a wall is solid) — both checks are
-//!   required; the disc test alone lets a wall between two adjacent cell centers become
-//!   permeable at the default 0.4-cell footprint,
-//! - the caller-supplied `visible` mask (skipped for `Unrestricted`) over
-//!   `footprint_cells ∪ line_traversal`, not the center point alone,
-//! - the region field: impassable is footprint-gated (a wide body cannot fit past
-//!   impassable terrain any more than a wall); arrest and terrain stay CENTER-CELL only, mirroring
-//!   `cell_enterable`'s documented asymmetry (they act on the mover's own position, not solid
-//!   geometry it must clear). Always reads the AUTHORITATIVE field for the mover's floor
-//!   (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
-//!   regardless of what the mover's own pathfind preview could see.
+//! `pathfinding::cell_enterable` uses for routing. The predicate set has three gates.
 //!
-//! The executor returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
-//! when the move stops before `path.last()` for any reason (wall, mask, region-impassable,
-//! region-arrest, or an exhausted movement `MoveGateInputs::budget`), including a region-arrest
-//! on the final path step.
+//! The wall gate applies a footprint-disc clearance test AND a center-to-center segment-crossing
+//! test against every `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
+//! (`ecs.move_walls(scene, None, mover_elevation)`), minus per step any one-way wall whose
+//! transparent side faces the pre-step point (`vision::Seg::transparent_from` — the shared
+//! predicate the sight raycast and the router read, so the three never disagree on which side of
+//! a wall is solid). Both checks are required; the disc test alone lets a wall between two
+//! adjacent cell centers become permeable at the default 0.4-cell footprint.
 //!
-//! INVARIANT (route-gate parity): step 2 calls `GridShape::line_traversal(prev,
-//! next, cell)` (via `ecs.resolve_grid_shape`) and checks `all ∈ visible` over
-//! `footprint_cells ∪ line_traversal` — square delegates to `movement::supercover_cells`, hex to
-//! a ψ-crossing supercover, so the predicate agrees on every cell on BOTH grid kinds, not square
-//! alone. This is the SAME predicate set `pathfinding::cell_enterable` uses when routing: on
-//! `GridStepped`, route-admissible ⇔ gate-admissible for a non-GM mover (the parity tests in this
-//! file pin the equivalence); on `Continuous` the two evaluate at different granularity (dense
-//! `gate_walk` sampling vs the router's cell-center check), so only the weaker route ⊆
-//! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision —
-//! there is no separate gate to keep in sync. The caller pre-computes `visible` off the ECS read
-//! lock, so this executor is pure and imposes no lock ordering.
+//! The vision-mask gate tests the caller-supplied `visible` mask (skipped for `Unrestricted`) over
+//! `footprint_cells ∪ line_traversal`, not the center point alone.
+//!
+//! The region gate reads the AUTHORITATIVE field for the mover's floor
+//! (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
+//! regardless of what the mover's own pathfind preview could see. Impassable is footprint-gated (a
+//! wide body cannot fit past impassable terrain any more than a wall); arrest and terrain stay
+//! CENTER-CELL only, mirroring `cell_enterable`'s documented asymmetry (they act on the mover's
+//! own position, not solid geometry it must clear).
+//!
+//! The executor returns the stop point, the legal prefix render-path and the accumulated cost.
+//! `truncated` is true when the move stops before `path.last()` for any reason (wall, mask,
+//! region-impassable, region-arrest, or an exhausted movement `MoveGateInputs::budget`),
+//! including a region-arrest on the final path step.
+//!
+//! INVARIANT (route-gate parity): the vision-mask gate calls
+//! `GridShape::line_traversal(prev, next, cell)` (via `ecs.resolve_grid_shape`) and checks
+//! `all ∈ visible` over `footprint_cells ∪ line_traversal` — square delegates to
+//! `movement::supercover_cells`, hex to a ψ-crossing supercover, so the predicate agrees on every
+//! cell on BOTH grid kinds, not square alone. This is the SAME predicate set
+//! `pathfinding::cell_enterable` uses when routing: on `GridStepped`, route-admissible ⇔
+//! gate-admissible for a non-GM mover (the parity tests pin the equivalence); on `Continuous` the
+//! two evaluate at different granularity (dense `gate_walk` sampling vs the router's cell-center
+//! check), so only the weaker route ⊆ gate-allowed direction holds. `execute_move` is the sole
+//! per-cell traversal decision — there is no separate gate to keep in sync. The caller
+//! pre-computes `visible` off the ECS read lock, so this executor is pure and imposes no lock
+//! ordering.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -305,8 +307,8 @@ pub(crate) struct MoveGateInputs<'a> {
     pub mover_elevation: f64,
 }
 
-/// Walk `path` step by step, validating each step against the wall gate (step 1), the
-/// vision-mask gate (step 2), and the region field (step 3).
+/// Walk `path` step by step, validating each step against the wall gate, the vision-mask gate,
+/// and the region gate.
 ///
 /// # Engine-agnostic gate walk
 ///
@@ -319,7 +321,7 @@ pub(crate) struct MoveGateInputs<'a> {
 ///
 /// # Parity with `pathfinding::cell_enterable` — per-cell decision and per-step cost
 ///
-/// The per-cell decision (step 1 + step 2) uses the SAME primitives as the router's
+/// The per-cell decision (the wall gate and the vision-mask gate) uses the SAME primitives as the router's
 /// `cell_enterable`: wall-segment crossing (`segments_cross`, the primitive `blocks_move`
 /// wraps), footprint-disc clearance, `GridShape::line_traversal` (a supercover on both grid
 /// kinds — square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the
@@ -510,7 +512,7 @@ pub(crate) fn execute_move(
         // point to a single canonical cell, so the mask/impassable disc and the wall disc can
         // share one anchor with no degenerate multi-cell admission at any radius.
 
-        // Step 1: wall gate — every dense sub-segment, exempt for a GM. TWO checks,
+        // Wall gate — every dense sub-segment, exempt for a GM. TWO checks,
         // both from `cell_enterable`: the footprint disc at
         // `next` must clear every wall, AND the center-to-center step segment must cross none.
         // The disc alone is insufficient — at a 0.4-cell footprint a wall midway between
@@ -538,7 +540,7 @@ pub(crate) fn execute_move(
             }
         }
 
-        // Step 2: vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
+        // Vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
         // center — the same `footprint_cells ∪ line_traversal` union `cell_enterable` requires.
         // This density is exactly why gate_walk exists: line_traversal
         // is well-defined and dense enough to cover the swept footprint for an any-angle
@@ -555,7 +557,7 @@ pub(crate) fn execute_move(
             }
         }
 
-        // Step 3: region gate, keyed on CELL-ENTRY TRANSITIONS, not per dense sample
+        // Region gate, keyed on CELL-ENTRY TRANSITIONS, not per dense sample
         // — a continuous path subdivided into several sub-cell samples within the same cell
         // is evaluated exactly once for that cell. For grid input that is one accrual per
         // authored step, since every authored step crosses into a distinct new
@@ -570,7 +572,7 @@ pub(crate) fn execute_move(
         // rejecting, so a duplicate-cell transition would silently fall through this dedup rather
         // than being caught by a separate check.
         if next_cell != last_region_cell {
-            // Impassable IS footprint-gated (`cell_enterable`'s check 4):
+            // Impassable IS footprint-gated (`cell_enterable`'s region gate):
             // a wide body cannot fit past impassable terrain any more than past a wall.
             if check_regions {
                 let fp_cells = grid.footprint_cells(next_cell, next, r_scene, cell);

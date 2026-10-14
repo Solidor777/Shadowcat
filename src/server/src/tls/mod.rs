@@ -2,20 +2,20 @@
 //! byte ([`listener::SniffListener`]).
 //!
 //! Certificates come from an operator PEM ([`pem`]), a persisted self-signed leaf ([`selfsigned`])
-//! or an in-memory self-signed leaf; the degradation ladder in [`TlsRuntime::start`] guarantees a
-//! TLS-side failure never prevents plain HTTP from serving.
+//! or an in-memory self-signed leaf, chosen by the degradation ladder in [`TlsRuntime::start`].
 //!
-//! INVARIANTS:
-//! 1. A TLS-side failure of any kind (certificate, key file, handshake) never stops plain HTTP.
-//! 2. Every rustls configuration names its crypto provider explicitly through [`ring_provider`];
-//!    the process never relies on rustls' feature-based auto-selection.
-//! 3. The certificate a connection receives, its [`ConnMeta::cert`] and the HSTS decision all
-//!    derive from ONE [`resolver::Snapshot::select`] call (see [`resolver`]).
+//! INVARIANT: A TLS-side failure of any kind (certificate, key file, handshake) never stops plain
+//! HTTP.
 //!
-//! ACME seam: [`resolver::Snapshot`] already carries the TLS-ALPN-01 challenge map and the
-//! primary-certificate slot an ACME task hot-swaps through [`resolver::CertResolver::update`];
-//! [`TlsSource::Acme`] and [`TlsRuntime`]'s `degraded_from` field are the status vocabulary it
-//! reports through.
+//! INVARIANT: Every rustls configuration names its crypto provider explicitly through
+//! [`ring_provider`]; the process never relies on rustls' feature-based auto-selection.
+//!
+//! INVARIANT: The certificate a connection receives, its [`ConnMeta::cert`] and the HSTS decision
+//! all derive from ONE [`resolver::Snapshot::select`] call (see [`resolver`]).
+//!
+//! ACME seam: [`resolver::Snapshot`] carries the TLS-ALPN-01 challenge map and the
+//! primary-certificate slot, and [`resolver::CertResolver::update`] swaps in a derived snapshot.
+//! ACME status is reported through [`TlsSource::Acme`] and [`TlsRuntime`]'s `degraded_from` field.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

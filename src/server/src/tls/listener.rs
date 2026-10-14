@@ -4,32 +4,35 @@
 //! anything else is plain HTTP), so `http://host:port` and `https://host:port` both serve the full
 //! app and nothing is redirected.
 //!
-//! Accept path guarantees:
-//! - one 10 s deadline bounds sniffing AND the whole TLS handshake (a peer that stalls
-//!   mid-handshake is dropped like one that sends nothing). There is deliberately no shorter
-//!   first-byte deadline: browsers open speculative connections (`rel=preconnect`, omnibox
-//!   prediction) that carry no bytes until a request needs them and close any that goes unused
-//!   for about 10 s (web.dev, "Establish network connections early to improve perceived page
-//!   speed", caution note on `rel=preconnect`), so a silent socket up to that age is ordinary
-//!   browser behaviour and the same 10 s is the longest silence worth holding. A shorter deadline
-//!   would drop connections a browser is about to use (it reconnects at the cost of a round
-//!   trip); a longer one only lets a silent peer hold a cap slot longer. Not verified: real
-//!   omnibox preconnect against this listener (Playwright's Chromium and Firefox, given a
-//!   preconnect link, opened no zero-byte connection within 25 s);
-//! - admission caps: a global in-flight cap and a per-peer cap keyed by [`peer_key`](crate::http::peer_slots::peer_key) (an IPv4
-//!   address, or the /64 prefix of an IPv6 address: a single IPv6 subscriber holds a whole /64, so
-//!   a per-address key would let one host mint 2^64 keys; IPv4-mapped IPv6 peers count as their
-//!   IPv4 address). Peers for which `Config::is_cap_exempt` holds (a listed trusted proxy or a
-//!   loopback peer) are exempt from the per-peer cap because every player behind such a peer shares
-//!   its address; they remain bound by the global cap. The caps bound the pre-hand-off phase, where a connection is unauthenticated and costs
-//!   the peer nothing; afterwards `crate::http::conn_serve::ConnLimits` bounds header-read, HTTP/2
-//!   idle time and the live-connection count (global and per peer, the same keying and
-//!   exemption, carried to it in `ConnMeta::cap_exempt`), and request-level throttles bound
-//!   abuse;
-//! - accept errors follow axum's own policy ([`crate::http::conn_serve::accept_error_pause`]):
-//!   connection-level errors are ignored, others are logged and followed by a 1 s pause, and the
-//!   accept loop never exits on error;
-//! - dropping the listener (graceful shutdown) releases the port immediately.
+//! One 10 s deadline bounds sniffing AND the whole TLS handshake (a peer that stalls
+//! mid-handshake is dropped like one that sends nothing). There is deliberately no shorter
+//! first-byte deadline: browsers open speculative connections (`rel=preconnect`, omnibox
+//! prediction) that carry no bytes until a request needs them and close any that goes unused
+//! for about 10 s (web.dev, "Establish network connections early to improve perceived page
+//! speed", caution note on `rel=preconnect`), so a silent socket up to that age is ordinary
+//! browser behaviour and the same 10 s is the longest silence worth holding. A shorter deadline
+//! would drop connections a browser is about to use (it reconnects at the cost of a round
+//! trip); a longer one only lets a silent peer hold a cap slot longer. Not verified: real
+//! omnibox preconnect against this listener (Playwright's Chromium and Firefox, given a
+//! preconnect link, opened no zero-byte connection within 25 s).
+//!
+//! Admission is capped by a global in-flight cap and a per-peer cap keyed by
+//! [`peer_key`](crate::http::peer_slots::peer_key) (an IPv4 address, or the /64 prefix of an IPv6
+//! address: a single IPv6 subscriber holds a whole /64, so a per-address key would let one host
+//! mint 2^64 keys; IPv4-mapped IPv6 peers count as their IPv4 address). Peers for which
+//! `Config::is_cap_exempt` holds (a listed trusted proxy or a loopback peer) are exempt from the
+//! per-peer cap because every player behind such a peer shares its address; they remain bound by
+//! the global cap. The caps bound the pre-hand-off phase, where a connection is unauthenticated
+//! and costs the peer nothing; afterwards `crate::http::conn_serve::ConnLimits` bounds
+//! header-read, HTTP/2 idle time and the live-connection count (global and per peer, the same
+//! keying and exemption, carried to it in `ConnMeta::cap_exempt`), and request-level throttles
+//! bound abuse.
+//!
+//! Accept errors follow axum's own policy ([`crate::http::conn_serve::accept_error_pause`]):
+//! connection-level errors are ignored, others are logged and followed by a 1 s pause, and the
+//! accept loop never exits on error.
+//!
+//! Dropping the listener (graceful shutdown) releases the port immediately.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
