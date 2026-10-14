@@ -1,8 +1,8 @@
 //! Deterministic test-fixture UUIDs.
 //!
-//! Every server-generated document id is a v4 UUID (`data::validation::validate_document_id`), so a
-//! fixture built from a small integer must carry the same version/variant bits or every Create-path
-//! test fails identically at ingress.
+//! Ingress accepts only a v4 or v7 UUID as a document id (`data::validation::validate_document_id`),
+//! so a fixture id built from a small integer must carry the version and variant bits of one or a
+//! Create-path test using it fails at ingress.
 
 /// Builds a UUID from `n`'s big-endian bytes with the version/variant nibbles forced to v4 /
 /// RFC4122, so two distinct small `n` values remain distinct while every fixture id passes

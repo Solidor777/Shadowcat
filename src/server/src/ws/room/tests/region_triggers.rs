@@ -1,9 +1,10 @@
-//! `Room`'s region-trigger fire sites.
+//! These tests exercise `Room`'s region-trigger fire sites.
 //!
-//! The tests cover the two sites, move execution (`Room::execute_move`'s post-commit call into
-//! `fire_region_triggers`) and placement/teleport (`Room::publish`'s candidate scan into
-//! `fire_placement_triggers`), the per-effect-kind application semantics, and the secrecy forcing
-//! rule for regions not visible to every world member.
+//! They cover three sites: move execution (`Room::execute_move`'s post-commit call into
+//! `fire_region_triggers`), placement/teleport (`Room::publish`'s candidate scan into
+//! `fire_placement_triggers`), and combat turn and round boundaries (`fire_turn_round_triggers`).
+//! They also cover the per-effect-kind application semantics and the secrecy forcing rule for
+//! regions not visible to every world member.
 
 use super::*;
 use crate::chat::{Audience, MessageEngine, MessageKind, Segment};

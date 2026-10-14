@@ -1,4 +1,6 @@
-//! GM audio-transport handling and the activeScene ambience swap.
+//! These tests cover GM audio-transport handling and the activeScene ambience swap.
+//!
+//! They also cover the track-ended report gate and the refusal of a playlist from another world.
 
 use super::*;
 use crate::audio::transport::{handle_transport, TransportError};

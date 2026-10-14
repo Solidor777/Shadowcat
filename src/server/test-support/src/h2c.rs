@@ -1,8 +1,8 @@
-//! HTTP/2 with prior knowledge over plain TCP.
+//! This module drives `http::conn_serve` with HTTP/2 prior knowledge over plain TCP.
 //!
-//! It drives `http::conn_serve` with an HTTP/2 connection (extended-CONNECT WebSockets included)
-//! without a TLS handshake: a [`ConnSource`] whose connections all claim ALPN `h2`, and a client
-//! that speaks HTTP/2 from the first byte.
+//! It offers an HTTP/2 connection (extended-CONNECT WebSockets included) without a TLS handshake:
+//! a [`ConnSource`] whose connections all claim ALPN `h2`, and a client that speaks HTTP/2 from the
+//! first byte.
 
 use std::io;
 use std::net::SocketAddr;

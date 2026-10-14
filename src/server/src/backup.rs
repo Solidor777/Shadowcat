@@ -1,14 +1,15 @@
-//! Whole-server backup/restore: SQLite `VACUUM INTO` snapshot + assets-directory copy + a
-//! `manifest.json` for round-trip sanity checks.
+//! This module backs up and restores a whole server: a SQLite `VACUUM INTO` snapshot, a copy of the
+//! assets directory and a `manifest.json` for round-trip sanity checks.
 //!
-//! Pure file I/O plus one SQL statement — no dependency on `AppState`/`SqliteRepository`, so a
-//! fresh short-lived connection is opened directly against the caller-resolved db path.
+//! It is pure file I/O plus one SQL statement, with no dependency on `AppState` or
+//! `SqliteRepository`, so a fresh short-lived connection is opened directly against the
+//! caller-resolved db path.
 //!
-//! INVARIANT: the DB snapshot (`VACUUM INTO`) always completes before the assets
-//! copy starts. Asset uploads write bytes to disk BEFORE inserting the
-//! referencing DB row (`http::assets::upload`), and asset files are never deleted
-//! except by explicit delete — so db-snapshot-then-assets-copy guarantees every
-//! asset the snapshot's rows reference is already present in the assets copy.
+//! INVARIANT: the DB snapshot (`VACUUM INTO`) always completes before the assets copy starts. Asset
+//! uploads write bytes to disk BEFORE inserting the referencing DB row (`http::assets::upload`), and
+//! asset files are never deleted except by explicit delete or by the rollback of an upload whose
+//! row was never inserted, so db-snapshot-then-assets-copy guarantees every asset the snapshot's
+//! rows reference is already present in the assets copy.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

@@ -95,8 +95,8 @@ fn astar_leg_orthogonal_never_returns_a_diagonal_step() {
 
 /// One conformance case: a rule, a cell offset, and the cost a direct wall-free route between
 /// two cells that far apart must report — asserted by the server's `astar_leg` here and by the
-/// client's `Grid.distance` against the same file (the `chosen-vision-sample.json` shared-
-/// fixture pattern), so the two languages cannot drift on what a rule costs.
+/// client's `Grid.distance` against the same fixture (the shared-fixture pattern of
+/// `chosen_vision_sample`), so the two languages cannot drift on what a rule costs.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiagonalCostCase {

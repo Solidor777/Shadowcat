@@ -1,5 +1,7 @@
-//! A session whose peer has stopped reading still ends, in steady state, after shutdown, and while
-//! a join is being refused, because the sends are bounded: `egress_loop`'s frame and Close sends and `reject_join`'s refusal sends.
+//! These tests check that a session whose peer has stopped reading still ends in steady state,
+//! after shutdown, and while a join is being refused.
+//!
+//! The sends are bounded: `egress_loop`'s frame and Close sends and `reject_join`'s refusal sends.
 
 use std::time::Duration;
 

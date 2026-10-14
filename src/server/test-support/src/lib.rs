@@ -1,14 +1,15 @@
-//! Shared WS integration-test harness for the scene tests.
+//! This crate holds the integration-test support that the server's test binaries share.
 //!
-//! It is a real WS client against an ephemeral in-process server whose single seeded user owns the
-//! world (GM), so its intents are authorized.
+//! Its root provides a real WS client against an ephemeral in-process server whose single seeded
+//! user owns the world (GM), so its intents are authorized; its modules provide the egress,
+//! HTTP/2, TLS, observation, log-capture, measurement and throughput fixtures.
 //!
-//! A library crate rather than a shared module included by each integration-test binary: such a
-//! module compiles whole while each binary uses only part of it, so every unused
-//! helper is dead code there and the module needs a blanket suppression. A `pub` item in a
-//! library is reachable by definition, so no such diagnostic fires and nothing is silenced.
-//! Reaching this crate only through `shadowcat`'s [dev-dependencies] keeps it out of release
-//! builds.
+//! It is a library crate rather than a shared module included by each integration-test binary: such
+//! a module compiles whole while each binary uses only part of it, so every unused helper is dead
+//! code there and the module needs a blanket suppression. A `pub` item in a library is reachable by
+//! definition, so no such diagnostic fires and nothing is silenced. Reaching this crate only through
+//! `shadowcat`'s [dev-dependencies] keeps it out of release builds.
+
 #![deny(missing_docs)]
 
 /// The HTTP/2 implementation the client helpers use, re-exported so tests name one version.

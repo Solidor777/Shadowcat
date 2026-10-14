@@ -1,4 +1,4 @@
-//! `validate_bounds` and `vfx_permitted` truth tables.
+//! These tests check the truth tables of `validate_bounds` and `vfx_permitted`.
 //!
 //! `validate_bounds` is tested cap by cap, and `vfx_permitted` over a stub `Repository` (canned
 //! doc and defaults, every other method unreachable) — the spectator short-circuit is pinned by a

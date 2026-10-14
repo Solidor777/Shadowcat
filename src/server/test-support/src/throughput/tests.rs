@@ -1,4 +1,5 @@
-//! Baseline resolution and lazy construction of the throughput ladder.
+//! These tests check baseline resolution, the lazy construction of the throughput ladder and the
+//! parsing of its worker count.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

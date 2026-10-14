@@ -1,28 +1,27 @@
-//! The vendored `h2` releases the stream slots of a stream whose reset is scheduled when the
-//! connection ends.
+//! These tests check that the vendored `h2` releases the stream slot of a stream whose reset is
+//! scheduled when the connection ends.
 //!
-//! A server that finishes its send half while the response DATA is queued behind a zero
-//! send window, with the request still open, drops its handles and leaves the stream in
-//! `Closed(ScheduledLibraryReset(NO_ERROR))`: the reset can never be written, and unpatched `h2`
-//! never converts the state, so the stream stays counted and `Counts::drop` asserts
-//! `!self.has_streams()` when the connection is dropped. The assertion exists only under
+//! A server that finishes its send half while the response DATA is queued behind the client's send
+//! window, with the request still open, drops its handles and leaves the stream in
+//! `Closed(ScheduledLibraryReset(NO_ERROR))`. The reset can never be written once the connection
+//! has ended, so the vendored `State` closes the stream with an error instead, which lets
+//! `Counts::transition_after` release the slot. A stream left counted trips `Counts::drop`'s
+//! assertion `!self.has_streams()` when the connection is dropped. The assertion exists only under
 //! `debug_assertions`; without them every test in this file would pass vacuously, so the whole
-//! file is compiled out there and the default-profile `cargo test` is the run that counts.
+//! file is compiled out there.
 //!
 //! Each connection end is driven over `tokio::io::duplex` (no sockets) through `Gate`, whose
-//! writes park once `block` is set (a peer that stopped reading) and whose reads fail on demand.
+//! writes park once `block` is set (a peer that stopped reading) and whose reads and writes fail on
+//! demand.
 //!
-//! Two arms of the vendored `State` are under test. The clean-EOF test needs the
-//! `State::recv_eof` arm. A transport failure runs `Streams::handle_error` (the failure sweep)
-//! and then, when the connection drops, `Streams::recv_eof` (the drop sweep). A stream whose
-//! reset-expiration window is still open (`Stream::reset_at` is `Some`, so
-//! `Stream::is_released` is false) survives the failure sweep and is released by the drop sweep's
-//! `State::recv_eof` arm. A stream whose window has already expired is removed from the store by
-//! the failure sweep's `Counts::transition_after` while still counted, so the drop sweep never
-//! finds it and only the `State::handle_error` arm releases it. The reset-expiration window is
-//! `h2::server::Builder::reset_stream_duration` (default `h2`'s `DEFAULT_RESET_STREAM_SECS`, one
-//! second); `Duration::ZERO` makes the window expired by the time the failure is injected, so
-//! the state that needs the `handle_error` arm is constructed directly rather than waited for.
+//! Two arms of the vendored `State` are under test: `State::recv_eof` and `State::handle_error`.
+//! A clean EOF reaches `State::recv_eof` through `Streams::recv_eof`, and the clean-EOF test needs
+//! that arm. A transport failure reaches `State::handle_error` through `Streams::handle_error`,
+//! and `Streams::recv_eof` runs again when the connection is dropped. Every test runs each
+//! combination of the client's initial window, the writer state and the server's reset-expiration
+//! window, which is `h2::server::Builder::reset_stream_duration` (`DEFAULT_RESET_STREAM_SECS` of
+//! `h2`, one second, by default); `Duration::ZERO` leaves that window expired.
+
 #![cfg(debug_assertions)]
 
 use std::io;

@@ -1,4 +1,4 @@
-//! `handle_toggle_door`'s reply shape.
+//! These tests check `handle_toggle_door`'s reply shape.
 //!
 //! The reply is `None` on success (the broadcast `Event` echo is the confirmation — the chat-ops
 //! asymmetric pattern), a correlated `DoorToggleError` to the originating connection only on

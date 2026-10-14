@@ -1,4 +1,4 @@
-//! Creature senses in the per-recipient `MoveStream` clip (`clip_move_stream` →
+//! These tests check creature senses in the per-recipient `MoveStream` clip (`clip_move_stream` →
 //! `InstantSight::sees_token`).
 //!
 //! A tremorsense observer is streamed a grounded token it cannot see, through the SAME reach

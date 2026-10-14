@@ -1,4 +1,5 @@
-//! Liveness probe endpoint plumbing.
+//! This module defines `HealthStatus`, the snapshot the liveness probe returns, which the client
+//! mirrors through the ts-rs type pipeline.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

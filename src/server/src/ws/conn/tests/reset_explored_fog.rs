@@ -1,7 +1,9 @@
-//! `handle_reset_explored_fog`'s authorization gate and happy-path effect.
+//! These tests exercise `handle_reset_explored_fog`'s authorization gate, its happy-path effect and
+//! its user-scoped reset.
 //!
 //! The gate gives a uniform generic refusal for a non-GM and for a scene outside this room's world;
-//! the happy path deletes rows and the broadcast is observable on a second subscriber.
+//! the happy path deletes rows and the broadcast is observable on a second subscriber. A
+//! user-scoped reset is refused on a shared-pooling scene and works under individual pooling.
 
 use super::*;
 

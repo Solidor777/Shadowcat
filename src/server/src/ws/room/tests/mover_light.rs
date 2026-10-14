@@ -1,7 +1,8 @@
-//! `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`).
+//! These tests exercise `Room::execute_move`'s carried-light timeline (`MoveStream.mover_light`).
 //!
-//! It is present exactly when the mover carries an enabled emission in an environment-lit scene,
-//! sampled at the position samples' own instants, and absent — with no raycast — otherwise.
+//! The timeline is present when the mover carries an enabled emission in an environment-lit scene,
+//! sampled at the position samples' own instants, and absent — with no raycast — when the scene is
+//! all-bright or the mover has no enabled emission.
 
 use super::*;
 use serde_json::json;

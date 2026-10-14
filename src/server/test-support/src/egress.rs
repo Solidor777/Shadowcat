@@ -1,8 +1,8 @@
-//! Fixtures for the egress no-progress tests.
+//! These are the fixtures for the egress no-progress tests.
 //!
-//! They are a serve loop over the real router plus routes that stall in controlled ways, and an
-//! HTTP/2 client whose receive windows and read pace the test sets, so a stall is driven by the
-//! credit the client returns rather than by a sleep.
+//! They are a serve loop over the real router plus routes that stall in controlled ways, an HTTP/2
+//! client whose receive windows and read pace the test sets, and raw HTTP/2 peers that script
+//! their frames, so a stall is driven by the credit the client returns rather than by a sleep.
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
@@ -57,11 +57,12 @@ pub enum Protocol {
 /// knowledge.
 ///
 /// Routes beyond the application's: `/endless` produces [`ENDLESS_CHUNK`]-byte chunks forever
-/// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/bulk` answers with `bytes` bytes from [`bulk_body`]; `/sparse` produces
-/// `chunks` chunks of 100 bytes, `gap_ms` milliseconds apart (query parameters); `/scripted`
-/// (any method) answers with chunks of the `sizes` query parameter's comma-separated lengths,
-/// ended as `end` says (`final`, `empty` or `trailers`: see [`BodyEnd`]), and logs the instant its
-/// body is dropped in [`EgressServer::drops`].
+/// (counted in [`EgressServer::produced`]); `/empty` answers with no body; `/bulk` answers with
+/// `bytes` bytes from [`bulk_body`]; `/sparse` produces `chunks` chunks of 100 bytes, `gap_ms`
+/// milliseconds apart (query parameters); `/scripted` (any method) answers with chunks of the
+/// `sizes` query parameter's comma-separated lengths, ended as `end` says (`final`, `empty` or
+/// `trailers`: see [`BodyEnd`]), and logs the instant its body is dropped in
+/// [`EgressServer::drops`].
 pub struct EgressServer {
     /// The bound address.
     pub addr: SocketAddr,

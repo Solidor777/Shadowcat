@@ -1,4 +1,5 @@
-//! Installed community-module discovery + the engine-compat semver gate.
+//! This module discovers the installed community modules, gates each on engine compatibility with
+//! a semver range, records each world's enablement of them, and caches the discovery scan.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

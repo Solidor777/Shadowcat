@@ -1,4 +1,5 @@
-//! The tunnel gate against a stream table the test feeds as the connection's writer would.
+//! These tests drive `TunnelGate` against a stream table that the test feeds as the connection's
+//! writer would.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

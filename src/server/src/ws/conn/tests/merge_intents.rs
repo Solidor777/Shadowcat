@@ -1,10 +1,11 @@
-//! `conn::merge_intents`'s wire-dispatch layer (`merge_intents::handle_merge_intent`).
+//! These tests exercise `conn::merge_intents`'s wire-dispatch layer
+//! (`merge_intents::handle_merge_intent`).
 //!
-//! The tests cover the stateless two-call flow, the owner-or-GM and per-path authorization
+//! They cover the stateless two-call flow, the owner-or-GM and per-path authorization
 //! derivations, push's per-instance visibility/capability outcomes, and the
 //! `WriteOrigin::TemplateMerge` commit's broadcast/redaction behaviour.
 //!
-//! Fixture pattern mirrors `combat_intents`'s harness construction.
+//! The fixture pattern mirrors the harness construction of `combat_intents`.
 
 use super::*;
 use crate::auth::role::ServerRole;

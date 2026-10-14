@@ -1,8 +1,8 @@
 //! The Shadowcat server library: authoritative state, persistence, permissions, and realtime sync
 //! for the self-hosted virtual tabletop.
 //!
-//! It is compiled into one binary with the web client embedded (`rust-embed` — `dist/` must exist
-//! at compile time). Clients send intents; this crate validates, applies, and broadcasts
+//! The crate is compiled into one binary with the web client embedded (`rust-embed` — `dist/` must
+//! exist at compile time). Clients send intents; this crate validates, applies, and broadcasts
 //! per-recipient-filtered events. Server-side code never executes third-party module code, except
 //! opted-in sandboxed validators (`sandbox`) running inside a fuel/memory-limited `wasmi`
 //! interpreter with no host imports beyond a rate-limited debug log.

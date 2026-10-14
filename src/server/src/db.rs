@@ -1,4 +1,8 @@
-//! SQLite pool bootstrap (deliberately single-connection).
+//! This module opens the server's SQLite pools and resolves which file a database URL names.
+//!
+//! The read-write pool is single-connection (`connect_pool`, `connect_pool_with_options`), so one
+//! writer serializes transactions; `open_read_only_pool` opens a small read-only pool over the same
+//! database for hot read paths.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.

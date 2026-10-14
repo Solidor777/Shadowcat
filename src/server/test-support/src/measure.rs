@@ -1,7 +1,5 @@
-//! Measurement support.
-//!
-//! It provides paced reads against a server with a given no-progress window, and the record sink
-//! for values a test measures but does not yet assert on.
+//! This module supports measurement: paced reads against a server with a given no-progress window,
+//! and the record sink for values a test measures but does not yet assert on.
 //!
 //! A measured value that is only empirical (a scheduling overshoot, a throughput ratio) is
 //! recorded, not asserted, until every operating system's value has been recorded; the sink
@@ -37,8 +35,10 @@ pub fn record(line: &str) {
 /// `derived` is the part of the detection delay the design fixes (the window plus one sampler
 /// tick: the cut lands at the first tick at or after the window). What lies beyond it is timer
 /// and task wake-up latency, which no premise bounds, so the overshoot is recorded per operating
-/// system and asserted on nothing. It becomes a blocking bound once the three legs are recorded,
-/// set below the worst leg by a stated headroom with the recorded values beside the constant.
+/// system and asserted on nothing.
+///
+/// TODO: Promote the overshoot to a blocking bound once the three legs are recorded, set below the
+/// worst leg by a stated headroom with the recorded values beside the constant.
 pub fn record_cut_overshoot(what: &str, observed: Duration, derived: Duration) {
     let overshoot_ms = observed.as_secs_f64() * 1e3 - derived.as_secs_f64() * 1e3;
     record(&format!(

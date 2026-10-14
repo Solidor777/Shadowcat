@@ -1,5 +1,5 @@
-//! Backpressure for a WebSocket session tunnelled inside an HTTP/2 stream (RFC 8441 extended
-//! CONNECT).
+//! This module applies backpressure to a WebSocket session tunnelled inside an HTTP/2 stream
+//! (RFC 8441 extended CONNECT).
 //!
 //! WHY: hyper's tunnel task takes every chunk the session writes and hands it to h2 whether or not
 //! the peer has granted send credit, and h2 buffers a write beyond the stream's window without
@@ -10,17 +10,15 @@
 //!
 //! [`TunnelGate`] makes the pending state real. It counts the bytes the session writes and
 //! compares them with the DATA payload bytes the connection's writer has put on the wire for the
-//! session's own stream ([`TunnelProbe`]); a session more than
-//! [`H2_SEND_BUF_BYTES`] ahead of the wire is not
-//! ready for its next frame, so the sink wrapped around the gate times the wait out with the same
-//! window as every other send. The wait ends when the backlog (bytes written minus bytes on the
-//! wire) is back within [`H2_SEND_BUF_BYTES`], or when the stream ends; wire progress that leaves
-//! the backlog above that bound does not release it. The same bound, one send buffer plus the
-//! frame being written, limits what a response body may be ahead of its peer.
+//! session's own stream ([`TunnelProbe`]); a session more than [`H2_SEND_BUF_BYTES`] ahead of the
+//! wire is not ready for its next frame, so the sink wrapped around the gate times the wait out
+//! with the same window as every other send. The wait ends when the backlog (bytes written minus
+//! bytes on the wire) is back within [`H2_SEND_BUF_BYTES`], or when the stream ends; wire progress
+//! that leaves the backlog above that bound does not release it. A response body's lead over an
+//! unread peer is bounded by the same send buffer plus one chunk.
 //!
-//! INVARIANT: the gate sits INSIDE the stall bound
-//! (`BoundedSink<TunnelGate<_>>`, built by `WsState::bounded_sink`), never outside it, or a gated
-//! wait would have no timer.
+//! INVARIANT: the gate sits INSIDE the stall bound (`BoundedSink<TunnelGate<_>>`, built by
+//! `WsState::bounded_sink`), never outside it, or a gated wait would have no timer.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

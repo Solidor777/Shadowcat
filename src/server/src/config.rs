@@ -1,4 +1,5 @@
-//! CLI/env/TOML config layering (`Cli` > `SHADOWCAT_*` > TOML > default).
+//! This module layers the server configuration: `Cli` flags override `SHADOWCAT_*` environment
+//! variables, which override the TOML file, which overrides the defaults.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
