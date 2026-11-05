@@ -217,6 +217,7 @@
 - Subagents don't auto-activate skills. Use the plugin's agents, each of which invokes the relevant skill first.
 - Delegating implementation: `shadowcat-codebase:shadowcat-coder`.
 - Any review checkpoint (buddy-check, `requesting-code-review`, mainline-plan-execution final review): `shadowcat-codebase:shadowcat-spec-reviewer` + `shadowcat-codebase:shadowcat-code-reviewer` as a pair.
+- Reviewers can write one review file and nothing else. Name the file in the dispatch when a durable copy is wanted; the final message is still the whole report.
 - **Good:** `Task(shadowcat-codebase:shadowcat-coder, "implement the faction border")`
 - **Bad:** `Task(general-purpose, "implement the faction border")`
 
