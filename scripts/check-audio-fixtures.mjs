@@ -147,12 +147,14 @@ function markerMismatches(python, file, manifestPath, track) {
  * @param {string} options.cwd - repository directory the corpus is listed in.
  * @param {string} options.dir - absolute fixture directory.
  * @param {string[]} options.tracks - manifest track names, without extension.
- * @param {(line: string) => void} [options.log] - receives the corpus size line.
+ * @param {(line: string) => void} [options.log] - receives the corpus size line; silent when
+ *   omitted, because this is a library function (see `repoFiles`). The entry point passes
+ *   `console.log`.
  * @returns {string[]} one message per failure; empty when the directory and manifest agree.
  * @example
  * fixtureListingFailures({ cwd: REPO_ROOT, dir: FIXTURE_DIR, tracks: ["a", "b"] });
  */
-export function fixtureListingFailures({ cwd, dir, tracks, log = console.log }) {
+export function fixtureListingFailures({ cwd, dir, tracks, log = () => {} }) {
   const rel = relative(cwd, dir).split("\\").join("/");
   if (rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
     return [`fixture directory ${dir} is outside the repository at ${cwd}, so the corpus cannot list it`];
@@ -252,7 +254,15 @@ export function compare({ python, committedDir = FIXTURE_DIR, listingFailures = 
   return { failures, lines };
 }
 
-function main(argv) {
+/**
+ * The command: lists the fixtures, checks the tools, then runs `compare`.
+ * @param {string[]} argv - command-line arguments after the script name.
+ * @param {() => string[]} [probeTools] - reports the missing tools; the tests inject a fixed answer.
+ * @returns {number} the process exit code: 0 clean or skipped, 1 on a finding, 2 when git cannot list the files.
+ * @example
+ * main(["--require-tools"]);
+ */
+export function main(argv, probeTools = missingTools) {
   const requireTools = argv.includes("--require-tools");
   // The fixture listing needs git and the manifest, not the audio tools, so it runs first: a git
   // failure ends the run with one line and status 2 whether or not the tools are installed. Only a
@@ -263,13 +273,14 @@ function main(argv) {
       cwd: REPO_ROOT,
       dir: FIXTURE_DIR,
       tracks: committedTracks(FIXTURE_DIR),
+      log: console.log,
     });
   } catch (e) {
     if (!(e instanceof CorpusListingError)) throw e;
     console.error(`lint:audio-fixtures: ${e.message}`);
     return 2;
   }
-  const missing = missingTools();
+  const missing = probeTools();
   if (missing.length > 0) {
     const msg = `audio fixtures: missing tools: ${missing.join(", ")}`;
     if (requireTools) {
