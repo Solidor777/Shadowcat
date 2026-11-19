@@ -1052,8 +1052,11 @@ export class WsClient {
 
   /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
    * the Welcome watchdog; on failure schedules a reconnect instead. `running_` is re-checked
-   * immediately after `opts.connect` resolves; a `stop()` call while the connect is pending
-   * closes and discards the resolved transport rather than adopting it unwatched.
+   * immediately after `opts.connect` resolves, together with `connGeneration`; a `stop()` call
+   * (or a `stop()` then `start()`) while the connect is pending closes and discards the resolved
+   * transport rather than adopting it unwatched. The transport's `onClose` acts only while its
+   * own generation is current, so a replaced transport's late close cannot tear down its
+   * successor.
    * Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
    * @returns Resolves once this attempt has either armed the watchdog or scheduled a retry.
    * @example
@@ -1068,9 +1071,15 @@ export class WsClient {
     try {
       const transport = await this.opts.connect({
         onMessage: (d) => this.handleFrame(d, gen),
-        onClose: () => this.handleClose(),
+        // Same generation guard as the `welcome`/`resync_end` arms: a close event from a
+        // replaced transport must not tear down the current one.
+        onClose: () => {
+          if (gen === this.connGeneration) this.handleClose();
+        },
       });
-      if (!this.running_) {
+      // A `stop()` then `start()` while this connect was pending leaves `running_` true again
+      // but bumps `connGeneration`; the superseded attempt must not adopt its transport.
+      if (!this.running_ || gen !== this.connGeneration) {
         transport.close();
         return;
       }
