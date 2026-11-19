@@ -185,6 +185,8 @@ describe("the gates read the corpus through repoFiles", () => {
     "scripts/check-module-docs.mjs",
     "scripts/check-secure-context-apis.mjs",
     "scripts/check-aria-label-keys.mjs",
+    "scripts/check-audio-fixtures.mjs",
+    "scripts/check-walk-sites.mjs",
     "scripts/check-skill-symbol-refs.mjs",
     "scripts/check-svelte-runtime-entries.mjs",
     "scripts/extract-ts-examples.mjs",

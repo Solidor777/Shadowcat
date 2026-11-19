@@ -429,6 +429,8 @@ jobs:
         run: pnpm lint:secure-context
       - name: No second TLS crypto backend (ring only)
         run: pnpm lint:crypto-backend
+      - name: Every directory walk is a recorded non-corpus read
+        run: pnpm lint:walk-sites
       - name: Vendored crates hold nothing but upstream plus the committed patch
         run: pnpm lint:vendor
       - name: No i18n keys as accessible text

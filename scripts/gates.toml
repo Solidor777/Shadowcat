@@ -365,6 +365,12 @@ tier = "commit"
 [[gate]]
 workflow = "ci.yml"
 job = "docs"
+command = "pnpm lint:walk-sites"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
 command = "pnpm lint:vendor"
 tier = "commit"
 
