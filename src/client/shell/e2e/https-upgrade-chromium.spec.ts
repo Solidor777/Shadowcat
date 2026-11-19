@@ -26,8 +26,8 @@ import { requirePrivateAddress } from "./https-support";
 //     DevTools therefore never reach it; a capture of the browser window shows it, and the
 //     operating system's accessibility API can invoke its button (`invokeBrowserButton`: Windows UI
 //     Automation, macOS System Events, Linux AT-SPI), which the interactive test below does on
-//     every platform. Only the Windows driver has been run against a real browser; the macOS and
-//     Linux drivers are first exercised by the CI matrix.
+//     every platform. The macOS and Linux drivers depend on the platform accessibility API and on
+//     the accessibility flag the launcher passes (`accessibilityArgs`).
 //   - the certificate interstitial a direct `https://` navigation shows DOES have a DOM; the last
 //     test drives its real "proceed" click path (`#details-button`, `#proceed-link`).
 // A connection-level failure (refused, reset, timed out) is a dead end and fails the test.

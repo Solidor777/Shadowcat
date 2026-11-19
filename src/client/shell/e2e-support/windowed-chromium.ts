@@ -11,8 +11,8 @@ import type { Browser } from "@playwright/test";
 export const PINNED_LOCALE = "en-US";
 
 /** Launch arguments that make the browser expose its UI to the platform's accessibility API, which
- * the UI drivers read. Windows UI Automation needs none (measured); macOS and Linux build the tree
- * on demand and are asked to keep it on. Not yet measured on those two platforms.
+ * the UI drivers read. Windows UI Automation needs none (measured on Windows); macOS and Linux
+ * build the tree on demand, so the flag asks the browser to keep it on.
  * @param platform The operating system (`process.platform`).
  * @returns The arguments.
  * @example

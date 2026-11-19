@@ -231,7 +231,8 @@ jobs:
       # The Chromium HTTPS-First prompt is browser UI, reachable only through the platform's
       # accessibility API: Windows UI Automation, macOS System Events, Linux AT-SPI (the drivers
       # under src/client/shell/e2e-support/invoke-button.*). Linux needs a virtual display, a
-      # session bus and the accessibility bus; the macOS and Linux drivers are first measured here.
+      # session bus and the accessibility bus; the macOS and Linux drivers depend on the platform
+      # accessibility API and on the accessibility flag the launcher passes.
       - name: Install the Linux accessibility driver dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb at-spi2-core dbus-x11 python3-gi gir1.2-atspi-2.0
