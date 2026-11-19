@@ -1106,16 +1106,21 @@ export class WsClient {
       // degraded server the watchdog exists to escape).
       this.armWelcomeWatchdog();
     } catch {
+      // A superseded attempt (stopped, or replaced by a later `open()`) that fails owns no
+      // state: a reconnect or a connect-failure report here would act on the current attempt.
+      if (!this.running_ || gen !== this.connGeneration) return;
       this.scheduleReconnect();
     }
   }
 
-  /** `Transport.onClose` handler: disarms the watchdog, clears `this.transport`, fails every
-   * in-flight correlated request with "connection closed", and — if still `running_` (not
-   * a `stop()`-triggered close) — schedules a reconnect. Not exported.
+  /** Close handling for the current connection: disarms the watchdog, clears `this.transport`,
+   * fails every in-flight correlated request with "connection closed", and — if still `running_`
+   * (not a `stop()`-triggered close) — schedules a reconnect. `open()` wires the transport's
+   * `onClose` to call this only while that transport's own generation equals `connGeneration`,
+   * so a replaced transport's late close never reaches it. Not exported.
    * @example
    * ```
-   * // wired as onClose: this.opts.connect({ onMessage, onClose: () => this.handleClose() })
+   * // wired in open(): onClose: () => { if (gen === this.connGeneration) this.handleClose(); }
    * this.handleClose();
    * ```
    */
