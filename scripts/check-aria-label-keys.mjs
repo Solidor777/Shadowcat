@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 import { norm, under } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
 
@@ -95,9 +96,13 @@ export function scanAriaLabelKeys(text) {
 }
 
 function main() {
-  const files = execFileSync("git", ["ls-files", "-z", "--", ...ROOTS], { encoding: "utf8" })
-    .split("\0")
-    .filter(isComponentSource);
+  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
+  const listed = runGit(["ls-files", "-z", "--", ...ROOTS], "the tracked component file list", { execFile });
+  if (!listed.ok) {
+    console.error(`lint:aria-labels: ${listed.message}`);
+    process.exit(2);
+  }
+  const files = listed.stdout.split("\0").filter(isComponentSource);
   let errors = 0;
   for (const path of files) {
     for (const v of scanAriaLabelKeys(readFileSync(path, "utf8"))) {

@@ -135,9 +135,14 @@ test("scrubGitEnv returns a scrubbed copy and leaves its input untouched", () =>
 // because the test process runs inside `git commit`'s hook environment. A test HELPER module (not
 // itself named as a test) is routed to the production check, which is the stricter of the two —
 // `runGit` satisfies both invariants at once — so a misrouted helper fails loudly rather than
-// silently. RESIDUAL: the fixture check verifies an `env` property is PRESENT, not that its value
-// is scrubbed — `env: process.env` satisfies it and re-opens the leak; the value is a review
-// obligation.
+// silently. RESIDUAL: the fixture check verifies an `env` property is PRESENT and is not the bare
+// `process.env`; any other value (a variable holding an unscrubbed copy) is a review obligation.
+//
+// "Direct git call" covers every child-process spawn form (`execFileSync`, `execFile`, `spawnSync`,
+// `spawn`, `execSync`, `exec`), a `const` bound to `"git"`, and a helper wrapper around any of them
+// (the spawn inside the wrapper is the call). A fixture that creates a repository in a linked
+// worktree's hook environment with an inherited `GIT_DIR` re-initialises that worktree's real git
+// directory and flips the shared `core.bare` to true; the env requirement exists to prevent that.
 //
 // Calls are found by PARSING, not by pattern matching the source text: a string literal or a
 // comment that spells the call out (this file's own specimens below) is not a call, so this file is
@@ -149,56 +154,97 @@ const TEST_FILE = /\.(test|spec)\.[cm]?[jt]s$/;
 // Per-file exceptions, each named with its reason — never a pattern, so every entry is reviewable
 // and the stale-entry test below reports one whose file stops calling git or stops existing.
 //
-// The three production files below are pre-existing doc/lint checkers unrelated to git hooks,
-// explicitly out of scope for this check and left for the owner to address separately.
-const EXCLUDED_FILES = new Set([
-  "scripts/check-aria-label-keys.mjs",
-  "scripts/check-file-lines.mjs",
-  "scripts/check-inline-tests.mjs",
-]);
+// `runGit` is the one place that may spawn git directly: it scrubs the environment itself, and
+// every other production file reaches git through it.
+const EXCLUDED_FILES = new Set(["scripts/lib/run-git.mjs"]);
 // Every test file in the tree satisfies the explicit-`env` invariant; a file that genuinely cannot
 // is named here with its reason, the same shape as `EXCLUDED_FILES`.
 const EXCLUDED_TEST_FILES = new Set([]);
 
-/** Whether `node` is a call to `execFileSync`, bare or as a property access (`cp.execFileSync`). */
-function isExecFileSyncCall(node) {
-  if (!ts.isCallExpression(node)) return false;
+// The child-process functions that can start git. The first group takes `(file, args, options)`;
+// the shell group takes `(command, options)`, so its command string starts with `git `.
+const FILE_SPAWNERS = new Set(["execFileSync", "execFile", "spawnSync", "spawn"]);
+const SHELL_SPAWNERS = new Set(["execSync", "exec"]);
+
+/** The function name `node` calls, bare (`spawnSync`) or as a property access (`cp.spawnSync`), else null. */
+function calleeName(node) {
+  if (!ts.isCallExpression(node)) return null;
   const callee = node.expression;
-  if (ts.isIdentifier(callee)) return callee.text === "execFileSync";
-  if (ts.isPropertyAccessExpression(callee)) return callee.name.text === "execFileSync";
-  return false;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  return null;
 }
 
-/** Whether `options` (a call's third argument) is an object literal with an `env` property, assigned or shorthand. */
+/** Names bound by `const x = "git"` in `source`, so a call through such a name counts as a git call. */
+function gitNameAliases(source) {
+  const aliases = new Set();
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isStringLiteralLike(node.initializer) &&
+      node.initializer.text === "git"
+    ) {
+      aliases.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return aliases;
+}
+
+/** Whether `target` (a spawn call's first argument) names git: the literal, an alias of it, or a shell string starting with it. */
+function namesGit(target, shell, aliases) {
+  if (target === undefined) return false;
+  if (ts.isIdentifier(target)) return !shell && aliases.has(target.text);
+  const text = ts.isStringLiteralLike(target)
+    ? target.text
+    : ts.isTemplateExpression(target)
+      ? target.head.text
+      : null;
+  if (text === null) return false;
+  return shell ? /^git(\s|$)/.test(text) : text === "git";
+}
+
+/**
+ * Whether `options` is an object literal with an `env` property, assigned or shorthand, whose value
+ * is not the bare `process.env` (the inherited environment is the leak this property exists to cut).
+ */
 function carriesExplicitEnv(options) {
   return (
     options !== undefined &&
     ts.isObjectLiteralExpression(options) &&
     options.properties.some(
       (p) =>
-        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-        ts.isIdentifier(p.name) &&
-        p.name.text === "env",
+        ts.isIdentifier(p.name ?? p) &&
+        (p.name ?? p).text === "env" &&
+        (ts.isShorthandPropertyAssignment(p) ||
+          (ts.isPropertyAssignment(p) && p.initializer.getText() !== "process.env")),
     )
   );
 }
 
 /**
- * Every direct git call in `text` — a call to `execFileSync` whose first argument is the string
- * literal `"git"` — as `{ line, explicitEnv }`, `explicitEnv` being whether the call's options
- * object carries an `env` property. Parsed as `scriptKind`, so text spelling the call out inside a
- * string or comment yields nothing.
+ * Every direct git spawn in `text` — a call to `execFileSync`, `execFile`, `spawnSync` or `spawn`
+ * whose first argument is `"git"` (or a `const` bound to it), or to `execSync`/`exec` whose command
+ * string starts with `git` — as `{ line, explicitEnv }`, `explicitEnv` being whether the call's
+ * options object carries an `env` property that is not the bare `process.env`. A helper wrapper
+ * (`const git = (...args) => spawnSync("git", args, opts)`) is found through the spawn inside it.
+ * Parsed as `scriptKind`, so text spelling the call out inside a string or comment yields nothing.
  */
 export function directGitCalls(text, scriptKind = ts.ScriptKind.JS) {
   const source = ts.createSourceFile("scan", text, ts.ScriptTarget.Latest, true, scriptKind);
+  const aliases = gitNameAliases(source);
   const calls = [];
   const visit = (node) => {
-    if (isExecFileSyncCall(node)) {
-      const [target, , options] = node.arguments;
-      if (target !== undefined && ts.isStringLiteralLike(target) && target.text === "git") {
+    const name = calleeName(node);
+    if (name !== null && (FILE_SPAWNERS.has(name) || SHELL_SPAWNERS.has(name))) {
+      const shell = SHELL_SPAWNERS.has(name);
+      if (namesGit(node.arguments[0], shell, aliases)) {
         calls.push({
           line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
-          explicitEnv: carriesExplicitEnv(options),
+          explicitEnv: carriesExplicitEnv(node.arguments[shell ? 1 : 2]),
         });
       }
     }
@@ -213,7 +259,7 @@ function scriptKindOf(rel) {
   return /\.[cm]?ts$/.test(rel) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
-/** True when `text` (a file's full contents) contains a direct `execFileSync("git", ...)` call. */
+/** True when `text` (a file's full contents) contains a direct git spawn (see `directGitCalls`). */
 function callsGitUnguarded(text) {
   return directGitCalls(text).length > 0;
 }
@@ -239,7 +285,7 @@ function trackedSources(repoRoot) {
     const rel = norm(entry);
     if (!SCANNED_EXTENSIONS.some((ext) => rel.endsWith(ext))) continue;
     const text = readFileSync(join(repoRoot, entry), "utf8");
-    if (!/["'`]git["'`]/.test(text)) continue;
+    if (!/["'`]git[\s"'`]/.test(text)) continue;
     out.push({ rel, text, scriptKind: scriptKindOf(rel) });
   }
   return out;
@@ -305,6 +351,29 @@ test("directGitCalls reports the line and whether the call carries an explicit e
   ]);
 });
 
+test("directGitCalls finds every spawn form, helper wrappers and aliases of the git name, and rejects a bare process.env", () => {
+  const text = [
+    'const a = spawnSync("git", ["init"], { cwd });',
+    'const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });',
+    'cp.spawn("git", ["status"], { env: scrubGitEnv() });',
+    'execFile("git", ["status"], { env: process.env });',
+    'execSync("git status", { env: scrubGitEnv() });',
+    "execSync(`git ${sub}`);",
+    'const GIT = "git"; spawnSync(GIT, ["add"], { env });',
+    'spawnSync("npm", ["install"]);',
+    'execSync("gitk");',
+  ].join("\n");
+  expect(directGitCalls(text).map((c) => [c.line, c.explicitEnv])).toEqual([
+    [1, false],
+    [2, false],
+    [3, true],
+    [4, false],
+    [5, true],
+    [6, false],
+    [7, true],
+  ]);
+});
+
 test("no tracked non-test source file calls git unguarded outside the shared runner or the documented exceptions", () => {
   const offenders = findUnguardedGitCallers(REPO_ROOT);
   expect(offenders).toEqual([]);
@@ -364,6 +433,12 @@ test("both checks catch a NEW file regardless of which directory it lives in, wi
     join(hooksDir, "scrubbed-fixture.test.mjs"),
     'execFileSync("git", ["init", "-q"], { cwd: dir, env: scrubGitEnv() });\n',
   );
+  // Positive control for the helper-wrapper shape: a test file whose scratch repository is created
+  // through a `spawnSync` wrapper with no `env` must be reported.
+  writeFileSync(
+    join(hooksDir, "wrapper-fixture.test.mjs"),
+    'const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });\ngit("init");\n',
+  );
   execFileSync("git", ["add", "-A"], { cwd: scratchRepoRoot, env: scrubGitEnv() });
   expect(findUnguardedGitCallers(scratchRepoRoot)).toEqual([
     "some/other/location/brand-new-entry-point.mjs",
@@ -371,5 +446,6 @@ test("both checks catch a NEW file regardless of which directory it lives in, wi
   ]);
   expect(findFixtureGitCallsWithoutEnv(scratchRepoRoot)).toEqual([
     "some/other/location/raw-fixture.test.mjs:3",
+    "some/other/location/wrapper-fixture.test.mjs:1",
   ]);
 });

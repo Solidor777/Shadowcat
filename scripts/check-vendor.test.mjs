@@ -8,6 +8,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { create } from "tar";
+import { scrubGitEnv } from "./lib/run-git.mjs";
 import {
   EXPECTED_HUNKS_BY_FILE,
   PATCHED_FILES,
@@ -606,13 +607,17 @@ test("the real tree passes the offline mode", () => {
 
 test("an untracked stray file under vendor/ fails before it is added", () => {
   const dir = mkdtempSync(join(tmpdir(), "check-vendor-git-"));
-  const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  // The test process runs inside `git commit`'s hook, which exports GIT_DIR; from a linked worktree
+  // an unscrubbed `git init` re-initialises that worktree's real git directory and flips the shared
+  // `core.bare` to true. Both spawns therefore start from `scrubGitEnv()`.
+  const env = scrubGitEnv();
+  const git = (...args) => spawnSync("git", args, { cwd: dir, encoding: "utf8", env });
   git("init");
   writeFileSync(join(dir, "Cargo.toml"), ROOT_TOML);
   writeFileSync(join(dir, "Cargo.lock"), LOCK_OK);
   mkdirSync(join(dir, "vendor"));
   writeFileSync(join(dir, "vendor", "notes.rs"), "fn stray() {}\n");
-  const r = spawnSync(process.execPath, [CLI], { cwd: dir, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [CLI], { cwd: dir, encoding: "utf8", env });
   expect(r.status).toBe(1);
   expect(r.stderr).toContain("vendor/notes.rs: not under a directory");
 });

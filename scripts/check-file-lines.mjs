@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { extname } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 import { GENERATED_ROOT, norm, under } from "./lib/gate-corpus.mjs";
 
 export const SOFT_LIMIT = 5000;
@@ -108,8 +109,13 @@ export function evaluate({ files, allow }) {
 
 /** Tracked paths under the roots, from git so build output and scratch never count. */
 function trackedFiles() {
-  const out = execFileSync("git", ["ls-files", "-z", "--", ...ROOTS], { encoding: "utf8" });
-  return out.split("\0").filter((p) => p.length > 0);
+  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
+  const listed = runGit(["ls-files", "-z", "--", ...ROOTS], "the tracked source file list", { execFile });
+  if (!listed.ok) {
+    console.error(`lint:file-size: ${listed.message}`);
+    process.exit(2);
+  }
+  return listed.stdout.split("\0").filter((p) => p.length > 0);
 }
 
 function main() {
