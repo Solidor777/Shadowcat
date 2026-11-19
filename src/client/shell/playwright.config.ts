@@ -104,6 +104,11 @@ const UPGRADE_HOST = "upgrade.shadowcat.example";
  * keep it suspended for the rest of the test no matter what gets clicked afterward. */
 const BASE_LAUNCH_ARGS = ["--use-gl=angle", "--autoplay-policy=no-user-gesture-required"];
 
+/** The `use` fragment that gives a Chromium project `BASE_LAUNCH_ARGS`. It is applied per project,
+ * never in the top-level `use`: Firefox and WebKit receive the same `args` array as command-line
+ * switches, and WebKit exits on an unknown one (`Unknown option --use-gl=angle`). */
+const CHROMIUM_LAUNCH = { launchOptions: { args: BASE_LAUNCH_ARGS } };
+
 /** Environment shared by every test server process; each server adds its own `SHADOWCAT_BIND`. */
 const SERVER_ENV = {
   SHADOWCAT_ADMIN_USER: "ops",
@@ -148,7 +153,7 @@ function httpsProjects(LAN_IP: string): Project[] {
         browserName: "chromium",
         baseURL: `https://${LAN_IP}:${HTTPS_PORT}`,
         ignoreHTTPSErrors: true,
-        launchOptions: { args: BASE_LAUNCH_ARGS },
+        ...CHROMIUM_LAUNCH,
       },
     },
     {
@@ -180,7 +185,7 @@ function httpsProjects(LAN_IP: string): Project[] {
     {
       name: "https-upgrade-chromium",
       testMatch: UPGRADE_CHROMIUM_SPEC,
-      use: { browserName: "chromium", baseURL: `http://${LAN_IP}:${HTTPS_PORT}` },
+      use: { browserName: "chromium", baseURL: `http://${LAN_IP}:${HTTPS_PORT}`, ...CHROMIUM_LAUNCH },
     },
     {
       name: "https-upgrade-chromium-named",
@@ -188,7 +193,7 @@ function httpsProjects(LAN_IP: string): Project[] {
       use: {
         browserName: "chromium",
         baseURL: `http://${UPGRADE_HOST}:${HTTPS_PORT}`,
-        launchOptions: { args: [`--host-resolver-rules=MAP ${UPGRADE_HOST} ${LAN_IP}`] },
+        launchOptions: { args: [...BASE_LAUNCH_ARGS, `--host-resolver-rules=MAP ${UPGRADE_HOST} ${LAN_IP}`] },
       },
     },
     {
@@ -253,12 +258,12 @@ function longAudioProjects(LAN_IP: string): Project[] {
     {
       name: "long-audio-https-chromium",
       testMatch: LONG_AUDIO_SPEC,
-      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true },
+      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true, ...CHROMIUM_LAUNCH },
     },
     {
       name: "long-audio-http-chromium",
       testMatch: LONG_AUDIO_SPEC,
-      use: { browserName: "chromium", baseURL: http },
+      use: { browserName: "chromium", baseURL: http, ...CHROMIUM_LAUNCH },
     },
     {
       // Launches WITHOUT the autoplay flag: the real-browser check that playback is reached only
@@ -285,12 +290,12 @@ function longAudioProjects(LAN_IP: string): Project[] {
     {
       name: "long-audio-playthrough-http-chromium",
       testMatch: LONG_AUDIO_PLAYTHROUGH_SPEC,
-      use: { browserName: "chromium", baseURL: http },
+      use: { browserName: "chromium", baseURL: http, ...CHROMIUM_LAUNCH },
     },
     {
       name: "long-audio-playthrough-https-chromium",
       testMatch: LONG_AUDIO_PLAYTHROUGH_SPEC,
-      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true },
+      use: { browserName: "chromium", baseURL: https, ignoreHTTPSErrors: true, ...CHROMIUM_LAUNCH },
     },
   ];
 }
@@ -345,17 +350,21 @@ function httpsServer(ip: string) {
 export default defineConfig({
   testDir: "./e2e",
   projects: [
-    { name: "loopback", testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC] },
+    {
+      name: "loopback",
+      testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC],
+      use: CHROMIUM_LAUNCH,
+    },
     // `decodeAudioData` of the server's Opus derivatives, once per engine that decodes them in Web
     // Audio. Both run against the shared loopback server (the test only uploads and fetches).
-    { name: "webm-decode-chromium", testMatch: WEBM_DECODE_SPEC, use: { browserName: "chromium" } },
-    { name: "webm-decode-firefox", testMatch: WEBM_DECODE_SPEC, use: { browserName: "firefox", launchOptions: {} } },
+    { name: "webm-decode-chromium", testMatch: WEBM_DECODE_SPEC, use: { browserName: "chromium", ...CHROMIUM_LAUNCH } },
+    { name: "webm-decode-firefox", testMatch: WEBM_DECODE_SPEC, use: { browserName: "firefox" } },
     {
       // Seeking and playing a long WAV through byte-range responses. Its own server runs the short
       // egress window, so a response left idle across a media element's pause is really cut.
       name: "media-range-loopback",
       testMatch: MEDIA_RANGE_SPEC,
-      use: { baseURL: `http://127.0.0.1:${MEDIA_RANGE_PORT}` },
+      use: { baseURL: `http://127.0.0.1:${MEDIA_RANGE_PORT}`, ...CHROMIUM_LAUNCH },
     },
     {
       // Plain-HTTP LAN play: the served origin is not a secure context, so every
@@ -437,7 +446,5 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:31999",
     trace: "retain-on-failure",
-    // Chromium launch flags (GL backend, autoplay policy) are documented on `BASE_LAUNCH_ARGS`.
-    launchOptions: { args: BASE_LAUNCH_ARGS },
   },
 });

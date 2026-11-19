@@ -173,7 +173,37 @@ describe("CI project partition", () => {
   });
 });
 
-type ProjectPatterns = NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
+describe("launch switches per engine", () => {
+  /** The `args` a project launches its browser with: its own `launchOptions` replace the top-level ones. */
+  function launchArgs(config: PlaywrightTestConfig, project: NonNullable<PlaywrightTestConfig["projects"]>[number]): string[] {
+    return (project.use?.launchOptions ?? config.use?.launchOptions)?.args ?? [];
+  }
+
+  /** The engine a project drives; Playwright defaults an unset `browserName` to Chromium. */
+  function engine(config: PlaywrightTestConfig, project: NonNullable<PlaywrightTestConfig["projects"]>[number]): string {
+    return project.use?.browserName ?? config.use?.browserName ?? "chromium";
+  }
+
+  it("passes command-line switches only to Chromium projects, because WebKit exits on an unknown one", async () => {
+    const loaded = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    for (const project of loaded.projects ?? []) {
+      const args = launchArgs(loaded, project);
+      if (engine(loaded, project) === "chromium") continue;
+      expect(args, `${project.name} (${engine(loaded, project)}) must receive no Chromium switches`).toEqual([]);
+    }
+  });
+
+  it("gives the Chromium projects the base switches, so the check above sees real arguments (positive control)", async () => {
+    const loaded = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const chromium = (loaded.projects ?? []).filter((p) => engine(loaded, p) === "chromium");
+    expect(chromium.length).toBeGreaterThan(5);
+    for (const project of chromium) {
+      expect(launchArgs(loaded, project), `${project.name} lacks --use-gl=angle`).toContain("--use-gl=angle");
+    }
+  });
+});
+
+type ProjectPatterns =NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
 
 /** Whether `file` matches one `testMatch` / `testIgnore` value. Only the regular-expression form
  * the config uses is evaluated; a glob string would be silently mis-read, so it fails loudly. */
