@@ -215,6 +215,35 @@ test("a hashchange to another world's route leaves the old session and enters th
   expect(ctx!.world).toBe("w2");
 });
 
+test("a hashchange to another world while the first snapshot is pending leaves exactly one socket, the second world's", async () => {
+  const sockets: string[] = [];
+  class CountingSocket extends WelcomingSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(new URL(url, "http://localhost").searchParams.get("world") ?? "");
+    }
+  }
+  await bootToEntry(async () => SELF_SIGNED);
+  vi.stubGlobal("WebSocket", CountingSocket as unknown);
+  let releaseFirst!: () => void;
+  vi.spyOn(api, "getWorldSnapshot").mockImplementation((world: string) =>
+    world === "w1"
+      ? new Promise((resolve) => {
+          releaseFirst = () => resolve({ documents: [], seq: 0 });
+        })
+      : Promise.reject(new Error("no snapshot in this test")),
+  );
+
+  navigateBrowser("#/world/w1");
+  await vi.waitFor(() => expect(hoisted.sessions.length).toBe(1));
+  navigateBrowser("#/world/w2");
+  await vi.waitFor(() => expect(hoisted.sessions.length).toBe(2));
+  await vi.waitFor(() => expect(sockets).toEqual(["w2"]));
+  releaseFirst();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sockets).toEqual(["w2"]);
+});
+
 test("Back to a world route after leaving it enters a new session for that world", async () => {
   await bootToEntry(async () => SELF_SIGNED);
   const first = await enter("w1");

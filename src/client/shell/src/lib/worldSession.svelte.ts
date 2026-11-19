@@ -366,6 +366,10 @@ export class WorldSession {
   /** The live transport, constructed fresh in `enter()` and dropped in `leave()`;
    * `null` before the first `enter()` and after `leave()`. */
   #ws: WsClient | null = null;
+  /** Set by `leave()` and never cleared: a session is single-use per world entry, so an
+   * `enter()` that is still awaiting when `leave()` runs, or that starts afterwards, builds no
+   * socket, subscription or store seed. */
+  #left = false;
   /** The optimistic (predicted) document view backing `documents`. */
   #optimistic: OptimisticClient;
   /** Intents predicted while reconnecting (transport down but the client is still
@@ -1494,16 +1498,29 @@ export class WorldSession {
    * ```
    */
   async enter(worldId: string): Promise<void> {
+    if (this.#left) {
+      this.#logger.warn("enter ignored: this session has been left; construct a new WorldSession");
+      return;
+    }
     this.world = worldId;
     this.state = "connecting";
-    let snapshotSeq: number | null = null;
+    let snapshot: Awaited<ReturnType<typeof getWorldSnapshot>> | undefined;
     try {
-      const snapshot = await getWorldSnapshot(worldId);
-      this.store.seedDocuments(snapshot.documents);
-      this.#optimistic.seedDocuments(snapshot.documents);
-      snapshotSeq = snapshot.seq;
+      snapshot = await getWorldSnapshot(worldId);
     } catch (e) {
       this.#logger.warn("world snapshot bootstrap failed; falling back to full replay", e);
+    }
+    // `leave()` ran during the snapshot fetch: build no socket or subscription and seed no store.
+    if (this.#left) return;
+    let snapshotSeq: number | null = null;
+    if (snapshot) {
+      try {
+        this.store.seedDocuments(snapshot.documents);
+        this.#optimistic.seedDocuments(snapshot.documents);
+        snapshotSeq = snapshot.seq;
+      } catch (e) {
+        this.#logger.warn("world snapshot bootstrap failed; falling back to full replay", e);
+      }
     }
     this.#ws = new WsClient({
       world: worldId,
@@ -1655,6 +1672,8 @@ export class WorldSession {
       }
     }
     await this.#ws.start();
+    // `leave()` ran during `start()` and already stopped the client; it owns the final state.
+    if (this.#left) return;
     this.state = "open";
   }
 
@@ -2046,7 +2065,9 @@ export class WorldSession {
    * `state`/`role`/`world`/`#gmViewedScene`. Does not clear `store`/`documents`, module
    * registrations, or the `#activated`/`#modulesAdded` latches — the shell's own usage
    * (`App`'s `leaveWorld`) discards this instance and constructs a fresh
-   * `WorldSession` for the next `enter()` rather than reusing this one.
+   * `WorldSession` for the next `enter()` rather than reusing this one. Safe at any time: an
+   * `enter()` still awaiting its snapshot or its socket start returns without building or
+   * opening anything, and a later `enter()` is a logged no-op.
    * @example
    * ```
    * declare const session: WorldSession;
@@ -2054,6 +2075,7 @@ export class WorldSession {
    * ```
    */
   leave(): void {
+    this.#left = true;
     this.#footprintsSub?.unsubscribe();
     this.#footprintsSub = null;
     this.#footprints = EMPTY_FOOTPRINTS;
