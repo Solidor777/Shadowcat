@@ -31,7 +31,7 @@ const EXPECTED: OutcomeTable<string> = {
     linux: 'frame:{"type":"hello"}',
     darwin: 'frame:{"type":"hello"}',
   },
-  "https-webkit": { win32: "blocked", darwin: "blocked" },
+  "https-webkit": { win32: "blocked", linux: "blocked", darwin: "blocked" },
 };
 
 /**

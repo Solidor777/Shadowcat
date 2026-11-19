@@ -20,7 +20,7 @@ const EXPECTED: OutcomeTable<string> = {
   "https-upgrade-firefox": { win32: "loaded:http:", linux: "loaded:http:", darwin: "loaded:http:" },
   "https-upgrade-firefox-named": { win32: "certificate-error", linux: "certificate-error", darwin: "certificate-error" },
   "https-upgrade-firefox-local": { win32: "certificate-error", linux: "certificate-error", darwin: "certificate-error" },
-  "https-upgrade-webkit": { win32: "loaded:http:", darwin: "loaded:http:" },
+  "https-upgrade-webkit": { win32: "loaded:http:", linux: "loaded:http:", darwin: "loaded:http:" },
 };
 
 test("http://<lan-address> is never a dead end", async ({ page, baseURL }, testInfo) => {
