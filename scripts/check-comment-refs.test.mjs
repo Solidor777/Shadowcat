@@ -1263,7 +1263,9 @@ test.skipIf(!HAS_SKILLS_CHECKOUT)("the skill corpus is scoped to the tracked ski
 // added to git, an ignored one never, and a tracked file deleted in the working tree is not read.
 const CORPUS_GATE = "scripts/check-comment-refs.mjs";
 const CORPUS_CLEAN = "// Plain.\nexport const a = 1;\n";
-const CORPUS_BANNED = "// Kept minimal for M8c-1.\nexport const a = 1;\n"; // EXAMPLE:
+// The milestone id is joined from parts, so this file never spells the banned form itself.
+const CORPUS_MILESTONE = ["M8c", "1"].join("-");
+const CORPUS_BANNED = `// Kept minimal for ${CORPUS_MILESTONE}.\nexport const a = 1;\n`;
 
 test("an untracked file with a banned comment fails the comment gate", () => {
   const dir = makeRepo({ "src/clean.ts": CORPUS_CLEAN, "src/new.ts": CORPUS_BANNED }, ["src/clean.ts"]);

@@ -131,16 +131,33 @@ describe("reconcile", () => {
   });
 });
 
+// Parsing the whole corpus is the file's one expensive step, so it runs once and the real-corpus
+// cases share the result.
+let repoScan;
+/**
+ * The corpus and its walk sites, computed on first use.
+ * @returns {{ files: string[], found: string[] }} the scanned files and their site ids.
+ * @example
+ * repoSites().found.length;
+ */
+function repoSites() {
+  repoScan ??= (() => {
+    const files = corpus();
+    return { files, found: collectSites(files) };
+  })();
+  return repoScan;
+}
+
 describe("the repository", () => {
   it("records exactly the walk sites that exist", () => {
-    const found = collectSites(corpus());
+    const { found } = repoSites();
     expect(reconcile(found, INVENTORY)).toEqual([]);
     expect(found).toHaveLength(INVENTORY.length);
   });
 
   it("agrees with an independent text recount", () => {
-    const found = collectSites(corpus());
-    const recount = corpus().reduce((n, f) => n + recountWalkCalls(readFileSync(join(REPO_ROOT, f), "utf8")), 0);
+    const { files, found } = repoSites();
+    const recount = files.reduce((n, f) => n + recountWalkCalls(readFileSync(join(REPO_ROOT, f), "utf8")), 0);
     expect(recount).toBe(found.length);
   });
 
