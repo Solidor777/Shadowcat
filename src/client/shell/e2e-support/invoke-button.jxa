@@ -42,12 +42,15 @@ function run(argv) {
     for (var i = 0; i < elements.length; i++) {
       try {
         if (elements[i].role() === "AXButton") {
-          if (elements[i].name() === name) {
+          // Chromium publishes a button's label as AXTitle or AXDescription; System Events' own
+          // `name` is empty for it, so every spelling is compared.
+          var labels = [elements[i].name(), elements[i].title(), elements[i].description()];
+          if (labels.indexOf(name) !== -1) {
             elements[i].actions.byName("AXPress").perform();
             console.log("INVOKED");
             $.exit(0);
           }
-          if (buttons.length < 30) buttons.push(String(elements[i].name()));
+          if (buttons.length < 30) buttons.push(labels.join("/"));
         }
       } catch (e) {
         // An element that vanished mid-walk is skipped, not fatal.
