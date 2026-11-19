@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/svelte";
 import { silentLogger } from "@shadowcat/core";
 import { test, expect, vi, afterEach } from "vitest";
-import type { AppContext } from "@shadowcat/ui-kit";
+import { notifications, type AppContext } from "@shadowcat/ui-kit";
 import type { TlsStatus } from "@shadowcat/types";
 import App from "./App.svelte";
 import * as api from "./lib/api";
@@ -17,7 +17,10 @@ import type { WorldSession } from "./lib/worldSession.svelte";
 const hoisted = vi.hoisted(() => ({
   sessions: [] as unknown[],
   /** The options each session was constructed with, parallel to `sessions`. */
-  options: [] as Array<{ onEvicted?: () => void }>,
+  options: [] as Array<{
+    onEvicted?: () => void;
+    onJoinRefused?: (code: "world_not_found" | "forbidden") => void;
+  }>,
   eagerRole: false,
 }));
 
@@ -215,6 +218,35 @@ test("a hashchange to another world's route leaves the old session and enters th
   expect(ctx!.world).toBe("w2");
 });
 
+test("a hashchange to another world while the first snapshot is pending leaves exactly one socket, the second world's", async () => {
+  const sockets: string[] = [];
+  class CountingSocket extends WelcomingSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(new URL(url, "http://localhost").searchParams.get("world") ?? "");
+    }
+  }
+  await bootToEntry(async () => SELF_SIGNED);
+  vi.stubGlobal("WebSocket", CountingSocket as unknown);
+  let releaseFirst!: () => void;
+  vi.spyOn(api, "getWorldSnapshot").mockImplementation((world: string) =>
+    world === "w1"
+      ? new Promise((resolve) => {
+          releaseFirst = () => resolve({ documents: [], seq: 0 });
+        })
+      : Promise.reject(new Error("no snapshot in this test")),
+  );
+
+  navigateBrowser("#/world/w1");
+  await vi.waitFor(() => expect(hoisted.sessions.length).toBe(1));
+  navigateBrowser("#/world/w2");
+  await vi.waitFor(() => expect(hoisted.sessions.length).toBe(2));
+  await vi.waitFor(() => expect(sockets).toEqual(["w2"]));
+  releaseFirst();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(sockets).toEqual(["w2"]);
+});
+
 test("Back to a world route after leaving it enters a new session for that world", async () => {
   await bootToEntry(async () => SELF_SIGNED);
   const first = await enter("w1");
@@ -242,6 +274,25 @@ test("a world route without an identity shows the entry screen, not a permanent 
   expect(await screen.findByTestId("entry-stub")).toBeTruthy();
   expect(screen.queryByText("Connecting…")).toBeNull();
   expect(hoisted.sessions).toHaveLength(0);
+});
+
+test.each([
+  ["world_not_found", "That world no longer exists."],
+  ["forbidden", "You are not a member of that world."],
+] as const)("a %s join refusal warns the user and returns to the worlds list", async (code, text) => {
+  await bootToEntry(async () => SELF_SIGNED);
+  const first = await enter("w1");
+  await vi.waitFor(() => expect(first.ctx()).toBeDefined());
+  const session = hoisted.sessions.at(-1) as WorldSession;
+  const leave = vi.spyOn(session, "leave");
+  const push = vi.spyOn(notifications, "push");
+
+  hoisted.options.at(-1)!.onJoinRefused!(code);
+
+  expect(push).toHaveBeenCalledWith("warning", text);
+  await vi.waitFor(() => expect(leave).toHaveBeenCalled());
+  expect(location.hash).toBe("#/worlds");
+  expect(await screen.findByTestId("entry-stub")).toBeTruthy();
 });
 
 test("an eviction returns to the worlds list and leaves the session", async () => {

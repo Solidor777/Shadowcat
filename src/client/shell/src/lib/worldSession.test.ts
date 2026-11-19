@@ -3,6 +3,7 @@ import { render } from "@testing-library/svelte";
 import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
   ContributionRegistry,
+  WsClient,
   silentLogger,
   buildTokenDoc,
   buildActorDoc,
@@ -2026,6 +2027,96 @@ test("a snapshot-fetch failure does not throw out of enter() and does not preven
 
   await expect(session.enter("w1")).resolves.toBeUndefined();
   expect(connectCalled).toBe(true);
+});
+
+describe("WorldSession.leave during enter", () => {
+  const leftSnapshotDoc = buildActorDoc(
+    "w1",
+    "L",
+    {
+      displayName: "L",
+      visual: { kind: "image", asset: "a" },
+      size: { w: 1, h: 1 },
+      shape: "square",
+      faction: null,
+      conditions: [],
+      prototype: false,
+      vision: null,
+      light: null,
+      movement: [],
+      aura: null,
+      sound: null,
+      vfx: null,
+    },
+    "left-actor",
+  );
+
+  test("leave() while the snapshot is pending: no socket, no seeding, state stays closed", async () => {
+    let resolveSnapshot!: (v: { documents: WireDocument[]; seq: number }) => void;
+    vi.mocked(getWorldSnapshot).mockReturnValueOnce(
+      new Promise((r) => {
+        resolveSnapshot = r;
+      }),
+    );
+    const connect = vi.fn<Connect>(() => Promise.resolve({ send: () => {}, close: () => {} }));
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+    const entering = session.enter("w1");
+    session.leave();
+    resolveSnapshot({ documents: [leftSnapshotDoc], seq: 3 });
+    await entering;
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(session.store.get("left-actor")).toBeUndefined();
+    expect(session.documents.get("left-actor")).toBeUndefined();
+    expect(session.state).toBe("closed");
+  });
+
+  test("leave() during the socket start: state stays closed and the client is stopped once", async () => {
+    const stopSpy = vi.spyOn(WsClient.prototype, "stop");
+    try {
+      let releaseConnect!: () => void;
+      const connect: Connect = () =>
+        new Promise((resolve) => {
+          releaseConnect = () => resolve({ send: () => {}, close: () => {} });
+        });
+      const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+      const entering = session.enter("w1");
+      await vi.waitFor(() => expect(releaseConnect).toBeTypeOf("function"));
+      session.leave();
+      releaseConnect();
+      await entering;
+
+      expect(session.state).toBe("closed");
+      expect(stopSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stopSpy.mockRestore();
+    }
+  });
+
+  test("a join refusal frame before the Welcome reaches opts.onJoinRefused", async () => {
+    const { connect, push } = pushConnect([]);
+    const onJoinRefused = vi.fn();
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger, onJoinRefused });
+
+    await session.enter("w1");
+    push({ type: "error", code: "forbidden", message: "not a member of this world" });
+
+    expect(onJoinRefused).toHaveBeenCalledExactlyOnceWith("forbidden");
+    session.leave();
+  });
+
+  test("enter() after leave() returns without constructing a socket", async () => {
+    const connect = vi.fn<Connect>(() => Promise.resolve({ send: () => {}, close: () => {} }));
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+    session.leave();
+    await session.enter("w1");
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(session.state).toBe("closed");
+  });
 });
 
 // An external module's declared stylesheet (`ModuleManifest.style`) follows

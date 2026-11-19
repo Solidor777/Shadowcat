@@ -11,6 +11,7 @@ use crate::ws::test_support::{token_engine, ws_engine};
 
 mod combat_intents;
 mod door_toggle;
+mod join_refusal;
 mod mover_light;
 mod reset_explored_fog;
 mod ruler;

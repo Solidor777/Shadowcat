@@ -371,6 +371,35 @@ where
     send_close(sink).await;
 }
 
+/// The refusal frame a `DataError` from the join path maps to, as `(code, message)`.
+///
+/// Only a real `Forbidden` (a non-member) reads as a membership refusal, which the client treats
+/// as terminal; every other error (a database or serialization failure) is `Internal`, which the
+/// client treats as transient and retries. This function never produces `WorldNotFound`: that
+/// answer has one source, `RoomRegistry::get_or_create`'s `Ok(None)`, which `handle_socket`
+/// replies to itself.
+fn join_refusal(e: &crate::data::DataError) -> (WsErrorCode, &'static str) {
+    match e {
+        crate::data::DataError::Forbidden => (WsErrorCode::Forbidden, "not a member of this world"),
+        _ => (WsErrorCode::Internal, "internal"),
+    }
+}
+
+/// Maps a join-path `DataError` through `join_refusal`, logs it (a membership refusal at info,
+/// anything else at warn with the error), and replies with the refusal frame and a Close.
+async fn refuse_join<S>(sink: &mut S, world_id: Uuid, user_id: Uuid, e: &crate::data::DataError)
+where
+    S: Sink<Message> + Unpin,
+{
+    let (code, message) = join_refusal(e);
+    if code == WsErrorCode::Forbidden {
+        tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
+    } else {
+        tracing::warn!(world = %world_id, user = %user_id, error = %e, "ws join failed");
+    }
+    reject_join(sink, code, message).await;
+}
+
 /// Send a non-`Event` broadcast frame unchanged. `MoveStream` must never reach here — it
 /// requires per-recipient clipping in the egress loop (`clip_move_stream`); this guard catches a
 /// future routing regression at test time.
@@ -440,9 +469,9 @@ async fn handle_socket(
             reject_join(&mut s, WsErrorCode::WorldNotFound, "world not found").await;
             return;
         }
-        Err(_) => {
+        Err(e) => {
             let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
-            reject_join(&mut s, WsErrorCode::Internal, "internal").await;
+            refuse_join(&mut s, world_id, user_id, &e).await;
             return;
         }
     };
@@ -452,10 +481,9 @@ async fn handle_socket(
     // filters every outgoing frame for the rest of the connection.
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
             let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
-            reject_join(&mut s, WsErrorCode::Forbidden, "not a member of this world").await;
-            tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
+            refuse_join(&mut s, world_id, user_id, &e).await;
             return;
         }
     };
