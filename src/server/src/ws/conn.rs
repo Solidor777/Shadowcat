@@ -19,7 +19,7 @@ use axum::extract::{Query, State};
 use axum::response::Response;
 use axum::Extension;
 use futures_util::stream::StreamExt;
-use futures_util::{Sink, SinkExt};
+use futures_util::{Sink, SinkExt, Stream};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -385,19 +385,56 @@ fn join_refusal(e: &crate::data::DataError) -> (WsErrorCode, &'static str) {
     }
 }
 
+/// Reads and discards inbound frames until the peer's Close or the end of the stream, giving up
+/// after `CLOSE_SEND_TIMEOUT`. A refused client has already sent its `hello`; closing a TCP
+/// socket that still holds unread data makes the OS reset the connection, which discards the
+/// refusal frame still in flight to the peer. Draining first lets the Close handshake finish.
+async fn drain_inbound<R>(stream: &mut R)
+where
+    R: Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, async {
+        while let Some(Ok(frame)) = stream.next().await {
+            if matches!(frame, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
+/// Refuses a join on `socket`: sends the `(code, message)` refusal frame and a Close through the
+/// bounded sink, then drains the peer's inbound frames (`drain_inbound`) before the socket drops.
+async fn refuse_socket(
+    state: &AppState,
+    socket: WebSocket,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
+    code: WsErrorCode,
+    message: &str,
+) {
+    let (sink, mut stream) = socket.split();
+    let mut sink = state.ws.bounded_sink(sink, &state.config, tunnel);
+    reject_join(&mut sink, code, message).await;
+    drain_inbound(&mut stream).await;
+}
+
 /// Maps a join-path `DataError` through `join_refusal`, logs it (a membership refusal at info,
 /// anything else at warn with the error), and replies with the refusal frame and a Close.
-async fn refuse_join<S>(sink: &mut S, world_id: Uuid, user_id: Uuid, e: &crate::data::DataError)
-where
-    S: Sink<Message> + Unpin,
-{
+async fn refuse_join(
+    state: &AppState,
+    socket: WebSocket,
+    tunnel: Option<crate::http::conn_serve::TunnelProbe>,
+    world_id: Uuid,
+    user_id: Uuid,
+    e: &crate::data::DataError,
+) {
     let (code, message) = join_refusal(e);
     if code == WsErrorCode::Forbidden {
         tracing::info!(world = %world_id, user = %user_id, "ws join denied: not a member");
     } else {
         tracing::warn!(world = %world_id, user = %user_id, error = %e, "ws join failed");
     }
-    reject_join(sink, code, message).await;
+    refuse_socket(state, socket, tunnel, code, message).await;
 }
 
 /// Send a non-`Event` broadcast frame unchanged. `MoveStream` must never reach here — it
@@ -465,13 +502,18 @@ async fn handle_socket(
     let room = match state.ws.rooms.get_or_create(repo.as_ref(), world_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
-            reject_join(&mut s, WsErrorCode::WorldNotFound, "world not found").await;
+            refuse_socket(
+                &state,
+                socket,
+                tunnel,
+                WsErrorCode::WorldNotFound,
+                "world not found",
+            )
+            .await;
             return;
         }
         Err(e) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
-            refuse_join(&mut s, world_id, user_id, &e).await;
+            refuse_join(&state, socket, tunnel, world_id, user_id, &e).await;
             return;
         }
     };
@@ -482,8 +524,7 @@ async fn handle_socket(
     let ctx = match repo.permission_context(world_id, user_id, user_role).await {
         Ok(c) => c,
         Err(e) => {
-            let mut s = state.ws.bounded_sink(socket, &state.config, tunnel);
-            refuse_join(&mut s, world_id, user_id, &e).await;
+            refuse_join(&state, socket, tunnel, world_id, user_id, &e).await;
             return;
         }
     };

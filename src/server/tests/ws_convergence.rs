@@ -797,6 +797,9 @@ async fn a_non_member_is_refused_with_a_forbidden_error_then_closed() {
     let cookie = h.login("stranger", "pw").await;
 
     let mut ws = h.connect_with(&cookie).await;
+    // The real client sends its hello as soon as the socket opens; the server answers the
+    // refusal without reading it, so the frame must survive unread inbound data.
+    ws.send(hello_cold_start(h.world)).await.unwrap();
     let frame = read_join_refusal(&mut ws).await;
     assert_eq!(frame["type"], "error");
     assert_eq!(frame["code"], "forbidden");
@@ -805,10 +808,58 @@ async fn a_non_member_is_refused_with_a_forbidden_error_then_closed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_nonexistent_world_is_refused_with_world_not_found_then_closed() {
     let h = spawn().await;
-    let mut ws = h.connect_world(Uuid::from_u128(0xdead), &h.cookie).await;
+    let missing = Uuid::from_u128(0xdead);
+    let mut ws = h.connect_world(missing, &h.cookie).await;
+    // The real client sends its hello as soon as the socket opens; the server answers the
+    // refusal without reading it, so the frame must survive unread inbound data.
+    ws.send(hello_cold_start(missing)).await.unwrap();
     let frame = read_join_refusal(&mut ws).await;
     assert_eq!(frame["type"], "error");
     assert_eq!(frame["code"], "world_not_found");
+}
+
+/// Runs the `drop_table` statement (a `DROP TABLE`) against the harness database so the next
+/// query that reads that table fails with a database error. Foreign-key enforcement is switched
+/// off first (the pool is one connection, so the setting holds for the drop) so the table can go
+/// while other tables still reference it.
+async fn break_table(h: &Harness, drop_table: &'static str) {
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(h.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query(drop_table)
+        .execute(h.repo.pool())
+        .await
+        .unwrap();
+}
+
+/// A world member whose room cannot be hydrated (the world lookup step of the join fails) is
+/// refused with the transient `internal` code, never the terminal `forbidden`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_room_hydration_is_refused_with_internal_not_forbidden() {
+    let h = spawn().await;
+    break_table(&h, "DROP TABLE documents").await;
+
+    let mut ws = h.connect().await;
+    ws.send(hello_cold_start(h.world)).await.unwrap();
+    let frame = read_join_refusal(&mut ws).await;
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["code"], "internal");
+}
+
+/// A world member whose membership lookup fails (the permission-context step of the join, after
+/// the room hydrated) is refused with the transient `internal` code, never the terminal
+/// `forbidden`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failing_membership_lookup_is_refused_with_internal_not_forbidden() {
+    let h = spawn().await;
+    break_table(&h, "DROP TABLE world_members").await;
+
+    let mut ws = h.connect().await;
+    ws.send(hello_cold_start(h.world)).await.unwrap();
+    let frame = read_join_refusal(&mut ws).await;
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["code"], "internal");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

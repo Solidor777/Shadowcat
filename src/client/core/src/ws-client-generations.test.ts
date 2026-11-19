@@ -14,6 +14,8 @@ interface Attempt {
   closeCalls: number;
   /** Settles the pending `connect` with this attempt's transport. */
   resolve: () => void;
+  /** Fails the pending `connect` like a refused socket. */
+  reject: () => void;
 }
 
 /** A `Connect` whose attempts stay pending until the test resolves them. Its transport's
@@ -22,12 +24,13 @@ interface Attempt {
 function manualNet(): { connect: Connect; attempts: Attempt[] } {
   const attempts: Attempt[] = [];
   const connect: Connect = (handlers) =>
-    new Promise<Transport>((resolve) => {
+    new Promise<Transport>((resolve, reject) => {
       const attempt: Attempt = {
         handlers,
         sent: [],
         closeCalls: 0,
         resolve: () => resolve(transport),
+        reject: () => reject(new Error("connect refused")),
       };
       let closed = false;
       const transport: Transport = {
@@ -49,14 +52,15 @@ function manualNet(): { connect: Connect; attempts: Attempt[] } {
 function makeClient(opts: { welcomeTimeoutMs?: number } = {}) {
   const net = manualNet();
   const sleep = vi.fn(() => new Promise<void>(() => {}));
+  const onConnectFailure = vi.fn();
   const client = new WsClient({
     world: "w1",
     connect: net.connect,
-    handlers: { onCommand: () => {} },
+    handlers: { onCommand: () => {}, onConnectFailure },
     sleep,
     welcomeTimeoutMs: opts.welcomeTimeoutMs ?? 40,
   });
-  return { client, sleep, ...net };
+  return { client, sleep, onConnectFailure, ...net };
 }
 
 describe("WsClient connect generations", () => {
@@ -77,6 +81,26 @@ describe("WsClient connect generations", () => {
     client.send({ type: "pong" });
     expect(b.sent.filter((f) => f.includes('"pong"'))).toHaveLength(1);
     expect(a.sent).toHaveLength(0);
+    client.stop();
+  });
+
+  it("a superseded connect that fails schedules no reconnect, reports no failure and keeps the current transport", async () => {
+    const { client, attempts, sleep, onConnectFailure } = makeClient();
+    const first = client.start();
+    client.stop();
+    const second = client.start();
+    const [a, b] = attempts;
+
+    b.resolve();
+    await second;
+    a.reject();
+    await first;
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(onConnectFailure).not.toHaveBeenCalled();
+    client.send({ type: "pong" });
+    expect(b.sent.filter((f) => f.includes('"pong"'))).toHaveLength(1);
+    expect(b.closeCalls).toBe(0);
     client.stop();
   });
 });
