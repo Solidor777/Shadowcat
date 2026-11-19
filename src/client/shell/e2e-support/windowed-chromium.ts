@@ -5,9 +5,9 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import type { Browser } from "@playwright/test";
 
-/** The UI locale every windowed Chromium is pinned to. The HTTPS-First interstitial's button names
- * are localized ("Continue to site", "Accéder au site" under `--lang=fr`, measured on Windows), and
- * the UI-Automation driver finds the button by that name, so the locale must not follow the host's. */
+/** The UI locale every windowed Chromium is pinned to. The UI drivers find the interstitial's button
+ * by its English accessible name ("Continue to site"), so the locale must not follow the host's.
+ * Measured on Windows only: under `--lang=fr` the button is named "Accéder au site". */
 export const PINNED_LOCALE = "en-US";
 
 /** Launch arguments that make the browser expose its UI to the platform's accessibility API, which

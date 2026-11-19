@@ -8,7 +8,8 @@ export const NOT_FOUND_STATUS = 3;
 /** Longest one driver invocation may take. A cold PowerShell plus UI Automation, a cold `osascript`
  * or a Python AT-SPI walk takes a few seconds; a hung accessibility provider would otherwise block
  * the test's own poll, which cannot interrupt a synchronous call. Chosen, not measured: well above
- * a cold start, well below the caller's polling budget. */
+ * a cold start. The caller's poll budget is at least twice this, so one hung invocation cannot
+ * consume it. */
 export const INVOKE_TIMEOUT_MS = 15_000;
 
 /** Runs a program to completion within `timeoutMs`; throws an error carrying `status` when it exits

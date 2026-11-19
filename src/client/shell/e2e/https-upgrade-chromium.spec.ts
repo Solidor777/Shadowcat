@@ -2,7 +2,7 @@ import { test, expect, chromium } from "@playwright/test";
 import type { BrowserContext } from "@playwright/test";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { invokeBrowserButton } from "../e2e-support/browser-ui";
+import { INVOKE_TIMEOUT_MS, invokeBrowserButton } from "../e2e-support/browser-ui";
 import { launchWindowedChromium } from "../e2e-support/windowed-chromium";
 import { requirePrivateAddress } from "./https-support";
 
@@ -170,7 +170,7 @@ test("HTTPS-First's 'Continue to site' reaches the plain-HTTP app", async ({ bas
     await expect
       .poll(() => invokeBrowserButton(child.pid!, "Continue to site"), {
         message: "the interstitial's 'Continue to site' button never appeared",
-        timeout: 20_000,
+        timeout: 2 * INVOKE_TIMEOUT_MS,
       })
       .toBe(true);
     await expect(page.getByLabel("Username")).toBeVisible({ timeout: 20_000 });
