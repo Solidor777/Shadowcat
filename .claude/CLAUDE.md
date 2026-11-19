@@ -17,6 +17,44 @@
 | `docs/POST_WORK_FINDINGS.md` | Living record of post-work review issues. NOT a to-do list |
 | `docs/design/` | Per-system design documents |
 
+## Validation
+- Work is done only when both tiers pass:
+
+```bash
+pnpm gate:commit
+pnpm gate:push
+```
+
+- `scripts/gates.toml` lists what each tier runs. `pnpm lint:gate-manifest` fails when it and `ci.yml` disagree.
+- Every gate is retroactive. A violation already in the tree is a defect to fix, not a precedent.
+
+| Gate | Fails when |
+|---|---|
+| `cargo fmt --all -- --check` | Rust code is not formatted |
+| `cargo clippy --all-targets -- -D warnings` | any clippy warning |
+| `cargo clippy --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items` | a Rust item, public or private, has no doc |
+| `cargo test --all`, `pnpm -r test`, `pnpm run test:scripts` | a test fails |
+| `pnpm -r typecheck` | a TypeScript type error |
+| `pnpm lint` | an ESLint error |
+| `pnpm lint:docs` | a function, method or class lacks a doc comment with description, params and an `@example` |
+| `pnpm lint:props` | a property, type, enum member or named arrow lacks a doc comment |
+| `pnpm lint:comments` | a code comment or codebase-skill brief names a milestone, task, date, plan or other process-assigned thing |
+| `pnpm lint:allowances` | a lint suppression is not approved (see Lint Suppression) |
+| `pnpm lint:file-size` | a file passes the size limits (see File Size) |
+| `pnpm lint:inline-tests` | a Rust file holds an inline test module body |
+| `pnpm lint:module-docs` | a Rust `mod` item carries an outer doc comment |
+| `pnpm lint:secure-context` | client code names a browser API that plain-HTTP LAN play does not expose |
+| `pnpm lint:crypto-backend` | a second TLS crypto backend enters `Cargo.lock` |
+| `pnpm lint:vendor` | project code hides under `vendor/`, or a vendored crate drifts from its recorded upstream plus patch |
+| `pnpm lint:aria-labels` | a human-facing attribute carries an i18n key instead of translated text |
+| `pnpm lint:gate-manifest` | `scripts/gates.toml` and the workflow steps disagree |
+| `pnpm lint:settings-privacy` | a tracked file under `.claude/` carries a user path, an address or a credential |
+| `pnpm lint:binary-size` | the release binary passes 60 MiB |
+| `pnpm lint:audio-fixtures` | the committed long-audio fixtures differ from what the generator produces |
+| `pnpm docs:check-examples`, `pnpm docs:check-rust-examples` | a doc example does not compile, or a Rust function has none |
+| `pnpm build:all` | the build or the strict doc build fails |
+| `git diff --exit-code src/types/generated` | the generated types are stale |
+
 ## Cross-Platform
 - Every artifact runs on macOS, Linux, and Windows (the server binary) and renders correctly in desktop and mobile browsers (Android, iOS) from the first commit. Cross-platform is a build-time invariant verified in CI, not a later port.
 - Code that compiles only on the author's OS, or a UI that assumes a mouse and a wide viewport, is a defect.
@@ -56,7 +94,8 @@
 ### Architectural Consent
 - Before non-trivial work, summarize the intended change and verify it against `ARCHITECTURE.md`, `PLAN.md`, and the design docs.
 - Dependencies, file layouts, and public APIs are architectural choices requiring consent.
-- If a plan fails to produce expected results, assume improper implementation before a flawed spec.
+- Never deviate from an agreed spec unilaterally.
+- Treat a null result (blank canvas, empty output) as an implementation failure until the code shows otherwise. Assume a flawed implementation before a flawed spec.
 - **Good:** "Proposed: migrate input parsing to async. Aligns with the non-blocking I/O rule in `ARCHITECTURE.md`. Consent required: add `tokio` and place the module in `src/net/`?"
 - **Bad:** "I added `tokio` and split the network logic into three new crates."
 
@@ -76,11 +115,13 @@
 ## Code Standards
 
 ### Lint Suppression
-- Every suppression silences a diagnostic without fixing what it describes, so each needs the user's explicit, per-instance sign-off. No agent adds one on its own authority.
+- Every suppression silences a diagnostic without fixing what it describes. No agent adds one on its own authority.
+- `dead_code` and `unused*` suppressions are never approvable, as `allow`, as `expect`, or as `eslint-disable` of `no-unused-vars`. There should be no dead code, so there is no sign-off to ask for.
+- Every other suppression needs the user's explicit, per-instance sign-off.
 - Covered: `#[allow(dead_code)]`, `#[allow(unused*)]`, `#[allow(clippy::*)]`, `#[expect(...)]` of any of these, `eslint-disable` of `no-unused-vars`, `@ts-ignore`, `@ts-nocheck`.
 - `pnpm lint:allowances` enforces this as a gate, not a ratchet: it is retroactive and nothing is grandfathered. A suppression already in the tree is a defect to fix, not a precedent.
 - Fix the code, never move the annotation: make the item reachable, delete it, or scope it to the build that uses it (`#[cfg(test)]` for test-only code, which must never compile into the release binary). Refactor the signature rather than silencing `too_many_arguments`.
-- If no fix exists, ask.
+- If no fix exists, ask how to change the code. Never ask to register a `dead_code` or `unused*` suppression.
 - **Good:** `pub truncated: bool,` threaded onto the wire frame so the lint no longer fires; `#[cfg(test)] pub probe_counter: u32,`; `fn execute(ctx: &MoveCtx, route: &Route) {}`
 - **Bad:** `#[allow(dead_code)] pub truncated: bool,`; `#[allow(clippy::too_many_arguments)] fn execute(a: A, …, h: H) {}`
 
@@ -113,6 +154,12 @@
 - **Bad:** `// Previously we used an Array here, but it caused O(n) lookups in v2.1.`
 - **Bad:** `// Per TICKET-842: add padding to the struct.`
 - **Bad:** `// TODO(@dave): Refactor this phase later (Epic 5).`
+
+### Comment Citations
+- Cite type names and members, never source line numbers or source file names. A position goes stale without any error; a symbol name travels with the code.
+- A file with no symbols (a manifest, a workflow) is named by path.
+- **Good:** `// Mirrors resolve_token_footprint.`
+- **Bad:** `// Mirrors footprint.rs line 412.`
 
 ## Security & IP
 - Zero tolerance for intellectual property infringement and data leaks. System state, test fixtures, and debug dumps stay free of proprietary code, credentials, and PII.
@@ -175,6 +222,10 @@
 - The commit hook skips only while a rebase, cherry-pick, revert, or merge is genuinely mid-operation (a queued step in its todo file, or an unresolved conflict in the index). A stale or abandoned operation still prints a message naming the command to conclude it.
 - Run `pnpm gate:push` before pushing. A commit made after the last successful run invalidates the receipt.
 - **Bad:** `git push origin main` after a sub-task rather than a full milestone.
+
+### Plan Execution
+- Once a multi-phase plan is approved, drive it task to task without asking permission to continue.
+- Task size, session length, and context usage are never reasons to stop.
 
 ### Crashes & CI
 - Work is never complete with a crash or a red pipeline.

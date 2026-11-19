@@ -20,6 +20,10 @@
 //
 // Approval is per instance and belongs to the repository owner, never to the author of the code
 // being suppressed. Approved instances live in the allowlist named below.
+//
+// Dead-code and unused-item lints are never approvable: the suppressed condition must not exist,
+// so a site carrying one fails whether or not an entry names it, and an entry naming one fails in
+// its own right. Every other lint is approvable per instance.
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -81,6 +85,15 @@ const SUPPRESSIONS = [
     extract: (m) => [m[1]],
   },
 ];
+
+/**
+ * Whether `lint` is one no entry can approve: Rust `dead_code` and the `unused*` family, with or
+ * without a tool prefix such as `clippy::`, and ESLint's `no-unused-vars` under any plugin prefix.
+ */
+const neverApprovable = (lint) => {
+  const bare = lint.split("::").pop().split("/").pop();
+  return bare === "dead_code" || bare.startsWith("unused") || bare === "no-unused-vars";
+};
 
 /** A declaration this scanner will name as the item a suppression sits on. */
 const DECL = [
@@ -232,7 +245,9 @@ const key = (o) => `${o.file}|${o.item}|${o.lint}`;
 const listed = new Map(allow.map((a) => [key(a), a]));
 const live = new Set(hits.map(key));
 
-const unlisted = hits.filter((h) => !listed.has(key(h)));
+const banned = hits.filter((h) => neverApprovable(h.lint));
+const bannedEntries = allow.filter((a) => neverApprovable(a.lint ?? ""));
+const unlisted = hits.filter((h) => !neverApprovable(h.lint) && !listed.has(key(h)));
 const stale = allow.filter((a) => !live.has(key(a)));
 const unreasoned = allow.filter((a) => !(a.reason ?? "").trim());
 const malformed = allow.filter((a) => !a.file || !a.item || !a.lint);
@@ -251,19 +266,42 @@ if (scanned.length === 0) {
 // Emits the live sites as allowlist entries, reason left blank on purpose: the reason is the whole
 // mechanism, and a generated one would be boilerplate that reports green forever.
 if (process.argv.includes("--report")) {
-  for (const h of [...hits].sort((a, b) => key(a).localeCompare(key(b)))) {
+  // A never-approvable site is left out: an entry for it could only fail, so offering one would
+  // invite writing it. The count still prints, as a comment line the registry parser skips.
+  const approvable = hits.filter((h) => !neverApprovable(h.lint));
+  for (const h of [...approvable].sort((a, b) => key(a).localeCompare(key(b)))) {
     console.log(`[[allow]]\nfile = "${h.file}"\nitem = "${h.item}"\nlint = "${h.lint}"\nreason = ""\n`);
+  }
+  if (banned.length) {
+    console.log(`# ${banned.length} dead-code or unused-item site(s) omitted: never approvable, fix the code.`);
   }
   process.exit(0);
 }
 
-const problems = unlisted.length + stale.length + unreasoned.length + malformed.length + lowered.length;
+const problems =
+  banned.length +
+  bannedEntries.length +
+  unlisted.length +
+  stale.length +
+  unreasoned.length +
+  malformed.length +
+  lowered.length;
 if (problems === 0) {
   console.log(`No unapproved lint suppressions. ${provenance}.`);
   process.exit(0);
 }
 
 console.error(`${problems} suppression problem(s). ${provenance}.\n`);
+if (banned.length) {
+  console.error(`NEVER APPROVABLE (${banned.length}) — a dead-code or unused-item suppression cannot be registered; fix the code:`);
+  for (const h of banned) console.error(`  ${h.file}:${h.line}  ${h.item}  [${h.lint}]  ${h.text}`);
+  console.error("");
+}
+if (bannedEntries.length) {
+  console.error(`NEVER APPROVABLE ENTRY (${bannedEntries.length}) — delete the entry and fix the site:`);
+  for (const a of bannedEntries) console.error(`  ${a.file}  ${a.item}  [${a.lint}]`);
+  console.error("");
+}
 if (unlisted.length) {
   console.error(`NOT APPROVED (${unlisted.length}) — every suppression needs a per-instance entry:`);
   for (const h of unlisted) console.error(`  ${h.file}:${h.line}  ${h.item}  [${h.lint}]  ${h.text}`);
@@ -290,6 +328,7 @@ if (lowered.length) {
   console.error("");
 }
 console.error("Fix the code — make it reachable, delete it, scope it to the build that uses it, or");
-console.error("refactor the signature. `#[expect]` is not an alternative form. If a suppression is");
-console.error(`genuinely warranted, it needs the repository owner's approval in ${ALLOWLIST}.`);
+console.error("refactor the signature. `#[expect]` is not an alternative form. A dead-code or unused-item");
+console.error("suppression is never approvable. Any other suppression that is genuinely warranted needs");
+console.error(`the repository owner's approval in ${ALLOWLIST}.`);
 process.exit(1);

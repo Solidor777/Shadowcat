@@ -8,6 +8,9 @@
 # claim. Stale entries fail the gate in their own right, so permission cannot silently
 # accumulate.
 #
+# Dead-code and unused-item lints (`dead_code`, the `unused*` family, `no-unused-vars`) are
+# never approvable. An entry naming one fails the gate; fix the code instead.
+#
 # `pnpm lint:allowances` also fails on a lint lowered in Cargo.toml, clippy.toml or
 # eslint.config.js — a manifest-level lowering suppresses the same diagnostic from
 # further away and would otherwise be the one route around this file.
