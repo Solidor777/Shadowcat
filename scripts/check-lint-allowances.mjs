@@ -24,17 +24,19 @@
 // Dead-code and unused-item lints are never approvable: the suppressed condition must not exist,
 // so a site carrying one fails whether or not an entry names it, and an entry naming one fails in
 // its own right. Every other lint is approvable per instance.
+//
+// Direction: a BAN gate. It scans the repository corpus (`repoFiles`: tracked plus untracked,
+// non-ignored files, minus files deleted in the working tree), so a new file is checked before
+// `git add` and an ignored file is never read.
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { REPO_ROOTS, repoFiles } from "./lib/gate-corpus.mjs";
 // An attribute quoted inside a doc comment is prose, not a suppression. Telling code from comment
 // is shared with the ephemeral-reference gate rather than reimplemented here: two scanners with
 // their own idea of what a comment is disagree about the same file, and neither can say which is
 // right.
 import { splitLine } from "./lib/comment-span.mjs";
 
-const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "dist-docs"]);
-const ROOTS = ["src", "scripts", "examples"];
 const ALLOWLIST = ".claude/suppression-allowlist.toml";
 
 // Repo-root config files that can lower a lint from a distance. Listed because they are a fixed,
@@ -166,26 +168,7 @@ function loadAllowlist() {
   return out;
 }
 
-/** Recursively collects source paths under `dir`; an absent root yields none. */
-function sources(dir) {
-  const out = [];
-  let entries;
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out;
-  }
-  for (const name of entries) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...sources(p));
-    else out.push(p);
-  }
-  return out;
-}
-
-const norm = (p) => p.split("\\").join("/");
-const scanned = ROOTS.flatMap(sources).map(norm);
+const scanned = repoFiles({ roots: REPO_ROOTS, label: "lint:allowances" });
 const hits = [];
 let exempted = 0;
 
@@ -259,7 +242,7 @@ const provenance = `${scanned.length} file(s) scanned, ${allow.length} allowlist
 // Scanning nothing and finding nothing produce the same zero, and a broken root reads as a pass.
 // Refuse the ambiguous result: an empty scan is an error, never a clean bill of health.
 if (scanned.length === 0) {
-  console.error(`no files found under ${ROOTS.join(", ")}. Nothing was examined.`);
+  console.error(`no files found under ${REPO_ROOTS.join(", ")}. Nothing was examined.`);
   process.exit(2);
 }
 

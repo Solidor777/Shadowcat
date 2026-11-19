@@ -57,12 +57,13 @@
 // check-secure-context-apis.test.mjs.
 
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import ts from "typescript";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { runGit } from "./lib/run-git.mjs";
-import { norm, under } from "./lib/gate-corpus.mjs";
+import { CLIENT_ROOTS, norm, repoFiles, under } from "./lib/gate-corpus.mjs";
+
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files,
+// minus files deleted in the working tree), so a new file is checked before `git add`.
 
 /** The file that defines the seam; the scan must include it or the gate is inert. */
 export const SEAM_FILE = "src/client/core/src/uuid.ts";
@@ -136,7 +137,7 @@ export const RULES = [
 ];
 
 const EXTS = [".ts", ".svelte", ".js", ".mjs"];
-const ROOTS = ["src", "examples"];
+const ROOTS = CLIENT_ROOTS;
 
 /** Whether `path` is a client source file the gate covers. */
 export function isCovered(path) {
@@ -516,27 +517,27 @@ export function allowedFileSet() {
   return new Set(RULES.flatMap((r) => r.allowedFiles));
 }
 
-/** Lists the tracked covered files through `runGit` (its default options carry no `maxBuffer`,
- * raised here for a repo-sized list).
- * @returns The `runGit` result.
+/** Lists the corpus files under the gate's roots.
+ * @returns Repo-relative paths; throws when git cannot list them.
  */
-function listTrackedFiles() {
-  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
-  return runGit(["ls-files", "-z", "--", ...ROOTS], "the tracked source file list", { execFile });
+function listCorpusFiles() {
+  return repoFiles({ roots: ROOTS, label: "lint:secure-context" });
 }
 
 /** Runs the gate over the files `listFiles` reports and returns the process exit code.
- * @param io Injected effects: `listFiles` returns a `runGit`-shaped result, `readFile` reads a path,
- * `log`/`error` receive output lines.
+ * @param io Injected effects: `listFiles` returns repo-relative paths (and throws when the tree
+ * cannot be listed), `readFile` reads a path, `log`/`error` receive output lines.
  * @returns 0 when clean, 1 on a violation, an unlistable tree, or a parse-blind template fragment.
  */
 export function runGate({ listFiles, readFile, log, error }) {
-  const listed = listFiles();
-  if (!listed.ok) {
-    error(`lint:secure-context: ${listed.message}`);
+  let listed;
+  try {
+    listed = listFiles();
+  } catch (e) {
+    error(`lint:secure-context: ${e.message}`);
     return 1;
   }
-  const files = listed.stdout.split("\0").filter((f) => f && isCovered(f));
+  const files = listed.filter((f) => f && isCovered(f));
   assertGateLive(files);
   let errors = 0;
   const unparsed = [];
@@ -560,5 +561,5 @@ export function runGate({ listFiles, readFile, log, error }) {
 }
 
 if (isDirectEntry(import.meta.url)) {
-  process.exit(runGate({ listFiles: listTrackedFiles, readFile: (p) => readFileSync(p, "utf8"), log: console.log, error: console.error }));
+  process.exit(runGate({ listFiles: listCorpusFiles, readFile: (p) => readFileSync(p, "utf8"), log: console.log, error: console.error }));
 }

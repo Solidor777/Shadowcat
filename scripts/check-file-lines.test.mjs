@@ -1,4 +1,7 @@
+import { renameSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "vitest";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 import {
   countLines,
   isCovered,
@@ -67,4 +70,32 @@ test("evaluate: every error names the path and the measured count", () => {
   const [e] = evaluate({ files: [{ path: "src/big.rs", lines: 12000 }], allow: [] });
   expect(e.message).toContain("src/big.rs");
   expect(e.message).toContain("12000");
+});
+
+// The corpus is the repository file list: an untracked, non-ignored file is measured before it is
+// added to git, an ignored one never, and a tracked file deleted in the working tree is not read.
+const GATE = "scripts/check-file-lines.mjs";
+
+test("an untracked oversize file fails the gate before git add", () => {
+  const dir = makeRepo({ "src/small.ts": lines(3), "src/big.ts": lines(SOFT_LIMIT + 1) }, ["src/small.ts"]);
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("src/big.ts");
+});
+
+test("the same oversize file under an ignored path passes", () => {
+  const dir = makeRepo(
+    { ".gitignore": "ignored/\n", "src/small.ts": lines(3), "src/ignored/big.ts": lines(SOFT_LIMIT + 1) },
+    [".gitignore", "src/small.ts"],
+  );
+  expect(runScriptIn(dir, GATE).status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT", () => {
+  const dir = makeRepo({ "src/small.ts": lines(3), "src/gone.ts": lines(3) });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "gone.ts"), join(dir, "gone-aside.ts"));
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
 });

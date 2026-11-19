@@ -19,12 +19,13 @@
 // rustc reads inside a nested comment is read as code after that first `*/`.
 
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { isRustSource, norm } from "./lib/gate-corpus.mjs";
+import { RUST_ROOTS, isRustSource, norm, repoFiles } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
-import { runGit } from "./lib/run-git.mjs";
+
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files,
+// minus files deleted in the working tree), so a new Rust file is checked before `git add`.
 
 const MOD_ITEM = /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]/;
 const DOC_ATTR_BODY = /^\s*doc\b/;
@@ -117,25 +118,26 @@ export function scanModuleDocs(text) {
   return out;
 }
 
-/** Lists the tracked Rust sources through `runGit`, with a buffer sized for a repo-wide list. */
-function listTrackedFiles() {
-  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
-  return runGit(["ls-files", "-z", "--", "src"], "the tracked source file list", { execFile });
+/** Lists the corpus Rust sources; throws when git cannot list them. */
+function listCorpusFiles() {
+  return repoFiles({ roots: RUST_ROOTS, label: "lint:module-docs" });
 }
 
 /**
  * Runs the gate over the files `listFiles` reports and returns the process exit code.
- * @param io Injected effects: `listFiles` returns a `runGit`-shaped result, `readFile` reads a
- * path, `log`/`error` receive output lines.
+ * @param io Injected effects: `listFiles` returns repo-relative paths (and throws when the tree
+ * cannot be listed), `readFile` reads a path, `log`/`error` receive output lines.
  * @returns 0 when clean, 1 on a violation or an unlistable tree.
  */
 export function runGate({ listFiles, readFile, log, error }) {
-  const listed = listFiles();
-  if (!listed.ok) {
-    error(`lint:module-docs: ${listed.message}`);
+  let listed;
+  try {
+    listed = listFiles();
+  } catch (e) {
+    error(`lint:module-docs: ${e.message}`);
     return 1;
   }
-  const files = listed.stdout.split("\0").filter((f) => f && isRustSource(f));
+  const files = listed.filter((f) => f && isRustSource(f));
   let errors = 0;
   for (const path of files) {
     for (const v of scanModuleDocs(readFile(path))) {
@@ -150,5 +152,5 @@ export function runGate({ listFiles, readFile, log, error }) {
 }
 
 if (isDirectEntry(import.meta.url)) {
-  process.exit(runGate({ listFiles: listTrackedFiles, readFile: (p) => readFileSync(p, "utf8"), log: console.log, error: console.error }));
+  process.exit(runGate({ listFiles: listCorpusFiles, readFile: (p) => readFileSync(p, "utf8"), log: console.log, error: console.error }));
 }

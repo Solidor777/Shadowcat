@@ -1,7 +1,8 @@
 import { test, expect } from "vitest";
-import { existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, renameSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 import { scanSecureContext, scanSecureContextDetailed, isCovered, assertGateLive, runGate, allowedFileSet, svelteRegions, SEAM_FILE, HTTPS_SPEC_FILE, MIC_SEAM_FILE, RULES } from "./check-secure-context-apis.mjs";
 
 test("a raw crypto.randomUUID call is a violation", () => {
@@ -241,16 +242,16 @@ test("svelte: style blocks and closing tags contribute nothing", () => {
 // ---- The gate's entry point.
 test("runGate: an unlistable tree fails loudly instead of scanning nothing", () => {
   const errors = [];
-  const code = runGate({ listFiles: () => ({ ok: false, message: "could not determine the tracked source file list (`git ls-files` failed: boom)" }), readFile: () => "", log: () => {}, error: (m) => errors.push(m) });
+  const code = runGate({ listFiles: () => { throw new Error("could not determine the file list (`git ls-files` failed: boom)"); }, readFile: () => "", log: () => {}, error: (m) => errors.push(m) });
   expect(code).toBe(1);
-  expect(errors).toEqual(["lint:secure-context: could not determine the tracked source file list (`git ls-files` failed: boom)"]);
+  expect(errors).toEqual(["lint:secure-context: could not determine the file list (`git ls-files` failed: boom)"]);
 });
 
 test("runGate: a violation exits 1 with file:line and a clean tree exits 0, printing distinct allowed files", () => {
   const files = { "src/client/core/src/uuid.ts": "export const x = 1;", "src/modules/x/src/A.svelte": "<script>const { clipboard } = navigator;</script>" };
   const run = (contents) => {
     const out = { log: [], error: [] };
-    const code = runGate({ listFiles: () => ({ ok: true, stdout: Object.keys(contents).join("\0") }), readFile: (p) => contents[p], log: (m) => out.log.push(m), error: (m) => out.error.push(m) });
+    const code = runGate({ listFiles: () => Object.keys(contents), readFile: (p) => contents[p], log: (m) => out.log.push(m), error: (m) => out.error.push(m) });
     return { code, ...out };
   };
   const bad = run(files);
@@ -294,7 +295,7 @@ test("a .svelte script block with a syntax error is reported at its file line", 
 test("runGate: an unparsable file fails the gate", () => {
   const files = { "src/client/core/src/uuid.ts": "export const x = ;", "src/modules/x/src/A.svelte": "<script>const a = 1;</script>" };
   const errors = [];
-  const code = runGate({ listFiles: () => ({ ok: true, stdout: Object.keys(files).join("\0") }), readFile: (p) => files[p], log: () => {}, error: (m) => errors.push(m) });
+  const code = runGate({ listFiles: () => Object.keys(files), readFile: (p) => files[p], log: () => {}, error: (m) => errors.push(m) });
   expect(code).toBe(1);
   expect(errors[0]).toMatch(/cannot parse src\/client\/core\/src\/uuid\.ts:1/);
 });
@@ -326,6 +327,38 @@ test.each([
   ["a const", "const caches = new Map();\ncaches.open('x');\n"],
 ])("%s shadows the global `caches`", (_name, code) => {
   expect(scanSecureContext("src/modules/x/src/a.ts", code)).toEqual([]);
+});
+
+// ---- The corpus is the repository file list (tracked plus untracked, non-ignored).
+const CORPUS_BASE = {
+  "src/client/core/src/uuid.ts": "export const x = 1;\n",
+  "src/modules/x/src/A.svelte": "<script>const a = 1;</script>\n",
+};
+const CORPUS_BANNED = "export const id = crypto.randomUUID();\n";
+const SECURE_GATE = "scripts/check-secure-context-apis.mjs";
+
+test("an untracked file naming a secure-context API fails the gate before git add", () => {
+  const dir = makeRepo({ ...CORPUS_BASE, "src/modules/x/src/new.ts": CORPUS_BANNED }, Object.keys(CORPUS_BASE));
+  const r = runScriptIn(dir, SECURE_GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("src/modules/x/src/new.ts");
+});
+
+test("the same file under an ignored path passes", () => {
+  const dir = makeRepo(
+    { ...CORPUS_BASE, ".gitignore": "ignored/\n", "src/modules/x/src/ignored/new.ts": CORPUS_BANNED },
+    [...Object.keys(CORPUS_BASE), ".gitignore"],
+  );
+  expect(runScriptIn(dir, SECURE_GATE).status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT", () => {
+  const dir = makeRepo({ ...CORPUS_BASE, "src/modules/x/src/gone.ts": "export const g = 1;\n" });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "modules", "x", "src", "gone.ts"), join(dir, "gone-aside.ts"));
+  const r = runScriptIn(dir, SECURE_GATE);
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
 });
 
 test("every allowed file exists, so an allow-list entry cannot outlive the file it names", () => {

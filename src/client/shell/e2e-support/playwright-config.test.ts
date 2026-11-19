@@ -2,8 +2,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NetworkInterfaceInfo } from "node:os";
 import type { PlaywrightTestConfig } from "@playwright/test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { repoFiles } from "../../../../scripts/lib/gate-corpus.mjs";
 import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
@@ -190,14 +191,17 @@ function projectsRunning(config: PlaywrightTestConfig, file: string): string[] {
     .map((p) => p.name ?? "");
 }
 
-/** The end-to-end test files under `e2e/`, recursively, as paths relative to the shell package. */
+/**
+ * The end-to-end test files under `e2e/`, recursively, as paths relative to the shell package.
+ * The list is the repository corpus (tracked plus untracked, non-ignored files), so a new spec is
+ * partition-checked before it is added to git.
+ */
 function listSpecs(): string[] {
-  const root = fileURLToPath(new URL("../e2e", import.meta.url));
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .map((p) => p.replace(/\\/g, "/"))
-    .filter((p) => p.endsWith(".spec.ts"))
-    .sort()
-    .map((p) => `e2e/${p}`);
+  const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
+  const shellRoot = "src/client/shell/";
+  return repoFiles({ cwd: repoRoot, roots: [`${shellRoot}e2e`], exts: [".spec.ts"], label: "e2e specs" }).map((p) =>
+    p.slice(shellRoot.length),
+  );
 }
 
 /** The projects whose `testMatch` is exactly `matcher`. */

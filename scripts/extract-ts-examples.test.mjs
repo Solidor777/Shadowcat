@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { fileURLToPath } from "node:url";
-import { resolve, join } from "node:path";
+import { resolve, join, sep } from "node:path";
+import { makeRepo } from "./lib/temp-repo.mjs";
 import {
   extractExamples,
   workspacePackageDirs,
@@ -748,6 +749,26 @@ describe("candidateFiles / svelteFiles", () => {
     const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
     const files = svelteFiles(repo, ["src/modules"]);
     for (const f of files) expect(f.endsWith(".svelte")).toBe(true);
+  });
+
+  // The corpus is the repository file list: an untracked, non-ignored source is a candidate before
+  // `git add`, an ignored one never, and the generated types are never a candidate.
+  it("lists an untracked source, skips an ignored one and the generated types", () => {
+    const dir = makeRepo(
+      {
+        ".gitignore": "ignored/\n",
+        "src/client/a/tracked.ts": "export const a = 1;\n",
+        "src/client/a/untracked.ts": "export const b = 1;\n",
+        "src/client/a/ignored/skipped.ts": "export const c = 1;\n",
+        "src/types/generated/Gen.ts": "export type G = 1;\n",
+      },
+      [".gitignore", "src/client/a/tracked.ts", "src/types/generated/Gen.ts"],
+    );
+    const rel = (p) => p.split(sep).join("/").slice(dir.length + 1);
+    expect(candidateFiles(dir, ["src/client", "src/types"]).map(rel).sort()).toEqual([
+      "src/client/a/tracked.ts",
+      "src/client/a/untracked.ts",
+    ]);
   });
 });
 

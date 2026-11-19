@@ -1,5 +1,8 @@
+import { renameSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "vitest";
 import { scanModuleDocs, runGate } from "./check-module-docs.mjs";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 
 test("a documented file-backed mod is a violation", () => {
   expect(scanModuleDocs("/// Summary.\npub mod audio;\n")).toEqual([{ line: 2, module: "audio", inline: false }]);
@@ -96,7 +99,10 @@ function gate(files, listOk = true) {
   const logs = [];
   const errors = [];
   const code = runGate({
-    listFiles: () => (listOk ? { ok: true, stdout: Object.keys(files).join("\0") } : { ok: false, message: "boom" }),
+    listFiles: () => {
+      if (!listOk) throw new Error("boom");
+      return Object.keys(files);
+    },
     readFile: (p) => files[p],
     log: (m) => logs.push(m),
     error: (m) => errors.push(m),
@@ -121,4 +127,30 @@ test("an unlistable tree fails the gate", () => {
   const r = gate({}, false);
   expect(r.code).toBe(1);
   expect(r.errors[0]).toContain("boom");
+});
+
+const DOCUMENTED_MOD = "/// Summary.\npub mod x;\n";
+
+test("an untracked Rust file with a documented mod fails the gate before git add", () => {
+  const dir = makeRepo({ "src/a/lib.rs": "pub mod x;\n", "src/a/new.rs": DOCUMENTED_MOD }, ["src/a/lib.rs"]);
+  const r = runScriptIn(dir, "scripts/check-module-docs.mjs");
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("src/a/new.rs:2");
+});
+
+test("the same file under an ignored path passes", () => {
+  const dir = makeRepo(
+    { ".gitignore": "ignored/\n", "src/a/lib.rs": "pub mod x;\n", "src/a/ignored/new.rs": DOCUMENTED_MOD },
+    [".gitignore", "src/a/lib.rs"],
+  );
+  expect(runScriptIn(dir, "scripts/check-module-docs.mjs").status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT", () => {
+  const dir = makeRepo({ "src/a/lib.rs": "pub mod x;\n", "src/a/gone.rs": "pub mod y;\n" });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "a", "gone.rs"), join(dir, "gone-aside.rs"));
+  const r = runScriptIn(dir, "scripts/check-module-docs.mjs");
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
 });

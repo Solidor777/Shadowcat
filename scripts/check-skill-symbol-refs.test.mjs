@@ -1038,6 +1038,17 @@ describe("checkSkillSymbolRefs", () => {
     join(repoRoot, "src", "server", "src", "scene", "regions.rs"),
     "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n",
   );
+  // The declaration index reads TRACKED files only, so the fixture is a real repository whose index
+  // holds `regions.rs`; `stray.rs` is written and deliberately never added.
+  writeFileSync(
+    join(repoRoot, "src", "server", "src", "scene", "stray.rs"),
+    "impl StrayUntracked {\n    pub fn is_stray(&self) -> bool { true }\n}\n",
+  );
+  execFileSync("git", ["init", "-q"], { cwd: repoRoot, env: scrubGitEnv() });
+  execFileSync("git", ["add", "--", "src/server/src/scene/regions.rs"], {
+    cwd: repoRoot,
+    env: scrubGitEnv(),
+  });
   for (const dir of ["client", "modules", "types"])
     mkdirSync(join(repoRoot, "src", dir), { recursive: true });
   mkdirSync(join(repoRoot, "scripts"), { recursive: true });
@@ -1068,6 +1079,13 @@ describe("checkSkillSymbolRefs", () => {
       { file: skillFile, line: 1, token: "region_arrests" },
       { file: skillFile, line: 1, token: "fakeCamelCitation" },
     ]);
+  });
+
+  // A declaration in an untracked file would make a citation resolve here and fail on CI, which
+  // sees a clean checkout; the index reads tracked files only.
+  it("does not resolve a citation against a symbol declared only in an untracked file", () => {
+    const result = run("See `StrayUntracked::is_stray`.");
+    expect(result.broken.map((b) => b.token)).toEqual(["StrayUntracked::is_stray"]);
   });
 
   it("does not scan an untracked (vendored) skill directory", () => {
