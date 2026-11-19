@@ -346,6 +346,8 @@ export interface TrafficEvent {
   contentLength: string | null;
   /** The request's `If-Range` header, or `null`. */
   ifRange: string | null;
+  /** The request's `If-None-Match` header, or `null`. */
+  ifNoneMatch: string | null;
   /** The failure text (failed). */
   error: string | null;
 }
@@ -379,6 +381,7 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
     contentEncoding: null,
     contentLength: null,
     ifRange: null,
+    ifNoneMatch: null,
     error: null,
   };
   page.on("request", (r) => {
@@ -391,6 +394,7 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
       variant: url.searchParams.get("variant"),
       range: r.headers()["range"] ?? null,
       ifRange: r.headers()["if-range"] ?? null,
+      ifNoneMatch: r.headers()["if-none-match"] ?? null,
     });
   });
   page.on("response", (r) => {
@@ -407,6 +411,7 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
       contentEncoding: headers["content-encoding"] ?? null,
       contentLength: headers["content-length"] ?? null,
       ifRange: r.request().headers()["if-range"] ?? null,
+      ifNoneMatch: r.request().headers()["if-none-match"] ?? null,
       error: null,
     });
   });
@@ -542,8 +547,8 @@ function headerValue(headers: Record<string, string>, name: string): string | un
 }
 
 /** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
- * the canonical URL, never the other derivative), every response the page saw is a `206` or the
- * initial `200`, nothing is compressed, no request fails except the element's own cancellation,
+ * the canonical URL, never the other derivative), every response the page saw is a `206`, the
+ * initial `200` or a `304` to a conditional request, nothing is compressed, no request fails except the element's own cancellation,
  * and no response the SERVER sent carries more than `MAX_RANGE_SLICE_BYTES`. The slice bound is
  * read from the network stack's own record (`raw`) where the engine exposes one, because a page
  * level `206` can be assembled by the browser's cache after a `304` and carry bytes the server
@@ -561,7 +566,11 @@ export function assertTrafficContract(log: TrafficLog, variant: Variant, raw: Ra
   const requested = new Set(log.events.map((e) => e.variant));
   expect([...requested], "the player requests only the expected derivative").toEqual([variant]);
   for (const e of log.events.filter((x) => x.kind === "response")) {
-    expect([200, 206], `status ${e.status} for ${e.range}`).toContain(e.status);
+    // A `304` answers a conditional request (an engine revalidating a cached derivative before
+    // ranging into it); one to a request with no `If-None-Match` is a server defect.
+    if (e.status !== 304 || e.ifNoneMatch === null) {
+      expect([200, 206], `status ${e.status} for ${e.range} (If-None-Match ${e.ifNoneMatch})`).toContain(e.status);
+    }
     if (raw === null && e.status === 206) {
       const { start, end } = parseContentRange(e.contentRange!);
       expect(end - start + 1, `slice ${e.contentRange}`).toBeLessThanOrEqual(MAX_RANGE_SLICE_BYTES);

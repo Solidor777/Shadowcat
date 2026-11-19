@@ -78,6 +78,14 @@ const STORED_DURATION_TOLERANCE_MS = 50;
 /** Tolerance, in milliseconds, between a derivative element's `duration` and `duration_ms`. */
 const ELEMENT_DURATION_TOLERANCE_MS = 100;
 
+/** Engine and platform pairs (`<browserName>:<process.platform>`) whose media stack estimates an
+ * Ogg stream's `duration` rather than reading it, with the tolerance in milliseconds measured for
+ * them. Playwright's Linux WebKit reports 1197.1935 s for the 1200 s ambient bed; the stored
+ * `duration_ms` is checked against the manifest on its own, so the server's value stays exact. */
+const ESTIMATED_ELEMENT_DURATION_TOLERANCE_MS: Record<string, number> = {
+  "webkit:linux": 3000,
+};
+
 /** Longest wait, in milliseconds, for the audible output to carry the new position after a seek. */
 const SEEK_SETTLE_MS = 10_000;
 
@@ -158,7 +166,9 @@ for (const leg of [...CHROMIUM_LEGS]) {
         expect(
           Math.abs(secs * 1000 - track.durationMs),
           `${variant} element duration ${secs}s against duration_ms ${track.durationMs}`,
-        ).toBeLessThanOrEqual(ELEMENT_DURATION_TOLERANCE_MS);
+        ).toBeLessThanOrEqual(
+          ESTIMATED_ELEMENT_DURATION_TOLERANCE_MS[`${browserName}:${process.platform}`] ?? ELEMENT_DURATION_TOLERANCE_MS,
+        );
       }
     }
     const playable = await page.evaluate(() => {
