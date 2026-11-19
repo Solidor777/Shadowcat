@@ -245,7 +245,7 @@ impl PeerSlots {
         let key = peer_key(ip);
         let reserved = self
             .global
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < self.global_cap).then_some(n + 1)
             })
             .is_ok();

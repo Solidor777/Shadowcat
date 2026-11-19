@@ -606,7 +606,7 @@ async fn soak(
                 let ends_in_reset = action != 1 || path == "/endless";
                 if ends_in_reset
                     && reset_budget
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| b.checked_sub(1))
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |b| b.checked_sub(1))
                         .is_err()
                 {
                     action = 1;
