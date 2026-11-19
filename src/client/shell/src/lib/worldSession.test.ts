@@ -2095,6 +2095,18 @@ describe("WorldSession.leave during enter", () => {
     }
   });
 
+  test("a join refusal frame before the Welcome reaches opts.onJoinRefused", async () => {
+    const { connect, push } = pushConnect([]);
+    const onJoinRefused = vi.fn();
+    const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger, onJoinRefused });
+
+    await session.enter("w1");
+    push({ type: "error", code: "forbidden", message: "not a member of this world" });
+
+    expect(onJoinRefused).toHaveBeenCalledExactlyOnceWith("forbidden");
+    session.leave();
+  });
+
   test("enter() after leave() returns without constructing a socket", async () => {
     const connect = vi.fn<Connect>(() => Promise.resolve({ send: () => {}, close: () => {} }));
     const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });

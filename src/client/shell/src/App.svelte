@@ -216,6 +216,12 @@
       connect: webSocketConnect(wsUrl),
       modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
       onEvicted: () => navigate({ name: "worlds" }),
+      // A refused join (the world is gone, or this user is not a member) is terminal: say why,
+      // then leave the world route so the session effect tears the session down.
+      onJoinRefused: (code) => {
+        notifications.push("warning", t(`session.joinRefused.${code}`));
+        navigate({ name: "worlds" });
+      },
       onReject: (reason, detail) =>
         notifications.push(
           "warning",

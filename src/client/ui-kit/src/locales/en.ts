@@ -7,6 +7,8 @@ export const en: Messages = {
   "login.submit": "Log in",
   "login.error": "Invalid username or password.",
   "ws.plainHttpHint": "Cannot open the secure connection. This server also answers plain HTTP: open {url} instead.",
+  "session.joinRefused.world_not_found": "That world no longer exists.",
+  "session.joinRefused.forbidden": "You are not a member of that world.",
   "entry.httpsNotice.body": "This server also answers over HTTPS. Use it for a secure connection (needed for microphone access):",
   "entry.httpsNotice.selfSigned": "The server made its own certificate, so your browser will warn once. Accept the warning to continue; plain HTTP keeps working either way.",
   "entry.httpsNotice.dismiss": "Dismiss",

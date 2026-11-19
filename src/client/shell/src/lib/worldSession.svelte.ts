@@ -131,6 +131,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** Terminal join refusal: the server refused this session's join before its first `welcome`
+   * (the world does not exist, or this user is not a member). The WsClient has already stopped
+   * — the shell tells the user and routes them out of the world. */
+  onJoinRefused?: (code: "world_not_found" | "forbidden") => void;
   /** Called after every rejected intent, with the server's reason and any player-presentable
    * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
    * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
@@ -1560,6 +1564,7 @@ export class WorldSession {
         onResyncComplete: () => this.#flushOfflineQueue(),
         onError: (e) => this.#logger.error("world session ws error", e),
         onEvicted: () => this.opts.onEvicted?.(),
+        onJoinRefused: (code) => this.opts.onJoinRefused?.(code),
         onAssetChanged: (msg) => {
           // Bump the resolver first so a notified panel re-resolves the new URL.
           this.assets.onAssetChanged(msg);

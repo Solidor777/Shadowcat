@@ -505,6 +505,11 @@ export interface WsClientHandlers {
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
+  /** The server refused this connection's join before its `welcome`: the world does not exist,
+   * or the user is not a member. Terminal: the client has already stopped (no reconnect) when
+   * this fires. A refusal of any other kind (`internal`) is transient and is not reported here.
+   * @param code Why the join was refused. */
+  onJoinRefused?(code: "world_not_found" | "forbidden"): void;
 }
 
 /** Construction options for `WsClient`: the connection factory, handler set, and the
@@ -1154,8 +1159,9 @@ export class WsClient {
   /** Parse (`parseServerMsg`, Zod-validated against `ServerMsgSchema` — malformed/unknown JSON
    * is silently dropped) and dispatch one inbound text frame by `msg.type`. `gen` is the
    * `connGeneration` this connection's `onMessage` closure was created with (stamped in
-   * `open()` before the connect `await`); ONLY the `"welcome"` and `"resync_end"` cases compare
-   * `gen !== this.connGeneration` and bail — every other frame type (`event`, `reject`,
+   * `open()` before the connect `await`); ONLY the `"welcome"`, `"resync_end"` and (for a
+   * join-refusing code) `"error"` cases compare `gen` against `this.connGeneration` — every
+   * other frame type (`event`, `reject`,
    * `move_stream`, chat/search/pathfind replies, etc.) acts regardless of generation, because
    * those either carry their own `request_id` correlation (dropped harmlessly if the requester
    * already gave up) or are idempotent/order-tolerant on the applied-seq watermark.
@@ -1221,6 +1227,20 @@ export class WsClient {
         this.send({ type: "pong" });
         break;
       case "error":
+        // A refused join is terminal, and only for the CURRENT connection before its own
+        // Welcome (same guard shape as the `welcome`/`resync_end` arms): an in-session
+        // `forbidden` (a refused fog reset, say) is not a refused join, and a frame from a
+        // superseded connection says nothing about this one. `internal` is transient and keeps
+        // the reconnect loop running.
+        if (
+          (msg.code === "world_not_found" || msg.code === "forbidden") &&
+          this.welcomedGeneration !== gen &&
+          gen === this.connGeneration
+        ) {
+          const refused = msg.code;
+          this.stop();
+          this.safeEmit(() => this.opts.handlers.onJoinRefused?.(refused));
+        }
         break;
       case "evicted":
         // Terminal: the server is deleting this world or account. Stop first
