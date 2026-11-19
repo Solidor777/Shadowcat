@@ -765,6 +765,52 @@ async fn player_write_to_gm_owned_doc_is_forbidden() {
     assert_eq!(frames[0]["reason"], "forbidden");
 }
 
+/// Reads the join refusal off a refused socket: the `error` frame, then the stream ending.
+async fn read_join_refusal(ws: &mut Ws) -> serde_json::Value {
+    let first = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+        .await
+        .expect("a refusal frame arrives")
+        .expect("the stream is not empty")
+        .expect("the frame reads");
+    let Message::Text(text) = first else {
+        panic!("expected a text error frame, got {first:?}");
+    };
+    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let rest = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+        .await
+        .expect("the socket closes after the refusal");
+    assert!(
+        matches!(rest, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
+        "nothing but a close follows the refusal, got {rest:?}"
+    );
+    frame
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_non_member_is_refused_with_a_forbidden_error_then_closed() {
+    let h = spawn().await;
+    let hash = hash_password("pw").unwrap();
+    h.repo
+        .create_user("stranger", Some(&hash), ServerRole::User, 0)
+        .await
+        .unwrap();
+    let cookie = h.login("stranger", "pw").await;
+
+    let mut ws = h.connect_with(&cookie).await;
+    let frame = read_join_refusal(&mut ws).await;
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["code"], "forbidden");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_nonexistent_world_is_refused_with_world_not_found_then_closed() {
+    let h = spawn().await;
+    let mut ws = h.connect_world(Uuid::from_u128(0xdead), &h.cookie).await;
+    let frame = read_join_refusal(&mut ws).await;
+    assert_eq!(frame["type"], "error");
+    assert_eq!(frame["code"], "world_not_found");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gm_only_property_hidden_from_player() {
     let h = spawn().await;
