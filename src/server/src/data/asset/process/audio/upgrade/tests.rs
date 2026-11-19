@@ -326,7 +326,9 @@ fn a_sibling_replaced_after_staging_is_not_overwritten() {
 
 /// A reader holding the target across the swap sees either the new file (the swap went through
 /// and the reader keeps the old bytes) or the old file intact (the platform refused the rename and
-/// the swap was skipped); either way the sweep terminates and leaves no staged file behind.
+/// the swap was skipped); either way the sweep terminates and leaves no staged file behind. On
+/// Windows the swap goes through (`Applied::Done`): `fs::File::open` shares the file for delete, so
+/// the rename replaces the target while the reader keeps the old bytes.
 #[test]
 fn a_reader_held_across_the_swap_leaves_the_old_or_the_new_file_intact() {
     let asset = stored(648, true, true, true);
