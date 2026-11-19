@@ -527,7 +527,8 @@ function listCorpusFiles() {
 /** Runs the gate over the files `listFiles` reports and returns the process exit code.
  * @param io Injected effects: `listFiles` returns repo-relative paths (and throws when the tree
  * cannot be listed), `readFile` reads a path, `log`/`error` receive output lines.
- * @returns 0 when clean, 1 on a violation, an unlistable tree, or a parse-blind template fragment.
+ * @returns 0 when clean, 1 on a violation or a parse-blind template fragment, 2 when the tree
+ * cannot be listed.
  */
 export function runGate({ listFiles, readFile, log, error }) {
   let listed;
@@ -535,7 +536,7 @@ export function runGate({ listFiles, readFile, log, error }) {
     listed = listFiles();
   } catch (e) {
     error(`lint:secure-context: ${e.message}`);
-    return 1;
+    return 2;
   }
   const files = listed.filter((f) => f && isCovered(f));
   assertGateLive(files);

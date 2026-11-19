@@ -484,13 +484,13 @@ export function download(url, { deadlineMs = DOWNLOAD_DEADLINE_MS, request = get
  * @param {() => Promise<Buffer>} [deps.fetchCrate] Downloads the upstream archive.
  * @param {(m: string) => void} deps.log Info sink.
  * @param {(m: string) => void} deps.error Error sink.
- * @returns {Promise<number>} Process exit code.
+ * @returns {Promise<number>} Process exit code: 0 clean, 1 on a finding, 2 when git cannot list the files.
  */
 export async function runGate({ listFiles, readFile, upstream, fetchCrate, log, error }) {
   const listed = listFiles();
   if (!listed.ok) {
     error(`lint:vendor: ${listed.message}`);
-    return 1;
+    return 2;
   }
   const errors = checkVendor({
     paths: listed.paths,

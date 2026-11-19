@@ -127,7 +127,7 @@ function listCorpusFiles() {
  * Runs the gate over the files `listFiles` reports and returns the process exit code.
  * @param io Injected effects: `listFiles` returns repo-relative paths (and throws when the tree
  * cannot be listed), `readFile` reads a path, `log`/`error` receive output lines.
- * @returns 0 when clean, 1 on a violation or an unlistable tree.
+ * @returns 0 when clean, 1 on a violation, 2 when the tree cannot be listed.
  */
 export function runGate({ listFiles, readFile, log, error }) {
   let listed;
@@ -135,7 +135,7 @@ export function runGate({ listFiles, readFile, log, error }) {
     listed = listFiles();
   } catch (e) {
     error(`lint:module-docs: ${e.message}`);
-    return 1;
+    return 2;
   }
   const files = listed.filter((f) => f && isRustSource(f));
   let errors = 0;

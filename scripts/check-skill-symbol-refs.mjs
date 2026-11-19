@@ -35,6 +35,7 @@ import { splitLine } from "./lib/comment-span.mjs";
 // in the module both documentation gates import from. Importing the sibling gate instead formed a
 // cycle: nothing evaluated an imported binding at module scope, so it worked by accident.
 import {
+  CorpusListingError,
   EXAMPLE_EXEMPT,
   GENERATED_ROOT,
   listSkillDirs,
@@ -1772,7 +1773,7 @@ export function checkSkillSymbolRefs(repoRoot, skillsRoot, opts = {}) {
   if (trackedDirs === undefined) {
     const dirs = listSkillDirs(skillsRoot);
     if (dirs === null)
-      throw new Error(
+      throw new CorpusListingError(
         "git could not list the skill corpus: this gate scopes by tracked-ness and cannot " +
           `guess it. Run it inside a git checkout with git on PATH (looked in ${skillsRoot}).`,
       );

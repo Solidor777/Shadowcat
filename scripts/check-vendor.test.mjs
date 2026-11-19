@@ -469,7 +469,7 @@ test("runGate reports a git failure instead of throwing", async () => {
     log: () => {},
     error: (m) => errors.push(m),
   });
-  expect(code).toBe(1);
+  expect(code).toBe(2);
   expect(errors).toEqual(["lint:vendor: could not determine the vendored file list (boom)"]);
 });
 

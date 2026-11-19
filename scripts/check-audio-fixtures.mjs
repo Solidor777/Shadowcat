@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
-import { repoFiles } from "./lib/gate-corpus.mjs";
+import { CorpusListingError, repoFiles } from "./lib/gate-corpus.mjs";
 import { isDirectEntry } from "./lib/is-main.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -174,9 +174,31 @@ export function fixtureListingFailures({ cwd, dir, tracks, log = console.log }) 
   return failures;
 }
 
-/** Runs both checks; returns `{ failures: string[], lines: string[] }`. */
-export function compare({ python, committedDir = FIXTURE_DIR }) {
-  const failures = [];
+/**
+ * The track names the committed manifest declares, sorted.
+ * @param {string} [committedDir] - directory holding the committed `manifest.json`.
+ * @returns {string[]} track names without extension.
+ * @example
+ * committedTracks(FIXTURE_DIR);
+ */
+export function committedTracks(committedDir = FIXTURE_DIR) {
+  const committed = JSON.parse(readFileSync(join(committedDir, "manifest.json"), "utf8"));
+  return Object.keys(committed.tracks).sort();
+}
+
+/**
+ * Runs both checks; returns `{ failures: string[], lines: string[] }`.
+ * @param {object} options - run inputs.
+ * @param {string} options.python - python interpreter that has NumPy and SciPy.
+ * @param {string} [options.committedDir] - directory holding the committed fixtures.
+ * @param {string[]} [options.listingFailures] - the `fixtureListingFailures` result, listed by the
+ *   caller before any tool runs so a git failure ends the run before the generator starts.
+ * @returns {{ failures: string[], lines: string[] }} one message per failure and the report lines.
+ * @example
+ * compare({ python: "python3", listingFailures: [] });
+ */
+export function compare({ python, committedDir = FIXTURE_DIR, listingFailures = [] }) {
+  const failures = [...listingFailures];
   const lines = [];
   const regenDir = mkdtempSync(join(tmpdir(), "shadowcat-audio-fixtures-"));
   const gen = run(python, [GENERATOR, regenDir]);
@@ -188,7 +210,6 @@ export function compare({ python, committedDir = FIXTURE_DIR }) {
   const committed = JSON.parse(readFileSync(committedManifestPath, "utf8"));
   const regen = JSON.parse(readFileSync(regenManifestPath, "utf8"));
   const tracks = Object.keys(committed.tracks).sort();
-  failures.push(...fixtureListingFailures({ cwd: REPO_ROOT, dir: committedDir, tracks }));
   for (const track of tracks) {
     const rt = regen.tracks[track];
     if (!rt || JSON.stringify(rt.sequence) !== JSON.stringify(committed.tracks[track].sequence)) {
@@ -233,6 +254,21 @@ export function compare({ python, committedDir = FIXTURE_DIR }) {
 
 function main(argv) {
   const requireTools = argv.includes("--require-tools");
+  // The fixture listing needs git and the manifest, not the audio tools, so it runs first: a git
+  // failure ends the run with one line and status 2 whether or not the tools are installed. Only a
+  // `CorpusListingError` is caught; any other error keeps its stack.
+  let listingFailures;
+  try {
+    listingFailures = fixtureListingFailures({
+      cwd: REPO_ROOT,
+      dir: FIXTURE_DIR,
+      tracks: committedTracks(FIXTURE_DIR),
+    });
+  } catch (e) {
+    if (!(e instanceof CorpusListingError)) throw e;
+    console.error(`lint:audio-fixtures: ${e.message}`);
+    return 2;
+  }
   const missing = missingTools();
   if (missing.length > 0) {
     const msg = `audio fixtures: missing tools: ${missing.join(", ")}`;
@@ -243,7 +279,7 @@ function main(argv) {
     console.log(`${msg}; SKIPPED (pass --require-tools to make this fatal)`);
     return 0;
   }
-  const { failures, lines } = compare({ python: findPython() });
+  const { failures, lines } = compare({ python: findPython(), listingFailures });
   for (const l of lines) console.log(l);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAIL ${f}`);
