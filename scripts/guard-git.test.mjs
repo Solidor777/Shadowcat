@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { scrubGitEnv } from "./lib/run-git.mjs";
 import {
   classify,
   segmentAndTokenize,
@@ -552,14 +553,14 @@ function gitHelp(cmd) {
   }
   const merged = new Map();
   for (const args of runs) {
-    const r = spawnSync("git", [...args, "-h"], { cwd: REPO_ROOT, encoding: "utf8" });
+    const r = spawnSync("git", [...args, "-h"], { cwd: REPO_ROOT, encoding: "utf8", env: scrubGitEnv() });
     if (r.error) return null;
     for (const [k, v] of parseGitHelp(`${r.stdout}\n${r.stderr}`)) merged.set(k, v);
   }
   return merged;
 }
 
-const installedHelp = spawnSync("git", ["--version"], { encoding: "utf8" }).error ? null : true;
+const installedHelp = spawnSync("git", ["--version"], { encoding: "utf8", env: scrubGitEnv() }).error ? null : true;
 
 test.skipIf(!installedHelp)("the option tables agree with the installed git's own -h output", () => {
   for (const [cmd, table] of Object.entries(OPTION_TABLES)) {

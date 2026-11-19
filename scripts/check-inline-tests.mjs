@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 import { isRustSource, norm } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
 
@@ -46,9 +47,13 @@ export function scanInlineTests(text) {
 }
 
 function main() {
-  const files = execFileSync("git", ["ls-files", "-z", "--", "src"], { encoding: "utf8" })
-    .split("\0")
-    .filter(isRustSource);
+  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
+  const listed = runGit(["ls-files", "-z", "--", "src"], "the tracked source file list", { execFile });
+  if (!listed.ok) {
+    console.error(`lint:inline-tests: ${listed.message}`);
+    process.exit(2);
+  }
+  const files = listed.stdout.split("\0").filter(isRustSource);
   let errors = 0;
   for (const path of files) {
     for (const v of scanInlineTests(readFileSync(path, "utf8"))) {
