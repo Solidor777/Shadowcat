@@ -21,6 +21,10 @@ export default [
       // failure that CI cannot reproduce, because CI never checks the directory out — a local-only
       // false failure trains readers to discount a real one.
       ".superpowers/",
+      // Git-ignored manual git worktrees, each a full checkout of this repository. The repo-root
+      // lint would otherwise walk every checkout's sources and build output as if they were part of
+      // this tree, so one open worktree turns a clean tree red; each worktree lints itself.
+      ".worktrees/",
       // The mandated debug-dump sink, git-ignored and ephemeral. Linting it makes USING the sink
       // the project requires break the repo lint gate, so an investigation has no green baseline
       // to work against — which pushes the next writer to drop artifacts somewhere unswept
