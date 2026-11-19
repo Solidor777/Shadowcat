@@ -2,14 +2,15 @@
 //!
 //! [`classify`] is the ONE decider. [`request_scheme`] (session cookie flavour and any absolute-URL
 //! builder) and [`hsts_max_age`] (the HSTS gate) both read it, so the three cannot disagree on an
-//! input. A request is HTTPS when
-//! 1. this process terminated TLS for its connection (`ConnMeta.tls`), or
-//! 2. its immediate peer is a configured trusted proxy AND the rightmost comma-separated value of
-//!    the last `X-Forwarded-Proto` header line is `https` (ASCII case-insensitive): the rightmost
-//!    value is the assertion of the nearest trusted proxy, and a multi-hop chain whose inner proxy
-//!    overwrote it to `http` yields plain HTTP, which fails toward a non-`Secure` cookie that still
-//!    works on an HTTPS page. RFC 7239 `Forwarded` is ignored, and an untrusted peer's header is
-//!    ignored entirely.
+//! input.
+//!
+//! A request is HTTPS when this process terminated TLS for its connection (`ConnMeta.tls`), or when
+//! its immediate peer is a configured trusted proxy AND the rightmost comma-separated value of the
+//! last `X-Forwarded-Proto` header line is `https` (ASCII case-insensitive). The rightmost value is
+//! the assertion of the nearest trusted proxy, and a multi-hop chain whose inner proxy overwrote it
+//! to `http` yields plain HTTP, which fails toward a non-`Secure` cookie that still works on an
+//! HTTPS page. RFC 7239 `Forwarded` is ignored, and an untrusted peer's header is ignored
+//! entirely.
 //!
 //! Anything else (including a request with no `ConnectInfo`, as under the axum-test mock
 //! transport) is plain HTTP.
