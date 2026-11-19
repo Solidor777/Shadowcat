@@ -278,6 +278,17 @@ jobs:
       - name: Install PipeWire dev headers (Linux)
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit
+      # The runner has no sound hardware. Firefox and WebKit open their output through the system
+      # sound server, and without a device an AudioContext never leaves "suspended", so the
+      # statusbar's unlock control never swaps to the mute toggle. A null sink is a device that
+      # discards its samples. Chromium falls back to a fake output by itself.
+      - name: Provide a null audio sink
+        run: |
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info
       - run: pnpm --filter @shadowcat/shell e2e:build:release
       - run: pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit
       - if: failure()

@@ -441,6 +441,13 @@ reason = "Installs the system PipeWire dev package the audio-monitor's Linux bac
 [[gate]]
 workflow = "ci.yml"
 job = "e2e-long-audio"
+command = "sudo apt-get install -y pulseaudio pulseaudio-utils pulseaudio --start --exit-idle-time=-1 pactl load-module module-null-sink sink_name=ci_null pactl set-default-sink ci_null pactl info"
+tier = "ci-only"
+reason = "Starts a sound server with a null sink on the hosted Linux runner, which has no sound device; Firefox and WebKit leave an AudioContext suspended without one. apt-get with sudo exists only on the Ubuntu runner, and a developer machine has its own audio device."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
 command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit"
 tier = "setup"
 reason = "Installs the browser builds the long-audio step drives; a prerequisite, not a check in its own right."
