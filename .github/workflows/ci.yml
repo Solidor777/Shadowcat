@@ -6,7 +6,7 @@ on:
 
 # Job timeouts bound a hang, not a regression: each is twice the longest successful run among the
 # last 100 completed runs of this workflow (per job, and per OS leg for `rust`), rounded up to five
-# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 28.9, rust ubuntu 23.3,
+# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 53.6, rust ubuntu 23.3,
 # web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. `audio-fixtures` has no run history yet; its 30 is sized from the
 # measured local regeneration of the three 20-minute tracks and is re-derived from the recorded runs
 # once they exist. `e2e-long-audio` (90) and the two `e2e-long-audio-playthrough-*` jobs (50, about 20
@@ -14,7 +14,7 @@ on:
 # Without one a hung job runs to the platform's six hours.
 jobs:
   rust:
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 60 || 50 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 110 || 50 }}
     strategy:
       fail-fast: false
       matrix:
