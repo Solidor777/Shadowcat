@@ -14,10 +14,22 @@
 // or as a property of any object (`fs.readdirSync`, `fsp.readdir`, `fs.promises.readdir`). Site id:
 // `file :: nearest named function :: callee :: ordinal`.
 //
-// Stated bound: a call through a computed property (`fs["readdirSync"]`), a callee re-exported under
-// another name from a different module, or a `child_process` `find` is not seen. The test compares
-// the parser's count with an independent text recount, so a form the parser misses and the text sees
-// fails loudly.
+// Stated bound: the scan does NOT see
+//   - a call through a computed property (`fs["readdirSync"]`);
+//   - a callee re-exported under another name from a different module;
+//   - a callee aliased through a local variable (`const rd = fs.readdirSync; rd(dir)`): only import
+//     and destructuring aliases are followed, and the text recount matches the callee's own name
+//     followed by `(`, so it misses the alias call too;
+//   - a call into a third-party glob or walk library (`fast-glob`, `globby`, `tinyglobby`,
+//     `walkdir`) whose function is not named in `WALK_CALLEES`;
+//   - a `child_process` `find`;
+//   - any file whose extension is outside `SCAN_EXTS`, for example `.mts`, `.cts`, `.tsx` and
+//     `.svelte` (a walk in a `.svelte` script block is unread);
+//   - any directory outside `REPO_ROOTS` and the repository-root files, for example `vendor/`,
+//     `docs/` and `.claude/`.
+// The test compares the parser's count with an independent text recount, so a form the parser
+// misses and the text sees, inside a scanned file, fails loudly; the forms above are invisible to
+// both.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -201,12 +213,18 @@ export function reconcile(found, recorded) {
 }
 
 if (isDirectEntry(import.meta.url)) {
-  const files = repoFiles({
-    roots: REPO_ROOTS,
-    rootFiles: true,
-    exts: SCAN_EXTS,
-    label: "lint:walk-sites",
-  });
+  let files;
+  try {
+    files = repoFiles({
+      roots: REPO_ROOTS,
+      rootFiles: true,
+      exts: SCAN_EXTS,
+      label: "lint:walk-sites",
+    });
+  } catch (e) {
+    console.error(`lint:walk-sites: ${e.message}`);
+    process.exit(2);
+  }
   const found = collectSites(files);
   const recorded = JSON.parse(readFileSync(INVENTORY_PATH, "utf8")).sites;
   const errors = reconcile(found, recorded);

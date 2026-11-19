@@ -168,7 +168,13 @@ function loadAllowlist() {
   return out;
 }
 
-const scanned = repoFiles({ roots: REPO_ROOTS, label: "lint:allowances" });
+let scanned;
+try {
+  scanned = repoFiles({ roots: REPO_ROOTS, label: "lint:allowances" });
+} catch (e) {
+  console.error(`lint:allowances: ${e.message}`);
+  process.exit(2);
+}
 const hits = [];
 let exempted = 0;
 

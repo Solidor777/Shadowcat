@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { describe, test, expect } from "vitest";
@@ -229,6 +229,29 @@ describe("the gates read the corpus through repoFiles", () => {
     expect(repoFilesCalls('import { repoFiles } from "./gate-corpus.mjs";\n', "a.mjs")).toBe(0);
     expect(repoFilesCalls('// repoFiles({})\nconst s = "repoFiles({})";\n', "a.mjs")).toBe(0);
     expect(repoFilesCalls("const f = repoFiles({ roots: [] });\n", "a.mjs")).toBe(1);
+  });
+
+  // A direct-entry gate that cannot list the corpus reports one line naming itself and exits 2; a
+  // stack trace, or a clean exit over an unread corpus, is a defect. git is made unreachable by
+  // giving the child a PATH holding no executables, which fails the same way for every gate
+  // whatever its working directory.
+  const GIT_FAILURE_GATES = [
+    ["scripts/check-file-lines.mjs", "lint:file-size"],
+    ["scripts/check-lint-allowances.mjs", "lint:allowances"],
+    ["scripts/check-comment-refs.mjs", "lint:comments"],
+    ["scripts/check-svelte-runtime-entries.mjs", "check:svelte-runtime"],
+    ["scripts/check-walk-sites.mjs", "lint:walk-sites"],
+    ["scripts/extract-ts-examples.mjs", "docs:check-examples"],
+  ];
+
+  test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label) => {
+    const emptyPath = mkdtempSync(join(tmpdir(), "no-git-path-"));
+    const env = Object.fromEntries(Object.entries(scrubGitEnv()).filter(([key]) => key.toLowerCase() !== "path"));
+    env.PATH = emptyPath;
+    const r = spawnSync(process.execPath, [gate], { env, encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(new RegExp(`^${label}: could not determine the file list`, "m"));
+    expect(r.stderr).not.toMatch(/\n\s+at /);
   });
 
   test("only the skill-checkout gates import skillSources", () => {

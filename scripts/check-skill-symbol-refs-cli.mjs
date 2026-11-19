@@ -257,7 +257,8 @@ function main() {
   // to the shared skills-dir location Claude Code itself reads live; an explicit second argument
   // is the seam the spawned-CLI test uses to point at a fixture's own seeded corpus.
   const skillsRoot = process.argv[3] === undefined ? defaultSkillsRoot() : resolve(process.argv[3]);
-  process.exitCode = report(checkSkillSymbolRefs(repoRoot, skillsRoot), console);
+  const result = checkSkillSymbolRefs(repoRoot, skillsRoot, { log: (line) => console.error(line) });
+  process.exitCode = report(result, console);
 }
 
 if (isDirectEntry(import.meta.url)) main();

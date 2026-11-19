@@ -1316,11 +1316,22 @@ function main() {
     .flatMap((a, i) => (a === "--cover" ? [argv[i + 1]] : []))
     .filter(Boolean);
 
+  // A git failure while listing the corpus ends the run with a message and status 2, never a stack
+  // trace; the same shape every other corpus gate reports.
+  const listCorpus = () => {
+    try {
+      return gateFileSet(scopes);
+    } catch (e) {
+      console.error(`lint:comments: ${e.message}`);
+      process.exit(2);
+    }
+  };
+
   // --residue: the coverage control. Reads `gateFileSet(scopes)` — the exact array the main scan
   // below also reads — so it cannot silently narrow to one corpus. Exits 1 only on non-empty
   // RESIDUE — an acknowledged match is not a failure, it is the mechanism working.
   if (argv.includes("--residue")) {
-    const { scanned: residueFiles } = gateFileSet(scopes);
+    const { scanned: residueFiles } = listCorpus();
     if (scopes.length > 0 && residueFiles.length === 0) {
       console.error(`--scope matched 0 file(s): ${scopes.join(", ")}`);
       console.error(
@@ -1360,7 +1371,7 @@ function main() {
     process.exit(1);
   }
 
-  const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = gateFileSet(scopes);
+  const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = listCorpus();
   const hits = [];
   let exempted = 0;
   // The coverage control's acknowledgement entries are hit-counted on the CI-wired run, not only

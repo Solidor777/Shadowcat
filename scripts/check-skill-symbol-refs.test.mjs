@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -31,6 +31,7 @@ import {
 } from "./check-skill-symbol-refs.mjs";
 import { listSkillDirs, defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 import { scrubGitEnv } from "./lib/run-git.mjs";
+import { makeRepo } from "./lib/temp-repo.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,6 +56,21 @@ function realIndex() {
   realIndexBuild ??= buildSymbolIndex(REPO_ROOT);
   return realIndexBuild;
 }
+
+describe("buildSymbolIndex corpus line", () => {
+  // A library function prints nothing; the command passes a log so it still reports its corpus size
+  // (see `repoFiles`).
+  it("prints nothing unless the caller passes a log", () => {
+    const dir = makeRepo({ "src/client/a.ts": "export const a = 1;\n" });
+    const printed = vi.spyOn(console, "error").mockImplementation(() => {});
+    buildSymbolIndex(dir);
+    expect(printed).not.toHaveBeenCalled();
+    printed.mockRestore();
+    const lines = [];
+    buildSymbolIndex(dir, undefined, (l) => lines.push(l));
+    expect(lines).toEqual(["corpus skill symbol index: 1 files"]);
+  });
+});
 
 describe("extractRustSymbols", () => {
   it("indexes fn/struct/enum/trait/const/static items bare and module-path-qualified", () => {

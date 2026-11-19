@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { scanDocExemptions } from "./report-doc-exemptions.mjs";
 
 const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
-const { total, scanned, bySource } = scanDocExemptions(repo);
+const { total, scanned, bySource } = scanDocExemptions(repo, console.log);
 console.log(
   `typedoc: ${total} documentation exemption(s) active across ${scanned.length} typedoc*.json config(s) scanned`,
 );

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { resolve, join, sep } from "node:path";
 import { makeRepo } from "./lib/temp-repo.mjs";
@@ -769,6 +769,21 @@ describe("candidateFiles / svelteFiles", () => {
       "src/client/a/tracked.ts",
       "src/client/a/untracked.ts",
     ]);
+  });
+
+  // A library function prints nothing on stdout; the direct-entry block passes `console.log` so the
+  // gate itself still reports its corpus size (see `repoFiles`).
+  it("prints no corpus line unless the caller passes a log", () => {
+    const dir = makeRepo({ "src/client/a.ts": "export const a = 1;\n", "src/client/b.svelte": "<div></div>\n" });
+    const printed = vi.spyOn(console, "log").mockImplementation(() => {});
+    candidateFiles(dir, ["src/client"]);
+    svelteFiles(dir, ["src/client"]);
+    expect(printed).not.toHaveBeenCalled();
+    printed.mockRestore();
+    const lines = [];
+    candidateFiles(dir, ["src/client"], (l) => lines.push(l));
+    svelteFiles(dir, ["src/client"], (l) => lines.push(l));
+    expect(lines).toEqual(["corpus docs:check-examples: 2 files", "corpus docs:check-examples: 2 files"]);
   });
 });
 

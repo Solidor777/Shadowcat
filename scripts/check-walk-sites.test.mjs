@@ -194,3 +194,37 @@ describe("corpus direction (a ban gate)", () => {
     expect(run.stderr).not.toContain("src/ignored/walker.mjs");
   });
 });
+
+// The header states what the scan cannot see. Each claim is exercised here, so the header cannot
+// say a form is invisible while the scan has started to see it, nor the reverse.
+describe("stated bound", () => {
+  const header = readFileSync(join(REPO_ROOT, "scripts", "check-walk-sites.mjs"), "utf8")
+    .split("\n")
+    .filter((l) => l.startsWith("//"))
+    .join("\n");
+
+  it("names every form the scan does not see", () => {
+    for (const phrase of [
+      "computed property",
+      "re-exported under",
+      "aliased through a local variable",
+      "third-party glob or walk library",
+      "child_process",
+      "`.mts`, `.cts`, `.tsx` and",
+      "`.svelte`",
+      "outside `REPO_ROOTS`",
+    ]) {
+      expect(header, phrase).toContain(phrase);
+    }
+  });
+
+  it("does not see a call through a local-variable alias, in the parser or the text recount", () => {
+    const text = 'import fs from "node:fs";\nconst rd = fs.readdirSync;\nexport function f() { return rd("."); }\n';
+    expect(findWalkSites(text, "a.mjs")).toEqual([]);
+    expect(recountWalkCalls(text)).toBe(0);
+  });
+
+  it("does not scan the extensions the header names", () => {
+    for (const ext of [".mts", ".cts", ".tsx", ".svelte"]) expect(SCAN_EXTS).not.toContain(ext);
+  });
+});
