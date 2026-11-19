@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import process from "node:process";
 import { splitLine } from "./comment-span.mjs";
 import { repoFiles } from "./gate-corpus.mjs";
 import { isDirectEntry } from "./is-main.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const SCRIPTS_DIR = resolve(fileURLToPath(import.meta.url), "..", "..");
 
@@ -28,7 +29,7 @@ const RUNNER_ARGV1 = process.argv[1];
  * const files = executableScripts(dirname(SCRIPTS_DIR));
  */
 function executableScripts(repoRoot) {
-  return repoFiles({ cwd: repoRoot, roots: ["scripts"], exts: [".mjs"], label: "argv[1] pin" })
+  return repoFiles({ cwd: repoRoot, roots: ["scripts"], exts: [".mjs"], log: () => {} })
     .filter((p) => !p.endsWith(".test.mjs"))
     .map((p) => join(repoRoot, ...p.split("/")))
     .sort();
@@ -96,6 +97,32 @@ describe("isDirectEntry", () => {
     const entry = resolve(process.cwd(), "scripts", "gate-cli.mjs");
     process.argv[1] = undefined;
     expect(isDirectEntry(pathToFileURL(entry).href)).toBe(false);
+  });
+});
+
+describe("executableScripts lists the shared corpus", () => {
+  const scratch = () =>
+    makeRepo(
+      {
+        ".gitignore": "scripts/ignored.mjs\n",
+        "scripts/tracked.mjs": "export const a = 1;\n",
+        "scripts/tracked.test.mjs": "export const t = 1;\n",
+        "scripts/stray.mjs": "export const s = 1;\n",
+        "scripts/ignored.mjs": "export const i = 1;\n",
+        "scripts/gone.mjs": "export const g = 1;\n",
+      },
+      [".gitignore", "scripts/tracked.mjs", "scripts/tracked.test.mjs", "scripts/gone.mjs"],
+    );
+  const names = (dir) => executableScripts(dir).map((p) => relative(join(dir, "scripts"), p));
+
+  it("includes an untracked script, omits an ignored one and every test module", () => {
+    expect(names(scratch())).toEqual(["gone.mjs", "stray.mjs", "tracked.mjs"]);
+  });
+
+  it("omits a tracked script deleted in the working tree", () => {
+    const dir = scratch();
+    renameSync(join(dir, "scripts", "gone.mjs"), join(dir, "gone-aside.txt"));
+    expect(names(dir)).toEqual(["stray.mjs", "tracked.mjs"]);
   });
 });
 
