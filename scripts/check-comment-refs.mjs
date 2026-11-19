@@ -33,6 +33,7 @@ import { isDirectEntry } from "./lib/is-main.mjs";
 // gates import from. Importing the sibling gate instead formed a cycle: nothing evaluated an
 // imported binding at module scope, so it worked by accident rather than by construction.
 import {
+  CorpusListingError,
   EXAMPLE_EXEMPT,
   GENERATED_ROOT,
   defaultSkillsRoot,
@@ -105,7 +106,7 @@ export function collectFiles(skillsRoot = defaultSkillsRoot()) {
   if (!existsSync(skillsRoot)) return { codeFiles, mdFiles: [], generatedFiles, untrackedSkillFiles: [] };
   const dirs = listSkillDirs(skillsRoot);
   if (dirs === null)
-    throw new Error(
+    throw new CorpusListingError(
       "git could not list the skill corpus: this gate scopes skill prose by tracked-ness and " +
         `cannot report a trustworthy count without it (looked in ${skillsRoot}).`,
     );
@@ -1316,12 +1317,15 @@ function main() {
     .flatMap((a, i) => (a === "--cover" ? [argv[i + 1]] : []))
     .filter(Boolean);
 
-  // A git failure while listing the corpus ends the run with a message and status 2, never a stack
-  // trace; the same shape every other corpus gate reports.
+  // A git failure while listing the corpus (`CorpusListingError`, from the code listing or the
+  // skill-directory listing) ends the run with a message and status 2, never a stack trace; the
+  // same shape every other corpus gate reports. Any other error, such as a skill directory git
+  // tracks but the working tree lacks, is a defect and keeps its stack.
   const listCorpus = () => {
     try {
       return gateFileSet(scopes);
     } catch (e) {
+      if (!(e instanceof CorpusListingError)) throw e;
       console.error(`lint:comments: ${e.message}`);
       process.exit(2);
     }

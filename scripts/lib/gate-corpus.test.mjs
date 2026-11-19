@@ -6,6 +6,7 @@ import { describe, test, expect } from "vitest";
 import ts from "typescript";
 import {
   CLIENT_ROOTS,
+  CorpusListingError,
   EXAMPLE_EXEMPT,
   REPO_ROOTS,
   RUST_ROOTS,
@@ -234,24 +235,74 @@ describe("the gates read the corpus through repoFiles", () => {
   // A direct-entry gate that cannot list the corpus reports one line naming itself and exits 2; a
   // stack trace, or a clean exit over an unread corpus, is a defect. git is made unreachable by
   // giving the child a PATH holding no executables, which fails the same way for every gate
-  // whatever its working directory.
+  // whatever its working directory. Every script that calls `repoFiles` and runs as a command is
+  // listed; the pin on `CONVERTED` above and this list name the same population.
+  const FILE_LIST_FAILURE = "could not determine the file list";
+  const SKILL_LIST_FAILURE = "git could not list the skill corpus";
   const GIT_FAILURE_GATES = [
-    ["scripts/check-file-lines.mjs", "lint:file-size"],
-    ["scripts/check-lint-allowances.mjs", "lint:allowances"],
-    ["scripts/check-comment-refs.mjs", "lint:comments"],
-    ["scripts/check-svelte-runtime-entries.mjs", "check:svelte-runtime"],
-    ["scripts/check-walk-sites.mjs", "lint:walk-sites"],
-    ["scripts/extract-ts-examples.mjs", "docs:check-examples"],
+    ["scripts/check-file-lines.mjs", "lint:file-size", FILE_LIST_FAILURE],
+    ["scripts/check-inline-tests.mjs", "lint:inline-tests", FILE_LIST_FAILURE],
+    ["scripts/check-module-docs.mjs", "lint:module-docs", FILE_LIST_FAILURE],
+    ["scripts/check-secure-context-apis.mjs", "lint:secure-context", FILE_LIST_FAILURE],
+    ["scripts/check-aria-label-keys.mjs", "lint:aria-labels", FILE_LIST_FAILURE],
+    ["scripts/check-audio-fixtures.mjs", "lint:audio-fixtures", FILE_LIST_FAILURE],
+    ["scripts/check-vendor.mjs", "lint:vendor", FILE_LIST_FAILURE],
+    ["scripts/check-lint-allowances.mjs", "lint:allowances", FILE_LIST_FAILURE],
+    ["scripts/check-comment-refs.mjs", "lint:comments", FILE_LIST_FAILURE],
+    ["scripts/check-svelte-runtime-entries.mjs", "check:svelte-runtime", FILE_LIST_FAILURE],
+    ["scripts/check-walk-sites.mjs", "lint:walk-sites", FILE_LIST_FAILURE],
+    ["scripts/extract-ts-examples.mjs", "docs:check-examples", FILE_LIST_FAILURE],
+    ["scripts/report-doc-exemptions-cli.mjs", "report-doc-exemptions", FILE_LIST_FAILURE],
+    ["scripts/check-skill-symbol-refs-cli.mjs", "check-skill-symbol-refs", SKILL_LIST_FAILURE],
   ];
 
-  test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label) => {
+  test("the failure list names every script that calls repoFiles and runs as a command", () => {
+    const callers = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => !p.endsWith(".test.mjs") && !p.startsWith("scripts/lib/"))
+      .filter((p) => repoFilesCalls(readFileSync(p, "utf8"), p) > 0)
+      .filter((p) => /isDirectEntry\(|^\s*(?:await\s+)?main\(/m.test(readFileSync(p, "utf8")));
+    const listed = GIT_FAILURE_GATES.map(([gate]) => gate);
+    for (const caller of callers) expect(listed).toContain(caller);
+  });
+
+  /** Runs `args` under node with a PATH holding no executables, so git cannot start.
+   * @param {string[]} args - node arguments.
+   * @param {Record<string, string>} [extraEnv] - extra environment entries.
+   * @returns {import("node:child_process").SpawnSyncReturns<string>} the finished child.
+   */
+  function runWithoutGit(args, extraEnv = {}) {
     const emptyPath = mkdtempSync(join(tmpdir(), "no-git-path-"));
     const env = Object.fromEntries(Object.entries(scrubGitEnv()).filter(([key]) => key.toLowerCase() !== "path"));
-    env.PATH = emptyPath;
-    const r = spawnSync(process.execPath, [gate], { env, encoding: "utf8" });
+    return spawnSync(process.execPath, args, { env: { ...env, ...extraEnv, PATH: emptyPath }, encoding: "utf8" });
+  }
+
+  test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label, message) => {
+    const r = runWithoutGit([gate]);
     expect(r.status).toBe(2);
-    expect(r.stderr).toMatch(new RegExp(`^${label}: could not determine the file list`, "m"));
+    expect(r.stderr).toMatch(new RegExp(`^${label}: ${message}`, "m"));
     expect(r.stderr).not.toMatch(/\n\s+at /);
+  });
+
+  // The comment gate catches `CorpusListingError` only: a skill directory git tracks but the
+  // working tree lacks is a defect of the checkout, and it must surface with its stack.
+  test("check-comment-refs keeps the stack of an error that is not a listing failure", () => {
+    const skills = makeRepo({ "kept/a.md": "", "gone/b.md": "" }, ["kept/a.md", "gone/b.md"]);
+    renameSync(join(skills, "gone"), join(skills, "gone-aside"));
+    const r = spawnSync(process.execPath, [COMMENT_GATE], {
+      env: { ...scrubGitEnv(), SHADOWCAT_CODEBASE_SKILLS_DIR: skills },
+      encoding: "utf8",
+    });
+    expect(r.status).not.toBe(2);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/ENOENT/);
+    expect(r.stderr).toMatch(/\n\s+at /);
+  });
+
+  test("a git failure is a CorpusListingError, so a gate can tell it from any other error", () => {
+    const failing = () => {
+      throw new Error("git is not installed");
+    };
+    expect(() => repoFiles({ cwd: process.cwd(), execFile: failing, log: () => {} })).toThrow(CorpusListingError);
   });
 
   test("only the skill-checkout gates import skillSources", () => {

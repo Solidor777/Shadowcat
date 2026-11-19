@@ -104,6 +104,23 @@ export const VENDOR_ROOTS = ["vendor"];
 const LIST_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
+ * Raised when git cannot list a corpus. A direct-entry gate catches this class and no other, so
+ * a git failure ends the run with one message and status 2 while any other error keeps its stack.
+ */
+export class CorpusListingError extends Error {
+  /**
+   * Builds the error.
+   * @param {string} message - what git could not determine.
+   * @example
+   * throw new CorpusListingError("could not determine the file list");
+   */
+  constructor(message) {
+    super(message);
+    this.name = "CorpusListingError";
+  }
+}
+
+/**
  * The repository's source corpus: every file git lists as present in the working tree, in one
  * place so every gate that scans files means the same thing by "the repo".
  *
@@ -117,13 +134,17 @@ const LIST_MAX_BUFFER = 64 * 1024 * 1024;
  * directly in the repository root. With neither given, every file is kept. `exts` filters by file
  * name suffix.
  *
- * Throws when git cannot answer: an unread corpus must never read as a clean one. A direct-entry
- * gate catches the throw, prints `<label>: <message>` to stderr and exits 2.
+ * Throws a `CorpusListingError` when git cannot answer: an unread corpus must never read as a clean
+ * one. A direct-entry gate catches that class only, prints `<label>: <message>` to stderr and
+ * exits 2; any other error keeps its stack.
  *
  * Log convention: a direct-entry gate (a script run as a command) leaves `log` at its default so
  * `corpus <label>: <N> files` prints on stdout, or passes `console.error` where stdout carries
  * machine-readable output. A library function another module or a test calls passes a no-op
- * `log` (or takes one from its caller, silent by default), so importing it prints nothing.
+ * `log` (or takes one from its caller, silent by default), so importing it prints nothing. A
+ * function that returns a corpus-derived value to its caller (`collectFiles` in
+ * `check-comment-refs.mjs`) is the one library-shaped case that prints: its caller is the gate's
+ * own entry point, whose stdout may carry `--json`, so it fixes `log` to stderr.
  *
  * @param {object} [options] - corpus selection.
  * @param {string} [options.cwd] - repository directory; defaults to the process directory.
@@ -152,7 +173,7 @@ export function repoFiles({
     execFile(cmd, args, { ...opts, cwd, maxBuffer: LIST_MAX_BUFFER });
   const list = (args, what) => {
     const result = runGit(["ls-files", "-z", ...args], what, { execFile: spawn });
-    if (!result.ok) throw new Error(result.message);
+    if (!result.ok) throw new CorpusListingError(result.message);
     return result.stdout.split("\0").filter((p) => p.length > 0);
   };
   const listed =

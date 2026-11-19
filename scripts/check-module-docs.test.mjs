@@ -125,7 +125,7 @@ test("the gate fails a documented mod fixture, names the rule, and passes inner-
 
 test("an unlistable tree fails the gate", () => {
   const r = gate({}, false);
-  expect(r.code).toBe(1);
+  expect(r.code).toBe(2);
   expect(r.errors[0]).toContain("boom");
 });
 

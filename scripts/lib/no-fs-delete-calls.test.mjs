@@ -17,7 +17,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // path instead of a fresh one per run (`check-skill-symbol-refs-cli.test.mjs`'s own precedent).
 //
 // Same shape as `run-git.test.mjs`'s GIT-CALL-BUDGET check: enumerated via `git ls-files` rather
-// than a directory walk, so an entry point living anywhere in the tracked tree is in scope by
+// than a directory walk, so an entry point living anywhere in the repository corpus is in scope by
 // construction rather than by someone remembering to widen a root.
 
 const FS_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
@@ -144,22 +144,23 @@ function scriptKindOf(rel) {
 }
 
 /**
- * Every path in the shared repository corpus (`repoFiles`: tracked plus untracked, non-ignored,
- * minus files deleted in the working tree), unfiltered. A ban scan reads the untracked-inclusive
- * corpus so a banned call is caught before `git add`.
+ * Every path in the shared repository corpus (`repoFiles`, minus files deleted in the working
+ * tree), unfiltered. `include: "all"` adds untracked, non-ignored files, which a ban scan reads so a
+ * banned call is caught before `git add`; `include: "tracked"` reads the index only, which an
+ * existence check reads so a file CI will not have cannot satisfy it.
  */
-function listTrackedFiles(repoRoot) {
-  return repoFiles({ cwd: repoRoot, log: () => {} });
+function listCorpusFiles(repoRoot, include = "all") {
+  return repoFiles({ cwd: repoRoot, include, log: () => {} });
 }
 
 /**
- * Every git-tracked file under `repoRoot` with a scanned extension that can name a banned member at
- * all, as `{ rel, text, scriptKind }`. A file mentioning none of `BANNED_NAMES` cannot contain a
- * matching call, so it is dropped before the parse.
+ * Every file of the corpus under `repoRoot` (see `listCorpusFiles` for `include`) with a scanned
+ * extension that can name a banned member at all, as `{ rel, text, scriptKind }`. A file mentioning
+ * none of `BANNED_NAMES` cannot contain a matching call, so it is dropped before the parse.
  */
-function trackedSources(repoRoot) {
+function corpusSources(repoRoot, include = "all") {
   const out = [];
-  for (const entry of listTrackedFiles(repoRoot)) {
+  for (const entry of listCorpusFiles(repoRoot, include)) {
     const rel = norm(entry);
     if (!SCANNED_EXTENSIONS.some((ext) => rel.endsWith(ext))) continue;
     const text = readFileSync(resolve(repoRoot, entry), "utf8");
@@ -169,10 +170,10 @@ function trackedSources(repoRoot) {
   return out;
 }
 
-/** Every tracked source file under `repoRoot` (minus `EXCLUDED_FILES`) with a real permanent-deletion call, as `path:line`. */
+/** Every corpus source file under `repoRoot` (minus `EXCLUDED_FILES`) with a real permanent-deletion call, as `path:line`. */
 function findFsDeleteCallers(repoRoot) {
   const offenders = [];
-  for (const { rel, text, scriptKind } of trackedSources(repoRoot)) {
+  for (const { rel, text, scriptKind } of corpusSources(repoRoot)) {
     if (EXCLUDED_FILES.has(rel)) continue;
     for (const call of dangerousFsDeleteCalls(text, scriptKind)) {
       offenders.push(`${rel}:${call.line}`);
@@ -237,7 +238,7 @@ test("a banned call spelled inside a string literal or a comment is not a call",
   expect(dangerousFsDeleteCalls(text)).toEqual([]);
 });
 
-test("no tracked source file calls a node:fs permanent-deletion function outside the documented exceptions", () => {
+test("no source file in the repository corpus calls a node:fs permanent-deletion function outside the documented exceptions", () => {
   const offenders = findFsDeleteCallers(REPO_ROOT);
   expect(offenders).toEqual([]);
 });
@@ -251,16 +252,35 @@ test("a banned call in an untracked file is seen, and one in an ignored file is 
   expect(findFsDeleteCallers(dir)).toEqual(["stray.mjs:2"]);
 });
 
+/**
+ * The members of `excluded` that no longer justify an exemption: a path that is not a TRACKED
+ * source naming a banned member, or one whose file carries no real permanent-deletion call. It
+ * reads the index only, so an untracked file cannot satisfy an exemption that CI would not see.
+ */
+function staleExclusions(repoRoot, excluded) {
+  const byPath = new Map(corpusSources(repoRoot, "tracked").map((s) => [s.rel, s]));
+  const stale = [];
+  for (const rel of excluded) {
+    const source = byPath.get(rel);
+    if (source === undefined) stale.push(`${rel} is excluded but is not a tracked source naming a banned member`);
+    else if (dangerousFsDeleteCalls(source.text, source.scriptKind).length === 0) {
+      stale.push(`${rel} is excluded but carries no real permanent-deletion call`);
+    }
+  }
+  return stale;
+}
+
 test("every named exclusion still names a tracked file that carries a real permanent-deletion call", () => {
   // An exclusion whose file stops calling one of these, or stops existing, is a stale exemption
   // that reads as a documented exception while exempting nothing — surfaced here rather than kept.
-  const byPath = new Map(trackedSources(REPO_ROOT).map((s) => [s.rel, s]));
-  for (const rel of EXCLUDED_FILES) {
-    const source = byPath.get(rel);
-    expect(source, `${rel} is excluded but is not a tracked source naming a banned member`).toBeDefined();
-    expect(
-      dangerousFsDeleteCalls(source.text, source.scriptKind).length,
-      `${rel} is excluded but carries no real permanent-deletion call`,
-    ).toBeGreaterThan(0);
-  }
+  expect(staleExclusions(REPO_ROOT, EXCLUDED_FILES)).toEqual([]);
+});
+
+test("an untracked file cannot satisfy a named exclusion", () => {
+  const banned = 'import { rmSync } from "node:fs";\nrmSync("x");\n';
+  const dir = makeRepo({ "kept.mjs": banned, "stray.mjs": banned }, ["kept.mjs"]);
+  expect(staleExclusions(dir, ["kept.mjs"])).toEqual([]);
+  expect(staleExclusions(dir, ["stray.mjs"])).toEqual([
+    "stray.mjs is excluded but is not a tracked source naming a banned member",
+  ]);
 });

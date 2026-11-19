@@ -16,9 +16,12 @@ export interface RepoFilesOptions {
   label?: string;
 }
 
+/** Raised when git cannot list a corpus; a gate catches this class only and exits 2. */
+export class CorpusListingError extends Error {}
+
 /**
  * The repository's source corpus: sorted, forward-slash paths relative to `cwd`.
- * Throws when git cannot list the files.
+ * Throws a `CorpusListingError` when git cannot list the files.
  * @param options - corpus selection.
  * @returns the matching repo-relative paths.
  * @example

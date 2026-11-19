@@ -19,15 +19,15 @@ export default defineConfig({
     // or parse the whole repository (the symbol index, the walk-site scan,
     // the comment-gate corpus) rather than mocking those boundaries, so
     // their wall-clock cost scales with host process-spawn and CPU speed, not
-    // with vitest's own per-test overhead. The work is fixed-size: measured
-    // on an idle machine the slowest cases take 1.3 s (the recycle-bin
-    // removal test), 2.8 s (a whole-corpus parse) and 6 s (the symbol index
-    // beside the other workers). The same cases took 10x longer when
-    // other builds saturated the host (a commit hook run beside concurrent
-    // cargo and rustc processes at 75-100% CPU timed out four whole-corpus
-    // tests at 12 s, and another run timed out the recycle-bin test).
-    // 60 s covers that 10x spread over the slowest measured case and still
-    // fails a genuine hang.
+    // with vitest's own per-test overhead. The work is fixed-size. Idle costs,
+    // measured with nothing else running: the slowest cases take 1.3 s (the
+    // recycle-bin removal test), 2.8 s (a whole-corpus parse) and 6 s (the
+    // symbol index beside the other workers). Under heavy host contention
+    // (concurrent cargo and rustc builds at 75-100% CPU) the same cases have
+    // been observed taking up to about 10x longer; that contention could not
+    // be reproduced on demand. The 60 s limit is a sizing margin over that
+    // observed 10x, set above the slowest idle case, and it still fails a
+    // genuine hang.
     testTimeout: 60000,
     hookTimeout: 60000,
   },

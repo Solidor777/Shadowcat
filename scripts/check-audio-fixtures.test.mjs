@@ -6,6 +6,7 @@ import { makeRepo } from "./lib/temp-repo.mjs";
 import {
   fixtureListingFailures,
   levelFailures,
+  main,
   parseIntegratedLufs,
   parseMaxVolume,
   byteEqualityEnforceable,
@@ -96,6 +97,39 @@ describe("fixtureListingFailures", () => {
     const failures = fixtureListingFailures({ cwd, dir: join(tmpdir(), "elsewhere"), tracks: ["a"], log: quiet });
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain("is outside the repository");
+  });
+
+  // A library function prints nothing unless its caller passes a log.
+  it("prints nothing when no log is passed", () => {
+    const cwd = makeRepo({ "fx/a.ogg": "" }, ["fx/a.ogg"]);
+    const printed = [];
+    const original = console.log;
+    console.log = (line) => printed.push(line);
+    try {
+      fixtureListingFailures({ cwd, dir: join(cwd, DIR), tracks: ["a"] });
+    } finally {
+      console.log = original;
+    }
+    expect(printed).toEqual([]);
+  });
+});
+
+// The command lists the fixtures before it looks for tools and passes `console.log`, so the corpus
+// line is on stdout even when every tool is missing.
+describe("main", () => {
+  it("prints the corpus line on stdout and skips cleanly when the tools are missing", () => {
+    const printed = [];
+    const original = console.log;
+    console.log = (line) => printed.push(line);
+    let code;
+    try {
+      code = main([], () => ["ffmpeg"]);
+    } finally {
+      console.log = original;
+    }
+    expect(code).toBe(0);
+    expect(printed[0]).toMatch(/^corpus lint:audio-fixtures: \d+ files$/);
+    expect(printed[1]).toContain("SKIPPED");
   });
 });
 

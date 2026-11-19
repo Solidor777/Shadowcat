@@ -112,16 +112,17 @@ test("scrubGitEnv returns a scrubbed copy and leaves its input untouched", () =>
 // Source-scanning regression test, same precedent as run-gate-tier.test.mjs's GIT-CALL-BUDGET
 // check: an unguarded `execFileSync` git call is a per-entry-point mistake, not a property of any
 // one file, so fixing the call at one entry point proves nothing about a further one recurring
-// at another — the check enumerates every tracked entry point instead of re-verifying named ones.
+// at another — the check enumerates every entry point of the repository corpus instead of
+// re-verifying named ones.
 //
-// Enumerates via `git ls-files` rather than walking a named directory tree: a directory-walk scan
-// root is itself an include-list one level up from the file-level exclude-list below it — it sees
-// every file under `scripts/`, but a git-invoking entry point living anywhere else in the tracked
-// tree (a Claude Code hook under `.claude/hooks/`, or any future location) is invisible to it
-// until someone remembers to widen the root. Tracked-file enumeration has no location to omit:
-// every JavaScript/TypeScript file git tracks, anywhere in the repository, is in scope by
-// construction, and ignored directories (`node_modules`, `dist`, build output) and untracked
-// scratch content are already excluded because they were never tracked.
+// Enumerates the shared corpus (`repoFiles`) rather than walking a named directory tree: a
+// directory-walk scan root is itself an include-list one level up from the file-level exclude-list
+// below it — it sees every file under `scripts/`, but a git-invoking entry point living anywhere
+// else in the repository (a Claude Code hook under `.claude/hooks/`, or any future location) is
+// invisible to it until someone remembers to widen the root. Corpus enumeration has no location to
+// omit: every JavaScript/TypeScript file git lists as tracked or untracked-and-not-ignored,
+// anywhere in the repository, is in scope by construction, so a stray file is seen before `git
+// add`; ignored directories (`node_modules`, `dist`, build output) are never read.
 //
 // Every scanned file lands in exactly ONE of two checks, decided by name: a test file (`.test.` or
 // `.spec.` before its extension) answers to the FIXTURE invariant, every other file to the
@@ -266,23 +267,25 @@ function callsGitUnguarded(text) {
 }
 
 /**
- * Every path in the shared repository corpus (`repoFiles`: tracked plus untracked, non-ignored,
- * minus files deleted in the working tree), unfiltered. A ban scan reads the untracked-inclusive
- * corpus so a bare git call is caught before `git add`.
+ * Every path in the shared repository corpus (`repoFiles`, minus files deleted in the working
+ * tree), unfiltered. `include: "all"` adds untracked, non-ignored files, which a ban scan reads so a
+ * bare git call is caught before `git add`; `include: "tracked"` reads the index only, which an
+ * existence check reads so a file CI will not have cannot satisfy it.
  */
-function listTrackedFiles(repoRoot) {
-  return repoFiles({ cwd: repoRoot, log: () => {} });
+function listCorpusFiles(repoRoot, include = "all") {
+  return repoFiles({ cwd: repoRoot, include, log: () => {} });
 }
 
 /**
- * Every git-tracked file under `repoRoot` with a scanned extension that can name git at all, as
- * `{ rel, text, scriptKind }`. A file with no `git` string literal cannot contain a call whose
- * first argument is that literal, so it is dropped before the parse rather than parsed and found
- * empty — the parse is what makes a full-tree scan cost seconds rather than milliseconds.
+ * Every file of the corpus under `repoRoot` (see `listCorpusFiles` for `include`) with a scanned
+ * extension that can name git at all, as `{ rel, text, scriptKind }`. A file with no `git` string
+ * literal cannot contain a call whose first argument is that literal, so it is dropped before the
+ * parse rather than parsed and found empty — the parse is what makes a full-tree scan cost seconds
+ * rather than milliseconds.
  */
-function trackedSources(repoRoot) {
+function corpusSources(repoRoot, include = "all") {
   const out = [];
-  for (const entry of listTrackedFiles(repoRoot)) {
+  for (const entry of listCorpusFiles(repoRoot, include)) {
     const rel = norm(entry);
     if (!SCANNED_EXTENSIONS.some((ext) => rel.endsWith(ext))) continue;
     const text = readFileSync(join(repoRoot, entry), "utf8");
@@ -293,12 +296,12 @@ function trackedSources(repoRoot) {
 }
 
 /**
- * Every tracked non-test source file under `repoRoot` (paths relative to `repoRoot`) that calls
+ * Every non-test corpus source file under `repoRoot` (paths relative to `repoRoot`) that calls
  * git directly instead of through `runGit`, minus `EXCLUDED_FILES`.
  */
 function findUnguardedGitCallers(repoRoot) {
   const offenders = [];
-  for (const { rel, text, scriptKind } of trackedSources(repoRoot)) {
+  for (const { rel, text, scriptKind } of corpusSources(repoRoot)) {
     if (TEST_FILE.test(rel) || EXCLUDED_FILES.has(rel)) continue;
     if (directGitCalls(text, scriptKind).length > 0) offenders.push(rel);
   }
@@ -306,12 +309,12 @@ function findUnguardedGitCallers(repoRoot) {
 }
 
 /**
- * Every direct git call in a tracked test file under `repoRoot` whose options carry no explicit
+ * Every direct git call in a corpus test file under `repoRoot` whose options carry no explicit
  * `env`, as `path:line`, minus `EXCLUDED_TEST_FILES`.
  */
 function findFixtureGitCallsWithoutEnv(repoRoot) {
   const offenders = [];
-  for (const { rel, text, scriptKind } of trackedSources(repoRoot)) {
+  for (const { rel, text, scriptKind } of corpusSources(repoRoot)) {
     if (!TEST_FILE.test(rel) || EXCLUDED_TEST_FILES.has(rel)) continue;
     for (const call of directGitCalls(text, scriptKind)) {
       if (!call.explicitEnv) offenders.push(`${rel}:${call.line}`);
@@ -375,28 +378,45 @@ test("directGitCalls finds every spawn form, helper wrappers and aliases of the 
   ]);
 });
 
-test("no tracked non-test source file calls git unguarded outside the shared runner or the documented exceptions", () => {
+test("no non-test source file in the repository corpus calls git unguarded outside the shared runner or the documented exceptions", () => {
   const offenders = findUnguardedGitCallers(REPO_ROOT);
   expect(offenders).toEqual([]);
 });
 
-test("every direct git call in a tracked test file passes an explicit env", () => {
+test("every direct git call in a test file of the repository corpus passes an explicit env", () => {
   const offenders = findFixtureGitCallsWithoutEnv(REPO_ROOT);
   expect(offenders).toEqual([]);
 });
 
+/**
+ * The members of `excluded` that no longer justify an exemption: a path that is not a TRACKED
+ * source naming git, or one whose file makes no direct git call. It reads the index only, so an
+ * untracked file cannot satisfy an exemption that CI would not see.
+ */
+function staleExclusions(repoRoot, excluded) {
+  const byPath = new Map(corpusSources(repoRoot, "tracked").map((s) => [s.rel, s]));
+  const stale = [];
+  for (const rel of excluded) {
+    const source = byPath.get(rel);
+    if (source === undefined) stale.push(`${rel} is excluded but is not a tracked source naming git`);
+    else if (directGitCalls(source.text, source.scriptKind).length === 0) {
+      stale.push(`${rel} is excluded but calls git through no direct call`);
+    }
+  }
+  return stale;
+}
+
 test("every named exclusion still names a tracked file that calls git directly", () => {
   // An exclusion whose file stops calling git, or stops existing, is a stale exemption that
   // reads as a documented exception while exempting nothing — surfaced here rather than kept.
-  const byPath = new Map(trackedSources(REPO_ROOT).map((s) => [s.rel, s]));
-  for (const rel of [...EXCLUDED_FILES, ...EXCLUDED_TEST_FILES]) {
-    const source = byPath.get(rel);
-    expect(source, `${rel} is excluded but is not a tracked source naming git`).toBeDefined();
-    expect(
-      directGitCalls(source.text, source.scriptKind).length,
-      `${rel} is excluded but calls git through no direct call`,
-    ).toBeGreaterThan(0);
-  }
+  expect(staleExclusions(REPO_ROOT, [...EXCLUDED_FILES, ...EXCLUDED_TEST_FILES])).toEqual([]);
+});
+
+test("an untracked file cannot satisfy a named exclusion", () => {
+  const bare = 'execFileSync("git", ["status"], { encoding: "utf8" });\n';
+  const dir = makeRepo({ "kept.mjs": bare, "stray.mjs": bare }, ["kept.mjs"]);
+  expect(staleExclusions(dir, ["kept.mjs"])).toEqual([]);
+  expect(staleExclusions(dir, ["stray.mjs"])).toEqual(["stray.mjs is excluded but is not a tracked source naming git"]);
 });
 
 test("both checks catch a NEW file regardless of which directory it lives in, without it being named anywhere first", () => {

@@ -243,7 +243,7 @@ test("svelte: style blocks and closing tags contribute nothing", () => {
 test("runGate: an unlistable tree fails loudly instead of scanning nothing", () => {
   const errors = [];
   const code = runGate({ listFiles: () => { throw new Error("could not determine the file list (`git ls-files` failed: boom)"); }, readFile: () => "", log: () => {}, error: (m) => errors.push(m) });
-  expect(code).toBe(1);
+  expect(code).toBe(2);
   expect(errors).toEqual(["lint:secure-context: could not determine the file list (`git ls-files` failed: boom)"]);
 });
 
