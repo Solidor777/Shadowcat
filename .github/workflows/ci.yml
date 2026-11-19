@@ -29,7 +29,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build client bundle (embedded by the server)
@@ -118,7 +118,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
@@ -147,7 +147,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The audio-monitor subcommand's Linux backend binds the system PipeWire
@@ -177,7 +177,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The audio-monitor subcommand's Linux backend binds the system PipeWire
@@ -220,7 +220,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install PipeWire dev headers (Linux)
@@ -271,7 +271,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install PipeWire dev headers (Linux)
@@ -302,7 +302,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install PipeWire dev headers (Linux)
@@ -333,7 +333,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install PipeWire dev headers (Linux)
@@ -364,7 +364,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install ffmpeg and the NumPy/SciPy generator dependencies
@@ -394,7 +394,7 @@ jobs:
           version: 9
       - uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
