@@ -24,6 +24,21 @@ export function accessibilityArgs(platform: NodeJS.Platform): string[] {
   return platform === "linux" || platform === "darwin" ? ["--force-renderer-accessibility"] : [];
 }
 
+/** Launch arguments for the process sandbox. Chromium's Linux sandbox needs unprivileged user
+ * namespaces, which a CI runner may restrict, so the sandbox is turned off only on a Linux CI run;
+ * a developer run keeps it.
+ * @param platform The operating system (`process.platform`).
+ * @param ci Whether the run is on CI.
+ * @returns The arguments.
+ * @example
+ * ```
+ * sandboxArgs("linux", true); // => ["--no-sandbox"]
+ * ```
+ */
+export function sandboxArgs(platform: NodeJS.Platform, ci: boolean): string[] {
+  return platform === "linux" && ci ? ["--no-sandbox"] : [];
+}
+
 /** How long the browser's debugging port may take to come up. */
 const LAUNCH_TIMEOUT_MS = 30_000;
 
@@ -60,6 +75,8 @@ export interface LaunchDeps {
   prepareProfile: (profile: string) => void;
   /** The operating system, which decides the accessibility arguments. */
   platform: NodeJS.Platform;
+  /** Whether the run is on CI, which decides the sandbox arguments. */
+  ci: boolean;
   /** How long to wait for the debugging port. */
   timeoutMs: number;
   /** Gap between connection attempts. */
@@ -93,6 +110,7 @@ export async function defaultLaunchDeps(): Promise<LaunchDeps> {
       writeFileSync(join(profile, "Default", "Preferences"), JSON.stringify({ https_only_mode_enabled: true }));
     },
     platform: process.platform,
+    ci: process.env.CI !== undefined,
     timeoutMs: LAUNCH_TIMEOUT_MS,
     pollMs: POLL_INTERVAL_MS,
   };
@@ -130,6 +148,7 @@ export async function launchWindowedChromium(
     "--no-first-run",
     "--no-default-browser-check",
     ...accessibilityArgs(d.platform),
+    ...sandboxArgs(d.platform, d.ci),
     ...extraArgs,
     "about:blank",
   ]);
