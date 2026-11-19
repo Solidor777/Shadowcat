@@ -59,16 +59,22 @@ def main(argv):
     pid = int(argv[1])
     name = argv[2]
     desktop = Atspi.get_desktop(0)
+    # The application pids the bus exposes, printed to stderr when no button matches so the failure
+    # names whether the browser registered with the accessibility bus at all.
+    seen = []
     for index in range(desktop.get_child_count()):
         app = desktop.get_child_at_index(index)
-        if app is None or app.get_process_id() != pid:
+        if app is None:
+            continue
+        seen.append(app.get_process_id())
+        if app.get_process_id() != pid:
             continue
         button = find_button(Atspi, app, name)
         if button is not None:
             Atspi.Action.do_action(button, 0)
             print("INVOKED")
             return 0
-    print("NOT FOUND")
+    print("no push button named %r in process %d; bus applications by pid: %s" % (name, pid, seen), file=sys.stderr)
     return NOT_FOUND
 
 

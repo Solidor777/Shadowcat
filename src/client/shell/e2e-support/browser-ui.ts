@@ -41,7 +41,26 @@ export interface Invocation {
 interface ExitFailure {
   /** The program's exit status, when it ran and exited non-zero. */
   status?: number;
+  /** What the program wrote to its standard error. */
+  stderr?: Buffer | string;
 }
+
+/** A driver run that found the button and invoked it. */
+export interface ButtonInvoked {
+  /** Always `true`. */
+  invoked: true;
+}
+
+/** A driver run that found no such button in the browser (yet). */
+export interface ButtonAbsent {
+  /** Always `false`. */
+  invoked: false;
+  /** The driver's own account of what it saw, which explains why; empty when it printed none. */
+  report: string;
+}
+
+/** The outcome of one driver run. */
+export type ButtonResult = ButtonInvoked | ButtonAbsent;
 
 /** Path of a driver script that sits beside this module.
  * @param name The script's file name.
@@ -98,13 +117,14 @@ export function invocationFor(platform: NodeJS.Platform, pid: number, name: stri
  * @param name The button's accessible name.
  * @param run Runs a program; replaceable in tests.
  * @param platform The operating system; replaceable in tests.
- * @returns Whether the button was found and invoked (`false`: not shown yet).
+ * @returns `{ invoked: true }` when the button was found and invoked, otherwise `{ invoked: false }`
+ *   (not shown yet) with the driver's report of what it saw.
  * @throws When the driver fails for any reason other than the button being absent, including
  *   taking longer than `INVOKE_TIMEOUT_MS`.
  * @example
  * ```ts
- * const clicked = invokeBrowserButton(4242, "Continue to site", () => {}, "win32");
- * // clicked === true
+ * const result = invokeBrowserButton(4242, "Continue to site", () => {}, "win32");
+ * // result.invoked === true
  * ```
  */
 export function invokeBrowserButton(
@@ -112,13 +132,14 @@ export function invokeBrowserButton(
   name: string,
   run: RunProgram = runProgram,
   platform: NodeJS.Platform = process.platform,
-): boolean {
+): ButtonResult {
   const { file, args } = invocationFor(platform, pid, name);
   try {
     run(file, args, INVOKE_TIMEOUT_MS);
-    return true;
+    return { invoked: true };
   } catch (e) {
-    if ((e as ExitFailure).status === NOT_FOUND_STATUS) return false;
+    const failure = e as ExitFailure;
+    if (failure.status === NOT_FOUND_STATUS) return { invoked: false, report: String(failure.stderr ?? "").trim() };
     throw e;
   }
 }

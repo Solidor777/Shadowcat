@@ -16,6 +16,7 @@ function run(argv) {
   var events = Application("System Events");
   var matches = events.processes.whose({ unixId: pid })();
   if (matches.length === 0) {
+    console.log("no accessible process with unix id " + pid + " among " + events.processes().length + " processes");
     $.exit(NOT_FOUND);
   }
   var proc = matches[0];
@@ -27,6 +28,9 @@ function run(argv) {
     // Not every build exposes the attribute; the window walk below reports what is reachable.
   }
   var windows = proc.windows();
+  // The buttons the walk saw, printed when none matches so the failure names what is reachable.
+  var buttons = [];
+  var elementCount = 0;
   for (var w = 0; w < windows.length; w++) {
     var elements;
     try {
@@ -34,18 +38,24 @@ function run(argv) {
     } catch (e) {
       continue;
     }
+    elementCount += elements.length;
     for (var i = 0; i < elements.length; i++) {
       try {
-        if (elements[i].role() === "AXButton" && elements[i].name() === name) {
-          elements[i].actions.byName("AXPress").perform();
-          console.log("INVOKED");
-          $.exit(0);
+        if (elements[i].role() === "AXButton") {
+          if (elements[i].name() === name) {
+            elements[i].actions.byName("AXPress").perform();
+            console.log("INVOKED");
+            $.exit(0);
+          }
+          if (buttons.length < 30) buttons.push(String(elements[i].name()));
         }
       } catch (e) {
         // An element that vanished mid-walk is skipped, not fatal.
       }
     }
   }
-  console.log("NOT FOUND");
+  console.log(
+    "process " + pid + ": " + windows.length + " window(s), " + elementCount + " element(s), buttons [" + buttons.join(" | ") + "]",
+  );
   $.exit(NOT_FOUND);
 }

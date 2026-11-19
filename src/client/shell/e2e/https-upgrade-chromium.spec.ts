@@ -167,12 +167,21 @@ test("HTTPS-First's 'Continue to site' reaches the plain-HTTP app", async ({ bas
     const page = context.pages()[0] ?? (await context.newPage());
     // The navigation itself fails with ERR_BLOCKED_BY_CLIENT while the prompt is up.
     await page.goto(url.href, { timeout: 20_000 }).catch(() => undefined);
-    await expect
-      .poll(() => invokeBrowserButton(child.pid!, "Continue to site"), {
-        message: "the interstitial's 'Continue to site' button never appeared",
-        timeout: 2 * INVOKE_TIMEOUT_MS,
-      })
-      .toBe(true);
+    let report = "";
+    try {
+      await expect
+        .poll(
+          () => {
+            const result = invokeBrowserButton(child.pid!, "Continue to site");
+            report = result.invoked ? "" : result.report;
+            return result.invoked;
+          },
+          { message: "the interstitial's 'Continue to site' button never appeared", timeout: 2 * INVOKE_TIMEOUT_MS },
+        )
+        .toBe(true);
+    } catch (e) {
+      throw new Error(`${(e as Error).message}\nthe driver's last report: ${report}`);
+    }
     await expect(page.getByLabel("Username")).toBeVisible({ timeout: 20_000 });
     expect(page.url(), "Continue to site reaches the plain-HTTP origin").toMatch(/^http:\/\//);
   } finally {
