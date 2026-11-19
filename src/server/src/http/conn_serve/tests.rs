@@ -182,9 +182,13 @@ async fn an_exhausted_source_ends_the_serve_loop() {
     assert_eq!(end.end, ServeEnd::SourceEnded);
 }
 
-/// A source that yields the connections of a real listener and then ends.
+/// A source that yields the first connection of a real listener and then ends once `end_signal`
+/// resolves, so the test decides when the source ends relative to the connection's traffic.
 struct OneThenEnd {
+    /// The listener until it has yielded its connection.
     listener: Option<TcpListener>,
+    /// Resolves when the source may report its end.
+    end_signal: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl ConnSource for OneThenEnd {
@@ -192,6 +196,9 @@ impl ConnSource for OneThenEnd {
 
     async fn accept(&mut self) -> io::Result<Option<(TcpStream, ConnMeta)>> {
         let Some(listener) = self.listener.as_ref() else {
+            if let Some(signal) = self.end_signal.take() {
+                let _ = signal.await;
+            }
             return Ok(None);
         };
         let (sock, peer) = listener.accept().await?;
@@ -204,9 +211,11 @@ impl ConnSource for OneThenEnd {
 async fn a_source_that_ends_drains_live_connections_like_a_shutdown() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let (end_tx, end_rx) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(serve_router(
         OneThenEnd {
             listener: Some(listener),
+            end_signal: Some(end_rx),
         },
         app(),
         std::future::pending(),
@@ -222,6 +231,9 @@ async fn a_source_that_ends_drains_live_connections_like_a_shutdown() {
         .await
         .unwrap()
         .unwrap();
+    // The source ends only now, after the response, so the connection is live and its reply has been
+    // read when the drain starts.
+    end_tx.send(()).unwrap();
     // The source ended with this keep-alive connection still open: the loop must drain it (the
     // default 30 s header-read bound would otherwise hold the return far past this deadline).
     let end = timeout(Duration::from_secs(5), task)
