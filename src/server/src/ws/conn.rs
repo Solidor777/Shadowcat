@@ -419,7 +419,8 @@ async fn refuse_socket(
 }
 
 /// Maps a join-path `DataError` through `join_refusal`, logs it (a membership refusal at info,
-/// anything else at warn with the error), and replies with the refusal frame and a Close.
+/// anything else at warn with the error), replies with the refusal frame and a Close, and drains
+/// the peer's inbound frames before the socket drops (`refuse_socket`).
 async fn refuse_join(
     state: &AppState,
     socket: WebSocket,
