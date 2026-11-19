@@ -55,7 +55,10 @@ const LEGS_BY_PROJECT: Record<string, Leg[]> = {
   "long-audio-https-chromium": CHROMIUM_LEGS,
   "long-audio-http-chromium": CHROMIUM_LEGS,
   "long-audio-https-chromium-noflag": [{ track: "ambient-bed", variant: "opus" }],
-  "long-audio-https-firefox": [{ track: "ambient-bed", variant: "opus" }],
+  "long-audio-https-firefox": [
+    { track: "ambient-bed", variant: "opus" },
+    { track: "ambient-bed", variant: "opus-webm" },
+  ],
   "long-audio-https-webkit": [{ track: "ambient-bed", variant: "opus-webm" }],
 };
 
@@ -125,9 +128,17 @@ for (const leg of [...CHROMIUM_LEGS]) {
   test(`${leg.track} streams over ${leg.variant}: start window, server Seek near the end, natural end, wrap`, async ({
     page,
     account,
+    browserName,
   }, testInfo) => {
     const legs = LEGS_BY_PROJECT[testInfo.project.name] ?? [];
     test.skip(!legs.some((l) => l.track === leg.track && l.variant === leg.variant), "not a leg of this project");
+    // Playwright's Windows WebKit build reports `canPlayType("audio/webm; codecs=opus")` as
+    // "probably" yet fails every media load with MEDIA_ERR_SRC_NOT_SUPPORTED, also over plain HTTP,
+    // and no shipping Safari exists on Windows; the WebKit leg runs on macOS and Linux only.
+    test.skip(
+      browserName === "webkit" && process.platform === "win32",
+      "Playwright's Windows WebKit cannot load Opus media (MEDIA_ERR_SRC_NOT_SUPPORTED); the leg runs on macOS and Linux",
+    );
     test.setTimeout(900_000);
     await installAudioProbes(page.context(), leg.variant === "opus-webm");
     const world = await createWorld(page, account, "Long Audio World");

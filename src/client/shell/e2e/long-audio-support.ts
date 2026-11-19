@@ -76,7 +76,12 @@ export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
 
 /** The failure texts an engine reports for a request its own media element cancels (a seek
  * replaces the request in flight; Firefox also cancels a request whose parsed data it already
- * holds). Any other failure text on an asset request fails a leg. */
+ * holds). Any other failure text on an asset request fails a leg. A server-side cut of an
+ * HTTP/1.1 response reads as `net::ERR_CONTENT_LENGTH_MISMATCH` or `net::ERR_CONNECTION_RESET` in
+ * Chromium and `NS_ERROR_NET_PARTIAL_TRANSFER` or `NS_ERROR_NET_RESET` in Firefox; none is listed
+ * here, so such a cut fails a leg. A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
+ * Chromium, which this list accepts, and raises no failure at all in Firefox: this list cannot
+ * observe an HTTP/2 cut. */
 export const SELF_CANCELLED: readonly string[] = ["net::ERR_ABORTED", "NS_BINDING_ABORTED", "NS_ERROR_PARSED_DATA_CACHED"];
 
 /** The Opus derivative a leg asserts the player requests. */
