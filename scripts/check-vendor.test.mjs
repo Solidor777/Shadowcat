@@ -628,6 +628,15 @@ test("an untracked stray file under vendor/ fails before it is added", () => {
 describe("lint:vendor reads the shared corpus", () => {
   const STRAY = "vendor/notes.rs";
   const STRAY_ERROR = `${STRAY}: not under a directory`;
+  // With the stray file out of the corpus the tree holds no vendored crate, so the gate reports
+  // exactly the crate's three required files as missing and nothing else: no stray finding, no
+  // ENOENT from reading a file the working tree lacks.
+  const NO_VENDORED_CRATE = [
+    "lint:vendor: vendor/h2/Cargo.toml: missing",
+    "lint:vendor: vendor/h2/LICENSE: missing",
+    "lint:vendor: vendor/h2/.vendored-sha256: missing",
+    "",
+  ].join("\n");
   const base = { "Cargo.toml": ROOT_TOML, "Cargo.lock": LOCK_OK };
   const run = (dir) => runScriptIn(dir, "scripts/check-vendor.mjs");
 
@@ -639,15 +648,15 @@ describe("lint:vendor reads the shared corpus", () => {
   test("the same stray file under an ignored path passes", () => {
     const dir = makeRepo({ ...base, ".gitignore": "vendor/notes.rs\n", [STRAY]: "fn stray() {}\n" }, [...Object.keys(base), ".gitignore"]);
     const r = run(dir);
-    expect(r.stderr).not.toContain(STRAY_ERROR);
-    expect(r.stderr).not.toContain("ENOENT");
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe(NO_VENDORED_CRATE);
   });
 
   test("a tracked stray file deleted in the working tree is not listed and does not throw", () => {
     const dir = makeRepo({ ...base, [STRAY]: "fn stray() {}\n" });
     renameSync(join(dir, "vendor", "notes.rs"), join(dir, "notes-aside.txt"));
     const r = run(dir);
-    expect(r.stderr).not.toContain(STRAY_ERROR);
-    expect(r.stderr).not.toContain("ENOENT");
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe(NO_VENDORED_CRATE);
   });
 });

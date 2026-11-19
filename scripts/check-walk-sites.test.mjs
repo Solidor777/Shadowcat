@@ -195,8 +195,12 @@ describe("corpus direction (a ban gate)", () => {
   });
 });
 
-// The header states what the scan cannot see. Each claim is exercised here, so the header cannot
-// say a form is invisible while the scan has started to see it, nor the reverse.
+// The header states what the scan cannot see. Pinned here: the header text names each of the seven
+// forms (computed property, re-export, local-variable alias, third-party glob or walk library,
+// `child_process` find, the extensions `.mts` `.cts` `.tsx` `.svelte`, directories outside
+// `REPO_ROOTS`), so a form cannot drop out of the header. Pinned by behaviour as well: the
+// local-variable alias is invisible to the parser and the text recount, and the named extensions
+// are absent from `SCAN_EXTS`. The other forms are pinned by header text only.
 describe("stated bound", () => {
   const header = readFileSync(join(REPO_ROOT, "scripts", "check-walk-sites.mjs"), "utf8")
     .split("\n")
