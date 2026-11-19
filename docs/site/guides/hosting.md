@@ -12,7 +12,7 @@ Linux staging tree with a `.desktop` entry, or a Windows `shadowcat.exe` (icon
 embedded).
 
 **From source** (needs Rust stable with the `wasm32-unknown-unknown` target —
-`rustup target add wasm32-unknown-unknown` — Node 22, pnpm 9):
+`rustup target add wasm32-unknown-unknown` — Node 24, pnpm 9):
 
 ```bash
 pnpm install

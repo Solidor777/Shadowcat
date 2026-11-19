@@ -84,11 +84,11 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   a function` in any package whose tests call `localStorage` directly (e.g.
   `dice-3d`'s `settings.test.ts`) — Node's own native `localStorage`/`sessionStorage` globals
   (unflagged by default starting some Node 24/25 release) collide with jsdom's own
-  implementation of the same globals. CI is unaffected (pinned to Node 22, which does not inject
+  implementation of the same globals. CI is unaffected (pinned to Node 24, which does not inject
   the native globals unflagged). The working per-invocation fix is
   `NODE_OPTIONS=--no-experimental-webstorage pnpm -r test` (or `gate:push`/`gate:commit`), but a
-  permanent repo-tracked fix (root `.npmrc`'s `node-options`) risks breaking CI's Node 22 run if
-  that flag isn't recognized there — unverified. Confirm compatibility with CI's exact Node 22.x
+  permanent repo-tracked fix (root `.npmrc`'s `node-options`) risks breaking CI's Node 24 run if
+  that flag isn't recognized there — unverified. Confirm compatibility with CI's exact Node 24.x
   patch version before adding it to a tracked config file; until then this stays a manual
   per-invocation env var on any local machine running a newer Node.
 
