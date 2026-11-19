@@ -24,7 +24,7 @@ import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 import { repoFiles } from "./lib/gate-corpus.mjs";
@@ -130,6 +130,50 @@ function markerMismatches(python, file, manifestPath, track) {
   return { ok: Number(m[2]) === 0 && Number(m[1]) === DURATION_SECS / 10, detail: m[0] };
 }
 
+/**
+ * Compares the `.ogg` files directly inside the fixture directory with the manifest's tracks, in
+ * two directions that differ on purpose.
+ *
+ * Existence reads TRACKED files only (`include: "tracked"`): a manifest track whose file was never
+ * added to git would otherwise pass on this machine and fail on a clean checkout. Strays read the
+ * untracked-inclusive corpus: an extra `.ogg` is a ban-direction finding, caught before `git add`;
+ * an ignored one is never read. Only direct children of the directory count, matching what the
+ * comparison probes (`join(dir, "<track>.ogg")`); a file in a subdirectory is not a fixture.
+ *
+ * A directory outside `cwd` is reported as a failure of its own: the corpus lists only the
+ * repository, so the comparison would otherwise fail with a message that blames the manifest.
+ *
+ * @param {object} options - listing inputs.
+ * @param {string} options.cwd - repository directory the corpus is listed in.
+ * @param {string} options.dir - absolute fixture directory.
+ * @param {string[]} options.tracks - manifest track names, without extension.
+ * @param {(line: string) => void} [options.log] - receives the corpus size line.
+ * @returns {string[]} one message per failure; empty when the directory and manifest agree.
+ * @example
+ * fixtureListingFailures({ cwd: REPO_ROOT, dir: FIXTURE_DIR, tracks: ["a", "b"] });
+ */
+export function fixtureListingFailures({ cwd, dir, tracks, log = console.log }) {
+  const rel = relative(cwd, dir).split("\\").join("/");
+  if (rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) {
+    return [`fixture directory ${dir} is outside the repository at ${cwd}, so the corpus cannot list it`];
+  }
+  const names = (include, listLog) =>
+    repoFiles({ cwd, roots: [rel], exts: [".ogg"], include, label: "lint:audio-fixtures", log: listLog })
+      .filter((p) => !p.slice(rel.length + 1).includes("/"))
+      .map((p) => p.slice(rel.length + 1));
+  const present = names("all", log);
+  const tracked = new Set(names("tracked", () => {}));
+  const wanted = tracks.map((t) => `${t}.ogg`);
+  const failures = [];
+  for (const file of wanted) {
+    if (!tracked.has(file)) failures.push(`manifest track file ${file} is not a tracked file present in ${rel}`);
+  }
+  for (const file of present) {
+    if (!wanted.includes(file)) failures.push(`${rel}/${file} is not a manifest track`);
+  }
+  return failures;
+}
+
 /** Runs both checks; returns `{ failures: string[], lines: string[] }`. */
 export function compare({ python, committedDir = FIXTURE_DIR }) {
   const failures = [];
@@ -144,16 +188,7 @@ export function compare({ python, committedDir = FIXTURE_DIR }) {
   const committed = JSON.parse(readFileSync(committedManifestPath, "utf8"));
   const regen = JSON.parse(readFileSync(regenManifestPath, "utf8"));
   const tracks = Object.keys(committed.tracks).sort();
-  // The corpus lists the fixture directory, so a stray untracked .ogg fails before `git add`.
-  const onDisk = repoFiles({
-    cwd: REPO_ROOT,
-    roots: [relative(REPO_ROOT, committedDir)],
-    exts: [".ogg"],
-    label: "lint:audio-fixtures",
-  }).map((p) => p.slice(p.lastIndexOf("/") + 1));
-  if (JSON.stringify(onDisk) !== JSON.stringify(tracks.map((t) => `${t}.ogg`))) {
-    failures.push(`committed .ogg files ${onDisk} differ from the manifest tracks ${tracks}`);
-  }
+  failures.push(...fixtureListingFailures({ cwd: REPO_ROOT, dir: committedDir, tracks }));
   for (const track of tracks) {
     const rt = regen.tracks[track];
     if (!rt || JSON.stringify(rt.sequence) !== JSON.stringify(committed.tracks[track].sequence)) {
