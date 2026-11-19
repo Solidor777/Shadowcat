@@ -210,6 +210,8 @@ describe("the gates read the corpus through repoFiles", () => {
     "scripts/extract-ts-examples.mjs",
     "scripts/report-doc-exemptions.mjs",
     "scripts/lib/is-main.test.mjs",
+    "scripts/lib/no-fs-delete-calls.test.mjs",
+    "scripts/lib/run-git.test.mjs",
     "src/client/shell/e2e-support/playwright-config.test.ts",
   ];
   const IMPORTS_REPO_FILES = /import\s*\{[^}]*\brepoFiles\b[^}]*\}\s*from\s*"[^"]*gate-corpus\.mjs"/;

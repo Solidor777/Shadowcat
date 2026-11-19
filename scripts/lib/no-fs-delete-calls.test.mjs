@@ -3,9 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { runGit } from "./run-git.mjs";
-import { norm } from "./gate-corpus.mjs";
-import { execFileSync } from "node:child_process";
+import { norm, repoFiles } from "./gate-corpus.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -144,13 +143,13 @@ function scriptKindOf(rel) {
   return /\.[cm]?ts$/.test(rel) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
 }
 
-/** Every path `git ls-files` reports under `repoRoot`, NUL-separated and unfiltered. */
+/**
+ * Every path in the shared repository corpus (`repoFiles`: tracked plus untracked, non-ignored,
+ * minus files deleted in the working tree), unfiltered. A ban scan reads the untracked-inclusive
+ * corpus so a banned call is caught before `git add`.
+ */
 function listTrackedFiles(repoRoot) {
-  const execFile = (cmd, args, opts) =>
-    execFileSync(cmd, args, { ...opts, cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 });
-  const result = runGit(["ls-files", "-z"], "the tracked file list", { execFile });
-  if (!result.ok) throw new Error(result.message);
-  return result.stdout.split("\0").filter(Boolean);
+  return repoFiles({ cwd: repoRoot, log: () => {} });
 }
 
 /**
@@ -241,6 +240,15 @@ test("a banned call spelled inside a string literal or a comment is not a call",
 test("no tracked source file calls a node:fs permanent-deletion function outside the documented exceptions", () => {
   const offenders = findFsDeleteCallers(REPO_ROOT);
   expect(offenders).toEqual([]);
+});
+
+test("a banned call in an untracked file is seen, and one in an ignored file is not", () => {
+  const banned = 'import { rmSync } from "node:fs";\nrmSync("x");\n';
+  const dir = makeRepo(
+    { ".gitignore": "ignored.mjs\n", "tracked.mjs": "export const a = 1;\n", "stray.mjs": banned, "ignored.mjs": banned },
+    [".gitignore", "tracked.mjs"],
+  );
+  expect(findFsDeleteCallers(dir)).toEqual(["stray.mjs:2"]);
 });
 
 test("every named exclusion still names a tracked file that carries a real permanent-deletion call", () => {
