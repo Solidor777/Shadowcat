@@ -2,9 +2,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NetworkInterfaceInfo } from "node:os";
 import type { PlaywrightTestConfig } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoFiles } from "../../../../scripts/lib/gate-corpus.mjs";
+import { makeRepo } from "../../../../scripts/lib/temp-repo.mjs";
 import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
@@ -18,6 +20,8 @@ import {
 } from "./spec-matchers";
 
 // Addresses are from the RFC 5737 documentation range 192.0.2.0/24.
+
+const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 
 type Interfaces = Record<string, NetworkInterfaceInfo[]>;
 
@@ -196,10 +200,9 @@ function projectsRunning(config: PlaywrightTestConfig, file: string): string[] {
  * The list is the repository corpus (tracked plus untracked, non-ignored files), so a new spec is
  * partition-checked before it is added to git.
  */
-function listSpecs(): string[] {
-  const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
+function listSpecs(repoRoot: string = REPO_ROOT): string[] {
   const shellRoot = "src/client/shell/";
-  return repoFiles({ cwd: repoRoot, roots: [`${shellRoot}e2e`], exts: [".spec.ts"], label: "e2e specs" }).map((p) =>
+  return repoFiles({ cwd: repoRoot, roots: [`${shellRoot}e2e`], exts: [".spec.ts"], log: () => {} }).map((p) =>
     p.slice(shellRoot.length),
   );
 }
@@ -211,6 +214,31 @@ function projectsMatching(config: PlaywrightTestConfig, matcher: RegExp): string
     .filter((p) => p.testMatch instanceof RegExp && p.testMatch.source === matcher.source)
     .map((p) => p.name ?? "");
 }
+
+describe("listSpecs reads the shared corpus", () => {
+  const spec = "src/client/shell/e2e";
+  const scratch = (): string =>
+    makeRepo(
+      {
+        ".gitignore": `${spec}/ignored.spec.ts\n`,
+        [`${spec}/tracked.spec.ts`]: "export {};\n",
+        [`${spec}/stray.spec.ts`]: "export {};\n",
+        [`${spec}/ignored.spec.ts`]: "export {};\n",
+        [`${spec}/gone.spec.ts`]: "export {};\n",
+      },
+      [".gitignore", `${spec}/tracked.spec.ts`, `${spec}/gone.spec.ts`],
+    );
+
+  it("includes an untracked spec and omits an ignored one", () => {
+    expect(listSpecs(scratch())).toEqual(["e2e/gone.spec.ts", "e2e/stray.spec.ts", "e2e/tracked.spec.ts"]);
+  });
+
+  it("omits a tracked spec deleted in the working tree", () => {
+    const dir = scratch();
+    renameSync(join(dir, ...spec.split("/"), "gone.spec.ts"), join(dir, "gone-aside.txt"));
+    expect(listSpecs(dir)).toEqual(["e2e/stray.spec.ts", "e2e/tracked.spec.ts"]);
+  });
+});
 
 describe("spec-to-project assignment", () => {
   const specs = listSpecs();

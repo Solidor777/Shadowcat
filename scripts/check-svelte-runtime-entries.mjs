@@ -29,11 +29,17 @@ if (isDirectEntry(import.meta.url)) {
   //
   // Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files),
   // so a new file is checked before `git add` and ignored build output is never read.
-  const files = repoFiles({
-    roots: ["src/client", "src/modules", "examples"],
-    exts: [".ts", ".svelte"],
-    label: "check:svelte-runtime",
-  });
+  let files;
+  try {
+    files = repoFiles({
+      roots: ["src/client", "src/modules", "examples"],
+      exts: [".ts", ".svelte"],
+      label: "check:svelte-runtime",
+    });
+  } catch (e) {
+    console.error(`check:svelte-runtime: ${e.message}`);
+    process.exit(2);
+  }
   const contents = Object.fromEntries(files.map((f) => [f, readFileSync(f, "utf8")]));
   const flagged = findUnenumeratedSveltePaths(contents, knownEntries);
   if (flagged.length > 0) {

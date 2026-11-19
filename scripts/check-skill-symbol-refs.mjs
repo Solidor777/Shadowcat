@@ -971,9 +971,11 @@ export function moduleNameOf(filePath) {
  * @param {string} [skillsRoot] - absolute path to the skill corpus root (see `defaultSkillsRoot`)
  *   whose immediate subdirectory names are indexed as sibling-skill citations; omitted (or
  *   nonexistent on disk) simply skips that indexing, since it is additive to the code index.
+ * @param {(line: string) => void} [log] - receives the corpus size line; silent by default because
+ *   this is a library function (see `repoFiles`).
  * @returns {{ symbols: Set<string>, filesIndexed: number, declared: Set<string> }}
  */
-export function buildSymbolIndex(repoRoot, skillsRoot) {
+export function buildSymbolIndex(repoRoot, skillsRoot, log = () => {}) {
   const declared = new Set();
   const referenced = new Set();
   let filesIndexed = 0;
@@ -1009,7 +1011,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     cwd: repoRoot,
     include: "tracked",
     label: "skill symbol index",
-    log: (line) => console.error(line),
+    log,
   });
   /** Absolute paths of the tracked files under repo-relative `root` that end in one of `exts`. */
   const filesUnder = (root, exts) =>
@@ -1746,8 +1748,10 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
  * @param {string} repoRoot - absolute path to the repository root (builds the CODE symbol index).
  * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`) —
  *   an independent checkout from `repoRoot` since the shadowcat-codebase migration.
- * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
- *   for a fixture tree that is not itself a git checkout; production passes nothing and asks git.
+ * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[], log?: (line: string) => void}} [opts] -
+ *   corpus scoping override, for a fixture tree that is not itself a git checkout; production
+ *   passes no scoping and asks git. `log` receives the symbol index's corpus size line; silent when
+ *   omitted, because this is a library function (see `repoFiles`).
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
  *   candidatesChecked: number, verified: number, acknowledged: number,
  *   broken: {file: string, line: number, token: string}[], nonCandidates: number,
@@ -1775,7 +1779,7 @@ export function checkSkillSymbolRefs(repoRoot, skillsRoot, opts = {}) {
     trackedDirs = dirs.tracked;
     untrackedDirs = dirs.untracked;
   }
-  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot, skillsRoot);
+  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot, skillsRoot, opts.log);
   const files = findMarkdownFiles(skillsRoot, trackedDirs);
   const acknowledgedHits = new Map();
   let verified = 0;

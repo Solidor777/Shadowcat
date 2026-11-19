@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { describe, test, expect } from "vitest";
@@ -173,6 +173,23 @@ describe("repoFiles", () => {
   });
 });
 
+/** The number of `repoFiles(...)` call expressions in `text`.
+ * @param {string} text - module source.
+ * @param {string} name - file name, which selects the TypeScript or JavaScript parser.
+ * @returns {number} the call count.
+ */
+function repoFilesCalls(text, name) {
+  const kind = name.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, kind);
+  let count = 0;
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "repoFiles") count += 1;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return count;
+}
+
 // Each gate that reads files names its direction (a ban gate scans the untracked-inclusive
 // corpus, a declaration index reads tracked files only) by calling `repoFiles`. A walker that
 // came back would bring its own idea of what the repository is.
@@ -186,18 +203,55 @@ describe("the gates read the corpus through repoFiles", () => {
     "scripts/check-secure-context-apis.mjs",
     "scripts/check-aria-label-keys.mjs",
     "scripts/check-audio-fixtures.mjs",
+    "scripts/check-vendor.mjs",
     "scripts/check-walk-sites.mjs",
     "scripts/check-skill-symbol-refs.mjs",
     "scripts/check-svelte-runtime-entries.mjs",
     "scripts/extract-ts-examples.mjs",
     "scripts/report-doc-exemptions.mjs",
     "scripts/lib/is-main.test.mjs",
+    "scripts/lib/no-fs-delete-calls.test.mjs",
+    "scripts/lib/run-git.test.mjs",
     "src/client/shell/e2e-support/playwright-config.test.ts",
   ];
   const IMPORTS_REPO_FILES = /import\s*\{[^}]*\brepoFiles\b[^}]*\}\s*from\s*"[^"]*gate-corpus\.mjs"/;
 
   test.each(CONVERTED)("%s imports repoFiles", (file) => {
     expect(readFileSync(file, "utf8")).toMatch(IMPORTS_REPO_FILES);
+  });
+
+  // An import with no call pins nothing: the gate could list files some other way.
+  test.each(CONVERTED)("%s calls repoFiles", (file) => {
+    expect(repoFilesCalls(readFileSync(file, "utf8"), file)).toBeGreaterThan(0);
+  });
+
+  test("the call counter finds a call and ignores an import, a comment and a string (positive control)", () => {
+    expect(repoFilesCalls('import { repoFiles } from "./gate-corpus.mjs";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls('// repoFiles({})\nconst s = "repoFiles({})";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls("const f = repoFiles({ roots: [] });\n", "a.mjs")).toBe(1);
+  });
+
+  // A direct-entry gate that cannot list the corpus reports one line naming itself and exits 2; a
+  // stack trace, or a clean exit over an unread corpus, is a defect. git is made unreachable by
+  // giving the child a PATH holding no executables, which fails the same way for every gate
+  // whatever its working directory.
+  const GIT_FAILURE_GATES = [
+    ["scripts/check-file-lines.mjs", "lint:file-size"],
+    ["scripts/check-lint-allowances.mjs", "lint:allowances"],
+    ["scripts/check-comment-refs.mjs", "lint:comments"],
+    ["scripts/check-svelte-runtime-entries.mjs", "check:svelte-runtime"],
+    ["scripts/check-walk-sites.mjs", "lint:walk-sites"],
+    ["scripts/extract-ts-examples.mjs", "docs:check-examples"],
+  ];
+
+  test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label) => {
+    const emptyPath = mkdtempSync(join(tmpdir(), "no-git-path-"));
+    const env = Object.fromEntries(Object.entries(scrubGitEnv()).filter(([key]) => key.toLowerCase() !== "path"));
+    env.PATH = emptyPath;
+    const r = spawnSync(process.execPath, [gate], { env, encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(new RegExp(`^${label}: could not determine the file list`, "m"));
+    expect(r.stderr).not.toMatch(/\n\s+at /);
   });
 
   test("only the skill-checkout gates import skillSources", () => {

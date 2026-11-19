@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { reportDocExemptions, findTypedocConfigs, scanDocExemptions } from "./report-doc-exemptions.mjs";
 import { makeRepo } from "./lib/temp-repo.mjs";
 
@@ -50,6 +50,22 @@ describe("findTypedocConfigs / scanDocExemptions", () => {
       join(root, "untracked", "typedoc.json"),
     ].sort();
     expect(found.sort()).toEqual(expected);
+  });
+
+  // A library function prints nothing on stdout; the report command passes `console.log` so it
+  // still reports its corpus size (see `repoFiles`).
+  it("prints no corpus line unless the caller passes a log, and the command prints it", () => {
+    const root = makeRepo({ "typedoc.json": "{}" });
+    const printed = vi.spyOn(console, "log").mockImplementation(() => {});
+    findTypedocConfigs(root);
+    scanDocExemptions(root);
+    expect(printed).not.toHaveBeenCalled();
+    printed.mockRestore();
+    const lines = [];
+    scanDocExemptions(root, (l) => lines.push(l));
+    expect(lines).toEqual(["corpus report-doc-exemptions: 1 files"]);
+    const out = execFileSync(process.execPath, [cliPath], { encoding: "utf8" });
+    expect(out).toMatch(/^corpus report-doc-exemptions: \d+ files$/m);
   });
 
   it("derives the total from every config that carries an exemption, not one hardcoded path", () => {

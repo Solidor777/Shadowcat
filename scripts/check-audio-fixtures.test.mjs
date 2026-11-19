@@ -1,5 +1,10 @@
+import { renameSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { makeRepo } from "./lib/temp-repo.mjs";
 import {
+  fixtureListingFailures,
   levelFailures,
   parseIntegratedLufs,
   parseMaxVolume,
@@ -33,6 +38,64 @@ describe("levelFailures", () => {
     expect(levelFailures(-11, -20)).toEqual([]);
     expect(levelFailures(-11, -26)).toEqual([]);
     expect(levelFailures(null, null)).toHaveLength(2);
+  });
+});
+
+// The fixture listing compares the directory with the manifest in two directions: a manifest track
+// must have a TRACKED file (so a never-added file cannot pass here and fail on a clean checkout),
+// and an extra `.ogg` is found in the untracked-inclusive corpus (so a stray is caught before
+// `git add`). Only direct children of the directory count.
+describe("fixtureListingFailures", () => {
+  const DIR = "fx";
+  const quiet = () => {};
+  /** Lists `fx/` of a scratch repository holding `files`, with `tracked` indexed. */
+  const list = (files, tracked, tracks = ["a", "b"]) => {
+    const cwd = makeRepo(files, tracked);
+    return { cwd, failures: fixtureListingFailures({ cwd, dir: join(cwd, DIR), tracks, log: quiet }) };
+  };
+
+  it("passes when every manifest track has a tracked file and nothing else is present", () => {
+    expect(list({ "fx/a.ogg": "", "fx/b.ogg": "" }, ["fx/a.ogg", "fx/b.ogg"]).failures).toEqual([]);
+  });
+
+  it("fails a manifest track whose file exists but was never added to git", () => {
+    const { failures } = list({ "fx/a.ogg": "", "fx/b.ogg": "" }, ["fx/a.ogg"]);
+    expect(failures).toEqual(["manifest track file b.ogg is not a tracked file present in fx"]);
+  });
+
+  it("fails an untracked stray .ogg that is not a manifest track", () => {
+    const { failures } = list({ "fx/a.ogg": "", "fx/b.ogg": "", "fx/stray.ogg": "" }, ["fx/a.ogg", "fx/b.ogg"]);
+    expect(failures).toEqual(["fx/stray.ogg is not a manifest track"]);
+  });
+
+  it("ignores a stray .ogg under an ignored path", () => {
+    const { failures } = list(
+      { ".gitignore": "fx/stray.ogg\n", "fx/a.ogg": "", "fx/b.ogg": "", "fx/stray.ogg": "" },
+      [".gitignore", "fx/a.ogg", "fx/b.ogg"],
+    );
+    expect(failures).toEqual([]);
+  });
+
+  it("fails a tracked track file deleted in the working tree without throwing", () => {
+    const { cwd } = list({ "fx/a.ogg": "", "fx/b.ogg": "" }, ["fx/a.ogg", "fx/b.ogg"]);
+    renameSync(join(cwd, DIR, "b.ogg"), join(cwd, "b-aside.txt"));
+    const failures = fixtureListingFailures({ cwd, dir: join(cwd, DIR), tracks: ["a", "b"], log: quiet });
+    expect(failures).toEqual(["manifest track file b.ogg is not a tracked file present in fx"]);
+  });
+
+  it("counts only direct children of the directory", () => {
+    const { failures } = list(
+      { "fx/a.ogg": "", "fx/b.ogg": "", "fx/sub/extra.ogg": "" },
+      ["fx/a.ogg", "fx/b.ogg"],
+    );
+    expect(failures).toEqual([]);
+  });
+
+  it("names a directory outside the repository instead of blaming the manifest", () => {
+    const cwd = makeRepo({ "fx/a.ogg": "" });
+    const failures = fixtureListingFailures({ cwd, dir: join(tmpdir(), "elsewhere"), tracks: ["a"], log: quiet });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("is outside the repository");
   });
 });
 

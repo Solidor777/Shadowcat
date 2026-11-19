@@ -6,7 +6,8 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { runGit, scrubGitEnv } from "./run-git.mjs";
-import { norm } from "./gate-corpus.mjs";
+import { norm, repoFiles } from "./gate-corpus.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -264,13 +265,13 @@ function callsGitUnguarded(text) {
   return directGitCalls(text).length > 0;
 }
 
-/** Every path `git ls-files` reports under `repoRoot`, NUL-separated and unfiltered. */
+/**
+ * Every path in the shared repository corpus (`repoFiles`: tracked plus untracked, non-ignored,
+ * minus files deleted in the working tree), unfiltered. A ban scan reads the untracked-inclusive
+ * corpus so a bare git call is caught before `git add`.
+ */
 function listTrackedFiles(repoRoot) {
-  const execFile = (cmd, args, opts) =>
-    execFileSync(cmd, args, { ...opts, cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 });
-  const result = runGit(["ls-files", "-z"], "the tracked file list", { execFile });
-  if (!result.ok) throw new Error(result.message);
-  return result.stdout.split("\0").filter(Boolean);
+  return repoFiles({ cwd: repoRoot, log: () => {} });
 }
 
 /**
@@ -448,4 +449,13 @@ test("both checks catch a NEW file regardless of which directory it lives in, wi
     "some/other/location/raw-fixture.test.mjs:3",
     "some/other/location/wrapper-fixture.test.mjs:1",
   ]);
+});
+
+test("a bare git call in an untracked file is seen, and one in an ignored file is not", () => {
+  const bare = 'execFileSync("git", ["status"], { encoding: "utf8" });\n';
+  const dir = makeRepo(
+    { ".gitignore": "ignored.mjs\n", "tracked.mjs": "export const a = 1;\n", "stray.mjs": bare, "ignored.mjs": bare },
+    [".gitignore", "tracked.mjs"],
+  );
+  expect(findUnguardedGitCallers(dir)).toEqual(["stray.mjs"]);
 });

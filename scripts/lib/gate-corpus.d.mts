@@ -10,7 +10,7 @@ export interface RepoFilesOptions {
   include?: "all" | "tracked";
   /** Also keep files directly in the repository root. */
   rootFiles?: boolean;
-  /** Receives the `corpus <label>: <N> files` line. */
+  /** Receives the `corpus <label>: <N> files` line; a library caller passes a no-op. */
   log?: (line: string) => void;
   /** Names the caller in the log line. */
   label?: string;

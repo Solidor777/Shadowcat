@@ -117,7 +117,13 @@ const LIST_MAX_BUFFER = 64 * 1024 * 1024;
  * directly in the repository root. With neither given, every file is kept. `exts` filters by file
  * name suffix.
  *
- * Throws when git cannot answer: an unread corpus must never read as a clean one.
+ * Throws when git cannot answer: an unread corpus must never read as a clean one. A direct-entry
+ * gate catches the throw, prints `<label>: <message>` to stderr and exits 2.
+ *
+ * Log convention: a direct-entry gate (a script run as a command) leaves `log` at its default so
+ * `corpus <label>: <N> files` prints on stdout, or passes `console.error` where stdout carries
+ * machine-readable output. A library function another module or a test calls passes a no-op
+ * `log` (or takes one from its caller, silent by default), so importing it prints nothing.
  *
  * @param {object} [options] - corpus selection.
  * @param {string} [options.cwd] - repository directory; defaults to the process directory.

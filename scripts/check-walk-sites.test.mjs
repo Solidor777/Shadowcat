@@ -131,16 +131,33 @@ describe("reconcile", () => {
   });
 });
 
+// Parsing the whole corpus is the file's one expensive step, so it runs once and the real-corpus
+// cases share the result.
+let repoScan;
+/**
+ * The corpus and its walk sites, computed on first use.
+ * @returns {{ files: string[], found: string[] }} the scanned files and their site ids.
+ * @example
+ * repoSites().found.length;
+ */
+function repoSites() {
+  repoScan ??= (() => {
+    const files = corpus();
+    return { files, found: collectSites(files) };
+  })();
+  return repoScan;
+}
+
 describe("the repository", () => {
   it("records exactly the walk sites that exist", () => {
-    const found = collectSites(corpus());
+    const { found } = repoSites();
     expect(reconcile(found, INVENTORY)).toEqual([]);
     expect(found).toHaveLength(INVENTORY.length);
   });
 
   it("agrees with an independent text recount", () => {
-    const found = collectSites(corpus());
-    const recount = corpus().reduce((n, f) => n + recountWalkCalls(readFileSync(join(REPO_ROOT, f), "utf8")), 0);
+    const { files, found } = repoSites();
+    const recount = files.reduce((n, f) => n + recountWalkCalls(readFileSync(join(REPO_ROOT, f), "utf8")), 0);
     expect(recount).toBe(found.length);
   });
 
@@ -175,5 +192,39 @@ describe("corpus direction (a ban gate)", () => {
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("unclassified walk site: src/untracked-walker.mjs :: walk :: readdirSync :: 1");
     expect(run.stderr).not.toContain("src/ignored/walker.mjs");
+  });
+});
+
+// The header states what the scan cannot see. Each claim is exercised here, so the header cannot
+// say a form is invisible while the scan has started to see it, nor the reverse.
+describe("stated bound", () => {
+  const header = readFileSync(join(REPO_ROOT, "scripts", "check-walk-sites.mjs"), "utf8")
+    .split("\n")
+    .filter((l) => l.startsWith("//"))
+    .join("\n");
+
+  it("names every form the scan does not see", () => {
+    for (const phrase of [
+      "computed property",
+      "re-exported under",
+      "aliased through a local variable",
+      "third-party glob or walk library",
+      "child_process",
+      "`.mts`, `.cts`, `.tsx` and",
+      "`.svelte`",
+      "outside `REPO_ROOTS`",
+    ]) {
+      expect(header, phrase).toContain(phrase);
+    }
+  });
+
+  it("does not see a call through a local-variable alias, in the parser or the text recount", () => {
+    const text = 'import fs from "node:fs";\nconst rd = fs.readdirSync;\nexport function f() { return rd("."); }\n';
+    expect(findWalkSites(text, "a.mjs")).toEqual([]);
+    expect(recountWalkCalls(text)).toBe(0);
+  });
+
+  it("does not scan the extensions the header names", () => {
+    for (const ext of [".mts", ".cts", ".tsx", ".svelte"]) expect(SCAN_EXTS).not.toContain(ext);
   });
 });

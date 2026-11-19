@@ -29,7 +29,7 @@ import process from "node:process";
 import { parse as parseToml } from "smol-toml";
 import { Parser } from "tar";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { runGit } from "./lib/run-git.mjs";
+import { VENDOR_ROOTS, repoFiles } from "./lib/gate-corpus.mjs";
 
 /** Crate directories `vendor/` may contain; any other path under `vendor/` fails. */
 export const VENDORED_CRATES = ["h2"];
@@ -398,14 +398,19 @@ export function checkUpstream({ crateBytes, readFile, expectedSha256 = UPSTREAM.
 }
 
 /**
- * Lists the files under `vendor/`: tracked plus untracked non-ignored, so a stray file fails
- * before it is added.
+ * Lists the files under `vendor/` from the shared corpus (`repoFiles` over `VENDOR_ROOTS`): tracked
+ * plus untracked non-ignored, so a stray file fails before it is added, and a tracked file deleted
+ * in the working tree is not listed.
  * @returns {{ok: true, paths: string[]} | {ok: false, message: string}} The paths or the git failure.
+ * @example
+ * listVendorPaths();
  */
 function listVendorPaths() {
-  const r = runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "vendor"], "the vendored file list");
-  if (!r.ok) return r;
-  return { ok: true, paths: [...new Set(r.stdout.split("\0").filter(Boolean))].sort() };
+  try {
+    return { ok: true, paths: repoFiles({ roots: VENDOR_ROOTS, label: "lint:vendor" }) };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
 }
 
 /**

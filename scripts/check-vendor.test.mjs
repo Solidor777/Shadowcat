@@ -1,14 +1,15 @@
-import { test, expect } from "vitest";
+import { describe, test, expect } from "vitest";
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { createServer, get as httpGet } from "node:http";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { create } from "tar";
 import { scrubGitEnv } from "./lib/run-git.mjs";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 import {
   EXPECTED_HUNKS_BY_FILE,
   PATCHED_FILES,
@@ -620,4 +621,33 @@ test("an untracked stray file under vendor/ fails before it is added", () => {
   const r = spawnSync(process.execPath, [CLI], { cwd: dir, encoding: "utf8", env });
   expect(r.status).toBe(1);
   expect(r.stderr).toContain("vendor/notes.rs: not under a directory");
+});
+
+// The vendor corpus is `repoFiles` over `VENDOR_ROOTS`: untracked non-ignored files count, ignored
+// files never do, and a tracked file deleted in the working tree is not listed.
+describe("lint:vendor reads the shared corpus", () => {
+  const STRAY = "vendor/notes.rs";
+  const STRAY_ERROR = `${STRAY}: not under a directory`;
+  const base = { "Cargo.toml": ROOT_TOML, "Cargo.lock": LOCK_OK };
+  const run = (dir) => runScriptIn(dir, "scripts/check-vendor.mjs");
+
+  test("an untracked stray file fails", () => {
+    const dir = makeRepo({ ...base, [STRAY]: "fn stray() {}\n" }, Object.keys(base));
+    expect(run(dir).stderr).toContain(STRAY_ERROR);
+  });
+
+  test("the same stray file under an ignored path passes", () => {
+    const dir = makeRepo({ ...base, ".gitignore": "vendor/notes.rs\n", [STRAY]: "fn stray() {}\n" }, [...Object.keys(base), ".gitignore"]);
+    const r = run(dir);
+    expect(r.stderr).not.toContain(STRAY_ERROR);
+    expect(r.stderr).not.toContain("ENOENT");
+  });
+
+  test("a tracked stray file deleted in the working tree is not listed and does not throw", () => {
+    const dir = makeRepo({ ...base, [STRAY]: "fn stray() {}\n" });
+    renameSync(join(dir, "vendor", "notes.rs"), join(dir, "notes-aside.txt"));
+    const r = run(dir);
+    expect(r.stderr).not.toContain(STRAY_ERROR);
+    expect(r.stderr).not.toContain("ENOENT");
+  });
 });

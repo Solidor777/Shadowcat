@@ -17,12 +17,14 @@ import { repoFiles } from "./lib/gate-corpus.mjs";
  * a file git has not yet seen would otherwise be an uncounted one. Ignored build output never
  * counts.
  * @param {string} root - The repository root to scan from.
+ * @param {(line: string) => void} [log] - Receives the corpus size line; silent when omitted,
+ *   because this is a library function (see `repoFiles`).
  * @returns {string[]} Absolute paths, sorted for deterministic output.
  * @example
  * const configs = findTypedocConfigs(process.cwd());
  */
-export function findTypedocConfigs(root) {
-  return repoFiles({ cwd: root, exts: [".json"], label: "report-doc-exemptions" })
+export function findTypedocConfigs(root, log = () => {}) {
+  return repoFiles({ cwd: root, exts: [".json"], label: "report-doc-exemptions", log })
     .filter((p) => /^typedoc.*\.json$/.test(basename(p)))
     .map((p) => join(root, ...p.split("/")))
     .sort();
@@ -43,13 +45,14 @@ export function reportDocExemptions(config) {
  * Scans every `typedoc*.json` under `repoRoot` for `intentionallyNotDocumented` entries,
  * stamping the result with what was scanned rather than returning a bare count.
  * @param {string} repoRoot - The repository root to scan from.
+ * @param {(line: string) => void} [log] - Receives the corpus size line; silent when omitted.
  * @returns {{ total: number, scanned: string[], bySource: { path: string, names: string[] }[] }}
  *   `total` — the sum of every exemption found; `scanned` — every `typedoc*.json` path visited,
  *   including ones carrying zero exemptions; `bySource` — a per-source breakdown listing only
  *   the configs that actually carry at least one exemption.
  */
-export function scanDocExemptions(repoRoot) {
-  const scanned = findTypedocConfigs(repoRoot);
+export function scanDocExemptions(repoRoot, log = () => {}) {
+  const scanned = findTypedocConfigs(repoRoot, log);
   const bySource = [];
   let total = 0;
   for (const path of scanned) {

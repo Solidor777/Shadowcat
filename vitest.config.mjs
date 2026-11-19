@@ -15,16 +15,20 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["scripts/**/*.test.mjs"],
-    // scripts/git-sequencer-state.test.mjs spawns real `git` subprocesses
-    // (ten-plus per remaining-work test) rather than mocking the process
-    // boundary, so its wall-clock cost scales with host git/process-spawn
-    // speed, not with vitest's own per-test overhead. The default 5000ms
-    // testTimeout/hookTimeout is a floor sized for in-process assertions
-    // and is not enough headroom for a loaded or slower host: measured
-    // slowest test at 2887ms on an unloaded dev machine, x4 for "slowest
-    // supported CI runner runs ~4x a dev machine" (`DUAL_SESSION_TIMEOUT_MS`'s
-    // sizing rule) rounds up to 12000ms.
-    testTimeout: 12000,
-    hookTimeout: 12000,
+    // Many tests spawn real `git` subprocesses, move files to the recycle bin
+    // or parse the whole repository (the symbol index, the walk-site scan,
+    // the comment-gate corpus) rather than mocking those boundaries, so
+    // their wall-clock cost scales with host process-spawn and CPU speed, not
+    // with vitest's own per-test overhead. The work is fixed-size: measured
+    // on an idle machine the slowest cases take 1.3 s (the recycle-bin
+    // removal test), 2.8 s (a whole-corpus parse) and 6 s (the symbol index
+    // beside the other workers). The same cases took 10x longer when
+    // other builds saturated the host (a commit hook run beside concurrent
+    // cargo and rustc processes at 75-100% CPU timed out four whole-corpus
+    // tests at 12 s, and another run timed out the recycle-bin test).
+    // 60 s covers that 10x spread over the slowest measured case and still
+    // fails a genuine hang.
+    testTimeout: 60000,
+    hookTimeout: 60000,
   },
 });
