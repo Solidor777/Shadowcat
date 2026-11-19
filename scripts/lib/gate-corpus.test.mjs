@@ -173,6 +173,23 @@ describe("repoFiles", () => {
   });
 });
 
+/** The number of `repoFiles(...)` call expressions in `text`.
+ * @param {string} text - module source.
+ * @param {string} name - file name, which selects the TypeScript or JavaScript parser.
+ * @returns {number} the call count.
+ */
+function repoFilesCalls(text, name) {
+  const kind = name.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, kind);
+  let count = 0;
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "repoFiles") count += 1;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return count;
+}
+
 // Each gate that reads files names its direction (a ban gate scans the untracked-inclusive
 // corpus, a declaration index reads tracked files only) by calling `repoFiles`. A walker that
 // came back would bring its own idea of what the repository is.
@@ -186,6 +203,7 @@ describe("the gates read the corpus through repoFiles", () => {
     "scripts/check-secure-context-apis.mjs",
     "scripts/check-aria-label-keys.mjs",
     "scripts/check-audio-fixtures.mjs",
+    "scripts/check-vendor.mjs",
     "scripts/check-walk-sites.mjs",
     "scripts/check-skill-symbol-refs.mjs",
     "scripts/check-svelte-runtime-entries.mjs",
@@ -198,6 +216,17 @@ describe("the gates read the corpus through repoFiles", () => {
 
   test.each(CONVERTED)("%s imports repoFiles", (file) => {
     expect(readFileSync(file, "utf8")).toMatch(IMPORTS_REPO_FILES);
+  });
+
+  // An import with no call pins nothing: the gate could list files some other way.
+  test.each(CONVERTED)("%s calls repoFiles", (file) => {
+    expect(repoFilesCalls(readFileSync(file, "utf8"), file)).toBeGreaterThan(0);
+  });
+
+  test("the call counter finds a call and ignores an import, a comment and a string (positive control)", () => {
+    expect(repoFilesCalls('import { repoFiles } from "./gate-corpus.mjs";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls('// repoFiles({})\nconst s = "repoFiles({})";\n', "a.mjs")).toBe(0);
+    expect(repoFilesCalls("const f = repoFiles({ roots: [] });\n", "a.mjs")).toBe(1);
   });
 
   test("only the skill-checkout gates import skillSources", () => {
