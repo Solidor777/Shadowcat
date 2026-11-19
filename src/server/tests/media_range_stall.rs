@@ -801,9 +801,10 @@ per_protocol!(
             "{protocol:?}: the drain took {took:?}"
         );
         drop(reply);
-        assert_eq!(
-            permits.held(),
-            0,
+        // An HTTP/2 request runs on its own spawned stream task (`StreamExec`), which the drain
+        // report does not join: it drops its permit at its next poll after the IO failed.
+        assert!(
+            wait_for(CUT_WAIT, || permits.held() == 0).await,
             "{protocol:?}: the drain left a permit held"
         );
         assert!(
