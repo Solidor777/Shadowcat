@@ -5,6 +5,7 @@ import type { PlaywrightTestConfig } from "@playwright/test";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  ANY_HTTPS_NAMED,
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
   LAN_SPEC,
@@ -208,6 +209,21 @@ function projectsMatching(config: PlaywrightTestConfig, matcher: RegExp): string
     .map((p) => p.name ?? "");
 }
 
+/** The rule that keeps a spec out of the loopback project by mistake: a file named `https-*` must
+ * match EXACTLY one of the three https project selectors, and any other file none of them.
+ * @param spec A path under `e2e/`.
+ * @returns A description of the violation, or `undefined` when the rule holds.
+ * @example
+ * ```
+ * httpsSelectorViolation("e2e/https-trust.spec.ts"); // => undefined
+ * ```
+ */
+function httpsSelectorViolation(spec: string): string | undefined {
+  const selectors = [HTTPS_SPECS, UPGRADE_SPEC, UPGRADE_CHROMIUM_SPEC].filter((m) => m.test(spec)).length;
+  const expected = ANY_HTTPS_NAMED.test(spec) ? 1 : 0;
+  return selectors === expected ? undefined : `${spec} matches ${selectors} https selector(s), expected ${expected}`;
+}
+
 describe("spec-to-project assignment", () => {
   const specs = listSpecs();
 
@@ -215,12 +231,15 @@ describe("spec-to-project assignment", () => {
     expect(specs.length).toBeGreaterThan(10);
   });
 
-  it("assigns the https matchers to disjoint spec sets", () => {
+  it("gives every https-named spec exactly one https project selector", () => {
     for (const spec of specs) {
-      const matched = [HTTPS_SPECS, UPGRADE_SPEC, UPGRADE_CHROMIUM_SPEC].filter((m) => m.test(spec));
-      expect(matched.length, `${spec} matches more than one https matcher`).toBeLessThanOrEqual(1);
-      expect(ANY_HTTPS_SPEC.some((m) => m.test(spec)), spec).toBe(matched.length === 1);
+      expect(httpsSelectorViolation(spec), spec).toBeUndefined();
     }
+  });
+
+  it("flags an https-named spec that no project selector claims (the detector fires)", () => {
+    expect(httpsSelectorViolation("e2e/https-upgrade-other.spec.ts")).toContain("matches 0");
+    expect(ANY_HTTPS_SPEC.some((m) => m.test("e2e/https-upgrade-other.spec.ts"))).toBe(true);
   });
 
   it("runs every spec in EXACTLY the project set its matcher derives: none twice, none nowhere", async () => {
