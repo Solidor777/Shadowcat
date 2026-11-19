@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -110,7 +110,7 @@ jobs:
 
   web:
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -138,7 +138,7 @@ jobs:
   # (the rust matrix already proves cross-OS build; this proves the boundary).
   e2e:
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -168,7 +168,7 @@ jobs:
   # setup hook, so the binary must already exist. Hence its own single-OS job.
   ui-e2e:
     timeout-minutes: 35
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -210,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -261,7 +261,7 @@ jobs:
   # recorded runs exist.
   e2e-long-audio:
     timeout-minutes: 90
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -292,7 +292,7 @@ jobs:
   # runs in parallel with the h2 play-through and the sampled legs.
   e2e-long-audio-playthrough-h1:
     timeout-minutes: 50
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -323,7 +323,7 @@ jobs:
   # parallel with the h1 play-through and the sampled legs.
   e2e-long-audio-playthrough-h2:
     timeout-minutes: 50
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -357,7 +357,7 @@ jobs:
   # match the manifest's recorded versions; the structural tier always runs.
   audio-fixtures:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -387,7 +387,7 @@ jobs:
   # an unused-exemption warning, and warnings here are fatal.
   docs:
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
