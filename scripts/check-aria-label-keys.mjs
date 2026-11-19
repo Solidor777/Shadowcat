@@ -28,15 +28,16 @@
 // gates through comment-span.mjs rather than reimplemented here.
 
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
-import { runGit } from "./lib/run-git.mjs";
-import { norm, under } from "./lib/gate-corpus.mjs";
+import { CLIENT_ROOTS, norm, repoFiles, under } from "./lib/gate-corpus.mjs";
 import { splitLine } from "./lib/comment-span.mjs";
 
-/** Repository roots whose tracked component files the gate reads. */
-export const ROOTS = ["src", "examples"];
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files,
+// minus files deleted in the working tree), so a new component is checked before `git add`.
+
+/** Repository roots whose component files the gate reads. */
+export const ROOTS = CLIENT_ROOTS;
 
 /**
  * Attributes whose value is read to a person. `alt` is deliberately absent: an image alt text that
@@ -96,13 +97,13 @@ export function scanAriaLabelKeys(text) {
 }
 
 function main() {
-  const execFile = (cmd, args, opts) => execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
-  const listed = runGit(["ls-files", "-z", "--", ...ROOTS], "the tracked component file list", { execFile });
-  if (!listed.ok) {
-    console.error(`lint:aria-labels: ${listed.message}`);
+  let files;
+  try {
+    files = repoFiles({ roots: ROOTS, exts: [".svelte"], label: "lint:aria-labels" }).filter(isComponentSource);
+  } catch (e) {
+    console.error(`lint:aria-labels: ${e.message}`);
     process.exit(2);
   }
-  const files = listed.stdout.split("\0").filter(isComponentSource);
   let errors = 0;
   for (const path of files) {
     for (const v of scanAriaLabelKeys(readFileSync(path, "utf8"))) {

@@ -1,0 +1,16 @@
+{
+  "aliasedImport": "import { readdirSync as rd } from \"node:fs\";\nexport function listAll() {\n  return rd(\"src\");\n}\n",
+  "namespaceImport": "import * as fs from \"node:fs\";\nexport function listAll() {\n  return fs.readdirSync(\".\");\n}\n",
+  "defaultImportBareSpecifier": "import fs from \"fs\";\nexport function listAll() {\n  return fs.readdirSync(\".\");\n}\n",
+  "promisesNamespace": "import fs from \"node:fs\";\nexport async function listAll() {\n  return fs.promises.readdir(\".\");\n}\n",
+  "promisesModuleAlias": "import * as fsp from \"node:fs/promises\";\nexport async function listAll() {\n  return fsp.readdir(\".\");\n}\n",
+  "globSyncArrow": "import { globSync } from \"node:fs\";\nexport const listAll = () => globSync(\"**/*.ts\");\n",
+  "destructuredAlias": "import fs from \"node:fs\";\nconst { readdirSync: rd } = fs;\nexport function listAll() {\n  return rd(\"src\");\n}\n",
+  "unclassifiedSrcWalker": "import { readdirSync } from \"node:fs\";\nexport function walk() {\n  return readdirSync(\"src\");\n}\n",
+  "cleanBuildOutputsShaped": "import { readdirSync } from \"node:fs\";\nexport function resolveTargets() {\n  return readdirSync(\"examples\");\n}\n",
+  "twoCallsOneFunction": "import { readdirSync } from \"node:fs\";\nexport function walk() {\n  readdirSync(\"a\");\n  return readdirSync(\"b\");\n}\n",
+  "innerAnonymousCallback": "import { readdirSync } from \"node:fs\";\nexport function outer() {\n  return [\"a\"].map((d) => readdirSync(d));\n}\n",
+  "mentionInCommentOnly": "// readdirSync(\".\") is how the old gate listed files.\nexport function noWalk() {\n  return 1;\n}\n",
+  "typescriptSource": "import { readdirSync } from \"node:fs\";\nexport function f(x: string): string[] {\n  return readdirSync(x);\n}\n",
+  "unrelatedCall": "export function noWalk(list) {\n  return list.map((x) => x + 1);\n}\n"
+}

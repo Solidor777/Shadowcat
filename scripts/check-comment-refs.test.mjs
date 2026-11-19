@@ -18,7 +18,9 @@ import {
   SKILL_BANNED,
 } from "./check-comment-refs.mjs";
 import { GENERATED_ROOT, MD_EXTS, defaultSkillsRoot, norm } from "./lib/gate-corpus.mjs";
-import { existsSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 
 // The skill corpus is a standalone plugin checkout since the shadowcat-codebase migration, not
 // part of this repo — CI never has it, so every test below that depends on the REAL skill corpus
@@ -1255,4 +1257,39 @@ test.skipIf(!HAS_SKILLS_CHECKOUT)("the skill corpus is scoped to the tracked ski
   for (const p of mdFiles) expect(untrackedSkillFiles).not.toContain(p);
   // Every scanned skill file sits under the skill root; nothing else sneaks in through the walk.
   for (const p of mdFiles) expect(p.startsWith(`${norm(SKILLS_ROOT)}/`)).toBe(true);
+});
+
+// The corpus is the repository file list: an untracked, non-ignored file is checked before it is
+// added to git, an ignored one never, and a tracked file deleted in the working tree is not read.
+const CORPUS_GATE = "scripts/check-comment-refs.mjs";
+const CORPUS_CLEAN = "// Plain.\nexport const a = 1;\n";
+const CORPUS_BANNED = "// Kept minimal for M8c-1.\nexport const a = 1;\n"; // EXAMPLE:
+
+test("an untracked file with a banned comment fails the comment gate", () => {
+  const dir = makeRepo({ "src/clean.ts": CORPUS_CLEAN, "src/new.ts": CORPUS_BANNED }, ["src/clean.ts"]);
+  const r = runScriptIn(dir, CORPUS_GATE);
+  expect(r.status).toBe(1);
+  expect(r.stdout + r.stderr).toContain("src/new.ts");
+});
+
+test("the same banned comment under an ignored path passes the comment gate", () => {
+  const dir = makeRepo(
+    { ".gitignore": "ignored/\n", "src/clean.ts": CORPUS_CLEAN, "src/ignored/new.ts": CORPUS_BANNED },
+    [".gitignore", "src/clean.ts"],
+  );
+  expect(runScriptIn(dir, CORPUS_GATE).status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT in the comment gate", () => {
+  const dir = makeRepo({ "src/clean.ts": CORPUS_CLEAN, "src/gone.ts": CORPUS_CLEAN });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "gone.ts"), join(dir, "gone-aside.ts"));
+  const r = runScriptIn(dir, CORPUS_GATE);
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
+});
+
+test("repo-root config files are in the comment gate's corpus", () => {
+  const dir = makeRepo({ "src/clean.ts": CORPUS_CLEAN, "root.config.js": CORPUS_BANNED }, ["src/clean.ts"]);
+  expect(runScriptIn(dir, CORPUS_GATE).status).toBe(1);
 });

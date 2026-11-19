@@ -31,6 +31,7 @@
     "lint:module-docs": "node scripts/check-module-docs.mjs",
     "lint:secure-context": "node scripts/check-secure-context-apis.mjs",
     "lint:crypto-backend": "node scripts/check-crypto-backend.mjs",
+    "lint:walk-sites": "node scripts/check-walk-sites.mjs",
     "lint:vendor": "node scripts/check-vendor.mjs",
     "lint:audio-fixtures": "node scripts/check-audio-fixtures.mjs --require-tools",
     "lint:vendor:upstream": "node scripts/check-vendor.mjs --upstream",

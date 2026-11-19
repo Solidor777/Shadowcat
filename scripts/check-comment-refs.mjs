@@ -22,8 +22,6 @@
 
 import {
   readFileSync,
-  readdirSync,
-  statSync,
   writeFileSync,
   mkdirSync,
   existsSync,
@@ -41,8 +39,10 @@ import {
   listSkillDirs,
   MD_EXTS,
   norm,
+  REPO_ROOTS,
+  repoFiles,
   SKIP_DIRS,
-  sources,
+  skillSources,
   under,
 } from "./lib/gate-corpus.mjs";
 // Every extension whose files carry comments a human reads. A stylesheet is code that decides what
@@ -58,15 +58,15 @@ const EXTS = [".ts", ".rs", ".svelte", ".mjs", ".js", ".scss"];
 //
 // `examples` is a published workspace whose packages ship as the authoring reference, so a comment
 // there is read by more people than most of `src`. Every other repo-wide gate already covers it.
-const ROOTS = ["src", "scripts", "examples"];
-
-// Repo-root config files are code too — an eslint config decides what ships. They are collected by
-// walking the root non-recursively rather than by listing them, so a new config is in scope the
-// day it is added instead of the day someone remembers to enumerate it.
-const rootFiles = () =>
-  readdirSync(".").filter(
-    (n) => EXTS.some((e) => n.endsWith(e)) && statSync(n).isFile(),
-  );
+//
+// Repo-root config files are code too — an eslint config decides what ships. `repoFiles` takes
+// them with `rootFiles`, so a new config is in scope the day it is added instead of the day
+// someone remembers to enumerate it.
+//
+// Direction: a BAN gate. The corpus is `repoFiles` (tracked plus untracked, non-ignored files), so
+// a new file is checked before `git add`. The corpus line goes to stderr because `--json` owns
+// stdout.
+const ROOTS = REPO_ROOTS;
 
 /** True when `p` sits inside one of `scopes` (or `scopes` is empty, meaning "everything"). */
 export const inScope = (scopes, p) =>
@@ -93,13 +93,15 @@ export const inScope = (scopes, p) =>
 // what keeps the two skill gates from disagreeing about the size of the corpus; the excluded count
 // prints on every run, because an uncounted exclusion is a backdoor.
 export function collectFiles(skillsRoot = defaultSkillsRoot()) {
-  const codeFiles = [
-    ...ROOTS.flatMap((d) => sources(d, EXTS)),
-    ...rootFiles(),
-  ]
-    .map(norm)
-    .filter((p) => !under(p, GENERATED_ROOT));
-  const generatedFiles = sources(GENERATED_ROOT, EXTS).map(norm);
+  const corpus = repoFiles({
+    roots: ROOTS,
+    rootFiles: true,
+    exts: EXTS,
+    label: "lint:comments",
+    log: (line) => console.error(line),
+  });
+  const codeFiles = corpus.filter((p) => !under(p, GENERATED_ROOT));
+  const generatedFiles = corpus.filter((p) => under(p, GENERATED_ROOT));
   if (!existsSync(skillsRoot)) return { codeFiles, mdFiles: [], generatedFiles, untrackedSkillFiles: [] };
   const dirs = listSkillDirs(skillsRoot);
   if (dirs === null)
@@ -108,10 +110,10 @@ export function collectFiles(skillsRoot = defaultSkillsRoot()) {
         `cannot report a trustworthy count without it (looked in ${skillsRoot}).`,
     );
   const mdFiles = [...dirs.tracked]
-    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .flatMap((name) => skillSources(join(skillsRoot, name), MD_EXTS))
     .map(norm);
   const untrackedSkillFiles = dirs.untracked
-    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .flatMap((name) => skillSources(join(skillsRoot, name), MD_EXTS))
     .map(norm);
   return { codeFiles, mdFiles, generatedFiles, untrackedSkillFiles };
 }

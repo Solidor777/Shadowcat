@@ -22,14 +22,16 @@
 
 import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
+import { repoFiles } from "./lib/gate-corpus.mjs";
 import { isDirectEntry } from "./lib/is-main.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
+const REPO_ROOT = resolve(HERE, "..");
 export const FIXTURE_DIR = resolve(HERE, "../src/client/shell/e2e-fixtures/audio");
 export const GENERATOR = resolve(HERE, "gen-audio-fixtures.py");
 export const VERIFIER = resolve(HERE, "verify-audio-markers.py");
@@ -142,7 +144,13 @@ export function compare({ python, committedDir = FIXTURE_DIR }) {
   const committed = JSON.parse(readFileSync(committedManifestPath, "utf8"));
   const regen = JSON.parse(readFileSync(regenManifestPath, "utf8"));
   const tracks = Object.keys(committed.tracks).sort();
-  const onDisk = readdirSync(committedDir).filter((n) => n.endsWith(".ogg")).sort();
+  // The corpus lists the fixture directory, so a stray untracked .ogg fails before `git add`.
+  const onDisk = repoFiles({
+    cwd: REPO_ROOT,
+    roots: [relative(REPO_ROOT, committedDir)],
+    exts: [".ogg"],
+    label: "lint:audio-fixtures",
+  }).map((p) => p.slice(p.lastIndexOf("/") + 1));
   if (JSON.stringify(onDisk) !== JSON.stringify(tracks.map((t) => `${t}.ogg`))) {
     failures.push(`committed .ogg files ${onDisk} differ from the manifest tracks ${tracks}`);
   }

@@ -1,24 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { reportDocExemptions, findTypedocConfigs, scanDocExemptions } from "./report-doc-exemptions.mjs";
+import { makeRepo } from "./lib/temp-repo.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const cliPath = resolve(scriptDir, "report-doc-exemptions-cli.mjs");
 const repoRoot = resolve(scriptDir, "..");
 const exemptionsConfigPath = resolve(repoRoot, "src", "types", "typedoc.json");
-
-// One fixed fixture root, reused and overwritten in place rather than a fresh temp directory per
-// run: this repo permits no permanent-deletion call, so a per-run directory would accumulate
-// forever. Each test below writes into its own fixed subdirectory with deterministic content, so
-// re-running never leaves a stale file another test's exact-set assertion would trip over.
-const FIXTURE_ROOT = join(
-  tmpdir(),
-  `shadowcat-${basename(fileURLToPath(import.meta.url), ".test.mjs")}-fixture`,
-);
 
 describe("reportDocExemptions", () => {
   it("counts the enumerated exemptions", () => {
@@ -33,40 +24,40 @@ describe("reportDocExemptions", () => {
 });
 
 describe("findTypedocConfigs / scanDocExemptions", () => {
-  it("finds every typedoc*.json under a tree, skipping build/vendor subtrees", () => {
-    const root = join(FIXTURE_ROOT, "configs");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "typedoc.json"), "{}");
-    writeFileSync(join(root, "typedoc.base.json"), "{}");
-    mkdirSync(join(root, "pkg-a"), { recursive: true });
-    writeFileSync(join(root, "pkg-a", "typedoc.json"), "{}");
-    mkdirSync(join(root, "node_modules", "some-dep"), { recursive: true });
-    writeFileSync(join(root, "node_modules", "some-dep", "typedoc.json"), "{}");
-    mkdirSync(join(root, "dist-docs"), { recursive: true });
-    writeFileSync(join(root, "dist-docs", "typedoc.json"), "{}");
+  // The corpus is the repository file list. This COUNTS exemptions, so an untracked config is
+  // read (an exemption in a file git has not yet seen would be uncounted) while an ignored one is
+  // not.
+  it("finds every typedoc*.json in the corpus: tracked and untracked, never ignored", () => {
+    const root = makeRepo(
+      {
+        ".gitignore": "node_modules/\ndist-docs/\n",
+        "typedoc.json": "{}",
+        "typedoc.base.json": "{}",
+        "pkg-a/typedoc.json": "{}",
+        "untracked/typedoc.json": "{}",
+        "node_modules/some-dep/typedoc.json": "{}",
+        "dist-docs/typedoc.json": "{}",
+        "other.json": "{}",
+      },
+      [".gitignore", "typedoc.json", "typedoc.base.json", "pkg-a/typedoc.json", "other.json"],
+    );
 
     const found = findTypedocConfigs(root);
     const expected = [
       join(root, "pkg-a", "typedoc.json"),
       join(root, "typedoc.base.json"),
       join(root, "typedoc.json"),
+      join(root, "untracked", "typedoc.json"),
     ].sort();
     expect(found.sort()).toEqual(expected);
   });
 
   it("derives the total from every config that carries an exemption, not one hardcoded path", () => {
-    const root = join(FIXTURE_ROOT, "total");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "typedoc.json"), JSON.stringify({}));
-    writeFileSync(
-      join(root, "typedoc.base.json"),
-      JSON.stringify({ intentionallyNotDocumented: ["Base.x"] }),
-    );
-    mkdirSync(join(root, "pkg-a"), { recursive: true });
-    writeFileSync(
-      join(root, "pkg-a", "typedoc.json"),
-      JSON.stringify({ intentionallyNotDocumented: ["PkgA.y", "PkgA.z"] }),
-    );
+    const root = makeRepo({
+      "typedoc.json": JSON.stringify({}),
+      "typedoc.base.json": JSON.stringify({ intentionallyNotDocumented: ["Base.x"] }),
+      "pkg-a/typedoc.json": JSON.stringify({ intentionallyNotDocumented: ["PkgA.y", "PkgA.z"] }),
+    });
 
     const { total, scanned, bySource } = scanDocExemptions(root);
     expect(total).toBe(3);
@@ -91,12 +82,11 @@ describe("findTypedocConfigs / scanDocExemptions", () => {
   // mirrors the real topology (a base config plus a package config beside it) instead of writing
   // through the real `typedoc.base.json`, so a crash mid-test can't leave a tracked file mutated.
   it("counts an exemption added to a config a single-hardcoded-path reporter would never read", () => {
-    const root = join(FIXTURE_ROOT, "probe");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "typedoc.json"), JSON.stringify({}));
-    writeFileSync(join(root, "typedoc.base.json"), JSON.stringify({}));
-    mkdirSync(join(root, "pkg-a"), { recursive: true });
-    writeFileSync(join(root, "pkg-a", "typedoc.json"), JSON.stringify({}));
+    const root = makeRepo({
+      "typedoc.json": JSON.stringify({}),
+      "typedoc.base.json": JSON.stringify({}),
+      "pkg-a/typedoc.json": JSON.stringify({}),
+    });
 
     const before = scanDocExemptions(root);
     expect(before.total).toBe(0);

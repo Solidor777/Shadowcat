@@ -1,10 +1,25 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
-import { test, expect } from "vitest";
-import { EXAMPLE_EXEMPT, defaultSkillsRoot, isRustSource, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
+import { describe, test, expect } from "vitest";
+import ts from "typescript";
+import {
+  CLIENT_ROOTS,
+  EXAMPLE_EXEMPT,
+  REPO_ROOTS,
+  RUST_ROOTS,
+  VENDOR_ROOTS,
+  defaultSkillsRoot,
+  isRustSource,
+  listSkillDirs,
+  norm,
+  repoFiles,
+  skillSources,
+  under,
+} from "./gate-corpus.mjs";
 import { scrubGitEnv } from "./run-git.mjs";
+import { makeRepo } from "./temp-repo.mjs";
 
 const COMMENT_GATE = "scripts/check-comment-refs.mjs";
 const SYMBOL_GATE = "scripts/check-skill-symbol-refs.mjs";
@@ -79,19 +94,155 @@ test("the path primitives are boundary-aware and platform-neutral", () => {
 });
 
 test.skipIf(!existsSync(SKILLS_ROOT))(
-  "sources() finds real markdown files under the skill corpus root",
+  "skillSources() finds real markdown files under the skill corpus root",
   () => {
-    expect(sources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
+    expect(skillSources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
   },
 );
 
-test("sources() skips git-ignored generated output directories", () => {
+test("skillSources() skips git-ignored generated output directories", () => {
   const root = mkdtempSync(join(tmpdir(), "gate-corpus-skip-"));
   for (const dir of ["kept", "test-results", "node_modules"]) {
     mkdirSync(join(root, dir));
     writeFileSync(join(root, dir, "a.js"), "");
   }
-  expect(sources(root, [".js"]).map(norm).map((p) => p.slice(norm(root).length + 1))).toEqual(["kept/a.js"]);
+  expect(skillSources(root, [".js"]).map(norm).map((p) => p.slice(norm(root).length + 1))).toEqual(["kept/a.js"]);
+});
+
+describe("repoFiles", () => {
+  const FILES = {
+    ".gitignore": "ignored/\n",
+    "root.config.js": "",
+    "src/tracked.ts": "",
+    "src/untracked.ts": "",
+    "src/ignored/skipped.ts": "",
+    "src/gone.ts": "",
+    "srcx/neighbour.ts": "",
+    "scripts/a.mjs": "",
+    "vendor/crate/lib.rs": "",
+  };
+  const TRACKED = [".gitignore", "root.config.js", "src/tracked.ts", "src/gone.ts", "srcx/neighbour.ts", "scripts/a.mjs", "vendor/crate/lib.rs"];
+  const quiet = () => {};
+  const dir = makeRepo(FILES, TRACKED);
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "gone.ts"), join(dir, "gone-aside.txt"));
+
+  test("lists tracked and untracked files, never an ignored or a working-tree-deleted one", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src"], log: quiet })).toEqual(["src/tracked.ts", "src/untracked.ts"]);
+  });
+
+  test("include tracked reads the index only", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src"], include: "tracked", log: quiet })).toEqual(["src/tracked.ts"]);
+  });
+
+  test("a root is boundary-aware and a set of roots is a union", () => {
+    expect(repoFiles({ cwd: dir, roots: ["src", "scripts"], log: quiet })).toEqual([
+      "scripts/a.mjs",
+      "src/tracked.ts",
+      "src/untracked.ts",
+    ]);
+  });
+
+  test("rootFiles keeps only files directly in the repository root; with roots it adds to them", () => {
+    expect(repoFiles({ cwd: dir, rootFiles: true, exts: [".js"], log: quiet })).toEqual(["root.config.js"]);
+    expect(repoFiles({ cwd: dir, roots: ["scripts"], rootFiles: true, exts: [".js", ".mjs"], log: quiet })).toEqual([
+      "root.config.js",
+      "scripts/a.mjs",
+    ]);
+  });
+
+  test("no roots and no rootFiles keeps the whole corpus, and vendor/ is outside every named set", () => {
+    expect(repoFiles({ cwd: dir, log: quiet })).toContain("vendor/crate/lib.rs");
+    for (const roots of [REPO_ROOTS, CLIENT_ROOTS, RUST_ROOTS]) {
+      expect(repoFiles({ cwd: dir, roots, log: quiet })).not.toContain("vendor/crate/lib.rs");
+    }
+    expect(repoFiles({ cwd: dir, roots: VENDOR_ROOTS, log: quiet })).toEqual(["vendor/crate/lib.rs"]);
+  });
+
+  test("logs the corpus size under the caller's label", () => {
+    const lines = [];
+    const files = repoFiles({ cwd: dir, roots: ["src"], label: "lint:probe", log: (l) => lines.push(l) });
+    expect(lines).toEqual([`corpus lint:probe: ${files.length} files`]);
+  });
+
+  test("throws when git cannot list the files: an unread corpus never passes silently", () => {
+    const failing = () => {
+      throw new Error("git is not installed");
+    };
+    expect(() => repoFiles({ cwd: dir, execFile: failing, log: quiet })).toThrow(/git is not installed/);
+  });
+});
+
+// Each gate that reads files names its direction (a ban gate scans the untracked-inclusive
+// corpus, a declaration index reads tracked files only) by calling `repoFiles`. A walker that
+// came back would bring its own idea of what the repository is.
+describe("the gates read the corpus through repoFiles", () => {
+  const CONVERTED = [
+    "scripts/check-lint-allowances.mjs",
+    "scripts/check-comment-refs.mjs",
+    "scripts/check-file-lines.mjs",
+    "scripts/check-inline-tests.mjs",
+    "scripts/check-module-docs.mjs",
+    "scripts/check-secure-context-apis.mjs",
+    "scripts/check-aria-label-keys.mjs",
+    "scripts/check-audio-fixtures.mjs",
+    "scripts/check-walk-sites.mjs",
+    "scripts/check-skill-symbol-refs.mjs",
+    "scripts/check-svelte-runtime-entries.mjs",
+    "scripts/extract-ts-examples.mjs",
+    "scripts/report-doc-exemptions.mjs",
+    "scripts/lib/is-main.test.mjs",
+    "src/client/shell/e2e-support/playwright-config.test.ts",
+  ];
+  const IMPORTS_REPO_FILES = /import\s*\{[^}]*\brepoFiles\b[^}]*\}\s*from\s*"[^"]*gate-corpus\.mjs"/;
+
+  test.each(CONVERTED)("%s imports repoFiles", (file) => {
+    expect(readFileSync(file, "utf8")).toMatch(IMPORTS_REPO_FILES);
+  });
+
+  test("only the skill-checkout gates import skillSources", () => {
+    const importers = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => !p.endsWith(".test.mjs"))
+      .filter((p) => /import\s*\{[^}]*\bskillSources\b[^}]*\}\s*from/.test(readFileSync(p, "utf8")));
+    expect(importers).toEqual(["scripts/check-comment-refs.mjs", "scripts/check-skill-symbol-refs.mjs"]);
+  });
+});
+
+/** The `new Set([...])` expressions in `text` whose array holds the string literal `"node_modules"`. */
+function privateSkipSets(text) {
+  const source = ts.createSourceFile("scan", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const found = [];
+  const visit = (node) => {
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "Set" &&
+      node.arguments?.[0] !== undefined &&
+      ts.isArrayLiteralExpression(node.arguments[0]) &&
+      node.arguments[0].elements.some((e) => ts.isStringLiteralLike(e) && e.text === "node_modules")
+    ) {
+      found.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+// A second private skip list is a second opinion about what the repository is; `SKIP_DIRS` (for
+// the skill-checkout walk) is the only one.
+describe("no second private directory skip list", () => {
+  test("the detector finds a private skip set (positive control)", () => {
+    const fixture = 'const SKIP = new Set(["node_modules", "dist"]);\n';
+    expect(privateSkipSets(fixture)).toEqual([1]);
+    expect(privateSkipSets('const ok = new Set(["dist"]);\n')).toEqual([]);
+  });
+
+  test("only lib/gate-corpus.mjs declares one", () => {
+    const declaring = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
+      .filter((p) => privateSkipSets(readFileSync(p, "utf8")).length > 0);
+    expect(declaring).toEqual(["scripts/lib/gate-corpus.mjs"]);
+  });
 });
 
 // Regression: git exports GIT_INDEX_FILE into every process it spawns a hook or script from (e.g.

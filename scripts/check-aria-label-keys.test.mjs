@@ -1,4 +1,7 @@
+import { renameSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "vitest";
+import { makeRepo, runScriptIn } from "./lib/temp-repo.mjs";
 import { scanAriaLabelKeys, isComponentSource, HUMAN_ATTRS } from "./check-aria-label-keys.mjs";
 
 test("a literal i18n key as an aria-label is a violation", () => {
@@ -78,4 +81,33 @@ test("isComponentSource covers tracked .svelte under src and examples only", () 
   expect(isComponentSource("examples\\module-scaffold\\src\\Panel.svelte")).toBe(true);
   expect(isComponentSource("src/modules/game-settings/src/index.ts")).toBe(false);
   expect(isComponentSource("docs/site/components/Demo.svelte")).toBe(false);
+});
+
+// The corpus is the repository file list: an untracked, non-ignored component is scanned before it
+// is added to git, an ignored one never, and a tracked file deleted in the working tree is not read.
+const GATE = "scripts/check-aria-label-keys.mjs";
+const KEYED = '<input aria-label="gameSettings.scene.gridSize" />\n';
+
+test("an untracked component with an i18n key as aria-label fails the gate before git add", () => {
+  const dir = makeRepo({ "src/a/Clean.svelte": "<p>x</p>\n", "src/a/New.svelte": KEYED }, ["src/a/Clean.svelte"]);
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("src/a/New.svelte");
+});
+
+test("the same component under an ignored path passes", () => {
+  const dir = makeRepo(
+    { ".gitignore": "ignored/\n", "src/a/Clean.svelte": "<p>x</p>\n", "src/a/ignored/New.svelte": KEYED },
+    [".gitignore", "src/a/Clean.svelte"],
+  );
+  expect(runScriptIn(dir, GATE).status).toBe(0);
+});
+
+test("a tracked file deleted in the working tree does not throw ENOENT", () => {
+  const dir = makeRepo({ "src/a/Clean.svelte": "<p>x</p>\n", "src/a/Gone.svelte": "<p>g</p>\n" });
+  // Moved aside, not deleted: the index still lists it while the working tree no longer has it.
+  renameSync(join(dir, "src", "a", "Gone.svelte"), join(dir, "gone-aside.svelte"));
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(0);
+  expect(r.stderr).not.toContain("ENOENT");
 });

@@ -67,20 +67,110 @@ export function isRustSource(path) {
   return under(p, "src") && p.endsWith(".rs");
 }
 
-/** Recursively collects paths matching `exts` under `dir`; called once per entry in a roots list.
+/**
+ * Recursively collects paths matching `exts` under `dir` of the skill checkout. Only the
+ * skill-checkout gates walk this way: the skill corpus is a separate git repository, so
+ * `repoFiles` (this repository's file list) cannot enumerate it, and `SKIP_DIRS` keeps the walk out
+ * of generated output inside it.
  * @param {string} dir - directory to walk.
  * @param {string[]} exts - file extensions to keep.
  * @returns {string[]} matching paths.
+ * @example
+ * skillSources(defaultSkillsRoot(), MD_EXTS);
  */
-export function sources(dir, exts) {
+export function skillSources(dir, exts) {
   const out = [];
   for (const name of readdirSync(dir)) {
     if (SKIP_DIRS.has(name)) continue;
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...sources(p, exts));
+    if (statSync(p).isDirectory()) out.push(...skillSources(p, exts));
     else if (exts.some((e) => name.endsWith(e))) out.push(p);
   }
   return out;
+}
+
+// Root sets, each named by the SUBJECT it covers. A set is never narrowed because a file in it
+// would fail a gate: the file is the defect.
+/** Every repo-wide source gate: product code, build scripts and the published examples. */
+export const REPO_ROOTS = ["src", "scripts", "examples"];
+/** Client-code gates: product and example sources that ship to a browser. */
+export const CLIENT_ROOTS = ["src", "examples"];
+/** The Rust source gates: the server workspace lives under `src`. */
+export const RUST_ROOTS = ["src"];
+/** The vendored crate tree; outside every other set by absence, read only by the vendor gate. */
+export const VENDOR_ROOTS = ["vendor"];
+
+/** Largest `git ls-files` output the corpus listing accepts, in bytes. */
+const LIST_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * The repository's source corpus: every file git lists as present in the working tree, in one
+ * place so every gate that scans files means the same thing by "the repo".
+ *
+ * `include: "all"` (default) is `git ls-files --cached --others --exclude-standard` minus
+ * `git ls-files --deleted`: a file is checked before `git add`, an ignored file is never read, and
+ * a tracked file deleted in the working tree is not read (it would throw ENOENT). `include:
+ * "tracked"` is `--cached` only, minus the deleted: a declaration index must not resolve a
+ * citation against a file CI will not have.
+ *
+ * Selection: a file is kept when it sits under one of `roots`, or (when `rootFiles` is set) sits
+ * directly in the repository root. With neither given, every file is kept. `exts` filters by file
+ * name suffix.
+ *
+ * Throws when git cannot answer: an unread corpus must never read as a clean one.
+ *
+ * @param {object} [options] - corpus selection.
+ * @param {string} [options.cwd] - repository directory; defaults to the process directory.
+ * @param {string[]} [options.roots] - top-level path prefixes to keep.
+ * @param {string[]} [options.exts] - file name suffixes to keep.
+ * @param {"all"|"tracked"} [options.include] - `"all"` adds untracked, non-ignored files.
+ * @param {boolean} [options.rootFiles] - also keep files directly in the repository root.
+ * @param {(line: string) => void} [options.log] - receives the `corpus <label>: <N> files` line.
+ * @param {string} [options.label] - names the caller in the log line.
+ * @param {typeof execFileSync} [options.execFile] - injectable spawn, for tests.
+ * @returns {string[]} sorted, forward-slash paths relative to `cwd`.
+ * @example
+ * repoFiles({ roots: REPO_ROOTS, exts: [".mjs"], label: "lint:allowances" });
+ */
+export function repoFiles({
+  cwd = process.cwd(),
+  roots,
+  exts,
+  include = "all",
+  rootFiles = false,
+  log = console.log,
+  label = "unnamed",
+  execFile = execFileSync,
+} = {}) {
+  const spawn = (cmd, args, opts) =>
+    execFile(cmd, args, { ...opts, cwd, maxBuffer: LIST_MAX_BUFFER });
+  const list = (args, what) => {
+    const result = runGit(["ls-files", "-z", ...args], what, { execFile: spawn });
+    if (!result.ok) throw new Error(result.message);
+    return result.stdout.split("\0").filter((p) => p.length > 0);
+  };
+  const listed =
+    include === "tracked"
+      ? list(["--cached"], "the tracked file list")
+      : list(["--cached", "--others", "--exclude-standard"], "the file list");
+  const deleted = new Set(list(["--deleted"], "the deleted file list").map(norm));
+  const wantsAll = roots === undefined && !rootFiles;
+  const files = [
+    ...new Set(
+      listed
+        .map(norm)
+        .filter((p) => !deleted.has(p))
+        .filter(
+          (p) =>
+            wantsAll ||
+            (roots ?? []).some((r) => under(p, r)) ||
+            (rootFiles && !p.includes("/")),
+        )
+        .filter((p) => exts === undefined || exts.some((e) => p.endsWith(e))),
+    ),
+  ].sort();
+  log(`corpus ${label}: ${files.length} files`);
+  return files;
 }
 
 // The one exemption either gate has: a line deliberately exhibiting a form in order to DEFINE it

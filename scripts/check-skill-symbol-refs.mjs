@@ -26,7 +26,7 @@
 // Pure library: no top-level side effects. `check-skill-symbol-refs-cli.mjs` is the executable
 // entry point.
 //
-// Cross-platform: node:path/node:fs only, plus one `git ls-files` invocation for corpus scoping.
+// Cross-platform: node:path/node:fs only, plus `git ls-files` invocations for corpus scoping.
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import ts from "typescript";
@@ -40,8 +40,8 @@ import {
   listSkillDirs,
   MD_EXTS,
   norm,
-  SKIP_DIRS,
-  sources,
+  repoFiles,
+  skillSources,
   under,
 } from "./lib/gate-corpus.mjs";
 
@@ -1002,8 +1002,24 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     for (const key of extractJsonKeys(text)) (isDependency(key) ? referenced : declared).add(key);
   };
 
-  for (const rustRoot of RUST_ROOTS.map((root) => join(repoRoot, ...root.split("/")))) {
-    for (const file of sources(rustRoot, [".rs"])) {
+  // A DECLARATION index: it reads TRACKED files only (`include: "tracked"`). An untracked stray
+  // file that declares a symbol would make a citation resolve on this machine and fail on CI,
+  // which sees a clean checkout; that is the permissive direction, so the index never reads one.
+  const tracked = repoFiles({
+    cwd: repoRoot,
+    include: "tracked",
+    label: "skill symbol index",
+    log: (line) => console.error(line),
+  });
+  /** Absolute paths of the tracked files under repo-relative `root` that end in one of `exts`. */
+  const filesUnder = (root, exts) =>
+    tracked
+      .filter((p) => under(p, root) && exts.some((e) => p.endsWith(e)))
+      .map((p) => join(repoRoot, ...p.split("/")));
+
+  for (const rustRootRel of RUST_ROOTS) {
+    const rustRoot = join(repoRoot, ...rustRootRel.split("/"));
+    for (const file of filesUnder(rustRootRel, [".rs"])) {
       filesIndexed += 1;
       const text = readFileSync(file, "utf8");
       const modulePath = rustModulePath(rustRoot, file);
@@ -1020,13 +1036,12 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
   // directly when it explains which library owns a behaviour. Rust paths spell a hyphenated crate
   // name with underscores, so both forms are indexed. A manifest key names a dependency or a build
   // knob — it is a reference, never a declaration of a Rust item.
-  for (const file of sources(join(repoRoot, "src", "server"), [".toml"])) {
+  for (const file of filesUnder("src/server", [".toml"])) {
     filesIndexed += 1;
     for (const name of extractTomlKeys(readFileSync(file, "utf8"))) referenced.add(name);
   }
 
-  const sqlRoot = join(repoRoot, "src", "server", "migrations");
-  for (const file of sources(sqlRoot, [".sql"])) {
+  for (const file of filesUnder("src/server/migrations", [".sql"])) {
     filesIndexed += 1;
     for (const name of extractSqlSymbols(readFileSync(file, "utf8"))) declared.add(name);
   }
@@ -1036,11 +1051,15 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
     const abs = join(repoRoot, ...root.split("/"));
     const valueSets = PRODUCT_ROOTS.includes(root);
     // Every package/module directory is a declaration too: `src/modules/topbar` is what makes
-    // "the `topbar` module" a citation of something real rather than of a word.
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) declared.add(entry.name);
+    // "the `topbar` module" a citation of something real rather than of a word. A directory is
+    // declared iff a tracked file sits under it.
+    for (const p of tracked) {
+      if (!under(p, root)) continue;
+      const rest = p.slice(root.length + 1);
+      const slash = rest.indexOf("/");
+      if (slash > 0) declared.add(rest.slice(0, slash));
     }
-    for (const file of sources(abs, [".ts", ".mjs", ".js"])) {
+    for (const file of filesUnder(root, [".ts", ".mjs", ".js"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
@@ -1049,7 +1068,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
       for (const name of extractTsSymbols(text, basename(file), { valueSets })) declared.add(name);
       for (const name of importBindingNames(text, basename(file))) referenced.add(name);
     }
-    for (const file of sources(abs, [".svelte"])) {
+    for (const file of filesUnder(root, [".svelte"])) {
       filesIndexed += 1;
       const componentName = basename(file, ".svelte");
       declared.add(componentName);
@@ -1067,7 +1086,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
         if (!imported.has(name) && !name.includes(".")) declared.add(`${componentName}.${name}`);
       }
     }
-    for (const file of sources(abs, [".json"])) {
+    for (const file of filesUnder(root, [".json"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
@@ -1077,7 +1096,7 @@ export function buildSymbolIndex(repoRoot, skillsRoot) {
   // Repo-root config files: an eslint or TypeDoc option a skill cites is set here and nowhere
   // else, and the lint configs are real modules whose own bindings prose names. Their string
   // literals are configuration, not wire values, so value-set extraction stays off.
-  for (const name of readdirSync(repoRoot)) {
+  for (const name of tracked.filter((p) => !p.includes("/"))) {
     const path = join(repoRoot, name);
     if (name.endsWith(".json")) {
       filesIndexed += 1;
@@ -1125,7 +1144,7 @@ export function findMarkdownFiles(skillsRoot, trackedDirs) {
   const out = [];
   for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !trackedDirs.has(entry.name)) continue;
-    out.push(...sources(join(skillsRoot, entry.name), MD_EXTS));
+    out.push(...skillSources(join(skillsRoot, entry.name), MD_EXTS));
   }
   return out.sort();
 }
