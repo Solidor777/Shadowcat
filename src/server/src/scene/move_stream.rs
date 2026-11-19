@@ -1,8 +1,8 @@
 //! Position trajectory sampler for `MoveStream` broadcast.
 //!
 //! Pure, no I/O. Converts a legal render-path and duration into time-tagged
-//! position samples for client playback. It is consumed by `Room::execute_move`,
-//! which extends `MoveExecution` to carry `samples`.
+//! position samples for client playback. It is consumed by `Room::execute_move`, which puts
+//! the samples on the `MoveStream` frame.
 //!
 //! Algorithm: arc-length parameterisation — compute cumulative segment lengths,
 //! place `n` samples at equal arc-length steps, map each onto the polyline via
