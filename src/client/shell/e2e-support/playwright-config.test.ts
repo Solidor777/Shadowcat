@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { NetworkInterfaceInfo } from "node:os";
 import type { PlaywrightTestConfig } from "@playwright/test";
 import { readFileSync, renameSync } from "node:fs";
@@ -241,7 +241,12 @@ describe("listSpecs reads the shared corpus", () => {
 });
 
 describe("spec-to-project assignment", () => {
-  const specs = listSpecs();
+  // Listed when the suite runs, not when the file is collected: a listing that goes wrong (slow or
+  // failing) then fails these tests, and cannot stall the collection of the file's other suites.
+  let specs: string[] = [];
+  beforeAll(() => {
+    specs = listSpecs();
+  });
 
   it("finds the e2e specs, nested ones included", () => {
     expect(specs.length).toBeGreaterThan(10);
