@@ -665,7 +665,12 @@ per_protocol!(
         let mut reply = media.get(&url, &[]).await;
         assert_eq!(reply.status(), 200, "{protocol:?}");
         let mut received = reply.read_at_least(SLICE / 2).await.unwrap();
-        tokio::time::sleep(WINDOW + tick() + SLACK).await;
+        // The stall starts once the producer has filled the buffers, so the cut is awaited through
+        // the permit it releases instead of a fixed sleep; reading resumes only after the cut.
+        assert!(
+            wait_for(CUT_WAIT, || media.permits().held() == 0).await,
+            "{protocol:?}: the stalled response was never cut"
+        );
         // Whatever the kernel and h2 had buffered still arrives; the rest never does.
         let cut = loop {
             match reply.read_some().await {
