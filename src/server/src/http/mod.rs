@@ -387,7 +387,10 @@ pub(crate) const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Durati
 /// The least time WebSocket session tasks get to finish after the connection drain returns, even
 /// when the drain deadline has already passed. A session blocked sending to a peer that has
 /// stopped reading ends at its Close bound ([`crate::ws::bounded_sink::CLOSE_SEND_TIMEOUT`]) once
-/// told to close, so the grace is that bound plus one second of scheduling slack.
+/// told to close, so the grace is that bound plus one second of scheduling slack. A refused join
+/// obeys the same bound: its error and Close sends end at the Close bound, a failed error send
+/// skips the Close, and its wait for the peer's inbound frames (`ws::conn`'s `drain_inbound`)
+/// ends at once when sessions are told to close.
 ///
 /// Every documented shutdown bound derives from this constant and the drain timeout: `serve_with`
 /// returns within `drain_timeout + SESSION_GRACE`, or `drain_timeout + conn_serve::ABORT_WAIT +
