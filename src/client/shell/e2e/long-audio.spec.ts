@@ -292,7 +292,7 @@ for (const leg of [...CHROMIUM_LEGS]) {
       await page.getByTestId("stop-all").click();
       await expect(page.getByTestId("audio-panel")).toHaveAttribute("data-audio-playing", "0", { timeout: 15_000 });
 
-      assertTrafficContract(log, leg.variant, network?.rawExchanges() ?? null);
+      assertTrafficContract(log, leg.variant, network?.rawExchanges() ?? null, browserName === "webkit");
       if (network !== null) expect(network.protocols()).toEqual([testInfo.project.name.includes("-https-") ? "h2" : "http/1.1"]);
     } finally {
       testInfo.attach("samples", { body: JSON.stringify(samples, null, 1), contentType: "application/json" });

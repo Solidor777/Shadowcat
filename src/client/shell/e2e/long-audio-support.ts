@@ -565,24 +565,39 @@ function statusCounts(log: TrafficLog): Record<string, number> {
 
 /** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
  * the canonical URL, never the other derivative), every response the page saw is a `206`, the
- * initial `200` or a `304` to a conditional request, nothing is compressed, no request fails except the element's own cancellation,
- * and no response the SERVER sent carries more than `MAX_RANGE_SLICE_BYTES`. The slice bound is
- * read from the network stack's own record (`raw`) where the engine exposes one, because a page
- * level `206` can be assembled by the browser's cache after a `304` and carry bytes the server
- * never sent; otherwise from the page-level events.
+ * initial `200` or a `304` to a conditional request, nothing is compressed, no request fails except
+ * the element's own cancellation, and no response the SERVER sent carries more than
+ * `MAX_RANGE_SLICE_BYTES`. The slice bound is read from the network stack's own record (`raw`)
+ * where the engine exposes one, because a page level `206` can be assembled by the browser's cache
+ * after a `304` and carry bytes the server never sent; otherwise from the page-level events. An
+ * engine whose media loader reports some responses with no status and no headers (`opaqueResponses`)
+ * has those responses skipped, and the rest must still be present and satisfy the contract.
  * @param log - The recorded traffic.
  * @param variant - The derivative the player is expected to request.
  * @param raw - The network stack's exchanges, or `null` when the engine exposes none.
+ * @param opaqueResponses - Whether the engine reports media responses with status `0` and no headers.
  * @example
  * ```
  * declare const log: TrafficLog;
- * assertTrafficContract(log, "opus", null);
+ * assertTrafficContract(log, "opus", null, false);
  * ```
  */
-export function assertTrafficContract(log: TrafficLog, variant: Variant, raw: RawExchange[] | null): void {
+export function assertTrafficContract(
+  log: TrafficLog,
+  variant: Variant,
+  raw: RawExchange[] | null,
+  opaqueResponses = false,
+): void {
   const requested = new Set(log.events.map((e) => e.variant));
   expect([...requested], "the player requests only the expected derivative").toEqual([variant]);
-  for (const e of log.events.filter((x) => x.kind === "response")) {
+  const responses = log.events.filter((x) => x.kind === "response");
+  const isOpaque = (e: TrafficEvent): boolean =>
+    opaqueResponses && e.status === 0 && e.contentRange === null && e.contentLength === null && e.range === null;
+  expect(
+    responses.filter((e) => !isOpaque(e)).length,
+    `responses with a status; statuses ${JSON.stringify(statusCounts(log))}`,
+  ).toBeGreaterThan(0);
+  for (const e of responses.filter((x) => !isOpaque(x))) {
     // A `304` answers a conditional request (an engine revalidating a cached derivative before
     // ranging into it); one to a request with no `If-None-Match` is a server defect.
     if (e.status !== 304 || e.ifNoneMatch === null) {
