@@ -303,8 +303,8 @@ async fn a_call_that_never_returns_faults_hung_once_the_hang_guard_fires_first()
     );
 }
 
-/// Counts to 1_500_000 and returns 0: roughly 12 million fuel units, which takes longer than
-/// 50 ms to interpret in an unoptimized build and far less than `MAX_FUEL`.
+/// Counts to 1_500_000 and returns 0: roughly 12 million fuel units, which is far less than
+/// `MAX_FUEL` (50 million) and so ends inside the fuel bound.
 const SLOW_BUT_HEALTHY_WAT: &str = r#"
   (module
     (memory (export "memory") 1)
