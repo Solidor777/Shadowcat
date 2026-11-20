@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "../e2e-support/egress-window";
 import {
   MANIFEST,
   assertTrafficContract,
@@ -24,8 +25,8 @@ import {
 // and the run fails if the element's requests are not completed or recovered through `Range`.
 // The position code embedded in the track (one semitone per 10-second slot) is read from the
 // page's mixed output once per slot for the whole run, so every gap between asset requests that
-// the egress window could cut holds at least one reading. Runs under the `long-audio-playthrough-*` projects, one per protocol and
-// each its own CI job.
+// the egress window could cut holds at least one reading. Runs under the
+// `long-audio-playthrough-*` projects, one per protocol and each its own CI job.
 
 /** The fixture track played in full: the one whose served sizes were measured. */
 const TRACK = "ambient-bed" as const;
@@ -41,12 +42,13 @@ function expectedProtocol(projectName: string): string {
   return projectName.includes("-https-") ? "h2" : "http/1.1";
 }
 
-/** The egress window, in milliseconds, of the server the play-through projects run against
- * (`MEDIA_RANGE_EGRESS_WINDOW_SECS` in `playwright.config.ts`): a response left open across a gap
- * at least this long is cut, so only such a gap can expose a cut the readings must cover. The
- * first reading exists no earlier than the middle of slot 0 (`READ_PHASE_SECS`), so the start-up
- * requests, which are all closer together than the window, cannot hold one. */
-const EGRESS_WINDOW_MS = 3_000;
+/** The egress window, in milliseconds, of the server the play-through projects run against:
+ * `MEDIA_RANGE_EGRESS_WINDOW_SECS`, the value the Playwright configuration sets on that server.
+ * A response left open across a gap at least this long is cut, so only such a gap can expose a cut
+ * the readings must cover. The first reading exists no earlier than the middle of slot 0
+ * (`READ_PHASE_SECS`), so the start-up requests, which are all closer together than the window,
+ * cannot hold one. */
+const EGRESS_WINDOW_MS = MEDIA_RANGE_EGRESS_WINDOW_SECS * 1000;
 
 /** The gaps, in milliseconds, between two consecutive asset requests that last at least
  * `EGRESS_WINDOW_MS` and hold no reading, over the request log and the reading times.
@@ -130,7 +132,7 @@ test("a 20-minute track plays from its start to its natural end in real time wit
 
     assertTrafficContract(log, "opus", network?.rawExchanges() ?? null);
     const gaps = gapsWithoutReading(log.events, readings.map((r) => r.at));
-    expect(gaps, "every gap between asset requests holds a reading").toEqual([]);
+    expect(gaps, "every gap of at least the egress window between asset requests holds a reading").toEqual([]);
     if (network !== null) expect(network.protocols()).toEqual([expectedProtocol(testInfo.project.name)]);
   } finally {
     testInfo.attach("readings", { body: JSON.stringify(readings), contentType: "application/json" });
