@@ -4,14 +4,15 @@ on:
   push:
   pull_request:
 
-# Job timeouts bound a hang, not a regression: each exceeds the longest successful run of its job
-# (per OS leg for `rust`) among the last 100 completed runs of this workflow. Longest successful
-# run, minutes: rust windows 86.9, rust macos 72.2, rust ubuntu 39.0, web 9.1, e2e 6.3, ui-e2e 16.6,
-# ui-e2e-https 19.3, docs 11.7, audio-fixtures 14.5, e2e-long-audio 27.0, e2e-long-audio-playthrough
-# 33.1. Without a timeout a hung job runs to the platform's six hours.
+# Job timeouts bound a hang, not a regression: each is twice the longest successful run of its job
+# (per OS leg for `rust`) among the last 100 completed runs of this workflow, rounded up to five
+# minutes. Longest successful run, minutes: rust windows 86.9, rust macos 72.2, rust ubuntu 39.0,
+# web 9.1, e2e 6.3, ui-e2e 16.6, ui-e2e-https 19.3, docs 11.7, audio-fixtures 14.5, e2e-long-audio
+# 27.0, e2e-long-audio-playthrough-h1 33.1, e2e-long-audio-playthrough-h2 31.3. Without a timeout a
+# hung job runs to the platform's six hours.
 jobs:
   rust:
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 110 || 50 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 175 || matrix.os == 'macos-latest' && 145 || 80 }}
     strategy:
       fail-fast: false
       matrix:
@@ -204,7 +205,7 @@ jobs:
   # and a cell recorded for one OS only FAILS on the others, reporting what it observed.
   # The loopback suite keeps its single Ubuntu placement above: it drives no per-OS behaviour.
   ui-e2e-https:
-    timeout-minutes: 45
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -258,7 +259,7 @@ jobs:
   # the natural end, the wrap), on h1 and h2. The server is the release build because the import
   # transcodes 20-minute tracks. Runs alone with one worker.
   e2e-long-audio:
-    timeout-minutes: 90
+    timeout-minutes: 55
     runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
@@ -300,7 +301,7 @@ jobs:
   # One full 20-minute real-time play-through of one track over plain HTTP (h1). Its own job so it
   # runs in parallel with the h2 play-through and the sampled legs.
   e2e-long-audio-playthrough-h1:
-    timeout-minutes: 50
+    timeout-minutes: 70
     runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
@@ -331,7 +332,7 @@ jobs:
   # One full 20-minute real-time play-through of one track over HTTPS (h2). Its own job so it runs in
   # parallel with the h1 play-through and the sampled legs.
   e2e-long-audio-playthrough-h2:
-    timeout-minutes: 50
+    timeout-minutes: 65
     runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
