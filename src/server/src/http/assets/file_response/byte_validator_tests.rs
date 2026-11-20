@@ -1,6 +1,6 @@
 //! These tests cover `Validator::OfFile`, whose validator is derived from the opened file's bytes.
 //!
-//! A GET's validator hit is answered after the open, under a permit. A HEAD takes no permit. A
+//! A GET's validator hit is answered after the open, under a permit, and so is a HEAD's. A
 //! rewrite that changes the length, modification time or head changes the validator.
 
 use std::sync::Arc;
@@ -211,28 +211,42 @@ async fn a_validator_hit_needs_a_permit() {
     assert_eq!(permits.held(), 0, "the 304 returned its permit");
 }
 
-/// A HEAD on this arm takes no permit: it is answered while every permit is held, 304 included.
+/// A HEAD on this arm opens the file, so it takes a permit like a GET: with every permit held it
+/// waits out the bounded wait and is refused as unavailable, 304 candidates included, and once a
+/// permit frees it is answered and returns the permit.
 #[tokio::test]
-async fn head_takes_no_permit_on_the_byte_validated_arm() {
+async fn head_takes_a_permit_on_the_byte_validated_arm() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("derivative");
     std::fs::write(&path, bytes(10_000, 0)).unwrap();
     let etag = etag_of(&path).await;
+    let hit = headers(&[(header::IF_NONE_MATCH, &etag)]);
     let permits = single();
-    let _held = permits.acquire().await.unwrap();
+    let held = permits.acquire().await.unwrap();
+    for request in [HeaderMap::new(), hit.clone()] {
+        let refused = serve(&permits, &path, Method::HEAD, &request)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(
+                refused,
+                AppError::Unavailable {
+                    retry_after_secs: 1
+                }
+            ),
+            "{refused:?}"
+        );
+    }
+    drop(held);
     let plain = serve(&permits, &path, Method::HEAD, &HeaderMap::new())
         .await
         .unwrap();
     assert_eq!(plain.status(), StatusCode::OK);
-    let hit = serve(
-        &permits,
-        &path,
-        Method::HEAD,
-        &headers(&[(header::IF_NONE_MATCH, &etag)]),
-    )
-    .await
-    .unwrap();
-    assert_eq!(hit.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(permits.held(), 0, "the HEAD returned its permit");
+    let answered = serve(&permits, &path, Method::HEAD, &hit).await.unwrap();
+    assert_eq!(answered.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(permits.held(), 0, "the 304 HEAD returned its permit");
 }
 
 /// After a rewrite, the old validator is not a 304, and an `If-Range` carrying it yields the whole

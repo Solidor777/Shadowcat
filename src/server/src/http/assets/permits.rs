@@ -10,7 +10,6 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,11 +30,7 @@ const RETRY_AFTER_SECS: u64 = 1;
 /// A permit to hold one asset file open for streaming; dropping it returns the permit.
 pub type FilePermit = OwnedSemaphorePermit;
 
-/// The process-wide pool of streamed-file permits, with a peak gauge.
-///
-/// `peak` records the most permits ever held at once. A new peak is logged at `debug` level
-/// (filtered out at the default log level), which is how the permit count of a workload such as a
-/// scene load is measured against [`STREAMED_FILE_PERMITS`].
+/// The process-wide pool of streamed-file permits.
 ///
 /// # Examples
 ///
@@ -50,7 +45,6 @@ pub type FilePermit = OwnedSemaphorePermit;
 /// assert!(permits.acquire().await.is_err());
 /// drop(first);
 /// assert!(permits.acquire().await.is_ok());
-/// assert_eq!(permits.peak(), 1);
 /// # }
 /// ```
 #[derive(Debug)]
@@ -61,8 +55,6 @@ pub struct StreamedFilePermits {
     capacity: usize,
     /// How long `acquire` waits before refusing.
     wait: Duration,
-    /// The most permits held at once so far.
-    peak: AtomicUsize,
 }
 
 impl StreamedFilePermits {
@@ -83,7 +75,6 @@ impl StreamedFilePermits {
             semaphore: Arc::new(Semaphore::new(capacity)),
             capacity,
             wait,
-            peak: AtomicUsize::new(0),
         }
     }
 
@@ -126,19 +117,10 @@ impl StreamedFilePermits {
             .map_err(|_| AppError::Unavailable {
                 retry_after_secs: RETRY_AFTER_SECS,
             })?;
-        let permit = acquired.map_err(|e| {
+        acquired.map_err(|e| {
             tracing::error!(?e, "streamed-file permit pool closed");
             AppError::Internal
-        })?;
-        let held = self.held();
-        if self.peak.fetch_max(held, Ordering::Relaxed) < held {
-            tracing::debug!(
-                peak = held,
-                capacity = self.capacity,
-                "streamed-file permit peak"
-            );
-        }
-        Ok(permit)
+        })
     }
 
     /// Permits currently held.
@@ -153,20 +135,6 @@ impl StreamedFilePermits {
     /// ```
     pub fn held(&self) -> usize {
         self.capacity - self.semaphore.available_permits()
-    }
-
-    /// The most permits held at once since the pool was created.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::Duration;
-    /// use shadowcat::http::assets::permits::StreamedFilePermits;
-    ///
-    /// assert_eq!(StreamedFilePermits::new(3, Duration::ZERO).peak(), 0);
-    /// ```
-    pub fn peak(&self) -> usize {
-        self.peak.load(Ordering::Relaxed)
     }
 
     /// Total permits in the pool.

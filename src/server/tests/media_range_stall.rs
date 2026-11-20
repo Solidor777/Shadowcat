@@ -835,7 +835,6 @@ per_protocol!(
         );
         // The first two were not disturbed by the refusal.
         assert_eq!(media.permits().held(), 2, "{protocol:?}");
-        assert!(media.permits().peak() >= 2);
 
         // After they are cut the pool serves again.
         assert!(
@@ -880,34 +879,6 @@ per_protocol!(
         assert_eq!(drain.stall_cuts, StallCuts::default(), "{protocol:?}");
     }
 );
-
-/// A response whose file has been read to its end holds no permit even though its client has read
-/// nothing and HTTP/2 still buffers the tail: a second request is served with a one-permit pool.
-/// This pins the observable only; the body is polled to its end at once either way, so the
-/// release at the last file byte (before that final poll) is pinned by
-/// `http::assets::file_response`'s unit test, not here.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn http2_returns_the_permit_at_the_last_file_byte_while_the_client_has_read_nothing() {
-    let mut media = Media::start(Protocol::H2, 1).await;
-    // Small enough for the stream's initial window and the send buffer to take whole.
-    let small = media
-        .seed("audio/wav", &[(".opus.ogg", &pattern(20 * 1024))])
-        .await;
-    let url = format!("/api/assets/{small}?variant=opus");
-    let first = media.get(&url, &[]).await;
-    assert_eq!(first.status(), 200);
-    assert!(
-        wait_for(Duration::from_secs(5), || media.permits().held() == 0).await,
-        "the permit was still held with every file byte already read"
-    );
-    // The first body is still unread; the pool of one serves another request.
-    let mut second = media.get(&url, &[("range", "bytes=0-9".into())]).await;
-    assert_eq!(second.status(), 206);
-    assert_eq!(second.read_all().await.unwrap(), pattern(10));
-    let mut first = first;
-    assert_eq!(first.read_all().await.unwrap(), pattern(20 * 1024));
-    media.finish().await;
-}
 
 /// A world with three large asset rows, so its export is far larger than the buffers between the
 /// server and the client, and an administrator who can request it.

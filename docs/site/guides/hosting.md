@@ -509,8 +509,8 @@ file open. A permit comes back when the last byte of the file has been read from
 client has not yet taken every byte) or when the response is cut or the client goes away. A request
 that finds all 256 permits taken waits up to 2 seconds for one and is then refused with
 `503 Service Unavailable` and `Retry-After: 1`, before any response header is written. Loading a
-scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 and HTTP/2 (measured
-with a debug-build gauge), so 256 is far above ordinary use; a table whose members stall many
+scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 and HTTP/2 (measured),
+so 256 is far above ordinary use; a table whose members stall many
 downloads at once can exhaust it for up to the slow-reader window below.
 
 ### Asset downloads, seeking and compression
@@ -521,10 +521,10 @@ decided by its type, once:
 
 - **Audio, video, raster images, PDFs, archives and WOFF fonts** (the types a client seeks in, loads
   lazily or resumes, or that are already compressed) are served uncompressed with
-  `Accept-Ranges: bytes`. Inline media (the Opus and WebM audio derivatives, raster images) is
-  answered in slices of at most 2 MiB, so an open-ended `Range: bytes=N-` returns 2 MiB and the
-  player asks for the next slice; an attachment download of the same types (the canonical file of
-  an audio, PDF or archive asset) is resumable to the end of the file. `multipart/byteranges` is
+  `Accept-Ranges: bytes`. Audio and video (the canonical file and the Opus and WebM audio
+  derivatives) and raster images are answered in slices of at most 2 MiB, so an open-ended
+  `Range: bytes=N-` returns 2 MiB and the player asks for the next slice; a PDF, archive or font
+  served as a download is resumable to the end of the file. `multipart/byteranges` is
   supported for up to 16 ranges; overlapping and adjacent ranges are merged first, so a request can
   never cost more than the file itself.
 - **Text, SVG, JSON and every other type** stay compressed (gzip or brotli when the client accepts

@@ -1,5 +1,6 @@
 import { test, expect } from "./fixtures";
 import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "../e2e-support/egress-window";
+import { sampleSlots } from "../e2e-support/slot-sampling";
 import {
   MANIFEST,
   assertTrafficContract,
@@ -27,6 +28,14 @@ import {
 // page's mixed output once per slot for the whole run, so every gap between asset requests that
 // the egress window could cut holds at least one reading. Runs under the
 // `long-audio-playthrough-*` projects, one per protocol and each its own CI job.
+//
+// What the traffic whitelist (`SELF_CANCELLED` in `long-audio-support`) can see: on HTTP/1.1 a
+// server-side cut surfaces as a failure text the whitelist does not list, so it fails the run. On
+// h2 it cannot see a cut. Chromium reports a cut stream as `net::ERR_ABORTED`, which the whitelist
+// accepts as the element's own cancel, and Firefox raises no failure at all. An h2 cut is caught
+// only through the other checks: the element's `errorCode` and `errorEvents`, the position-code
+// readings, the natural end and the server's stopped entry. The slice bound and the failed-request
+// check run after every slot, not only at the end.
 
 /** The fixture track played in full: the one whose served sizes were measured. */
 const TRACK = "ambient-bed" as const;
@@ -98,7 +107,16 @@ test("a 20-minute track plays from its start to its natural end in real time wit
 
   const readings: { slot: number; at: number; position: number; drift: number | null; code: number | null; db: number | null }[] = [];
   try {
-    for (let slot = 0; slot < lengthSecs / MANIFEST.slot_secs; slot++) {
+    const slots = lengthSecs / MANIFEST.slot_secs;
+    /** Waits for the middle of `slot`, asserts the element and the position code, and records the reading.
+     * @param slot - The slot index.
+     * @returns Resolves once the slot is recorded.
+     * @example
+     * ```
+     * await readSlot(0);
+     * ```
+     */
+    const readSlot = async (slot: number): Promise<void> => {
       const target = slot * MANIFEST.slot_secs + READ_PHASE_SECS;
       await expect.poll(() => serverPositionSecs(entry), { intervals: [500], timeout: 120_000 }).toBeGreaterThanOrEqual(target);
       const position = serverPositionSecs(entry);
@@ -120,7 +138,8 @@ test("a 20-minute track plays from its start to its natural end in real time wit
           expectedCode(TRACK, position),
         );
       }
-    }
+    };
+    await sampleSlots(slots, readSlot, () => assertTrafficContract(log, "opus", network?.rawExchanges() ?? null));
 
     // The natural end: the element ends with no error and the server stops the sequential entry.
     await expect
@@ -130,7 +149,6 @@ test("a 20-minute track plays from its start to its natural end in real time wit
     await expect(page.getByTestId("audio-panel")).toHaveAttribute("data-audio-playing", "0", { timeout: 30_000 });
     expect(await playingEntries(page.request, world.id), "the server stopped the entry at the end").toHaveLength(0);
 
-    assertTrafficContract(log, "opus", network?.rawExchanges() ?? null);
     const gaps = gapsWithoutReading(log.events, readings.map((r) => r.at));
     expect(gaps, "every gap of at least the egress window between asset requests holds a reading").toEqual([]);
     if (network !== null) expect(network.protocols()).toEqual([expectedProtocol(testInfo.project.name)]);

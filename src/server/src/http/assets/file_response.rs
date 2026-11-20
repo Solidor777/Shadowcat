@@ -15,9 +15,10 @@
 //! A response whose validator is derived from the file's own bytes (`Validator::OfFile`) cannot
 //! answer a validator hit before opening. Its GET opens the file under the permit, reads the
 //! length, modification time and head from that one handle, and answers a 304 after the open,
-//! holding the permit until the 304 is returned. Its HEAD opens the file for the head read alone
-//! and takes no permit. A version-derived validator (`Validator::Version`) is checked by the
-//! caller before `serve_file` runs, so its 304 opens no file and takes no permit.
+//! holding the permit until the 304 is returned. Its HEAD opens the file for the head read alone,
+//! under a permit held for that read, so no asset file is open outside the pool. A version-derived
+//! validator (`Validator::Version`) is checked by the caller before `serve_file` runs, so its 304
+//! opens no file and takes no permit, and its HEAD reads the length from metadata and takes none.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -370,7 +371,7 @@ fn multipart_segments(
 /// length from that handle, so the length, the validator and the bytes streamed describe one file
 /// even when a replace renames over the name mid-request. A HEAD with a version-derived validator
 /// reads the length from the file's metadata, takes no permit and opens nothing; with a
-/// byte-derived validator it opens the file for the head read alone.
+/// byte-derived validator it takes a permit and opens the file for the head read alone.
 pub(super) async fn serve_file(
     spec: FileResponse<'_>,
     headers: &HeaderMap,
@@ -400,8 +401,10 @@ pub(super) async fn serve_file(
             (len, etag.clone(), Some((file, permit)))
         }
         (Validator::OfFile { stem }, true) => {
-            // A HEAD must name the validator its GET would, so it reads the same head; it holds
-            // the descriptor only for that read and takes no permit, like every HEAD.
+            // A HEAD must name the validator its GET would, so it reads the same head. It opens a
+            // descriptor, so it takes a permit like every other open; both are released when the
+            // arm ends, ahead of the response.
+            let _permit = permits.acquire().await?;
             let mut file = File::open(spec.path).await.map_err(missing)?;
             let (len, etag) = file_validator(&mut file, stem).await?;
             if let Some(not_modified) = not_modified(headers, &etag) {

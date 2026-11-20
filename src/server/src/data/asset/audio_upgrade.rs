@@ -5,8 +5,9 @@
 //!
 //! The sweep runs once per server start, after the listener is bound, one asset at a time. The
 //! decode and mux work of an asset runs on the blocking pool without any lock, and only the swap
-//! (a rename of a staged file over each sibling) holds the read side of the write barrier, like
-//! every other commit-and-file-move pair. It writes no database row, bumps no asset version and
+//! (a rename of a staged file over each sibling) holds the write side of the write barrier, which
+//! excludes every asset replace, delete and reconvert (they hold the read side) for the length of
+//! the fingerprint checks and renames. It writes no database row, bumps no asset version and
 //! broadcasts nothing: the derivative's `ETag` is derived from the served file's length,
 //! modification time and head bytes, so a rewritten sibling is a new validator for every cache
 //! without a version change.
@@ -64,7 +65,7 @@ impl UpgradeReport {
 }
 
 /// Upgrades every transcoded audio asset's stale Opus siblings, one asset at a time, and reports
-/// what it did. `assets_dir` is the asset store root and `barrier` the write barrier whose read
+/// what it did. `assets_dir` is the asset store root and `barrier` the write barrier whose write
 /// side the swap holds.
 ///
 /// # Examples
@@ -149,8 +150,10 @@ async fn upgrade_one(
             return;
         }
     };
-    // The swap is a commit-and-file-move pair, so it holds the read side like every other one.
-    let _file_ops = barrier.read().await;
+    // `apply` checks each target's fingerprint and then renames over it. A replace, delete or
+    // reconvert landing between the two would be overwritten by bytes built from the old file, so
+    // the swap takes the write side, which excludes every holder of the read side (all of them).
+    let _file_ops = barrier.write().await;
     let applied = tokio::task::spawn_blocking(move || upgrade::apply(&staged, rename)).await;
     match applied {
         Ok(Applied::Done(files)) => match kind {

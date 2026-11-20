@@ -193,7 +193,7 @@ async fn a_failed_swap_is_skipped_and_completed_by_the_next_pass() {
     );
 }
 
-/// The swap holds the read side of the write barrier: while the write side is held (a backup or a
+/// The swap takes the write side of the write barrier: while the write side is held (a backup or a
 /// restore), the sweep stages its files and then waits, and it completes once the barrier frees.
 #[tokio::test]
 async fn the_swap_waits_for_the_write_barrier() {
@@ -223,4 +223,32 @@ async fn the_swap_waits_for_the_write_barrier() {
         std::fs::read(webm_of(root.path(), world, id)).unwrap(),
         old_webm
     );
+}
+
+/// An asset replace, delete or reconvert holds the read side across its commit and file move. The
+/// swap waits for every such holder to finish before it checks a fingerprint, so none can land
+/// between the check and the rename.
+#[tokio::test]
+async fn the_swap_waits_for_an_asset_write_holding_the_read_side() {
+    let (repo, world) = repo_with_world().await;
+    let root = tempfile::tempdir().unwrap();
+    let id = seed(&repo, world, root.path(), 648, true, (true, true, true)).await;
+    let old_webm = std::fs::read(webm_of(root.path(), world, id)).unwrap();
+    let barrier = RwLock::new(());
+    let replace_in_flight = barrier.read().await;
+
+    let pass = upgrade_audio_derivatives(&repo, root.path(), &barrier);
+    tokio::pin!(pass);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), &mut pass)
+            .await
+            .is_err(),
+        "the swap is waiting for the asset write to finish"
+    );
+    assert_eq!(
+        std::fs::read(webm_of(root.path(), world, id)).unwrap(),
+        old_webm
+    );
+    drop(replace_in_flight);
+    assert_eq!(pass.await.remuxed, 1);
 }

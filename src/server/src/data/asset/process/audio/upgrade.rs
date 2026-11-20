@@ -390,6 +390,11 @@ pub(crate) fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
 /// still the file the packets were read from. A mismatch or a failed rename stops the swap, removes
 /// every staged file that was not renamed and reports `Applied::Skipped`; the targets already
 /// renamed stay (WebM first, so the asset is selected again while its Ogg is unfixed).
+///
+/// The fingerprint check and the rename are two steps, so the check only holds if nothing else
+/// replaces or deletes the target between them. `apply` takes no lock itself: the caller
+/// (`audio_upgrade::upgrade_one`) holds the write side of the write barrier around the call, which
+/// excludes every asset replace, delete and reconvert.
 pub(crate) fn apply(staged: &[Staged], rename: Rename) -> Applied {
     for (done, s) in staged.iter().enumerate() {
         if fingerprint(&s.target) != Some(s.expect) {
