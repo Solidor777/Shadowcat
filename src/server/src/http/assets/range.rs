@@ -25,8 +25,8 @@ pub(super) enum RangeClass {
     /// Compressible type on the embed route: `Range` is ignored, no `Accept-Ranges` is sent, and
     /// the compression layer may encode the body.
     Ignore,
-    /// Media, raster image, PDF, archive or font served inline: ranged, never compressed, and one
-    /// response carries at most `MAX_RANGE_SLICE` bytes.
+    /// Audio or video of any disposition, or a raster image, PDF, archive or font served inline:
+    /// ranged, never compressed, and one response carries at most `MAX_RANGE_SLICE` bytes.
     MediaSliced,
     /// Any explicit download (an attachment of a ranged type, or the retained original of any
     /// type): ranged, never compressed, and uncapped so a resume `bytes=N-` runs to the end of
@@ -110,33 +110,50 @@ const COMPRESSIBLE_IMAGE_TYPE: &str = "image/svg+xml";
 /// parameters after `;` are ignored, so `audio/ogg; codecs=opus` is matched by the `audio/`
 /// prefix.
 pub(super) fn is_media_or_archive(content_type: &str) -> bool {
+    if is_streaming_media(content_type) {
+        return true;
+    }
     let essence = content_type
         .split(';')
         .next()
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if essence.starts_with("audio/") || essence.starts_with("video/") {
-        return true;
-    }
     if essence.starts_with("image/") {
         return !essence.starts_with(COMPRESSIBLE_IMAGE_TYPE);
     }
     RANGED_EXACT_TYPES.contains(&essence.as_str())
 }
 
+/// `true` when `content_type` is an `audio/` or `video/` type: a type a media element fetches
+/// with `Range` and reads ahead of playback, so one response must never be longer than a slice.
+/// Case-insensitive; parameters after `;` are ignored.
+fn is_streaming_media(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    essence.starts_with("audio/") || essence.starts_with("video/")
+}
+
 /// The only place that decides whether a response is ranged and uncompressed.
 ///
 /// `Route::Original` is an explicit save of a file: every type is `DownloadFull`, because a
-/// resume matters more than the compression it costs. On `Route::Embed` a ranged type is
-/// `MediaSliced` inline and `DownloadFull` as an attachment (a browser download of a zip or PDF
-/// resumes to the end, not 2 MiB at a time); every other type is `Ignore`, because the attachment
-/// header `serve` sends for non-raster types is a rendering-safety header, not a download intent,
-/// so it must not turn an SVG or a text file into an uncompressed download.
+/// resume matters more than the compression it costs. On `Route::Embed` an `audio/` or `video/`
+/// type is `MediaSliced` whatever its disposition: `serve` sends `attachment` for every non-raster
+/// type as a rendering-safety header, and a media element still fetches the canonical file with
+/// `Range` and reads ahead of playback, so its response must be a slice that never idles past the
+/// egress window. Any other ranged type is `MediaSliced` inline and `DownloadFull` as an
+/// attachment (a browser download of a zip or PDF resumes to the end, not 2 MiB at a time); every
+/// remaining type is `Ignore`, for the same reason: the attachment header must not turn an SVG or
+/// a text file into an uncompressed download.
 pub(super) fn classify(content_type: &str, disposition: Disposition, route: Route) -> RangeClass {
     match route {
         Route::Original => RangeClass::DownloadFull,
         Route::Embed if !is_media_or_archive(content_type) => RangeClass::Ignore,
+        Route::Embed if is_streaming_media(content_type) => RangeClass::MediaSliced,
         Route::Embed => match disposition {
             Disposition::Inline => RangeClass::MediaSliced,
             Disposition::Attachment => RangeClass::DownloadFull,

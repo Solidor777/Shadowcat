@@ -53,18 +53,25 @@ struct Row {
 /// no variant.
 const SERVE_ROWS: &[Row] = &[
     Row {
-        label: "audio/ogg canonical (attachment)",
+        label: "audio/ogg canonical (attachment, but streamed by a media element)",
         stored: "audio/ogg",
         suffix: "",
         query: "",
-        expect: Expect::Whole,
+        expect: Expect::Sliced,
     },
     Row {
         label: "audio/wav canonical: raw PCM trades its compression for seeking",
         stored: "audio/wav",
         suffix: "",
         query: "",
-        expect: Expect::Whole,
+        expect: Expect::Sliced,
+    },
+    Row {
+        label: "video/mp4 canonical (attachment, but streamed by a media element)",
+        stored: "video/mp4",
+        suffix: "",
+        query: "",
+        expect: Expect::Sliced,
     },
     Row {
         label: "opus derivative (audio/ogg; codecs=opus, inline)",

@@ -525,8 +525,11 @@ holds a file in memory, and `LeasedBody` re-chunks to the egress frame size.
   in-place rewrite of a derivative (the WebM upgrade sweep swaps files without a version bump)
   changes the validator, so a cached copy and an `If-Range` resume across the swap both restart.
 - One classification, `range::classify(content_type, disposition, route)`: `Route::Original` is
-  `DownloadFull` for every type. On `Route::Embed` a type in the ranged list is `MediaSliced` when
-  served inline and `DownloadFull` as an attachment; any other type is `Ignore`. The list is
+  `DownloadFull` for every type. On `Route::Embed` an `audio/` or `video/` type is `MediaSliced`
+  whatever its disposition (a media element fetches the canonical file with `Range` and reads ahead
+  of playback, so its response must be a slice that never idles past the egress window); any other
+  type in the ranged list is `MediaSliced` when served inline and `DownloadFull` as an attachment;
+  any other type is `Ignore`. The list is
   `range::is_media_or_archive`: prefixes `audio/`, `video/`; `image/` except `image/svg+xml` (the
   exclusion tower-http's own image predicate encodes; a parity test pins them); exact
   `application/ogg`, `application/pdf`, the archive types (zip, gzip, bzip2, xz, zstd, 7z, rar) and

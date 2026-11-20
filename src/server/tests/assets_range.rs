@@ -531,11 +531,12 @@ async fn a_missing_file_keeps_its_status_per_site() {
 async fn an_attachment_download_is_uncapped_and_a_compressible_type_ignores_range() {
     let h = common::spawn().await;
     let bytes = pattern(SIZE);
-    // `audio/wav` is a ranged type served as an attachment: whole-file semantics, no 2 MiB cap.
-    let wav = seed(&h, "audio/wav", &[("", &bytes)], false).await;
+    // `application/zip` is a ranged non-media type served as an attachment: whole-file semantics,
+    // no 2 MiB cap.
+    let zip = seed(&h, "application/zip", &[("", &bytes)], false).await;
     let res = fetch(
         &h,
-        &format!("http://{}/api/assets/{wav}", h.addr),
+        &format!("http://{}/api/assets/{zip}", h.addr),
         &[("range", "bytes=0-".into())],
         false,
     )

@@ -521,10 +521,10 @@ decided by its type, once:
 
 - **Audio, video, raster images, PDFs, archives and WOFF fonts** (the types a client seeks in, loads
   lazily or resumes, or that are already compressed) are served uncompressed with
-  `Accept-Ranges: bytes`. Inline media (the Opus and WebM audio derivatives, raster images) is
-  answered in slices of at most 2 MiB, so an open-ended `Range: bytes=N-` returns 2 MiB and the
-  player asks for the next slice; an attachment download of the same types (the canonical file of
-  an audio, PDF or archive asset) is resumable to the end of the file. `multipart/byteranges` is
+  `Accept-Ranges: bytes`. Audio and video (the canonical file and the Opus and WebM audio
+  derivatives) and raster images are answered in slices of at most 2 MiB, so an open-ended
+  `Range: bytes=N-` returns 2 MiB and the player asks for the next slice; a PDF, archive or font
+  served as a download is resumable to the end of the file. `multipart/byteranges` is
   supported for up to 16 ranges; overlapping and adjacent ranges are merged first, so a request can
   never cost more than the file itself.
 - **Text, SVG, JSON and every other type** stay compressed (gzip or brotli when the client accepts
