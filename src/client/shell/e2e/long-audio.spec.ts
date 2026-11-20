@@ -7,6 +7,7 @@ import {
   assertTrafficContract,
   contextStates,
   createWorld,
+  elementEvents,
   elementState,
   expectedCode,
   installAudioProbes,
@@ -297,6 +298,13 @@ for (const leg of [...CHROMIUM_LEGS]) {
     } finally {
       testInfo.attach("samples", { body: JSON.stringify(samples, null, 1), contentType: "application/json" });
       testInfo.attach("traffic", { body: JSON.stringify({ events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
+      const elementLogs = await elementEvents(page, track.assetId);
+      testInfo.attach("element-events", { body: JSON.stringify(elementLogs), contentType: "application/json" });
+      process.stdout.write(
+        `WEBKIT-EVENTS ${testInfo.repeatEachIndex} ${JSON.stringify(
+          elementLogs.map((l) => ({ src: l.src, events: l.events.filter((e) => e.type !== "tick" || e.currentTime > 1170 || e.currentTime < 8) })),
+        )}\n`,
+      );
     }
   });
 }
