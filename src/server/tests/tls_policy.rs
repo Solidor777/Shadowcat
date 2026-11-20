@@ -620,8 +620,12 @@ fn key_file_dacl_is_protected_and_owner_only_on_windows() {
             );
         }
         assert!(sddl.contains(";FA;"), "{path:?}: {sddl}");
+        // The principal is a user SID, or `LA`: SDDL writes the built-in Administrator account
+        // (the account a hosted CI runner executes as) as its alias `LA` rather than as
+        // `S-1-5-21-<domain>-500`. Source: Microsoft "SDDL for Device Objects" / "ACE strings",
+        // alias table.
         assert!(
-            sddl.contains("S-1-5-21-") || sddl.contains("S-1-5-"),
+            sddl.contains("S-1-5-") || sddl.contains(";LA)"),
             "{path:?}: {sddl}"
         );
     }
