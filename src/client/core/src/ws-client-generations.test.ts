@@ -103,6 +103,17 @@ describe("WsClient connect generations", () => {
     expect(b.closeCalls).toBe(0);
     client.stop();
   });
+
+  it("a connect that fails after a plain stop() schedules no reconnect and reports no failure", async () => {
+    const { client, attempts, sleep, onConnectFailure } = makeClient();
+    const first = client.start();
+    client.stop();
+    attempts[0].reject();
+    await first;
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(onConnectFailure).not.toHaveBeenCalled();
+  });
 });
 
 /** Starts A, replaces it by stop()+start() with B, adopts B, then lets A's late close event
