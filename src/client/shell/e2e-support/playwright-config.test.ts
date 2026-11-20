@@ -208,7 +208,7 @@ describe("launch switches per engine", () => {
   });
 });
 
-type ProjectPatterns =NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
+type ProjectPatterns = NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
 
 /** Whether `file` matches one `testMatch` / `testIgnore` value. Only the regular-expression form
  * the config uses is evaluated; a glob string would be silently mis-read, so it fails loudly. */

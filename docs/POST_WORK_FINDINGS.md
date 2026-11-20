@@ -1174,9 +1174,9 @@ are observations awaiting triage, not committed work.
   keyboard input cannot reach it, and keyboard or coordinate input through DevTools did not reach
   the plain-HTTP page. A capture of the browser window shows it, and on Windows UI Automation
   invokes its "Continue to site" button, which reaches the plain-HTTP app (automated in the
-  Chromium upgrade spec). Status: Resolved on Windows; macOS and Linux have drivers
-  (`e2e-support/invoke-button.jxa`, `invoke-button.py`) that only the CI matrix can measure (the
-  TODO entry lists what the first run must show).
+  Chromium upgrade spec). macOS and Linux have drivers (`e2e-support/invoke-button.jxa`,
+  `invoke-button.py`) that the `ui-e2e-https` CI job runs on its macOS and Linux legs; that job
+  passed on all three OS legs in two consecutive CI runs. Status: Resolved.
 
 - Title: An h2 debug assertion trips under the shutdown IO kill.
   Summary: At the drain deadline `serve_router` fails the IO of every connection still open, which

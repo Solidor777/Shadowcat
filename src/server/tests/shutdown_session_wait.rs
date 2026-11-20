@@ -27,7 +27,7 @@ const TIMEOUT_WARNING: &str = "timed out waiting for websocket connections";
 const JITTER: Duration = Duration::from_millis(150);
 
 /// Room for scheduling latency when asserting a wait's upper bound. It stays below
-/// `conn_serve::KILL_GRACE` (2 s): a connection that needed its kill grace would end the shutdown
+/// `conn_serve::KILL_GRACE`: a connection that needed its kill grace would end the shutdown
 /// that much later, and a slack of that size would hide it.
 const UPPER_SLACK: Duration = Duration::from_millis(1500);
 

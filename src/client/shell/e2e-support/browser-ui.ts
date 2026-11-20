@@ -16,7 +16,8 @@ export const INVOKE_TIMEOUT_MS = 15_000;
  * non-zero, and an error with `code: "ETIMEDOUT"` (the child killed) when it outlives the timeout. */
 export type RunProgram = (file: string, args: string[], timeoutMs: number) => void;
 
-/** Runs `file` with `args`, discarding its output.
+/** Runs `file` with `args`, piping its output: standard output is dropped on success, and the
+ * error thrown on a non-zero exit carries the captured standard error.
  * @param file The program.
  * @param args Its arguments.
  * @param timeoutMs Longest the program may run before it is killed.
