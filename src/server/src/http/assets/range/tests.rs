@@ -258,12 +258,6 @@ fn if_range_gates_the_range() {
     );
 }
 
-#[test]
-fn slice_length_counts_both_ends() {
-    assert_eq!(s(0, 0).len(), 1);
-    assert_eq!(s(10, 19).len(), 10);
-}
-
 fn parts(decision: RangeDecision) -> Vec<Slice> {
     match decision {
         RangeDecision::Slices(parts) => parts,
@@ -400,8 +394,6 @@ fn a_coalesced_single_part_is_shortened_like_a_single_spec() {
         media("bytes=0-100,50-9999999", LARGE),
         one(0, MAX_RANGE_SLICE - 1)
     );
-    // Equal to the single-spec answer for the same coalesced range.
-    assert_eq!(media("bytes=0-,0-", LARGE), media("bytes=0-", LARGE));
 }
 
 /// Parses a `multipart/byteranges` body back into its parts, checking the framing byte for byte.

@@ -167,7 +167,14 @@ fn header(res: &reqwest::Response, name: &str) -> Option<String> {
 }
 
 /// Parses a `multipart/byteranges` body into (first, last, payload) triples, checking the framing.
-fn parse_multipart(body: &[u8], boundary: &str) -> Vec<(usize, usize, Vec<u8>)> {
+/// Parses a `multipart/byteranges` body into `(first, last, payload)` parts, asserting every part
+/// names the representation's `content_type` and the file's `total` length.
+fn parse_multipart(
+    body: &[u8],
+    boundary: &str,
+    content_type: &str,
+    total: usize,
+) -> Vec<(usize, usize, Vec<u8>)> {
     let mut rest = body;
     let mut parts = Vec::new();
     loop {
@@ -189,7 +196,12 @@ fn parse_multipart(body: &[u8], boundary: &str) -> Vec<(usize, usize, Vec<u8>)> 
             .split("\r\n")
             .find_map(|l| l.strip_prefix("Content-Range: bytes "))
             .expect("Content-Range header");
-        let (span, _) = range.split_once('/').unwrap();
+        assert!(
+            headers.contains(&format!("Content-Type: {content_type}")),
+            "part head names the representation type: {headers}"
+        );
+        let (span, part_total) = range.split_once('/').unwrap();
+        assert_eq!(part_total, total.to_string(), "part names the file length");
         let (first, last) = span.split_once('-').unwrap();
         let (first, last): (usize, usize) = (first.parse().unwrap(), last.parse().unwrap());
         let n = last - first + 1;
@@ -352,7 +364,7 @@ async fn several_ranges_are_a_multipart_response_that_parses_back_exactly() {
         let declared: usize = header(&res, "content-length").unwrap().parse().unwrap();
         let body = res.bytes().await.unwrap();
         assert_eq!(body.len(), declared, "{label}: exact Content-Length");
-        let parts = parse_multipart(&body, &boundary);
+        let parts = parse_multipart(&body, &boundary, site.content_type, SIZE);
         let spans: Vec<(usize, usize)> = parts.iter().map(|(a, b, _)| (*a, *b)).collect();
         assert_eq!(spans, vec![(0, 9), (1000, 1999), (5000, 5004)], "{label}");
         for (first, last, payload) in parts {
