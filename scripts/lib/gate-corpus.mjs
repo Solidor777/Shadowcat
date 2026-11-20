@@ -135,8 +135,8 @@ export class CorpusListingError extends Error {
  * name suffix.
  *
  * Throws a `CorpusListingError` when git cannot answer: an unread corpus must never read as a clean
- * one. A direct-entry gate catches that class only, prints `<label>: <message>` to stderr and
- * exits 2; any other error keeps its stack.
+ * one. Every direct-entry gate that lists the corpus prints `<label>: <message>` to stderr and exits
+ * 2 on that failure.
  *
  * Log convention: a direct-entry gate (a script run as a command) leaves `log` at its default so
  * `corpus <label>: <N> files` prints on stdout, or passes `console.error` where stdout carries

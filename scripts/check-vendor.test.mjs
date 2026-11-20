@@ -645,7 +645,7 @@ describe("lint:vendor reads the shared corpus", () => {
     expect(run(dir).stderr).toContain(STRAY_ERROR);
   });
 
-  test("the same stray file under an ignored path passes", () => {
+  test("the same stray file under an ignored path is not listed", () => {
     const dir = makeRepo({ ...base, ".gitignore": "vendor/notes.rs\n", [STRAY]: "fn stray() {}\n" }, [...Object.keys(base), ".gitignore"]);
     const r = run(dir);
     expect(r.status).toBe(1);

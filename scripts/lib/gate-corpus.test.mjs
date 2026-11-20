@@ -235,8 +235,8 @@ describe("the gates read the corpus through repoFiles", () => {
   // A direct-entry gate that cannot list the corpus reports one line naming itself and exits 2; a
   // stack trace, or a clean exit over an unread corpus, is a defect. git is made unreachable by
   // giving the child a PATH holding no executables, which fails the same way for every gate
-  // whatever its working directory. Every script that calls `repoFiles` and runs as a command is
-  // listed; the pin on `CONVERTED` above and this list name the same population.
+  // whatever its working directory. Every non-test, non-library script that calls `repoFiles` and
+  // holds an `isDirectEntry(` guard or a top-level `main(` call is listed.
   const FILE_LIST_FAILURE = "could not determine the file list";
   const SKILL_LIST_FAILURE = "git could not list the skill corpus";
   const GIT_FAILURE_GATES = [
@@ -256,7 +256,7 @@ describe("the gates read the corpus through repoFiles", () => {
     ["scripts/check-skill-symbol-refs-cli.mjs", "check-skill-symbol-refs", SKILL_LIST_FAILURE],
   ];
 
-  test("the failure list names every script that calls repoFiles and runs as a command", () => {
+  test("the failure list names every non-library script that calls repoFiles and holds an isDirectEntry guard or a main call", () => {
     const callers = repoFiles({ roots: ["scripts"], exts: [".mjs"], log: () => {} })
       .filter((p) => !p.endsWith(".test.mjs") && !p.startsWith("scripts/lib/"))
       .filter((p) => repoFilesCalls(readFileSync(p, "utf8"), p) > 0)
@@ -267,13 +267,12 @@ describe("the gates read the corpus through repoFiles", () => {
 
   /** Runs `args` under node with a PATH holding no executables, so git cannot start.
    * @param {string[]} args - node arguments.
-   * @param {Record<string, string>} [extraEnv] - extra environment entries.
    * @returns {import("node:child_process").SpawnSyncReturns<string>} the finished child.
    */
-  function runWithoutGit(args, extraEnv = {}) {
+  function runWithoutGit(args) {
     const emptyPath = mkdtempSync(join(tmpdir(), "no-git-path-"));
     const env = Object.fromEntries(Object.entries(scrubGitEnv()).filter(([key]) => key.toLowerCase() !== "path"));
-    return spawnSync(process.execPath, args, { env: { ...env, ...extraEnv, PATH: emptyPath }, encoding: "utf8" });
+    return spawnSync(process.execPath, args, { env: { ...env, PATH: emptyPath }, encoding: "utf8" });
   }
 
   test.each(GIT_FAILURE_GATES)("%s reports a git failure as `%s: <message>` with exit 2 and no stack", (gate, label, message) => {
