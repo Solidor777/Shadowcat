@@ -573,6 +573,6 @@ reason = "Builds the candidate-size sweep on the runner before the timed runs."
 [[gate]]
 workflow = "sweep.yml"
 job = "sweep"
-command = "for i in 1 2 3 4 5 6 7 8; do cargo test --release -p shadowcat --test h2_send_buf_sweep -- --nocapture done"
+command = "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do cargo test --release -p shadowcat --test h2_send_buf_sweep -- --nocapture done"
 tier = "ci-only"
 reason = "Measures candidate send-buffer sizes on the three CI operating systems; a developer machine's values are not the criterion's."
