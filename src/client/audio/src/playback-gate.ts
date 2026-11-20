@@ -58,7 +58,8 @@ export class PlaybackGate {
   /** Forget every refusal: called from a user gesture so the next sync starts the elements.
    * @example
    * ```
-   * // exercised through `engine-gesture.test.ts`
+   * // exercised through the `PlaybackGate` describe block and the
+   * // `AudioEngine interruption and suspension recovery` gesture-retry case
    * ```
    */
   release(): void {

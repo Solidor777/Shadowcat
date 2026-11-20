@@ -220,7 +220,8 @@ export class AudioEngine implements AudioApi {
    * @param value The new state.
    * @example
    * ```
-   * // private; exercised through `engine-gesture.test.ts`
+   * // private; exercised through the `AudioEngine interruption and suspension recovery` and
+   * // `AudioEngine start-up through the gate` describe blocks
    * ```
    */
   #setNeedsGesture(value: boolean): void {

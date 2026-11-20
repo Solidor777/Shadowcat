@@ -16,7 +16,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("AudioEngine interruption and suspension recovery", () => {
-  it("(1) running -> interrupted -> running: one resume, needsGesture false, one live node, audible position at the server position", async () => {
+  it("running -> interrupted -> running: one resume, needsGesture false, one live node, audible position at the server position", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1", { loop: true })));
@@ -36,7 +36,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(Math.abs(offset - 30)).toBeLessThanOrEqual(SYNC_SEEK_THRESHOLD_SECS);
   });
 
-  it("(2) suspended and resume() rejects: needsGesture true with a notification; unlock() runs it, clears the flag, no duplicate node", async () => {
+  it("suspended and resume() rejects: needsGesture true with a notification; unlock() runs it, clears the flag, no duplicate node", async () => {
     const { ctx, engine, notified } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1", { loop: true })));
@@ -54,7 +54,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(liveSources(ctx)).toBe(1);
   });
 
-  it("(3) resume() pends forever: after RESUME_WAIT_MS needsGesture is true", async () => {
+  it("resume() pends forever: after RESUME_WAIT_MS needsGesture is true", async () => {
     const { ctx, timer, engine } = rig();
     ctx.resumeMode = "pend";
     const unlocking = engine.unlock();
@@ -66,7 +66,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(engine.needsGesture).toBe(true);
   });
 
-  it("(4) hidden -> visible while suspended: one resume() and one applyState", async () => {
+  it("hidden -> visible while suspended: one resume() and one applyState", async () => {
     const { ctx, clock, visibility, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));
@@ -85,7 +85,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(clock.reads - reads).toBe(1);
   });
 
-  it("(5) statechange to running: no resume(), one applyState", async () => {
+  it("statechange to running: no resume(), one applyState", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));
@@ -101,7 +101,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(engine.needsGesture).toBe(false);
   });
 
-  it("(6) after dispose no state change recovers anything", async () => {
+  it("after dispose no state change recovers anything", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));

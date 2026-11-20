@@ -39,12 +39,15 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   from a rejected resume, a context still not running after `RESUME_WAIT_MS`, or a refused play
   (`086d2fdb`); the status bar shows the unlock control whenever `needsGesture` is true and its click
   retries (`efd08e7c`). Tests: `track-player.test.ts` "audio-clock position", `playback-gate.test.ts`,
-  `engine-recovery.test.ts` cases (1) to (6) plus the gesture-retry and no-duplicate-player cases,
-  `StatusBar` needsGesture cases. Mutants observed red: wall-clock position arithmetic (2 red), gate
-  without the paused/blocked check (6 red), no statechange handler ((1), (2), (5) red), resume on
-  every statechange ((1), (5) red), `needsGesture` only from rejection ((3) red), recovery with a
-  fresh entry id (duplicate-player test red), the visibility handler without its resume or resuming
-  while hidden ((4) red), `dispose` leaving `onstatechange` installed ((6) red), the status bar
+  `engine-recovery.test.ts` cases (the interruption, rejected-resume, pending-resume,
+  hidden-to-visible, statechange-to-running and after-dispose cases) plus the gesture-retry and
+  no-duplicate-player cases, `StatusBar` needsGesture cases. Mutants observed red: wall-clock
+  position arithmetic (2 red), gate without the paused/blocked check (6 red), no statechange handler
+  (the interruption, rejected-resume and statechange-to-running cases red), resume on every
+  statechange (the interruption and statechange-to-running cases red), `needsGesture` only from
+  rejection (the pending-resume case red), recovery with a fresh entry id (duplicate-player test
+  red), the visibility handler without its resume or resuming while hidden (the hidden-to-visible
+  case red), `dispose` leaving `onstatechange` installed (the after-dispose case red), the status bar
   ignoring `needsGesture` (1 red). Not verified on a real device interruption.
 
 ## Audio — no periodic synchronisation existed, so any drift or missed `audio-state` change persisted
@@ -54,7 +57,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   until the next unrelated change. `AudioEngine` now runs a `SYNC_TICK_MS` tick and a page-visible
   trigger, both through `applyState` over the latest state (idempotent per entry id), and `unlock`
   replays the same latest state (`90a1f3e1`). Tests and mutants as in the drift entry above
-  (`engine-sync.test.ts`, 9 tests, including its dispose case: the timer is cleared, the observer is
+  (`engine-sync.test.ts`, 8 tests, including its dispose case: the timer is cleared, the observer is
   removed and nothing re-applies; no-op timer callback 2 red).
 
 ## Audio panel — the seek slider's range was the stored length in milliseconds, or only 60 seconds past the position
