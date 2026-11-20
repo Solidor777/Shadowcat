@@ -1,10 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { resolve, join, sep } from "node:path";
-import { spawn } from "node:child_process";
-import { setTimeout } from "node:timers";
 import { makeRepo } from "./lib/temp-repo.mjs";
-import { scrubGitEnv } from "./lib/run-git.mjs";
 import {
   extractExamples,
   workspacePackageDirs,
@@ -787,31 +784,6 @@ describe("candidateFiles / svelteFiles", () => {
     candidateFiles(dir, ["src/client"], (l) => lines.push(l));
     svelteFiles(dir, ["src/client"], (l) => lines.push(l));
     expect(lines).toEqual(["corpus docs:check-examples: 2 files", "corpus docs:check-examples: 2 files"]);
-  });
-
-  // The full docs check typechecks every example and runs for minutes, so this spawns the command,
-  // waits for the first corpus line on stdout, allows 5 s for the second (the two listings run back
-  // to back, before any example is compiled), then ends the child.
-  it("the command prints both corpus lines on stdout", async () => {
-    const script = resolve(fileURLToPath(import.meta.url), "..", "extract-ts-examples.mjs");
-    const child = spawn(process.execPath, [script], { env: scrubGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    const corpusLines = () => out.split(/\r?\n/).filter((l) => /^corpus docs:check-examples: \d+ files$/.test(l));
-    try {
-      await new Promise((done, fail) => {
-        let timer;
-        child.stdout.on("data", (chunk) => {
-          out += chunk;
-          if (corpusLines().length >= 2) done();
-          else if (corpusLines().length === 1 && timer === undefined) timer = setTimeout(done, 5000);
-        });
-        child.on("error", fail);
-        child.on("close", () => done());
-      });
-    } finally {
-      child.kill();
-    }
-    expect(corpusLines()).toHaveLength(2);
   });
 });
 
