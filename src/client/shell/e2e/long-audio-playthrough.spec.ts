@@ -111,10 +111,6 @@ test("a 20-minute track plays from its start to its natural end in real time wit
     /** Waits for the middle of `slot`, asserts the element and the position code, and records the reading.
      * @param slot - The slot index.
      * @returns Resolves once the slot is recorded.
-     * @example
-     * ```
-     * await readSlot(0);
-     * ```
      */
     const readSlot = async (slot: number): Promise<void> => {
       const target = slot * MANIFEST.slot_secs + READ_PHASE_SECS;
