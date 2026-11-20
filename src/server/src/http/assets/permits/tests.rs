@@ -30,19 +30,6 @@ async fn a_permit_freed_inside_the_wait_is_granted_to_the_waiter() {
     assert!(waiter.await.unwrap().is_ok());
 }
 
-#[tokio::test]
-async fn the_peak_is_the_most_held_at_once_and_survives_release() {
-    let permits = StreamedFilePermits::new(4, Duration::from_millis(10));
-    let a = permits.acquire().await.unwrap();
-    let b = permits.acquire().await.unwrap();
-    let c = permits.acquire().await.unwrap();
-    assert_eq!((permits.held(), permits.peak()), (3, 3));
-    drop((a, b, c));
-    assert_eq!((permits.held(), permits.peak()), (0, 3));
-    let _d = permits.acquire().await.unwrap();
-    assert_eq!((permits.held(), permits.peak()), (1, 3));
-}
-
 /// The descriptor budget and the handler pool read one constant, so the raise and the bound
 /// cannot disagree.
 #[test]

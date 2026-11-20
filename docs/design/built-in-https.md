@@ -472,9 +472,11 @@ task paces its own accept errors.
     `Retry-After: 1`) before any header is written. A GET takes the permit before it opens the file;
     the permit moves into the body and is returned when the last file byte has been read (not when
     the last buffered byte has been sent) or when the body is dropped, which a stall cut, a reset or
-    a drain does. A HEAD, a 304 answered before the file is touched and a 416 hold none. The pool
-    records its peak and logs a new peak at `debug`; a scene of 150 distinct images measured 3 to
-    4 at its peak over HTTP/1.1 and HTTP/2, which is why 256 stands. The raise and the fit read the
+    a drain does. A HEAD of a version-validated arm, a 304 answered before the file is touched and a
+    416 hold none. A HEAD of the byte-validated arm opens the file for the head read, so it takes a
+    permit for that read and returns it with the descriptor: no asset file is open outside the pool.
+    A scene of 150 distinct images was measured at 3 to 4 permits at its peak over HTTP/1.1 and
+    HTTP/2, which is why 256 stands. The raise and the fit read the
     same definition, so they cannot disagree, and the pool is created from the same constant. A platform without the limit is not
     clamped.
 - `ConnectInfo<ConnMeta>` is inserted in exactly two places: `conn_serve::serve_router` and
@@ -518,7 +520,7 @@ holds a file in memory, and `LeasedBody` re-chunks to the egress frame size.
   opened: an asset replaced or deleted mid-response is not waited on and the open response keeps
   the old bytes. A HEAD of a version-validated arm calls `fs::metadata`, takes no permit and
   answers the GET's status and headers with an empty body; a HEAD of a byte-validated arm opens the
-  file for the head read alone and takes no permit. Validators: `"{id}-{version}"` (canonical,
+  file for the head read alone, under a permit held for that read. Validators: `"{id}-{version}"` (canonical,
   `thumb`, `preview`, `sheet`), `"{id}-{version}-orig"` (original), and for the derivatives
   `"{id}-{version}-opus-{len}-{mtime}-{head hash}"` and `"{id}-{version}-opus-webm-{len}-{mtime}-{head
   hash}"` (length and modification time in hexadecimal, eight bytes of the head hash in hex): an

@@ -835,7 +835,6 @@ per_protocol!(
         );
         // The first two were not disturbed by the refusal.
         assert_eq!(media.permits().held(), 2, "{protocol:?}");
-        assert!(media.permits().peak() >= 2);
 
         // After they are cut the pool serves again.
         assert!(

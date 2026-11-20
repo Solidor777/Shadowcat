@@ -509,8 +509,8 @@ file open. A permit comes back when the last byte of the file has been read from
 client has not yet taken every byte) or when the response is cut or the client goes away. A request
 that finds all 256 permits taken waits up to 2 seconds for one and is then refused with
 `503 Service Unavailable` and `Retry-After: 1`, before any response header is written. Loading a
-scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 and HTTP/2 (measured
-with a debug-build gauge), so 256 is far above ordinary use; a table whose members stall many
+scene of 150 distinct images held at most 4 permits at once over both HTTP/1.1 and HTTP/2 (measured),
+so 256 is far above ordinary use; a table whose members stall many
 downloads at once can exhaust it for up to the slow-reader window below.
 
 ### Asset downloads, seeking and compression

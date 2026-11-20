@@ -561,10 +561,12 @@ pub struct ServeQuery {
     pub variant: Option<String>,
 }
 
-/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet]` — read-gated by world
-/// membership; ETag-revalidated. A derivative shares the canonical's ETag
-/// (`"{id}-{version}"`): it is regenerated whenever the canonical's version
-/// changes, so the version keys it. A missing `thumb`/`preview` derivative is regenerated on
+/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet|opus|opus-webm]` — read-gated by world
+/// membership; ETag-revalidated. The canonical, `thumb`, `preview` and `sheet` share one ETag
+/// (`"{id}-{version}"`): a derivative is regenerated whenever the canonical's version
+/// changes, so the version keys it. The `opus` and `opus-webm` ETags are derived from the served
+/// file's own length, modification time and head bytes (`Validator::OfFile`), because the audio
+/// upgrade sweep rewrites those files without a version bump. A missing `thumb`/`preview` derivative is regenerated on
 /// demand; if the canonical does not decode, the canonical itself is served
 /// in its place rather than a 404. `sheet` is the server-derived grid sheet
 /// (`AssetMeta.sheet`; animated sources only) — written once at commit/reconvert time, never
@@ -573,9 +575,14 @@ pub struct ServeQuery {
 /// The file is streamed, never read whole into memory, and byte ranges are honoured for the media,
 /// raster-image, PDF, archive and font types (`Accept-Ranges: bytes`; `Range` and `If-Range`; 206,
 /// `multipart/byteranges` and 416 answers; a media response carries at most 2 MiB per request).
-/// Every other type is compressible and ignores `Range`. On every branch the validator check
-/// precedes any file access, and `If-None-Match` is answered before `Range` is read. A `HEAD` request answers the
-/// status and headers of the matching `GET` from the file's metadata, opening nothing.
+/// Every other type is compressible and ignores `Range`. `If-None-Match` is answered before `Range`
+/// is read. On the canonical, `thumb`, `preview` and `sheet` branches the validator comes from the
+/// record, so a hit is answered before any file access and takes no permit. On the `opus` and
+/// `opus-webm` branch the validator comes from the opened file, so the file is opened first, under
+/// a streamed-file permit, and a hit is answered after the open. A `HEAD` request answers the
+/// status and headers of the matching `GET`: from the file's metadata, opening nothing, on the
+/// record-validated branches; on the `opus` and `opus-webm` branch it opens the file for the
+/// head read, under a permit held for that read.
 ///
 /// # Examples
 ///
