@@ -23,7 +23,7 @@ use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
 use shadowcat::data::asset::{Asset, AssetMeta};
 use shadowcat::http::assets::permits::StreamedFilePermits;
-use shadowcat::http::conn_serve::{egress_tick, ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
+use shadowcat::http::conn_serve::{ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
 use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::h2_session::{login, seeded_state};
 use shadowcat_test_support::tls::H2Client;
@@ -34,11 +34,6 @@ use uuid::Uuid;
 
 /// The no-progress window the tests run at.
 const WINDOW: Duration = Duration::from_secs(1);
-
-/// The sampler period at [`WINDOW`].
-fn tick() -> Duration {
-    egress_tick(WINDOW)
-}
 
 /// The drain bound the tests run at.
 const DRAIN: Duration = Duration::from_millis(500);
@@ -52,7 +47,7 @@ const SLICE: usize = 2 * 1024 * 1024;
 /// Size of the seeded media file: six slices, larger than any buffer between server and client.
 const MEDIA_LEN: usize = 6 * SLICE;
 
-/// Slack added to a cut's expected time for scheduling.
+/// Slack added to the drain's expected time for scheduling.
 const SLACK: Duration = Duration::from_millis(1000);
 
 /// Longest a test waits for a stalled response to be cut. A hang bound, not the sampler's latency:
