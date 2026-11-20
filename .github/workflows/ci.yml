@@ -4,22 +4,21 @@ on:
   push:
   pull_request:
 
-# Job timeouts bound a hang, not a regression: each is twice the longest successful run among the
-# last 100 completed runs of this workflow (per job, and per OS leg for `rust`), rounded up to five
-# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 53.6, rust ubuntu 23.3,
-# web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. `audio-fixtures` has no run history yet; its 30 is sized from the
-# measured local regeneration of the three 20-minute tracks and is re-derived from the recorded runs
-# once they exist. `e2e-long-audio` (90) and the two `e2e-long-audio-playthrough-*` jobs (50, about 20
-# minutes of real-time playback each) have no run history either and are re-derived the same way.
-# Without one a hung job runs to the platform's six hours.
+# Job timeouts bound a hang, not a regression: each exceeds the longest successful run of its job
+# (per OS leg for `rust`) among the last 100 completed runs of this workflow. Longest successful
+# run, minutes: rust windows 86.9, rust macos 72.2, rust ubuntu 39.0, web 9.1, e2e 6.3, ui-e2e 16.6,
+# ui-e2e-https 19.3, docs 11.7, audio-fixtures 14.5, e2e-long-audio 27.0, e2e-long-audio-playthrough
+# 33.1. Without a timeout a hung job runs to the platform's six hours.
 jobs:
   rust:
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 110 || 50 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    # The Linux leg is labelled `ubuntu-latest` (the required check is named `rust (ubuntu-latest)`)
+    # and runs on the 24.04 image, whose libpipewire matches the pipewire 0.8 and libspa 0.8 bindings.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     steps:
       - uses: actions/checkout@v6
       # The server embeds the client bundle (dist/), so build it before any cargo
@@ -202,16 +201,16 @@ jobs:
   # Plain-HTTP LAN play and built-in HTTPS in real browsers, on every OS the server ships for.
   # Browser engines differ per OS (certificate-error wording, HTTPS-upgrade branches, loopback
   # mixed-content rules), so each expected outcome in the specs is keyed by (project, platform)
-  # and a cell measured on one OS only FAILS here on the others, reporting what it observed, so the
-  # first run on each OS supplies the measurement.
+  # and a cell recorded for one OS only FAILS on the others, reporting what it observed.
   # The loopback suite keeps its single Ubuntu placement above: it drives no per-OS behaviour.
   ui-e2e-https:
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    # `ubuntu-latest` runs on the 24.04 image, as in the `rust` job.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -257,8 +256,7 @@ jobs:
   # Long-audio streaming in real browsers: NON-looping 20-minute entries over both Opus derivative
   # containers, sampled (about a minute from the start, a server `Seek` to 15 seconds before the end,
   # the natural end, the wrap), on h1 and h2. The server is the release build because the import
-  # transcodes 20-minute tracks. Runs alone with one worker; the timeout is a placeholder bound until
-  # recorded runs exist.
+  # transcodes 20-minute tracks. Runs alone with one worker.
   e2e-long-audio:
     timeout-minutes: 90
     runs-on: ubuntu-24.04
