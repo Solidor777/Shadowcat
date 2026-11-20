@@ -115,6 +115,45 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(clock.reads).toBe(reads);
   });
 
+  it("a first unlock() whose resume wait outlives dispose() sets no flag, notifies nobody and installs nothing", async () => {
+    const raf = vi.fn(() => 1);
+    const { ctx, clock, timer, visibility, engine, notified } = rig({ raf });
+    engine.applyState(state(entry("e1")));
+    ctx.resumeMode = "pend";
+    const unlocking = engine.unlock();
+    await settle();
+    expect(timer.pendingTimeoutMs()).toEqual([RESUME_WAIT_MS]);
+    engine.dispose();
+    notified.mockClear();
+    timer.fireTimeouts();
+    await unlocking;
+    expect(engine.needsGesture).toBe(false);
+    expect(notified).not.toHaveBeenCalled();
+    expect(timer.periodMs()).toBeNull();
+    expect(visibility.observers()).toBe(0);
+    expect(raf).not.toHaveBeenCalled();
+    expect(clock.reads).toBe(0);
+  });
+
+  it("a later unlock() whose resume wait outlives dispose() sets no flag, notifies nobody and applies no state", async () => {
+    const { ctx, clock, timer, engine, notified } = rig();
+    await engine.unlock();
+    engine.applyState(state(entry("e1")));
+    ctx.resumeMode = "pend";
+    ctx.setState("suspended");
+    await settle();
+    const unlocking = engine.unlock();
+    await settle();
+    engine.dispose();
+    notified.mockClear();
+    const reads = clock.reads;
+    timer.fireTimeouts();
+    await unlocking;
+    expect(engine.needsGesture).toBe(false);
+    expect(notified).not.toHaveBeenCalled();
+    expect(clock.reads).toBe(reads);
+  });
+
   it("recovery never starts a second player for the entry already held (streaming)", async () => {
     const { ctx, elements, engine } = rig();
     await engine.unlock();

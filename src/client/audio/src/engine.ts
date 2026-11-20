@@ -166,6 +166,10 @@ export class AudioEngine implements AudioApi {
    * `unlock()` replay (Web Audio node creation before a context exists is impossible), the
    * synchronisation tick and the visibility trigger all re-apply. */
   #latestState: AudioStateEngine | null = null;
+  /** Counts `dispose()` calls. A resume wait captures it before it awaits and abandons its
+   * continuation when it changed, so a wait that outlives `dispose()` installs and notifies
+   * nothing. */
+  #disposals = 0;
   /** Whether the device needs a user gesture before it will play: set when the browser refuses
    * a `play()` for want of one, read through `needsGesture`. */
   #needsGesture = false;
@@ -367,6 +371,7 @@ export class AudioEngine implements AudioApi {
   async unlock(): Promise<void> {
     // A user gesture lifts every earlier autoplay refusal: the elements are asked again.
     this.#playGate.release();
+    const disposals = this.#disposals;
     if (this.#noWebAudio) {
       this.#setNeedsGesture(false);
       this.#restartDegraded();
@@ -375,6 +380,7 @@ export class AudioEngine implements AudioApi {
     if (this.#context !== null) {
       if (this.#context.state !== "running") await this.#resumeContext(this.#context);
       else this.#setNeedsGesture(false);
+      if (disposals !== this.#disposals) return;
       if (this.#latestState) this.applyState(this.#latestState);
       return;
     }
@@ -417,6 +423,7 @@ export class AudioEngine implements AudioApi {
     );
     context.onstatechange = () => this.#onContextStateChange();
     await this.#resumeContext(context);
+    if (disposals !== this.#disposals) return;
     if (this.#latestState) this.applyState(this.#latestState);
     if (this.#pendingAudibility) {
       this.applyAudibility(this.#pendingAudibility);
@@ -429,7 +436,7 @@ export class AudioEngine implements AudioApi {
   /** Ask `context` to resume and wait at most `RESUME_WAIT_MS` for it to run. The wait ends
    * on a settled `resume()` or on the timeout; afterwards `needsGesture` is `true` when the
    * request was rejected or the context is still not `"running"`, `false` otherwise. Never
-   * loops: one request per call.
+   * loops: one request per call. A wait that finishes after `dispose()` changes nothing.
    * @param context The context to resume.
    * @example
    * ```
@@ -437,6 +444,7 @@ export class AudioEngine implements AudioApi {
    * ```
    */
   async #resumeContext(context: AudioContextLike): Promise<void> {
+    const disposals = this.#disposals;
     let timeout: number | null = null;
     const elapsed = new Promise<void>((resolve) => {
       timeout = this.#opts.timer.setTimeout(resolve, RESUME_WAIT_MS);
@@ -444,12 +452,12 @@ export class AudioEngine implements AudioApi {
     try {
       await Promise.race([context.resume(), elapsed]);
     } catch {
-      this.#setNeedsGesture(true);
+      if (disposals === this.#disposals) this.#setNeedsGesture(true);
       return;
     } finally {
       if (timeout !== null) this.#opts.timer.clearTimeout(timeout);
     }
-    this.#setNeedsGesture(context.state !== "running");
+    if (disposals === this.#disposals) this.#setNeedsGesture(context.state !== "running");
   }
 
   /** Recovery from a context state change: a context that ran again re-applies the latest
@@ -829,6 +837,7 @@ export class AudioEngine implements AudioApi {
    * ```
    */
   dispose(): void {
+    this.#disposals++;
     for (const player of this.#trackPlayers.values()) player.dispose();
     this.#trackPlayers.clear();
     for (const player of this.#emitterPlayers.values()) player.dispose();
