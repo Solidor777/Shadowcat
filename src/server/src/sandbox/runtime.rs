@@ -6,7 +6,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
@@ -21,14 +21,14 @@ const MAX_REASON_BYTES: usize = 512;
 const MAX_FUEL: u64 = 50_000_000;
 /// Guest linear memory ceiling.
 const MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
-/// Post-hoc wall-clock threshold: a call that RETURNED but took longer than this is
-/// reclassified as `Fault(FaultKind::TooSlow)` regardless of its own verdict.
-const SLOW_CALL_BUDGET: Duration = Duration::from_millis(50);
-/// Hard hang guard around the whole `spawn_blocking` join: a call that never returns within
-/// this window is abandoned and reported as `Fault(FaultKind::Hung)` — distinct from
-/// `TooSlow`, which is a call that DID return (fuel bounds wasm instructions, not a stalled
-/// host import or allocator loop, so this is a belt-and-braces guard against the latter).
-const HANG_GUARD: Duration = Duration::from_millis(250);
+/// Liveness backstop around the whole `spawn_blocking` join: a call that never returns within
+/// this window is abandoned and reported as `Fault(FaultKind::Hung)`. `MAX_FUEL` bounds every
+/// wasm instruction deterministically, so a healthy or runaway guest ends by itself well
+/// inside this window (exhausting `MAX_FUEL` takes about 0.5 s in an unoptimized build); the
+/// guard exists only for a stall fuel cannot see (a blocked host import or allocator loop).
+/// The window is generous so that a loaded host stretching the wall clock cannot fault a
+/// healthy validator: a fault decision must not depend on how busy the machine is.
+const HANG_GUARD: Duration = Duration::from_secs(10);
 /// Per-call cap on `env.log` payload size.
 const MAX_LOG_BYTES: usize = 1024;
 /// Per-call cap on `env.log` invocation count; the 17th+ call is silently ignored.
@@ -92,9 +92,9 @@ struct HostState {
     log_calls_remaining: u32,
 }
 
-/// Runs `compiled` against `input` with the production wall-clock budgets
-/// (`SLOW_CALL_BUDGET`/`HANG_GUARD`) — see `run_validator_with_budgets` for the
-/// implementation and why the two are parameters rather than the module consts directly.
+/// Runs `compiled` against `input` with the production `HANG_GUARD` — see
+/// `run_validator_with_hang_guard` for the implementation and why the guard is a parameter
+/// rather than the module const directly.
 ///
 /// # Examples
 ///
@@ -129,7 +129,7 @@ pub async fn run_validator(
     compiled: &CompiledValidator,
     input: &ValidatorInput,
 ) -> ValidatorVerdict {
-    run_validator_with_budgets(compiled, input, SLOW_CALL_BUDGET, HANG_GUARD).await
+    run_validator_with_hang_guard(compiled, input, HANG_GUARD).await
 }
 
 /// Runs `compiled` against `input` on `tokio::task::spawn_blocking`, on a fresh `Store` per
@@ -138,19 +138,16 @@ pub async fn run_validator(
 /// `0` is `Accept`; any other return reads the reason via `reason_ptr`/`reason_len`. Every
 /// `Fault` this function produces carries `consecutive: 0` — this function has no world or
 /// registry context to compute the real streak; `sandbox::validate_document` stamps the real
-/// value in before returning the verdict to ITS OWN caller. The slow-call budget reclassifies
-/// only a call that COMPLETED (an authored `Accept`/`Refuse`) past budget as
-/// `Fault(FaultKind::TooSlow)` — a call that trapped already carries its precise `FaultKind`,
-/// which reclassification would only obscure (an infinite loop must surface as `OutOfFuel`,
-/// not `TooSlow`); both kinds count toward auto-disable identically.
-/// `slow_call_budget`/`hang_guard` are parameters (not the module consts directly) so
-/// `runtime::tests` can shrink `hang_guard` far below the wall-clock cost of exhausting
-/// `MAX_FUEL`, proving the guard's own `tokio::time::timeout` fires for real rather than
-/// merely observing a fault fuel exhaustion would have produced anyway.
-async fn run_validator_with_budgets(
+/// value in before returning the verdict to ITS OWN caller. The verdict of a call that
+/// returns is decided only by the guest's own behaviour and `MAX_FUEL`, never by elapsed
+/// wall-clock time: a runaway loop surfaces as `OutOfFuel` and a slow host cannot fault a
+/// healthy call. `hang_guard` is a parameter (not the module const directly) so
+/// `runtime::tests` can shrink it far below the wall-clock cost of exhausting `MAX_FUEL`,
+/// proving the guard's own `tokio::time::timeout` fires for real rather than merely
+/// observing a fault fuel exhaustion would have produced anyway.
+async fn run_validator_with_hang_guard(
     compiled: &CompiledValidator,
     input: &ValidatorInput,
-    slow_call_budget: Duration,
     hang_guard: Duration,
 ) -> ValidatorVerdict {
     let module_id = compiled.module_id.clone();
@@ -169,33 +166,15 @@ async fn run_validator_with_budgets(
         return fault(FaultKind::InputTooLarge);
     }
     let compiled = compiled.clone();
-    let join = tokio::task::spawn_blocking(move || run_validator_blocking(&compiled, &bytes));
-    let (result, elapsed) = match tokio::time::timeout(hang_guard, join).await {
-        Ok(Ok(pair)) => pair,
-        Ok(Err(_)) => return fault(FaultKind::Trap),
+    let join = tokio::task::spawn_blocking(move || run_validator_body(&compiled, &bytes));
+    match tokio::time::timeout(hang_guard, join).await {
+        Ok(Ok(verdict)) => verdict,
+        Ok(Err(_)) => fault(FaultKind::Trap),
         Err(_) => {
             tracing::warn!(module = %module_id, "validator call exceeded the hang guard");
-            return fault(FaultKind::Hung);
+            fault(FaultKind::Hung)
         }
-    };
-    if elapsed > slow_call_budget && !matches!(result, ValidatorVerdict::Fault(_)) {
-        tracing::warn!(module = %module_id, ?elapsed, "validator call exceeded the slow-call budget");
-        return fault(FaultKind::TooSlow);
     }
-    result
-}
-
-/// The synchronous wrapper run inside `spawn_blocking`: times `run_validator_body` ON THIS
-/// THREAD and pairs its verdict with the measured duration — the slow-call budget is defined
-/// over the call's `Instant`-measured duration on the blocking thread, which deliberately
-/// excludes `spawn_blocking` scheduling latency.
-fn run_validator_blocking(
-    compiled: &CompiledValidator,
-    input_bytes: &[u8],
-) -> (ValidatorVerdict, Duration) {
-    let started = Instant::now();
-    let verdict = run_validator_body(compiled, input_bytes);
-    (verdict, started.elapsed())
 }
 
 /// The synchronous body: fresh `Store`/`Linker` on the engine that compiled
