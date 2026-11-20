@@ -3,6 +3,7 @@ import type { PlaywrightTestConfig } from "@playwright/test";
 import path from "node:path";
 import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
+import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "./e2e-support/egress-window";
 import { pickLanAddress } from "./e2e-support/lan-address";
 import {
   ANY_HTTPS_SPEC,
@@ -47,10 +48,9 @@ const HTTPS_PORT = 32001;
  * because it runs with a short egress window, which no other spec may share. */
 const MEDIA_RANGE_PORT = 32002;
 
-/** The `egress_window_secs` the media-range server runs with (the real configuration key, set in
- * the server's environment). Long enough for one browser read-ahead burst to finish, short enough
- * that a response left idle across a real pause between bursts is cut inside the test's budget. */
-const MEDIA_RANGE_EGRESS_WINDOW_SECS = "3";
+/** The `egress_window_secs` the windowed servers run with, as the environment string
+ * (`MEDIA_RANGE_EGRESS_WINDOW_SECS`, the one value the play-through spec also reads). */
+const EGRESS_WINDOW_ENV = String(MEDIA_RANGE_EGRESS_WINDOW_SECS);
 
 /** Port of the test server the long-audio projects target: bound beyond loopback with TLS on its
  * default (`auto`) so one port answers both `https://` (h2) and plain `http://` (h1), and with a
@@ -313,7 +313,7 @@ function longAudioServer(ip: string) {
     env: {
       ...SERVER_ENV,
       SHADOWCAT_BIND: `0.0.0.0:${LONG_AUDIO_PORT}`,
-      SHADOWCAT_EGRESS_WINDOW_SECS: MEDIA_RANGE_EGRESS_WINDOW_SECS,
+      SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
     },
   };
 }
@@ -424,7 +424,7 @@ export default defineConfig({
       env: {
         ...SERVER_ENV,
         SHADOWCAT_BIND: `127.0.0.1:${MEDIA_RANGE_PORT}`,
-        SHADOWCAT_EGRESS_WINDOW_SECS: MEDIA_RANGE_EGRESS_WINDOW_SECS,
+        SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
       },
     },
     ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP), longAudioServer(LAN_IP)]),

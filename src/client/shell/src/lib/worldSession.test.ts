@@ -2315,6 +2315,73 @@ describe("WorldSession.audio", () => {
     }
   });
 
+  test("audio.needsGesture is reactive: a change the engine announces re-runs a reader of the getter", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    let needsGesture = false;
+    vi.spyOn(AudioEngine.prototype, "needsGesture", "get").mockImplementation(() => needsGesture);
+    const subscribe = vi.spyOn(AudioEngine.prototype, "subscribe");
+    const session = audioSession();
+    const { before, after } = reactiveRead(
+      () => session.audio.needsGesture,
+      () => {
+        needsGesture = true;
+        // The subscription `createSubscriber` opened on the first read names the engine as `this`.
+        (subscribe.mock.contexts[0] as InstanceType<typeof AudioEngine>).notifyAudioChanged();
+      },
+    );
+    expect(before).toBe(false);
+    expect(after).toBe(true);
+    session.leave();
+  });
+
+  test("the AudioEngine's timer opt is the window's timers", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      audioSession();
+      const { timer } = ctorSpy.mock.calls[0][0];
+      const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+      const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+      const setIntervalSpy = vi.spyOn(window, "setInterval");
+      const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+      const callback = vi.fn();
+      const timeout = timer.setTimeout(callback, 500);
+      expect(setTimeoutSpy).toHaveBeenCalledWith(callback, 500);
+      timer.clearTimeout(timeout);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timeout);
+      const interval = timer.setInterval(callback, 1000);
+      expect(setIntervalSpy).toHaveBeenCalledWith(callback, 1000);
+      timer.clearInterval(interval);
+      expect(clearIntervalSpy).toHaveBeenCalledWith(interval);
+      expect(callback).not.toHaveBeenCalled();
+    } finally {
+      ctorSpy.mockRestore();
+    }
+  });
+
+  test("the AudioEngine's visibility opt reads document visibility and observes visibilitychange", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      audioSession();
+      const { visibility } = ctorSpy.mock.calls[0][0];
+      const state = vi.spyOn(document, "visibilityState", "get");
+      state.mockReturnValue("visible");
+      expect(visibility.isVisible()).toBe(true);
+      state.mockReturnValue("hidden");
+      expect(visibility.isVisible()).toBe(false);
+      const observer = vi.fn();
+      const unsubscribe = visibility.subscribe(observer);
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(observer).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(observer).toHaveBeenCalledTimes(1);
+    } finally {
+      ctorSpy.mockRestore();
+    }
+  });
+
   test("an audio-state document-store update drives AudioEngine.applyState", async () => {
     const { AudioEngine } = await import("@shadowcat/audio");
     const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});

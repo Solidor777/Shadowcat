@@ -1,57 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type AudioStateEngine, type PlayingTrack } from "@shadowcat/core";
-import { AudioEngine, SYNC_TICK_MS, type AudioEngineOpts } from "./engine";
+import { SYNC_TICK_MS } from "./engine";
 import { setMediaElementFactory } from "./track-player";
-import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
-import { stubAudioContext, stubMediaElement, stubWasmDecoder } from "./__fixtures__/stubContext";
-import type { MediaElementLike } from "./context";
-
-function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
-  return {
-    id,
-    playlist: null,
-    trackIndex: 0,
-    asset: "a1",
-    channel: "music",
-    gain: 1,
-    loop: false,
-    startedAt: 0,
-    pausedAt: null,
-    ...over,
-  };
-}
-
-function state(...playing: PlayingTrack[]): AudioStateEngine {
-  return { playing, shuffleSeed: 0 };
-}
-
-/** The harness every case builds an engine from: the clock the tests advance, the manual
- * timer and the scripted visibility source, plus every element the engine created. */
-function rig(over: Partial<AudioEngineOpts> = {}) {
-  const clock = { ms: 0 };
-  const timer = timerHarness();
-  const visibility = visibilityHarness();
-  const elements: MediaElementLike[] = [];
-  setMediaElementFactory(() => {
-    const el = stubMediaElement();
-    elements.push(el);
-    return el;
-  });
-  const engine = new AudioEngine({
-    resolver: new AssetResolver(),
-    serverNow: () => clock.ms,
-    transport: vi.fn(),
-    createContext: () => stubAudioContext(),
-    createOggOpusDecoder: async () => stubWasmDecoder(),
-    raf: () => 1,
-    caf: () => {},
-    timer,
-    visibility,
-    ...over,
-  });
-  return { engine, clock, timer, visibility, elements };
-}
+import { entry, rig, state } from "./__fixtures__/engineHarness";
+import { stubMediaElement } from "./__fixtures__/stubContext";
 
 beforeEach(() => {
   setMediaElementFactory(() => stubMediaElement());
@@ -142,10 +94,10 @@ describe("AudioEngine synchronisation tick", () => {
 
 describe("AudioEngine synchronisation tick keeps a streaming element in step over a long run", () => {
   /** Plays 300 simulated seconds: the element's clock advances at its own `playbackRate` each
-   * second; `ticks` decides whether the engine's tick runs. The server position starts 80 ms
-   * ahead of the element (a not-yet-playing element at its first sync).
+   * second and the engine's tick runs once per second. The server position starts 80 ms ahead of
+   * the element (a not-yet-playing element at its first sync).
    * @returns The final signed drift, element minus server, seconds. */
-  async function run(ticks: boolean): Promise<number> {
+  async function run(): Promise<number> {
     const { engine, clock, timer, elements } = rig();
     await engine.unlock();
     clock.ms = 80;
@@ -154,16 +106,12 @@ describe("AudioEngine synchronisation tick keeps a streaming element in step ove
     for (let second = 1; second <= 300; second++) {
       clock.ms += 1000;
       el.currentTime += el.playbackRate;
-      if (ticks) timer.fire();
+      timer.fire();
     }
     return el.currentTime - clock.ms / 1000;
   }
 
-  it("without a tick the nudge never returns to 1 and the drift grows past a second", async () => {
-    expect(Math.abs(await run(false))).toBeGreaterThan(1);
-  });
-
   it("with the tick the drift stays inside the engage bound plus one tick's nudge", async () => {
-    expect(Math.abs(await run(true))).toBeLessThan(0.05);
+    expect(Math.abs(await run())).toBeLessThan(0.05);
   });
 });

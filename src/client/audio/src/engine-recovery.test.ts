@@ -1,76 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type AudioStateEngine, type PlayingTrack } from "@shadowcat/core";
-import { AudioEngine, RESUME_WAIT_MS } from "./engine";
+import { RESUME_WAIT_MS } from "./engine";
 import { SYNC_SEEK_THRESHOLD_SECS, setMediaElementFactory } from "./track-player";
-import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
-import {
-  stubAudioContext,
-  stubBuffer,
-  stubMediaElement,
-  stubWasmDecoder,
-  wavBytes,
-  type StubAudioContext,
-  type StubMediaElement,
-} from "./__fixtures__/stubContext";
-
-function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
-  return {
-    id,
-    playlist: null,
-    trackIndex: 0,
-    asset: "a1",
-    channel: "music",
-    gain: 1,
-    loop: false,
-    startedAt: 0,
-    pausedAt: null,
-    ...over,
-  };
-}
-
-function state(...playing: PlayingTrack[]): AudioStateEngine {
-  return { playing, shuffleSeed: 0 };
-}
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-/** Everything one recovery case needs: the engine over a scripted context, the clock, the
- * timer and visibility harnesses, a counter of `serverNow` reads (one per `applyState` on the
- * graph path) and every element the engine created. */
-function rig() {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
-  const ctx: StubAudioContext = stubAudioContext();
-  ctx.decodeAudioData = async () => stubBuffer(100);
-  const clock = { ms: 0, reads: 0 };
-  const timer = timerHarness();
-  const visibility = visibilityHarness();
-  const elements: StubMediaElement[] = [];
-  setMediaElementFactory(() => {
-    const el = stubMediaElement();
-    elements.push(el);
-    return el;
-  });
-  const engine = new AudioEngine({
-    resolver: new AssetResolver(),
-    serverNow: () => {
-      clock.reads++;
-      return clock.ms;
-    },
-    transport: vi.fn(),
-    createContext: () => ctx,
-    createOggOpusDecoder: async () => stubWasmDecoder(),
-    raf: () => 1,
-    caf: () => {},
-    timer,
-    visibility,
-  });
-  const notified = vi.fn();
-  engine.subscribe(notified);
-  return { ctx, clock, timer, visibility, elements, engine, notified };
-}
+import { entry, rig, settle, state } from "./__fixtures__/engineHarness";
+import { stubMediaElement, type StubAudioContext } from "./__fixtures__/stubContext";
 
 /** Buffer sources started and not stopped. */
 function liveSources(ctx: StubAudioContext): number {
@@ -83,7 +16,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("AudioEngine interruption and suspension recovery", () => {
-  it("(1) running -> interrupted -> running: one resume, needsGesture false, one live node, audible position at the server position", async () => {
+  it("running -> interrupted -> running: one resume, needsGesture false, one live node, audible position at the server position", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1", { loop: true })));
@@ -103,7 +36,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(Math.abs(offset - 30)).toBeLessThanOrEqual(SYNC_SEEK_THRESHOLD_SECS);
   });
 
-  it("(2) suspended and resume() rejects: needsGesture true with a notification; unlock() runs it, clears the flag, no duplicate node", async () => {
+  it("suspended and resume() rejects: needsGesture true with a notification; unlock() runs it, clears the flag, no duplicate node", async () => {
     const { ctx, engine, notified } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1", { loop: true })));
@@ -121,7 +54,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(liveSources(ctx)).toBe(1);
   });
 
-  it("(3) resume() pends forever: after RESUME_WAIT_MS needsGesture is true", async () => {
+  it("resume() pends forever: after RESUME_WAIT_MS needsGesture is true", async () => {
     const { ctx, timer, engine } = rig();
     ctx.resumeMode = "pend";
     const unlocking = engine.unlock();
@@ -133,7 +66,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(engine.needsGesture).toBe(true);
   });
 
-  it("(4) hidden -> visible while suspended: one resume() and one applyState", async () => {
+  it("hidden -> visible while suspended: one resume() and one applyState", async () => {
     const { ctx, clock, visibility, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));
@@ -152,7 +85,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(clock.reads - reads).toBe(1);
   });
 
-  it("(5) statechange to running: no resume(), one applyState", async () => {
+  it("statechange to running: no resume(), one applyState", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));
@@ -168,7 +101,7 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(engine.needsGesture).toBe(false);
   });
 
-  it("(6) after dispose no state change recovers anything", async () => {
+  it("after dispose no state change recovers anything", async () => {
     const { ctx, clock, engine } = rig();
     await engine.unlock();
     engine.applyState(state(entry("e1")));
@@ -180,6 +113,92 @@ describe("AudioEngine interruption and suspension recovery", () => {
     await settle();
     expect(ctx.resumeCalls).toBe(resumes);
     expect(clock.reads).toBe(reads);
+  });
+
+  it("a first unlock() whose resume wait outlives dispose() sets no flag, notifies nobody and installs nothing", async () => {
+    const raf = vi.fn(() => 1);
+    const { ctx, clock, timer, visibility, engine, notified } = rig({ raf });
+    engine.applyState(state(entry("e1")));
+    ctx.resumeMode = "pend";
+    const unlocking = engine.unlock();
+    await settle();
+    expect(timer.pendingTimeoutMs()).toEqual([RESUME_WAIT_MS]);
+    engine.dispose();
+    notified.mockClear();
+    timer.fireTimeouts();
+    await unlocking;
+    expect(engine.needsGesture).toBe(false);
+    expect(notified).not.toHaveBeenCalled();
+    expect(timer.periodMs()).toBeNull();
+    expect(visibility.observers()).toBe(0);
+    expect(raf).not.toHaveBeenCalled();
+    expect(clock.reads).toBe(0);
+  });
+
+  it("a later unlock() whose resume wait outlives dispose() sets no flag, notifies nobody and applies no state", async () => {
+    const { ctx, clock, timer, engine, notified } = rig();
+    await engine.unlock();
+    engine.applyState(state(entry("e1")));
+    ctx.resumeMode = "pend";
+    ctx.setState("suspended");
+    await settle();
+    const unlocking = engine.unlock();
+    await settle();
+    engine.dispose();
+    notified.mockClear();
+    const reads = clock.reads;
+    timer.fireTimeouts();
+    await unlocking;
+    expect(engine.needsGesture).toBe(false);
+    expect(notified).not.toHaveBeenCalled();
+    expect(clock.reads).toBe(reads);
+  });
+
+  describe("a streaming element under a suspended context, corrected by the next tick", () => {
+    /** An engine playing one streaming entry for 4 s, then suspended with a `resume()` that never
+     * settles, and the server clock moved on to 10 s. Records every write to the element's
+     * `currentTime`; the element sits at 4 s, the position it had when the context stopped.
+     * @returns The element, the tick control and the write count. */
+    async function suspendedAtFourSeconds() {
+      const { ctx, clock, timer, elements, engine } = rig();
+      await engine.unlock();
+      engine.applyState(state(entry("e1")));
+      clock.ms = 4000;
+      timer.fire();
+      const el = elements[0];
+      let position = el.currentTime;
+      const writes = { count: 0 };
+      Object.defineProperty(el, "currentTime", {
+        configurable: true,
+        get: () => position,
+        set: (value: number) => {
+          writes.count++;
+          position = value;
+        },
+      });
+      ctx.resumeMode = "pend";
+      ctx.setState("suspended");
+      await settle();
+      clock.ms = 10_000;
+      return { el, timer, writes, advanceElementTo: (secs: number) => (position = secs) };
+    }
+
+    it("an element whose clock froze with the context (Chromium) is seeked to the server position", async () => {
+      const { el, timer, writes } = await suspendedAtFourSeconds();
+      expect(el.currentTime).toBeCloseTo(4, 5);
+      timer.fire();
+      expect(writes.count).toBe(1);
+      expect(el.currentTime).toBeCloseTo(10, 5);
+    });
+
+    it("an element whose clock kept running (Firefox) is left in position", async () => {
+      const { el, timer, writes, advanceElementTo } = await suspendedAtFourSeconds();
+      advanceElementTo(10);
+      timer.fire();
+      expect(writes.count).toBe(0);
+      expect(el.currentTime).toBe(10);
+      expect(el.playbackRate).toBe(1);
+    });
   });
 
   it("recovery never starts a second player for the entry already held (streaming)", async () => {
