@@ -154,6 +154,53 @@ describe("AudioEngine interruption and suspension recovery", () => {
     expect(clock.reads).toBe(reads);
   });
 
+  describe("a streaming element under a suspended context, corrected by the next tick", () => {
+    /** An engine playing one streaming entry for 4 s, then suspended with a `resume()` that never
+     * settles, and the server clock moved on to 10 s. Records every write to the element's
+     * `currentTime`; the element sits at 4 s, the position it had when the context stopped.
+     * @returns The element, the tick control and the write count. */
+    async function suspendedAtFourSeconds() {
+      const { ctx, clock, timer, elements, engine } = rig();
+      await engine.unlock();
+      engine.applyState(state(entry("e1")));
+      clock.ms = 4000;
+      timer.fire();
+      const el = elements[0];
+      let position = el.currentTime;
+      const writes = { count: 0 };
+      Object.defineProperty(el, "currentTime", {
+        configurable: true,
+        get: () => position,
+        set: (value: number) => {
+          writes.count++;
+          position = value;
+        },
+      });
+      ctx.resumeMode = "pend";
+      ctx.setState("suspended");
+      await settle();
+      clock.ms = 10_000;
+      return { el, timer, writes, advanceElementTo: (secs: number) => (position = secs) };
+    }
+
+    it("an element whose clock froze with the context (Chromium) is seeked to the server position", async () => {
+      const { el, timer, writes } = await suspendedAtFourSeconds();
+      expect(el.currentTime).toBeCloseTo(4, 5);
+      timer.fire();
+      expect(writes.count).toBe(1);
+      expect(el.currentTime).toBeCloseTo(10, 5);
+    });
+
+    it("an element whose clock kept running (Firefox) is left in position", async () => {
+      const { el, timer, writes, advanceElementTo } = await suspendedAtFourSeconds();
+      advanceElementTo(10);
+      timer.fire();
+      expect(writes.count).toBe(0);
+      expect(el.currentTime).toBe(10);
+      expect(el.playbackRate).toBe(1);
+    });
+  });
+
   it("recovery never starts a second player for the entry already held (streaming)", async () => {
     const { ctx, elements, engine } = rig();
     await engine.unlock();

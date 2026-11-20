@@ -257,25 +257,3 @@ describe("TrackPlayer — audio-clock position", () => {
     player.dispose();
   });
 });
-
-describe("TrackPlayer — streaming element under a suspended context", () => {
-  it("an element whose clock froze with the context (Chromium) is seeked to the server position", () => {
-    const ctx = stubAudioContext();
-    const el = stubMediaElement();
-    setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
-    el.currentTime = 4; // froze here while the server clock ran on to 10 s
-    player.sync(entry(), 10_000);
-    expect(el.currentTime).toBeCloseTo(10, 5);
-  });
-
-  it("an element whose clock kept running (Firefox) is left in position", () => {
-    const ctx = stubAudioContext();
-    const el = stubMediaElement();
-    setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {}, quietGate());
-    el.currentTime = 10;
-    player.sync(entry(), 10_000);
-    expect(el.currentTime).toBe(10);
-  });
-});
