@@ -79,10 +79,16 @@ export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
  * holds). Any other failure text on an asset request fails a leg. A server-side cut of an
  * HTTP/1.1 response reads as `net::ERR_CONTENT_LENGTH_MISMATCH` or `net::ERR_CONNECTION_RESET` in
  * Chromium and `NS_ERROR_NET_PARTIAL_TRANSFER` or `NS_ERROR_NET_RESET` in Firefox; none is listed
- * here, so such a cut fails a leg. A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
+ * here, so such a cut fails a leg. WebKit reports its element's cancel as `Load request cancelled`
+ * (measured on the Playwright WebKit build on Linux). A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
  * Chromium, which this list accepts, and raises no failure at all in Firefox: this list cannot
  * observe an HTTP/2 cut. */
-export const SELF_CANCELLED: readonly string[] = ["net::ERR_ABORTED", "NS_BINDING_ABORTED", "NS_ERROR_PARSED_DATA_CACHED"];
+export const SELF_CANCELLED: readonly string[] = [
+  "net::ERR_ABORTED",
+  "NS_BINDING_ABORTED",
+  "NS_ERROR_PARSED_DATA_CACHED",
+  "Load request cancelled",
+];
 
 /** The Opus derivative a leg asserts the player requests. */
 export type Variant = "opus" | "opus-webm";
@@ -346,8 +352,6 @@ export interface TrafficEvent {
   contentLength: string | null;
   /** The request's `If-Range` header, or `null`. */
   ifRange: string | null;
-  /** The request's `If-None-Match` header, or `null`. */
-  ifNoneMatch: string | null;
   /** The failure text (failed). */
   error: string | null;
 }
@@ -381,7 +385,6 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
     contentEncoding: null,
     contentLength: null,
     ifRange: null,
-    ifNoneMatch: null,
     error: null,
   };
   page.on("request", (r) => {
@@ -394,7 +397,6 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
       variant: url.searchParams.get("variant"),
       range: r.headers()["range"] ?? null,
       ifRange: r.headers()["if-range"] ?? null,
-      ifNoneMatch: r.headers()["if-none-match"] ?? null,
     });
   });
   page.on("response", (r) => {
@@ -411,7 +413,6 @@ export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
       contentEncoding: headers["content-encoding"] ?? null,
       contentLength: headers["content-length"] ?? null,
       ifRange: r.request().headers()["if-range"] ?? null,
-      ifNoneMatch: r.request().headers()["if-none-match"] ?? null,
       error: null,
     });
   });
@@ -565,7 +566,7 @@ function statusCounts(log: TrafficLog): Record<string, number> {
 
 /** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
  * the canonical URL, never the other derivative), every response the page saw is a `206`, the
- * initial `200` or a `304` to a conditional request, nothing is compressed, no request fails except
+ * initial `200` or a `304` revalidation, nothing is compressed, no request fails except
  * the element's own cancellation, and no response the SERVER sent carries more than
  * `MAX_RANGE_SLICE_BYTES`. The slice bound is read from the network stack's own record (`raw`)
  * where the engine exposes one, because a page level `206` can be assembled by the browser's cache
@@ -598,13 +599,16 @@ export function assertTrafficContract(
     `responses with a status; statuses ${JSON.stringify(statusCounts(log))}`,
   ).toBeGreaterThan(0);
   for (const e of responses.filter((x) => !isOpaque(x))) {
-    // A `304` answers a conditional request (an engine revalidating a cached derivative before
-    // ranging into it); one to a request with no `If-None-Match` is a server defect.
-    if (e.status !== 304 || e.ifNoneMatch === null) {
+    // A `304` is an engine revalidating a cached derivative before ranging into it. The engine
+    // adds its conditional header below the page-level request record, so the request cannot be
+    // checked here (the server's `304` rule is asserted by its own tests); the response must still
+    // carry no range.
+    if (e.status === 304) {
+      expect(e.contentRange, `a 304 carries no Content-Range; event ${JSON.stringify(e)}`).toBeNull();
+    } else {
       expect(
         [200, 206],
-        `status ${e.status} for ${e.range} (If-None-Match ${e.ifNoneMatch}); event ${JSON.stringify(e)}; ` +
-          `statuses ${JSON.stringify(statusCounts(log))}`,
+        `status ${e.status} for ${e.range}; event ${JSON.stringify(e)}; statuses ${JSON.stringify(statusCounts(log))}`,
       ).toContain(e.status);
     }
     if (raw === null && e.status === 206) {
