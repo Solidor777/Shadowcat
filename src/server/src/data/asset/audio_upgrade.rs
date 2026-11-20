@@ -58,7 +58,22 @@ pub struct UpgradeReport {
 }
 
 impl UpgradeReport {
-    /// Assets whose files the pass rewrote.
+    /// Assets whose files the pass rewrote: the remuxed, re-encoded and tail-repaired ones.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::asset::audio_upgrade::UpgradeReport;
+    ///
+    /// let report = UpgradeReport {
+    ///     remuxed: 1,
+    ///     retranscoded: 2,
+    ///     unrepairable_tail: 3,
+    ///     skipped: 4,
+    ///     ..UpgradeReport::default()
+    /// };
+    /// assert_eq!(report.written(), 6);
+    /// ```
     pub fn written(&self) -> usize {
         self.remuxed + self.retranscoded + self.unrepairable_tail
     }

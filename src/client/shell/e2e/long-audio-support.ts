@@ -79,10 +79,16 @@ export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
  * holds). Any other failure text on an asset request fails a leg. A server-side cut of an
  * HTTP/1.1 response reads as `net::ERR_CONTENT_LENGTH_MISMATCH` or `net::ERR_CONNECTION_RESET` in
  * Chromium and `NS_ERROR_NET_PARTIAL_TRANSFER` or `NS_ERROR_NET_RESET` in Firefox; none is listed
- * here, so such a cut fails a leg. A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
+ * here, so such a cut fails a leg. WebKit reports its element's cancel as `Load request cancelled`
+ * (measured on the Playwright WebKit build on Linux). A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
  * Chromium, which this list accepts, and raises no failure at all in Firefox: this list cannot
  * observe an HTTP/2 cut. */
-export const SELF_CANCELLED: readonly string[] = ["net::ERR_ABORTED", "NS_BINDING_ABORTED", "NS_ERROR_PARSED_DATA_CACHED"];
+export const SELF_CANCELLED: readonly string[] = [
+  "net::ERR_ABORTED",
+  "NS_BINDING_ABORTED",
+  "NS_ERROR_PARSED_DATA_CACHED",
+  "Load request cancelled",
+];
 
 /** The Opus derivative a leg asserts the player requests. */
 export type Variant = "opus" | "opus-webm";
@@ -541,27 +547,70 @@ function headerValue(headers: Record<string, string>, name: string): string | un
   return key === undefined ? undefined : headers[key];
 }
 
-/** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
- * the canonical URL, never the other derivative), every response the page saw is a `206` or the
- * initial `200`, nothing is compressed, no request fails except the element's own cancellation,
- * and no response the SERVER sent carries more than `MAX_RANGE_SLICE_BYTES`. The slice bound is
- * read from the network stack's own record (`raw`) where the engine exposes one, because a page
- * level `206` can be assembled by the browser's cache after a `304` and carry bytes the server
- * never sent; otherwise from the page-level events.
+/** Counts the recorded responses by status, for a failure message.
  * @param log - The recorded traffic.
- * @param variant - The derivative the player is expected to request.
- * @param raw - The network stack's exchanges, or `null` when the engine exposes none.
+ * @returns The number of responses per status.
  * @example
  * ```
  * declare const log: TrafficLog;
- * assertTrafficContract(log, "opus", null);
+ * const counts = statusCounts(log);
  * ```
  */
-export function assertTrafficContract(log: TrafficLog, variant: Variant, raw: RawExchange[] | null): void {
+function statusCounts(log: TrafficLog): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const e of log.events.filter((x) => x.kind === "response")) {
+    counts[String(e.status)] = (counts[String(e.status)] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
+ * the canonical URL, never the other derivative), every response the page saw is a `206`, the
+ * initial `200` or a `304` revalidation, nothing is compressed, no request fails except
+ * the element's own cancellation, and no response the SERVER sent carries more than
+ * `MAX_RANGE_SLICE_BYTES`. The slice bound is read from the network stack's own record (`raw`)
+ * where the engine exposes one, because a page level `206` can be assembled by the browser's cache
+ * after a `304` and carry bytes the server never sent; otherwise from the page-level events. An
+ * engine whose media loader reports some responses with no status and no headers (`opaqueResponses`)
+ * has those responses skipped, and the rest must still be present and satisfy the contract.
+ * @param log - The recorded traffic.
+ * @param variant - The derivative the player is expected to request.
+ * @param raw - The network stack's exchanges, or `null` when the engine exposes none.
+ * @param opaqueResponses - Whether the engine reports media responses with status `0` and no headers.
+ * @example
+ * ```
+ * declare const log: TrafficLog;
+ * assertTrafficContract(log, "opus", null, false);
+ * ```
+ */
+export function assertTrafficContract(
+  log: TrafficLog,
+  variant: Variant,
+  raw: RawExchange[] | null,
+  opaqueResponses = false,
+): void {
   const requested = new Set(log.events.map((e) => e.variant));
   expect([...requested], "the player requests only the expected derivative").toEqual([variant]);
-  for (const e of log.events.filter((x) => x.kind === "response")) {
-    expect([200, 206], `status ${e.status} for ${e.range}`).toContain(e.status);
+  const responses = log.events.filter((x) => x.kind === "response");
+  const isOpaque = (e: TrafficEvent): boolean =>
+    opaqueResponses && e.status === 0 && e.contentRange === null && e.contentLength === null && e.range === null;
+  expect(
+    responses.filter((e) => !isOpaque(e)).length,
+    `responses with a status; statuses ${JSON.stringify(statusCounts(log))}`,
+  ).toBeGreaterThan(0);
+  for (const e of responses.filter((x) => !isOpaque(x))) {
+    // A `304` is an engine revalidating a cached derivative before ranging into it. The engine
+    // adds its conditional header below the page-level request record, so the request cannot be
+    // checked here (the server's `304` rule is asserted by its own tests); the response must still
+    // carry no range.
+    if (e.status === 304) {
+      expect(e.contentRange, `a 304 carries no Content-Range; event ${JSON.stringify(e)}`).toBeNull();
+    } else {
+      expect(
+        [200, 206],
+        `status ${e.status} for ${e.range}; event ${JSON.stringify(e)}; statuses ${JSON.stringify(statusCounts(log))}`,
+      ).toContain(e.status);
+    }
     if (raw === null && e.status === 206) {
       const { start, end } = parseContentRange(e.contentRange!);
       expect(end - start + 1, `slice ${e.contentRange}`).toBeLessThanOrEqual(MAX_RANGE_SLICE_BYTES);

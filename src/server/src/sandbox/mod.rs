@@ -47,15 +47,10 @@ pub enum FaultKind {
     BadPointer,
     /// The serialized `ValidatorInput` exceeded 1 MiB; the module was never instantiated.
     InputTooLarge,
-    /// The call COMPLETED (an authored accept/refuse) but its `Instant`-measured duration
-    /// exceeded the 50 ms per-call budget — a slow-but-under-fuel validator, reclassified as
-    /// a fault. A call that instead traps keeps its precise kind (an infinite loop stays
-    /// `OutOfFuel`); both count toward auto-disable identically.
-    TooSlow,
-    /// The call never returned at all within the 250 ms `tokio::time::timeout` hang guard
+    /// The call never returned at all within the 10 s `tokio::time::timeout` hang guard
     /// around the `spawn_blocking` join (fuel bounds wasm instructions, not a stalled host
     /// import or allocator loop) — the blocking thread is abandoned, and this is logged at
-    /// `warn`.
+    /// `warn`. No other fault depends on elapsed wall-clock time.
     Hung,
     /// Any other wasmi trap (unreachable, integer overflow, out-of-bounds table access, ...).
     Trap,

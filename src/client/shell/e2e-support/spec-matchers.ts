@@ -33,6 +33,11 @@ export const UPGRADE_SPEC = /https-upgrade\.spec\.ts$/;
  * preference, not a launch switch. */
 export const UPGRADE_CHROMIUM_SPEC = /https-upgrade-chromium\.spec\.ts$/;
 
-/** Every spec that runs against the HTTPS server instead of the loopback one: the union of the
- * three HTTPS matchers, so the loopback project's ignore list cannot drift from them. */
-export const ANY_HTTPS_SPEC: readonly RegExp[] = [HTTPS_SPECS, UPGRADE_SPEC, UPGRADE_CHROMIUM_SPEC];
+/** Every spec file named `https-*`. The loopback project ignores this, so a spec with that name can
+ * never fall into the loopback project; each such spec must also match exactly one of
+ * `HTTPS_SPECS`, `UPGRADE_SPEC` and `UPGRADE_CHROMIUM_SPEC`, which select its HTTPS project. */
+export const ANY_HTTPS_NAMED = /https-.*\.spec\.ts$/;
+
+/** The loopback project's HTTPS ignore list: the name catch-all, which covers the three project
+ * selectors above and any new `https-*` spec alike. */
+export const ANY_HTTPS_SPEC: readonly RegExp[] = [ANY_HTTPS_NAMED];

@@ -6,7 +6,7 @@ on:
 
 # Job timeouts bound a hang, not a regression: each is twice the longest successful run among the
 # last 100 completed runs of this workflow (per job, and per OS leg for `rust`), rounded up to five
-# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 28.9, rust ubuntu 23.3,
+# minutes. Longest successful run, minutes: rust windows 60.8, rust macos 53.6, rust ubuntu 23.3,
 # web 8.8, e2e 5.5, ui-e2e 16.6, docs 11.7. `audio-fixtures` has no run history yet; its 30 is sized from the
 # measured local regeneration of the three 20-minute tracks and is re-derived from the recorded runs
 # once they exist. `e2e-long-audio` (90) and the two `e2e-long-audio-playthrough-*` jobs (50, about 20
@@ -14,11 +14,11 @@ on:
 # Without one a hung job runs to the platform's six hours.
 jobs:
   rust:
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 60 || 50 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 125 || matrix.os == 'macos-latest' && 110 || 50 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -110,7 +110,7 @@ jobs:
 
   web:
     timeout-minutes: 20
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -138,7 +138,7 @@ jobs:
   # (the rust matrix already proves cross-OS build; this proves the boundary).
   e2e:
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -168,7 +168,7 @@ jobs:
   # setup hook, so the binary must already exist. Hence its own single-OS job.
   ui-e2e:
     timeout-minutes: 35
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -210,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -231,7 +231,8 @@ jobs:
       # The Chromium HTTPS-First prompt is browser UI, reachable only through the platform's
       # accessibility API: Windows UI Automation, macOS System Events, Linux AT-SPI (the drivers
       # under src/client/shell/e2e-support/invoke-button.*). Linux needs a virtual display, a
-      # session bus and the accessibility bus; the macOS and Linux drivers are first measured here.
+      # session bus and the accessibility bus; the macOS and Linux drivers depend on the platform
+      # accessibility API and on the accessibility flag the launcher passes.
       - name: Install the Linux accessibility driver dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb at-spi2-core dbus-x11 python3-gi gir1.2-atspi-2.0
@@ -260,7 +261,7 @@ jobs:
   # recorded runs exist.
   e2e-long-audio:
     timeout-minutes: 90
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -277,6 +278,17 @@ jobs:
       - name: Install PipeWire dev headers (Linux)
         run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium firefox webkit
+      # The runner has no sound hardware. Firefox and WebKit open their output through the system
+      # sound server, and without a device an AudioContext never leaves "suspended", so the
+      # statusbar's unlock control never swaps to the mute toggle. A null sink is a device that
+      # discards its samples. Chromium falls back to a fake output by itself.
+      - name: Provide a null audio sink
+        run: |
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info
       - run: pnpm --filter @shadowcat/shell e2e:build:release
       - run: pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit
       - if: failure()
@@ -291,7 +303,7 @@ jobs:
   # runs in parallel with the h2 play-through and the sampled legs.
   e2e-long-audio-playthrough-h1:
     timeout-minutes: 50
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -322,7 +334,7 @@ jobs:
   # parallel with the h1 play-through and the sampled legs.
   e2e-long-audio-playthrough-h2:
     timeout-minutes: 50
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SHADOWCAT_E2E_PROFILE: release
     steps:
@@ -356,7 +368,7 @@ jobs:
   # match the manifest's recorded versions; the structural tier always runs.
   audio-fixtures:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -386,7 +398,7 @@ jobs:
   # an unused-exemption warning, and warnings here are fatal.
   docs:
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

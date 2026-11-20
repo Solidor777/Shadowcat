@@ -17,10 +17,10 @@ import { checkMeasuredOutcome, type OutcomeTable } from "../e2e-support/platform
 
 /** The measured branch per project and platform: `loaded:<protocol>` or `certificate-error`. */
 const EXPECTED: OutcomeTable<string> = {
-  "https-upgrade-firefox": { win32: "loaded:http:" },
-  "https-upgrade-firefox-named": { win32: "certificate-error" },
-  "https-upgrade-firefox-local": { win32: "certificate-error" },
-  "https-upgrade-webkit": { win32: "loaded:http:" },
+  "https-upgrade-firefox": { win32: "loaded:http:", linux: "loaded:http:", darwin: "loaded:http:" },
+  "https-upgrade-firefox-named": { win32: "certificate-error", linux: "certificate-error", darwin: "certificate-error" },
+  "https-upgrade-firefox-local": { win32: "certificate-error", linux: "certificate-error", darwin: "certificate-error" },
+  "https-upgrade-webkit": { win32: "loaded:http:", linux: "loaded:http:", darwin: "loaded:http:" },
 };
 
 test("http://<lan-address> is never a dead end", async ({ page, baseURL }, testInfo) => {

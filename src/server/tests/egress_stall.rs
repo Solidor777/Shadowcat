@@ -132,6 +132,14 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
 /// unit at lower rates.
 const PROGRESS_FLOORS_PER_WINDOW: usize = 64;
 
+/// What the progressing reader saw when the connection ended: the bytes it had read and, for
+/// each sample at which the socket had accepted more, when (milliseconds since the request) and
+/// how many bytes. The grants are the figure the connection unit judges, so a cut that follows a
+/// gap in them is the unit reading the socket's lumps, not the reader stalling.
+fn evidence(read: usize, grants: &[(u128, u64)]) -> String {
+    format!("read {read} B; socket accepted (ms, B) {grants:?}")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
     let server = serve().await;
@@ -142,10 +150,24 @@ async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
     let mut buf = vec![0u8; chunk];
     let start = Instant::now();
     let mut read = 0usize;
+    let mut grants: Vec<(u128, u64)> = Vec::new();
+    let mut last = 0u64;
     while start.elapsed() < WINDOW * 3 {
         tokio::time::sleep(step).await;
-        let n = peer.read(&mut buf).await.expect("the connection was cut");
-        assert!(n > 0, "the connection ended after {:?}", start.elapsed());
+        let accepted = server.writes.accepted.load(Ordering::Relaxed);
+        if accepted != last {
+            grants.push((start.elapsed().as_millis(), accepted - last));
+            last = accepted;
+        }
+        let n = peer.read(&mut buf).await.unwrap_or_else(|e| {
+            panic!("the connection was cut ({e}): {}", evidence(read, &grants))
+        });
+        assert!(
+            n > 0,
+            "the connection ended after {:?}: {}",
+            start.elapsed(),
+            evidence(read, &grants)
+        );
         read += n;
     }
     assert!(
@@ -154,7 +176,8 @@ async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
     );
     assert!(
         server.closed.lock().unwrap().is_empty(),
-        "the server ended a connection that was making progress"
+        "the server ended a connection that was making progress: {}",
+        evidence(read, &grants)
     );
     // Still being produced, not merely buffered.
     assert!(server.produced.load(Ordering::SeqCst) > read);

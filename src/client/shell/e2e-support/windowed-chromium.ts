@@ -5,14 +5,14 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import type { Browser } from "@playwright/test";
 
-/** The UI locale every windowed Chromium is pinned to. The HTTPS-First interstitial's button names
- * are localized ("Continue to site", "Accéder au site" under `--lang=fr`, measured on Windows), and
- * the UI-Automation driver finds the button by that name, so the locale must not follow the host's. */
+/** The UI locale every windowed Chromium is pinned to. The UI drivers find the interstitial's button
+ * by its English accessible name ("Continue to site"), so the locale must not follow the host's.
+ * Measured on Windows only: under `--lang=fr` the button is named "Accéder au site". */
 export const PINNED_LOCALE = "en-US";
 
 /** Launch arguments that make the browser expose its UI to the platform's accessibility API, which
- * the UI drivers read. Windows UI Automation needs none (measured); macOS and Linux build the tree
- * on demand and are asked to keep it on. Not yet measured on those two platforms.
+ * the UI drivers read. Windows UI Automation needs none (measured on Windows); macOS and Linux
+ * build the tree on demand, so the flag asks the browser to keep it on.
  * @param platform The operating system (`process.platform`).
  * @returns The arguments.
  * @example
@@ -22,6 +22,21 @@ export const PINNED_LOCALE = "en-US";
  */
 export function accessibilityArgs(platform: NodeJS.Platform): string[] {
   return platform === "linux" || platform === "darwin" ? ["--force-renderer-accessibility"] : [];
+}
+
+/** Launch arguments for the process sandbox. Chromium's Linux sandbox needs unprivileged user
+ * namespaces, which a CI runner may restrict, so the sandbox is turned off only on a Linux CI run;
+ * a developer run keeps it.
+ * @param platform The operating system (`process.platform`).
+ * @param ci Whether the run is on CI.
+ * @returns The arguments.
+ * @example
+ * ```
+ * sandboxArgs("linux", true); // => ["--no-sandbox"]
+ * ```
+ */
+export function sandboxArgs(platform: NodeJS.Platform, ci: boolean): string[] {
+  return platform === "linux" && ci ? ["--no-sandbox"] : [];
 }
 
 /** How long the browser's debugging port may take to come up. */
@@ -60,6 +75,8 @@ export interface LaunchDeps {
   prepareProfile: (profile: string) => void;
   /** The operating system, which decides the accessibility arguments. */
   platform: NodeJS.Platform;
+  /** Whether the run is on CI, which decides the sandbox arguments. */
+  ci: boolean;
   /** How long to wait for the debugging port. */
   timeoutMs: number;
   /** Gap between connection attempts. */
@@ -93,6 +110,7 @@ export async function defaultLaunchDeps(): Promise<LaunchDeps> {
       writeFileSync(join(profile, "Default", "Preferences"), JSON.stringify({ https_only_mode_enabled: true }));
     },
     platform: process.platform,
+    ci: process.env.CI !== undefined,
     timeoutMs: LAUNCH_TIMEOUT_MS,
     pollMs: POLL_INTERVAL_MS,
   };
@@ -130,6 +148,7 @@ export async function launchWindowedChromium(
     "--no-first-run",
     "--no-default-browser-check",
     ...accessibilityArgs(d.platform),
+    ...sandboxArgs(d.platform, d.ci),
     ...extraArgs,
     "about:blank",
   ]);

@@ -1,12 +1,10 @@
 use super::*;
 use crate::sandbox::{ValidatorFault, ValidatorInput};
 
-/// Wall-clock budgets that keep the production `HANG_GUARD` out of every non-timing test:
-/// on a saturated CI runner, instantiating even a trivial module can exceed the production
-/// guard's wall clock, which would race the verdict kind the test actually pins (a
-/// non-timing assertion must never observe `Fault(TooSlow)`). Tests that pin the
-/// guard/slow-call behavior itself set their own budgets explicitly instead.
-const GENEROUS: (Duration, Duration) = (Duration::from_secs(3600), Duration::from_secs(3600));
+/// Hang guard that keeps the production `HANG_GUARD` out of every non-timing test: on a
+/// saturated CI runner a call can outlast any fixed window, which would race the verdict kind
+/// the test actually pins. Tests that pin the guard itself set their own window instead.
+const GENEROUS: Duration = Duration::from_secs(3600);
 
 /// Compiles a WAT fixture into a `CompiledValidator` through `CompiledValidator::compile`,
 /// the same single compile path the registry's scan-time compile uses.
@@ -48,8 +46,7 @@ const ACCEPT_WAT: &str = r#"
 
 #[tokio::test]
 async fn accept_returns_zero() {
-    let verdict =
-        run_validator_with_budgets(&compiled(ACCEPT_WAT), &input(10), GENEROUS.0, GENEROUS.1).await;
+    let verdict = run_validator_with_hang_guard(&compiled(ACCEPT_WAT), &input(10), GENEROUS).await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -76,8 +73,7 @@ const REFUSE_WAT: &str = r#"
 
 #[tokio::test]
 async fn refuse_with_reason() {
-    let verdict =
-        run_validator_with_budgets(&compiled(REFUSE_WAT), &input(-1), GENEROUS.0, GENEROUS.1).await;
+    let verdict = run_validator_with_hang_guard(&compiled(REFUSE_WAT), &input(-1), GENEROUS).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Refuse {
@@ -111,13 +107,9 @@ const REFUSE_LONG_REASON_WAT: &str = r#"
 
 #[tokio::test]
 async fn refuse_with_an_over_long_reason_is_truncated() {
-    let verdict = run_validator_with_budgets(
-        &compiled(REFUSE_LONG_REASON_WAT),
-        &input(-1),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(REFUSE_LONG_REASON_WAT), &input(-1), GENEROUS)
+            .await;
     let ValidatorVerdict::Refuse { reason, .. } = verdict else {
         panic!("expected Refuse, got {verdict:?}");
     };
@@ -142,13 +134,8 @@ async fn infinite_loop_is_out_of_fuel() {
     // legitimately fires first (both kinds count toward auto-disable identically — the
     // guard-first race is exactly what `a_call_that_never_returns_faults_hung...` pins).
     // This test isolates the fuel cap itself, so it must not race the guard.
-    let verdict = run_validator_with_budgets(
-        &compiled(INFINITE_LOOP_WAT),
-        &input(0),
-        Duration::from_secs(3600),
-        Duration::from_secs(3600),
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(INFINITE_LOOP_WAT), &input(0), GENEROUS).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -181,13 +168,8 @@ async fn memory_bomb_is_a_memory_limit_fault() {
     // The denied grow is silent (-1); the store past the obtained pages is the trap, and it
     // must classify as MemoryLimit — never OutOfFuel, which would mean the ceiling was not
     // enforced and the loop ran until the fuel ran out.
-    let verdict = run_validator_with_budgets(
-        &compiled(MEMORY_BOMB_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(MEMORY_BOMB_WAT), &input(0), GENEROUS).await;
     let ValidatorVerdict::Fault(ValidatorFault { kind, .. }) = verdict else {
         panic!("expected Fault, got {verdict:?}");
     };
@@ -203,13 +185,8 @@ const MISSING_VALIDATE_WAT: &str = r#"
 
 #[tokio::test]
 async fn missing_validate_export_is_bad_abi() {
-    let verdict = run_validator_with_budgets(
-        &compiled(MISSING_VALIDATE_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(MISSING_VALIDATE_WAT), &input(0), GENEROUS).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -230,13 +207,8 @@ const BAD_POINTER_WAT: &str = r#"
 
 #[tokio::test]
 async fn alloc_out_of_bounds_is_bad_pointer() {
-    let verdict = run_validator_with_budgets(
-        &compiled(BAD_POINTER_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(BAD_POINTER_WAT), &input(0), GENEROUS).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -261,13 +233,8 @@ const NON_UTF8_REASON_WAT: &str = r#"
 
 #[tokio::test]
 async fn non_utf8_reason_is_lossy_decoded_not_a_fault() {
-    let verdict = run_validator_with_budgets(
-        &compiled(NON_UTF8_REASON_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(NON_UTF8_REASON_WAT), &input(0), GENEROUS).await;
     assert!(matches!(verdict, ValidatorVerdict::Refuse { .. }));
 }
 
@@ -293,13 +260,9 @@ const LOG_SEVENTEEN_TIMES_WAT: &str = r#"
 async fn sixteen_log_calls_honoured_seventeenth_ignored() {
     // No assertion on the log sink itself here (that's `tracing`'s own concern) — this test
     // pins that the 17th call does not trap or otherwise change the verdict.
-    let verdict = run_validator_with_budgets(
-        &compiled(LOG_SEVENTEEN_TIMES_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(LOG_SEVENTEEN_TIMES_WAT), &input(0), GENEROUS)
+            .await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -307,8 +270,7 @@ async fn sixteen_log_calls_honoured_seventeenth_ignored() {
 async fn input_over_one_mib_is_refused_without_running() {
     let mut oversized = input(0);
     oversized.name = Some("x".repeat(2 * 1024 * 1024));
-    let verdict =
-        run_validator_with_budgets(&compiled(ACCEPT_WAT), &oversized, GENEROUS.0, GENEROUS.1).await;
+    let verdict = run_validator_with_hang_guard(&compiled(ACCEPT_WAT), &oversized, GENEROUS).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -322,13 +284,12 @@ async fn input_over_one_mib_is_refused_without_running() {
 #[tokio::test]
 async fn a_call_that_never_returns_faults_hung_once_the_hang_guard_fires_first() {
     // `hang_guard` is shrunk far below the wall-clock cost of burning `MAX_FUEL`'s
-    // 50_000_000 units in a tight interpreted loop, and `slow_call_budget` is generously
-    // wide — so ONLY the hang guard can be what fires, proving the timeout path for real
-    // rather than merely observing a fault fuel exhaustion would have produced anyway.
-    let verdict = run_validator_with_budgets(
+    // 50_000_000 units in a tight interpreted loop, so ONLY the hang guard can be what
+    // fires, proving the timeout path for real rather than merely observing a fault fuel
+    // exhaustion would have produced anyway.
+    let verdict = run_validator_with_hang_guard(
         &compiled(INFINITE_LOOP_WAT),
         &input(0),
-        Duration::from_secs(3600),
         Duration::from_millis(1),
     )
     .await;
@@ -342,41 +303,37 @@ async fn a_call_that_never_returns_faults_hung_once_the_hang_guard_fires_first()
     );
 }
 
+/// Counts to 1_500_000 and returns 0: roughly 12 million fuel units, which takes longer than
+/// 50 ms to interpret in an unoptimized build and far less than `MAX_FUEL`.
+const SLOW_BUT_HEALTHY_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "validate") (param i32 i32) (result i32)
+      (local $i i32)
+      (block $done
+        (loop $l
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br_if $done (i32.ge_u (local.get $i) (i32.const 1500000)))
+          (br $l)))
+      (i32.const 0)))
+"#;
+
 #[tokio::test]
-async fn a_call_that_returns_past_the_slow_call_budget_is_reclassified_too_slow() {
-    // A zero-duration budget is exceeded by any measurable call, deterministically
-    // exercising the post-hoc reclassification without depending on real sleep timing the
-    // guest ABI has no way to request.
-    let verdict = run_validator_with_budgets(
-        &compiled(ACCEPT_WAT),
-        &input(0),
-        Duration::ZERO,
-        Duration::from_millis(250),
-    )
-    .await;
-    assert_eq!(
-        verdict,
-        ValidatorVerdict::Fault(ValidatorFault {
-            module: "test-module".into(),
-            kind: FaultKind::TooSlow,
-            consecutive: 0,
-        })
-    );
+async fn a_slow_but_healthy_call_is_not_faulted_whatever_the_wall_clock_says() {
+    // The verdict of a call that stays inside `MAX_FUEL` is a function of the guest's own
+    // instruction count, so a loaded host (which only stretches the wall clock) cannot turn
+    // an `Accept` into a fault. The production entry point is used on purpose: its budgets
+    // are the ones a loaded runner exercises.
+    let verdict = run_validator(&compiled(SLOW_BUT_HEALTHY_WAT), &input(0)).await;
+    assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
 #[tokio::test]
-async fn a_trapping_call_keeps_its_precise_kind_even_past_the_slow_call_budget() {
-    // A zero-duration budget is exceeded by any measurable call, but a call that TRAPPED is
-    // not reclassified: an infinite loop must surface as `OutOfFuel`, never `TooSlow` — the
-    // trap's own kind is strictly more diagnostic, and both count toward auto-disable
-    // identically.
-    let verdict = run_validator_with_budgets(
-        &compiled(INFINITE_LOOP_WAT),
-        &input(0),
-        Duration::ZERO,
-        Duration::from_secs(3600),
-    )
-    .await;
+async fn a_runaway_call_still_faults_out_of_fuel_under_the_production_budgets() {
+    // An unbounded loop must be stopped by the deterministic fuel cap, not by a wall-clock
+    // guard that a slow host could trip first.
+    let verdict = run_validator(&compiled(INFINITE_LOOP_WAT), &input(0)).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -403,13 +360,8 @@ const MALFORMED_LOG_ARGS_WAT: &str = r#"
 
 #[tokio::test]
 async fn malformed_log_args_are_dropped_not_a_fault() {
-    let verdict = run_validator_with_budgets(
-        &compiled(MALFORMED_LOG_ARGS_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(MALFORMED_LOG_ARGS_WAT), &input(0), GENEROUS).await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -426,13 +378,9 @@ const TRAPPING_REASON_PTR_WAT: &str = r#"
 
 #[tokio::test]
 async fn a_trapping_reason_export_is_classified_as_a_trap_not_a_bad_pointer() {
-    let verdict = run_validator_with_budgets(
-        &compiled(TRAPPING_REASON_PTR_WAT),
-        &input(0),
-        GENEROUS.0,
-        GENEROUS.1,
-    )
-    .await;
+    let verdict =
+        run_validator_with_hang_guard(&compiled(TRAPPING_REASON_PTR_WAT), &input(0), GENEROUS)
+            .await;
     let ValidatorVerdict::Fault(ValidatorFault { kind, .. }) = verdict else {
         panic!("expected Fault, got {verdict:?}");
     };

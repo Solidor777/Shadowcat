@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { repoFiles } from "../../../../scripts/lib/gate-corpus.mjs";
 import { makeRepo } from "../../../../scripts/lib/temp-repo.mjs";
 import {
+  ANY_HTTPS_NAMED,
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
   LAN_SPEC,
@@ -177,7 +178,37 @@ describe("CI project partition", () => {
   });
 });
 
-type ProjectPatterns = NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
+describe("launch switches per engine", () => {
+  /** The `args` a project launches its browser with: its own `launchOptions` replace the top-level ones. */
+  function launchArgs(config: PlaywrightTestConfig, project: NonNullable<PlaywrightTestConfig["projects"]>[number]): string[] {
+    return (project.use?.launchOptions ?? config.use?.launchOptions)?.args ?? [];
+  }
+
+  /** The engine a project drives; Playwright defaults an unset `browserName` to Chromium. */
+  function engine(config: PlaywrightTestConfig, project: NonNullable<PlaywrightTestConfig["projects"]>[number]): string {
+    return project.use?.browserName ?? config.use?.browserName ?? "chromium";
+  }
+
+  it("passes command-line switches only to Chromium projects, because WebKit exits on an unknown one", async () => {
+    const loaded = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    for (const project of loaded.projects ?? []) {
+      const args = launchArgs(loaded, project);
+      if (engine(loaded, project) === "chromium") continue;
+      expect(args, `${project.name} (${engine(loaded, project)}) must receive no Chromium switches`).toEqual([]);
+    }
+  });
+
+  it("gives the Chromium projects the base switches, so the check above sees real arguments (positive control)", async () => {
+    const loaded = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const chromium = (loaded.projects ?? []).filter((p) => engine(loaded, p) === "chromium");
+    expect(chromium.length).toBeGreaterThan(5);
+    for (const project of chromium) {
+      expect(launchArgs(loaded, project), `${project.name} lacks --use-gl=angle`).toContain("--use-gl=angle");
+    }
+  });
+});
+
+type ProjectPatterns =NonNullable<PlaywrightTestConfig["projects"]>[number]["testMatch"];
 
 /** Whether `file` matches one `testMatch` / `testIgnore` value. Only the regular-expression form
  * the config uses is evaluated; a glob string would be silently mis-read, so it fails loudly. */
@@ -240,6 +271,21 @@ describe("listSpecs reads the shared corpus", () => {
   });
 });
 
+/** The rule that keeps a spec out of the loopback project by mistake: a file named `https-*` must
+ * match EXACTLY one of the three https project selectors, and any other file none of them.
+ * @param spec A path under `e2e/`.
+ * @returns A description of the violation, or `undefined` when the rule holds.
+ * @example
+ * ```
+ * httpsSelectorViolation("e2e/https-trust.spec.ts"); // => undefined
+ * ```
+ */
+function httpsSelectorViolation(spec: string): string | undefined {
+  const selectors = [HTTPS_SPECS, UPGRADE_SPEC, UPGRADE_CHROMIUM_SPEC].filter((m) => m.test(spec)).length;
+  const expected = ANY_HTTPS_NAMED.test(spec) ? 1 : 0;
+  return selectors === expected ? undefined : `${spec} matches ${selectors} https selector(s), expected ${expected}`;
+}
+
 describe("spec-to-project assignment", () => {
   // Listed when the suite runs, not when the file is collected: a listing that goes wrong (slow or
   // failing) then fails these tests, and cannot stall the collection of the file's other suites.
@@ -252,12 +298,15 @@ describe("spec-to-project assignment", () => {
     expect(specs.length).toBeGreaterThan(10);
   });
 
-  it("assigns the https matchers to disjoint spec sets", () => {
+  it("gives every https-named spec exactly one https project selector", () => {
     for (const spec of specs) {
-      const matched = [HTTPS_SPECS, UPGRADE_SPEC, UPGRADE_CHROMIUM_SPEC].filter((m) => m.test(spec));
-      expect(matched.length, `${spec} matches more than one https matcher`).toBeLessThanOrEqual(1);
-      expect(ANY_HTTPS_SPEC.some((m) => m.test(spec)), spec).toBe(matched.length === 1);
+      expect(httpsSelectorViolation(spec), spec).toBeUndefined();
     }
+  });
+
+  it("flags an https-named spec that no project selector claims (the detector fires)", () => {
+    expect(httpsSelectorViolation("e2e/https-upgrade-other.spec.ts")).toContain("matches 0");
+    expect(ANY_HTTPS_SPEC.some((m) => m.test("e2e/https-upgrade-other.spec.ts"))).toBe(true);
   });
 
   it("runs every spec in EXACTLY the project set its matcher derives: none twice, none nowhere", async () => {

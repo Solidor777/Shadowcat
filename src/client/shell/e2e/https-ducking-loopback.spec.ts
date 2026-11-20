@@ -21,9 +21,17 @@ import { checkMeasuredOutcome, type OutcomeTable } from "../e2e-support/platform
 
 /** The measured outcome per engine project and platform. */
 const EXPECTED: OutcomeTable<string> = {
-  "https-chromium": { win32: 'frame:{"type":"hello"}' },
-  "https-firefox": { win32: 'frame:{"type":"hello"}' },
-  "https-webkit": { win32: "blocked" },
+  "https-chromium": {
+    win32: 'frame:{"type":"hello"}',
+    linux: 'frame:{"type":"hello"}',
+    darwin: 'frame:{"type":"hello"}',
+  },
+  "https-firefox": {
+    win32: 'frame:{"type":"hello"}',
+    linux: 'frame:{"type":"hello"}',
+    darwin: 'frame:{"type":"hello"}',
+  },
+  "https-webkit": { win32: "blocked", linux: "blocked", darwin: "blocked" },
 };
 
 /**

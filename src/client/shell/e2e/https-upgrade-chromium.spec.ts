@@ -2,7 +2,7 @@ import { test, expect, chromium } from "@playwright/test";
 import type { BrowserContext } from "@playwright/test";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { invokeBrowserButton } from "../e2e-support/browser-ui";
+import { INVOKE_TIMEOUT_MS, invokeBrowserButton } from "../e2e-support/browser-ui";
 import { launchWindowedChromium } from "../e2e-support/windowed-chromium";
 import { requirePrivateAddress } from "./https-support";
 
@@ -26,8 +26,8 @@ import { requirePrivateAddress } from "./https-support";
 //     DevTools therefore never reach it; a capture of the browser window shows it, and the
 //     operating system's accessibility API can invoke its button (`invokeBrowserButton`: Windows UI
 //     Automation, macOS System Events, Linux AT-SPI), which the interactive test below does on
-//     every platform. Only the Windows driver has been run against a real browser; the macOS and
-//     Linux drivers are first exercised by the CI matrix.
+//     every platform. The macOS and Linux drivers depend on the platform accessibility API and on
+//     the accessibility flag the launcher passes (`accessibilityArgs`).
 //   - the certificate interstitial a direct `https://` navigation shows DOES have a DOM; the last
 //     test drives its real "proceed" click path (`#details-button`, `#proceed-link`).
 // A connection-level failure (refused, reset, timed out) is a dead end and fails the test.
@@ -167,12 +167,21 @@ test("HTTPS-First's 'Continue to site' reaches the plain-HTTP app", async ({ bas
     const page = context.pages()[0] ?? (await context.newPage());
     // The navigation itself fails with ERR_BLOCKED_BY_CLIENT while the prompt is up.
     await page.goto(url.href, { timeout: 20_000 }).catch(() => undefined);
-    await expect
-      .poll(() => invokeBrowserButton(child.pid!, "Continue to site"), {
-        message: "the interstitial's 'Continue to site' button never appeared",
-        timeout: 20_000,
-      })
-      .toBe(true);
+    let report = "";
+    try {
+      await expect
+        .poll(
+          () => {
+            const result = invokeBrowserButton(child.pid!, "Continue to site");
+            report = result.invoked ? "" : result.report;
+            return result.invoked;
+          },
+          { message: "the interstitial's 'Continue to site' button never appeared", timeout: 2 * INVOKE_TIMEOUT_MS },
+        )
+        .toBe(true);
+    } catch (e) {
+      throw new Error(`${(e as Error).message}\nthe driver's last report: ${report}`);
+    }
     await expect(page.getByLabel("Username")).toBeVisible({ timeout: 20_000 });
     expect(page.url(), "Continue to site reaches the plain-HTTP origin").toMatch(/^http:\/\//);
   } finally {

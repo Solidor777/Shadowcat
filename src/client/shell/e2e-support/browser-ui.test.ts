@@ -34,7 +34,7 @@ describe("invokeBrowserButton", () => {
   it("runs the platform's command and reports the button invoked", () => {
     const calls: { file: string; timeoutMs: number }[] = [];
     const run: RunProgram = (file, _args, timeoutMs) => void calls.push({ file, timeoutMs });
-    expect(invokeBrowserButton(4242, "Continue to site", run, "linux")).toBe(true);
+    expect(invokeBrowserButton(4242, "Continue to site", run, "linux")).toEqual({ invoked: true });
     expect(calls).toEqual([{ file: "python3", timeoutMs: INVOKE_TIMEOUT_MS }]);
   });
 
@@ -43,8 +43,15 @@ describe("invokeBrowserButton", () => {
       throw Object.assign(new Error("exit 3"), { status: 3 });
     };
     for (const platform of ["win32", "darwin", "linux"] as const) {
-      expect(invokeBrowserButton(1, "x", run, platform), platform).toBe(false);
+      expect(invokeBrowserButton(1, "x", run, platform), platform).toEqual({ invoked: false, report: "" });
     }
+  });
+
+  it("carries the driver's standard-error report of what it saw when the button is absent", () => {
+    const run: RunProgram = () => {
+      throw Object.assign(new Error("exit 3"), { status: 3, stderr: Buffer.from("process 7: 1 window(s), buttons [Go back]\n") });
+    };
+    expect(invokeBrowserButton(7, "x", run, "darwin")).toEqual({ invoked: false, report: "process 7: 1 window(s), buttons [Go back]" });
   });
 
   it("rethrows any other failure: a broken driver is not 'not shown yet'", () => {

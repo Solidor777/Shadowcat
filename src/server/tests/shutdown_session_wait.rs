@@ -26,6 +26,29 @@ const TIMEOUT_WARNING: &str = "timed out waiting for websocket connections";
 /// Room for scheduling jitter when asserting a wait's lower bound.
 const JITTER: Duration = Duration::from_millis(150);
 
+/// Room for scheduling latency when asserting a wait's upper bound. It stays below
+/// `conn_serve::KILL_GRACE` (2 s): a connection that needed its kill grace would end the shutdown
+/// that much later, and a slack of that size would hide it.
+const UPPER_SLACK: Duration = Duration::from_millis(1500);
+
+/// The errors `serve_with` logs when a connection outlives its failed IO (the kill-grace and abort
+/// paths). A shutdown that ends on time logs neither; the drain-timeout warning is not among them
+/// because the stuck request in these tests passes the drain bound by design.
+const KILL_PATH_ERRORS: [&str; 2] = [
+    "connection dropped: it did not end after its IO failed",
+    "connection tasks did not end after their IO was failed; aborting them",
+];
+
+/// Asserts that the captured log text `text` holds no kill-path error.
+fn assert_no_kill_path(text: &str) {
+    for error in KILL_PATH_ERRORS {
+        assert!(
+            !text.contains(error),
+            "the shutdown needed the kill path ({error}):\n{text}"
+        );
+    }
+}
+
 /// A running `serve_with`, a request that keeps its connection in flight past the drain, and the
 /// instant shutdown was requested.
 struct Shutdown {
@@ -104,6 +127,7 @@ async fn a_session_that_releases_within_the_grace_after_the_deadline_is_waited_f
         "sessions that released inside the grace were reported as timed out:\n{}",
         log.text()
     );
+    assert_no_kill_path(&log.text());
 }
 
 #[tokio::test]
@@ -118,7 +142,7 @@ async fn a_session_that_never_releases_ends_the_wait_at_the_drain_bound_plus_the
         s.elapsed
     );
     assert!(
-        s.elapsed < expected + Duration::from_secs(1),
+        s.elapsed < expected + UPPER_SLACK,
         "serve_with outlasted the drain bound plus the session grace: {:?} > {expected:?}",
         s.elapsed
     );
@@ -132,4 +156,5 @@ async fn a_session_that_never_releases_ends_the_wait_at_the_drain_bound_plus_the
         "the timeout warning does not report the pending-sends gauge:\n{}",
         log.text()
     );
+    assert_no_kill_path(&log.text());
 }

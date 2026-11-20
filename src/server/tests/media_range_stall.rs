@@ -23,7 +23,7 @@ use shadowcat::auth::role::ServerRole;
 use shadowcat::config::Config;
 use shadowcat::data::asset::{Asset, AssetMeta};
 use shadowcat::http::assets::permits::StreamedFilePermits;
-use shadowcat::http::conn_serve::{egress_tick, ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
+use shadowcat::http::conn_serve::{ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
 use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::h2_session::{login, seeded_state};
 use shadowcat_test_support::tls::H2Client;
@@ -34,11 +34,6 @@ use uuid::Uuid;
 
 /// The no-progress window the tests run at.
 const WINDOW: Duration = Duration::from_secs(1);
-
-/// The sampler period at [`WINDOW`].
-fn tick() -> Duration {
-    egress_tick(WINDOW)
-}
 
 /// The drain bound the tests run at.
 const DRAIN: Duration = Duration::from_millis(500);
@@ -52,8 +47,18 @@ const SLICE: usize = 2 * 1024 * 1024;
 /// Size of the seeded media file: six slices, larger than any buffer between server and client.
 const MEDIA_LEN: usize = 6 * SLICE;
 
-/// Slack added to a cut's expected time for scheduling.
+/// Slack added to the drain's expected time for scheduling.
 const SLACK: Duration = Duration::from_millis(1000);
+
+/// Longest a test waits for a stalled response to be cut. A hang bound, not the sampler's latency:
+/// the sampler's cut between the window and one tick after it is pinned at its seam
+/// (`the_sampler_cuts_a_stalled_stream_between_the_window_and_one_tick_after_it` under a paused
+/// clock), and the cut's attribution is asserted through [`StallCuts`]. Through real sockets the
+/// stall begins only once the producer has filled the buffers between server and client, which
+/// costs CPU time: the cut follows the response by 1.1 s to 1.4 s on an idle machine and by up to
+/// 4.2 s when several copies of this file share one core, so a bound near `WINDOW` fails on a
+/// loaded runner without any change to the product.
+const CUT_WAIT: Duration = Duration::from_secs(20);
 
 /// Bytes whose value depends on the offset, so a wrongly placed slice is visible.
 fn pattern(len: usize) -> Vec<u8> {
@@ -565,7 +570,7 @@ per_protocol!(
 
         // The peer reads nothing; the response is cut and both resources come back.
         assert!(
-            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
+            wait_for(CUT_WAIT, || media.permits().held() == 0).await,
             "{protocol:?}: the cut never released the permit"
         );
         assert!(
@@ -655,7 +660,12 @@ per_protocol!(
         let mut reply = media.get(&url, &[]).await;
         assert_eq!(reply.status(), 200, "{protocol:?}");
         let mut received = reply.read_at_least(SLICE / 2).await.unwrap();
-        tokio::time::sleep(WINDOW + tick() + SLACK).await;
+        // The stall starts once the producer has filled the buffers, so the cut is awaited through
+        // the permit it releases instead of a fixed sleep; reading resumes only after the cut.
+        assert!(
+            wait_for(CUT_WAIT, || media.permits().held() == 0).await,
+            "{protocol:?}: the stalled response was never cut"
+        );
         // Whatever the kernel and h2 had buffered still arrives; the rest never does.
         let cut = loop {
             match reply.read_some().await {
@@ -715,7 +725,7 @@ per_protocol!(
             "{protocol:?}: the response holds no permit while it streams"
         );
         assert!(
-            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
+            wait_for(CUT_WAIT, || media.permits().held() == 0).await,
             "{protocol:?}: the stalled compressed response was never cut"
         );
         drop(reply);
@@ -791,9 +801,10 @@ per_protocol!(
             "{protocol:?}: the drain took {took:?}"
         );
         drop(reply);
-        assert_eq!(
-            permits.held(),
-            0,
+        // An HTTP/2 request runs on its own spawned stream task (`StreamExec`), which the drain
+        // report does not join: it drops its permit at its next poll after the IO failed.
+        assert!(
+            wait_for(CUT_WAIT, || permits.held() == 0).await,
             "{protocol:?}: the drain left a permit held"
         );
         assert!(
@@ -838,7 +849,7 @@ per_protocol!(
 
         // After they are cut the pool serves again.
         assert!(
-            wait_for(WINDOW + tick() + SLACK, || media.permits().held() == 0).await,
+            wait_for(CUT_WAIT, || media.permits().held() == 0).await,
             "{protocol:?}"
         );
         let mut again = media.get(&url, &[("range", "bytes=0-9".into())]).await;
@@ -928,10 +939,7 @@ async fn a_cut_export_releases_the_barrier_and_the_permit() {
     // The client reads nothing: the connection is cut, the dropped receiver ends the producing
     // thread, and the task that held both resources returns them.
     assert!(
-        wait_for(WINDOW + tick() + SLACK, || {
-            state.file_permits.held() == 0
-        })
-        .await,
+        wait_for(CUT_WAIT, || state.file_permits.held() == 0).await,
         "the cut export never released its permit"
     );
     assert!(

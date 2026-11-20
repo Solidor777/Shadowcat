@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { Browser } from "@playwright/test";
-import { accessibilityArgs, launchWindowedChromium, PINNED_LOCALE, type BrowserProcess, type LaunchDeps } from "./windowed-chromium";
+import { accessibilityArgs, launchWindowedChromium, PINNED_LOCALE, sandboxArgs, type BrowserProcess, type LaunchDeps } from "./windowed-chromium";
 
 const BROWSER = { tag: "browser" } as unknown as Browser;
 
@@ -27,6 +27,7 @@ function fakes(upAfter: number) {
     freePort: async () => 9999,
     prepareProfile: vi.fn(),
     platform: "linux",
+    ci: true,
     timeoutMs: 120,
     pollMs: 5,
   };
@@ -46,6 +47,7 @@ describe("launchWindowedChromium", () => {
     expect(args).toContain("--user-data-dir=profile-dir");
     expect(args).toContain("--x=1");
     expect(args).toContain("--force-renderer-accessibility");
+    expect(args.filter((a) => a === "--no-sandbox"), "the sandbox flag appears exactly once").toHaveLength(1);
     expect(args.at(-1)).toBe("about:blank");
     expect(deps.prepareProfile).toHaveBeenCalledWith("profile-dir");
     expect(child.killed, "a successful launch keeps the browser").toBe(0);
@@ -71,6 +73,15 @@ describe("launchWindowedChromium", () => {
     };
     await expect(launchWindowedChromium("p", [], deps)).rejects.toThrow("boom");
     expect(child.killed).toBe(1);
+  });
+});
+
+describe("sandboxArgs", () => {
+  it("turns the sandbox off only for Linux on CI", () => {
+    expect(sandboxArgs("linux", true)).toEqual(["--no-sandbox"]);
+    expect(sandboxArgs("linux", false)).toEqual([]);
+    expect(sandboxArgs("darwin", true)).toEqual([]);
+    expect(sandboxArgs("win32", true)).toEqual([]);
   });
 });
 
