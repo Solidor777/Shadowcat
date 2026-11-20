@@ -546,6 +546,23 @@ function headerValue(headers: Record<string, string>, name: string): string | un
   return key === undefined ? undefined : headers[key];
 }
 
+/** Counts the recorded responses by status, for a failure message.
+ * @param log - The recorded traffic.
+ * @returns The number of responses per status.
+ * @example
+ * ```
+ * declare const log: TrafficLog;
+ * const counts = statusCounts(log);
+ * ```
+ */
+function statusCounts(log: TrafficLog): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const e of log.events.filter((x) => x.kind === "response")) {
+    counts[String(e.status)] = (counts[String(e.status)] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** Asserts the traffic contract every long-audio leg shares: only `variant` is requested (never
  * the canonical URL, never the other derivative), every response the page saw is a `206`, the
  * initial `200` or a `304` to a conditional request, nothing is compressed, no request fails except the element's own cancellation,
@@ -569,7 +586,11 @@ export function assertTrafficContract(log: TrafficLog, variant: Variant, raw: Ra
     // A `304` answers a conditional request (an engine revalidating a cached derivative before
     // ranging into it); one to a request with no `If-None-Match` is a server defect.
     if (e.status !== 304 || e.ifNoneMatch === null) {
-      expect([200, 206], `status ${e.status} for ${e.range} (If-None-Match ${e.ifNoneMatch})`).toContain(e.status);
+      expect(
+        [200, 206],
+        `status ${e.status} for ${e.range} (If-None-Match ${e.ifNoneMatch}); event ${JSON.stringify(e)}; ` +
+          `statuses ${JSON.stringify(statusCounts(log))}`,
+      ).toContain(e.status);
     }
     if (raw === null && e.status === 206) {
       const { start, end } = parseContentRange(e.contentRange!);
