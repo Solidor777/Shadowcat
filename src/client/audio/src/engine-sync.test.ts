@@ -1,57 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type AudioStateEngine, type PlayingTrack } from "@shadowcat/core";
-import { AudioEngine, SYNC_TICK_MS, type AudioEngineOpts } from "./engine";
+import { SYNC_TICK_MS } from "./engine";
 import { setMediaElementFactory } from "./track-player";
-import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
-import { stubAudioContext, stubMediaElement, stubWasmDecoder } from "./__fixtures__/stubContext";
-import type { MediaElementLike } from "./context";
-
-function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
-  return {
-    id,
-    playlist: null,
-    trackIndex: 0,
-    asset: "a1",
-    channel: "music",
-    gain: 1,
-    loop: false,
-    startedAt: 0,
-    pausedAt: null,
-    ...over,
-  };
-}
-
-function state(...playing: PlayingTrack[]): AudioStateEngine {
-  return { playing, shuffleSeed: 0 };
-}
-
-/** The harness every case builds an engine from: the clock the tests advance, the manual
- * timer and the scripted visibility source, plus every element the engine created. */
-function rig(over: Partial<AudioEngineOpts> = {}) {
-  const clock = { ms: 0 };
-  const timer = timerHarness();
-  const visibility = visibilityHarness();
-  const elements: MediaElementLike[] = [];
-  setMediaElementFactory(() => {
-    const el = stubMediaElement();
-    elements.push(el);
-    return el;
-  });
-  const engine = new AudioEngine({
-    resolver: new AssetResolver(),
-    serverNow: () => clock.ms,
-    transport: vi.fn(),
-    createContext: () => stubAudioContext(),
-    createOggOpusDecoder: async () => stubWasmDecoder(),
-    raf: () => 1,
-    caf: () => {},
-    timer,
-    visibility,
-    ...over,
-  });
-  return { engine, clock, timer, visibility, elements };
-}
+import { entry, rig, state } from "./__fixtures__/engineHarness";
+import { stubMediaElement } from "./__fixtures__/stubContext";
 
 beforeEach(() => {
   setMediaElementFactory(() => stubMediaElement());

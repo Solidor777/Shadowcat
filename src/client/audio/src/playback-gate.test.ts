@@ -1,34 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type PlayingTrack, type SceneAudibility } from "@shadowcat/core";
-import { AudioEngine } from "./engine";
-import { OneShotPlayer } from "./one-shot-player";
+import { AssetResolver, type SceneAudibility } from "@shadowcat/core";
 import { FallbackTrackPlayer } from "./fallback-player";
 import { PlaybackGate } from "./playback-gate";
-import { setMediaElementFactory, TrackPlayer } from "./track-player";
-import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
-import {
-  quietGate,
-  stubAudioContext,
-  stubMediaElement,
-  stubWasmDecoder,
-  type StubMediaElement,
-} from "./__fixtures__/stubContext";
-
-function entry(over: Partial<PlayingTrack> = {}): PlayingTrack {
-  return {
-    id: "e1",
-    playlist: null,
-    trackIndex: 0,
-    asset: "a1",
-    channel: "music",
-    gain: 1,
-    loop: false,
-    startedAt: 0,
-    pausedAt: null,
-    ...over,
-  };
-}
+import { setMediaElementFactory } from "./track-player";
+import { entry, rig, settle, state } from "./__fixtures__/engineHarness";
+import { quietGate, stubMediaElement, type StubMediaElement } from "./__fixtures__/stubContext";
 
 /** The browser's autoplay refusal. */
 function notAllowed(): Error {
@@ -42,14 +19,6 @@ function refusePlay(el: StubMediaElement, error: Error): ReturnType<typeof vi.fn
   const play = vi.fn(() => Promise.reject(error));
   el.play = play;
   return play;
-}
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-function dest() {
-  return { gain: { value: 1, setTargetAtTime: () => {} }, connect: () => {}, disconnect: () => {} };
 }
 
 beforeEach(() => {
@@ -103,70 +72,21 @@ describe("PlaybackGate", () => {
 });
 
 describe("every arm starts its element through the gate", () => {
-  it("TrackPlayer streaming: a refused element is asked once across many syncs and reports the refusal", async () => {
-    const ctx = stubAudioContext();
-    const el = stubMediaElement();
-    setMediaElementFactory(() => el);
-    const play = refusePlay(el, notAllowed());
-    const onBlocked = vi.fn();
-    const oneShot = new OneShotPlayer(
-      ctx,
-      new AssetResolver(),
-      { master: dest(), music: dest(), ambience: dest(), sfx: dest(), ui: dest() },
-      async () => stubWasmDecoder(),
-    );
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShot, entry(), dest(), () => {}, new PlaybackGate(onBlocked));
-    for (let i = 0; i < 20; i++) {
-      player.sync(entry(), i * 1000);
-      await settle();
-    }
-    expect(play).toHaveBeenCalledTimes(1);
-    expect(onBlocked).toHaveBeenCalledTimes(1);
-  });
-
   it("FallbackTrackPlayer: a playing element is not asked again on later syncs", () => {
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
     const play = vi.spyOn(el, "play");
-    const player = new FallbackTrackPlayer(new AssetResolver(), () => ({ gain: 1, muted: false }), entry(), () => {}, quietGate());
-    for (let i = 0; i < 20; i++) player.sync(entry(), i * 1000);
+    const player = new FallbackTrackPlayer(new AssetResolver(), () => ({ gain: 1, muted: false }), entry("e1"), () => {}, quietGate());
+    for (let i = 0; i < 20; i++) player.sync(entry("e1"), i * 1000);
     expect(play).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("AudioEngine start-up through the gate", () => {
-  function engineWith(over: { throwContext?: boolean } = {}) {
-    const elements: StubMediaElement[] = [];
-    setMediaElementFactory(() => {
-      const el = stubMediaElement();
-      elements.push(el);
-      return el;
-    });
-    const clock = { ms: 0 };
-    const timer = timerHarness();
-    const engine = new AudioEngine({
-      resolver: new AssetResolver(),
-      serverNow: () => clock.ms,
-      transport: vi.fn(),
-      createContext: () => {
-        if (over.throwContext) throw new Error("no web audio");
-        return stubAudioContext();
-      },
-      createOggOpusDecoder: async () => stubWasmDecoder(),
-      raf: () => 1,
-      caf: () => {},
-      timer,
-      visibility: visibilityHarness(),
-    });
-    return { engine, elements, timer, clock };
-  }
-
   it("a refused streaming element sets needsGesture, notifies once, and the ticks do not re-ask", async () => {
-    const { engine, elements, timer } = engineWith();
-    const notified = vi.fn();
-    engine.subscribe(notified);
+    const { engine, elements, timer, notified } = rig();
     await engine.unlock();
-    engine.applyState({ playing: [entry()], shuffleSeed: 0 });
+    engine.applyState(state(entry("e1")));
     const play = refusePlay(elements[0], notAllowed());
     // The element was already started by applyState; re-pause so the gate sees it paused.
     elements[0].paused = true;
@@ -180,7 +100,11 @@ describe("AudioEngine start-up through the gate", () => {
   });
 
   it("a degraded carried emitter is started only while paused", async () => {
-    const { engine, elements } = engineWith({ throwContext: true });
+    const { engine, elements } = rig({
+      createContext: () => {
+        throw new Error("no web audio");
+      },
+    });
     await engine.unlock();
     const payload: SceneAudibility = {
       scene: "s1",

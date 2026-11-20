@@ -1,76 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type AudioStateEngine, type PlayingTrack } from "@shadowcat/core";
-import { AudioEngine, RESUME_WAIT_MS } from "./engine";
+import { RESUME_WAIT_MS } from "./engine";
 import { SYNC_SEEK_THRESHOLD_SECS, setMediaElementFactory } from "./track-player";
-import { timerHarness, visibilityHarness } from "./__fixtures__/engineHarness";
-import {
-  stubAudioContext,
-  stubBuffer,
-  stubMediaElement,
-  stubWasmDecoder,
-  wavBytes,
-  type StubAudioContext,
-  type StubMediaElement,
-} from "./__fixtures__/stubContext";
-
-function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
-  return {
-    id,
-    playlist: null,
-    trackIndex: 0,
-    asset: "a1",
-    channel: "music",
-    gain: 1,
-    loop: false,
-    startedAt: 0,
-    pausedAt: null,
-    ...over,
-  };
-}
-
-function state(...playing: PlayingTrack[]): AudioStateEngine {
-  return { playing, shuffleSeed: 0 };
-}
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-/** Everything one recovery case needs: the engine over a scripted context, the clock, the
- * timer and visibility harnesses, a counter of `serverNow` reads (one per `applyState` on the
- * graph path) and every element the engine created. */
-function rig() {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
-  const ctx: StubAudioContext = stubAudioContext();
-  ctx.decodeAudioData = async () => stubBuffer(100);
-  const clock = { ms: 0, reads: 0 };
-  const timer = timerHarness();
-  const visibility = visibilityHarness();
-  const elements: StubMediaElement[] = [];
-  setMediaElementFactory(() => {
-    const el = stubMediaElement();
-    elements.push(el);
-    return el;
-  });
-  const engine = new AudioEngine({
-    resolver: new AssetResolver(),
-    serverNow: () => {
-      clock.reads++;
-      return clock.ms;
-    },
-    transport: vi.fn(),
-    createContext: () => ctx,
-    createOggOpusDecoder: async () => stubWasmDecoder(),
-    raf: () => 1,
-    caf: () => {},
-    timer,
-    visibility,
-  });
-  const notified = vi.fn();
-  engine.subscribe(notified);
-  return { ctx, clock, timer, visibility, elements, engine, notified };
-}
+import { entry, rig, settle, state } from "./__fixtures__/engineHarness";
+import { stubMediaElement, type StubAudioContext } from "./__fixtures__/stubContext";
 
 /** Buffer sources started and not stopped. */
 function liveSources(ctx: StubAudioContext): number {
