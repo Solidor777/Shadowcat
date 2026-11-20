@@ -357,17 +357,23 @@ where
 }
 
 /// Sends one error frame and then a Close frame. Every send is bounded by the sink
-/// (`BoundedSink`), so a peer that is not reading cannot hold the session task here.
+/// (`BoundedSink`), so a peer that is not reading cannot hold the session task here. A failed
+/// error send ends the refusal without a Close: a send fails only when the peer stopped reading
+/// or the socket is dead, and the Close would wait on the same condition, so once shutdown is
+/// signalled the whole refusal stays inside one `CLOSE_SEND_TIMEOUT`.
 async fn reject_join<S>(sink: &mut S, code: WsErrorCode, message: &str)
 where
     S: Sink<Message> + Unpin,
 {
-    let _ = sink
+    let sent = sink
         .send(text(&ServerMsg::Error {
             code,
             message: message.into(),
         }))
         .await;
+    if sent.is_err() {
+        return;
+    }
     send_close(sink).await;
 }
 
@@ -385,26 +391,57 @@ fn join_refusal(e: &crate::data::DataError) -> (WsErrorCode, &'static str) {
     }
 }
 
-/// Reads and discards inbound frames until the peer's Close or the end of the stream, giving up
-/// after `CLOSE_SEND_TIMEOUT`. A refused client has already sent its `hello`; closing a TCP
-/// socket that still holds unread data makes the OS reset the connection, which discards the
-/// refusal frame still in flight to the peer. Draining first lets the Close handshake finish.
-async fn drain_inbound<R>(stream: &mut R)
+/// Reads and discards inbound frames until the peer's Close or the end of the stream. A refused
+/// client has already sent its `hello`; closing a TCP socket that still holds unread data makes
+/// the OS reset the connection, which discards the refusal frame still in flight to the peer.
+/// Draining first lets the Close handshake finish.
+///
+/// Two bounds end the wait: `CLOSE_SEND_TIMEOUT` from the start (a silent peer), and the shutdown
+/// signal (`shutdown` set, now or later), which ends it at once. Once sessions are told to close,
+/// the server is going away and the drain only spares the peer a connection reset, so it must not
+/// add a wait after the refusal's own bounded sends.
+async fn drain_inbound<R>(stream: &mut R, mut shutdown: tokio::sync::watch::Receiver<bool>)
 where
     R: Stream<Item = Result<Message, axum::Error>> + Unpin,
 {
-    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, async {
+    let read_to_close = async {
         while let Some(Ok(frame)) = stream.next().await {
             if matches!(frame, Message::Close(_)) {
                 break;
             }
         }
+    };
+    let signalled = async {
+        let _ = shutdown.wait_for(|set| *set).await;
+    };
+    let _ = tokio::time::timeout(CLOSE_SEND_TIMEOUT, async {
+        tokio::select! {
+            () = read_to_close => {}
+            () = signalled => {}
+        }
     })
     .await;
 }
 
-/// Refuses a join on `socket`: sends the `(code, message)` refusal frame and a Close through the
-/// bounded sink, then drains the peer's inbound frames (`drain_inbound`) before the socket drops.
+/// Sends the `(code, message)` refusal frame and a Close through `sink` (`reject_join`), then
+/// drains the peer's inbound frames from `stream` (`drain_inbound`). The sink and the stream are
+/// the two halves of one socket; the caller drops them after this returns.
+async fn refuse_streams<S, R>(
+    sink: &mut S,
+    stream: &mut R,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    code: WsErrorCode,
+    message: &str,
+) where
+    S: Sink<Message> + Unpin,
+    R: Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    reject_join(sink, code, message).await;
+    drain_inbound(stream, shutdown).await;
+}
+
+/// Refuses a join on `socket`: splits it, bounds the sink (`WsState::bounded_sink`) and refuses
+/// through the halves (`refuse_streams`) before the socket drops.
 async fn refuse_socket(
     state: &AppState,
     socket: WebSocket,
@@ -414,8 +451,14 @@ async fn refuse_socket(
 ) {
     let (sink, mut stream) = socket.split();
     let mut sink = state.ws.bounded_sink(sink, &state.config, tunnel);
-    reject_join(&mut sink, code, message).await;
-    drain_inbound(&mut stream).await;
+    refuse_streams(
+        &mut sink,
+        &mut stream,
+        state.ws.shutdown.clone(),
+        code,
+        message,
+    )
+    .await;
 }
 
 /// Maps a join-path `DataError` through `join_refusal`, logs it (a membership refusal at info,

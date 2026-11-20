@@ -2,6 +2,8 @@
 //! after shutdown, and while a join is being refused.
 //!
 //! The sends are bounded: `egress_loop`'s frame and Close sends and `reject_join`'s refusal sends.
+//! A refusal's other wait, `drain_inbound`, ends at `CLOSE_SEND_TIMEOUT` or at the shutdown signal;
+//! the `refusal_drain` tests pin it.
 
 use std::time::Duration;
 
@@ -166,7 +168,7 @@ async fn an_idle_session_still_closes_with_a_close_frame_on_shutdown() {
 }
 
 /// A sink over `credits` permits, bounded by `stall`, and the channel its accepted frames reach.
-fn refusal_sink(
+pub(super) fn refusal_sink(
     credits: usize,
     stall: Duration,
 ) -> (
