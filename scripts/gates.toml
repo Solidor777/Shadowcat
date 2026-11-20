@@ -468,6 +468,27 @@ reason = "Builds the client bundle and the RELEASE server binary the long-audio 
 [[gate]]
 workflow = "ci.yml"
 job = "e2e-long-audio"
+command = "cat /proc/sys/net/ipv4/tcp_wmem /proc/sys/net/ipv4/tcp_rmem"
+tier = "ci-only"
+reason = "Prints the Linux TCP buffer limits the measurement below runs under; the file exists only on Linux."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "cargo run --release -p shadowcat-test-support --bin egress_measure -- h1-progress 1,1,1,1,1,1,1,1,1,1 64 3"
+tier = "ci-only"
+reason = "Measures the Linux socket's acceptance lumps for a progressing HTTP/1 reader; the figure is the Linux runner's, and a developer machine's kernel differs."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
+command = "cargo run --release -p shadowcat-test-support --bin egress_measure -- socket-grants 0 0 1048576 16384"
+tier = "ci-only"
+reason = "Measures the Linux socket's grant granularity for a bare socket pair; the figure is the Linux runner's, and a developer machine's kernel differs."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e-long-audio"
 command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit"
 tier = "ci-only"
 reason = "The sampled long-audio streaming specs: real-time playback of 20-minute tracks, about two minutes per track per engine and protocol plus the transcode, against a server of its own with a short egress window. Minutes of wall clock and a fixed port, so it stays in CI outside the local tiers, where only the isolated runner attributes a result to the tree under test."
