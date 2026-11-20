@@ -96,9 +96,9 @@ function resolveLanIp(): string | undefined {
  * an engine sees a real hostname rather than an address literal. */
 const UPGRADE_HOST = "upgrade.shadowcat.example";
 
-/** Chromium launch flags shared by the Chromium projects (Firefox and WebKit projects never receive them). `--use-gl=angle` selects the platform's real GL
- * backend instead of the CPU rasterizer, and ANGLE falls back to SwiftShader by itself where no
- * device exists, so the flag is safe on a GPU-less runner rather than something to gate per
+/** Chromium launch flags shared by the Chromium projects (Firefox and WebKit projects never
+ * receive them). `--use-gl=angle` selects the platform's real GL backend instead of the CPU
+ * rasterizer, and ANGLE falls back to SwiftShader by itself where no device exists, so the flag is safe on a GPU-less runner rather than something to gate per
  * environment. `--autoplay-policy=no-user-gesture-required`: the audio engine's `AudioContext`
  * is constructed before any click, and Chromium's default gesture requirement would otherwise
  * keep it suspended for the rest of the test no matter what gets clicked afterward. */

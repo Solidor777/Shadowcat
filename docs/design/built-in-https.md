@@ -630,8 +630,8 @@ browser window shows it. On Windows its "Continue to site" button is invoked thr
 (`invokeBrowserButton`), which reaches the plain-HTTP app; that click is automated. On macOS the
 same function drives System Events through JavaScript for Automation, and on Linux AT-SPI through
 PyGObject under a virtual display; the `ui-e2e-https` CI job runs the interstitial specs with the
-matching driver on each of its three OS legs. The certificate error interstitial of a direct `https://` navigation does
-have a DOM and its "Advanced" / "Proceed" click is automated. Not verified: real Safari, real
+matching driver on each of its three OS legs. The certificate error interstitial of a direct
+`https://` navigation does have a DOM and its "Advanced" / "Proceed" click is automated. Not verified: real Safari, real
 Android Chrome and any browser's behaviour for a public IP address.
 Outcomes are asserted per (project, platform); the address under test must be private (RFC 1918),
 because engines upgrade CGNAT and public addresses like internet hosts: on such an address the
