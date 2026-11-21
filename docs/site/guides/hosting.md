@@ -563,7 +563,7 @@ returns no flow-control credit for that long, or whose socket accepts almost not
 HTTP/2 stream is reset and the rest of the connection is untouched, or, when the response had
 already ended and its last bytes are stuck, or over HTTP/1, the whole connection is closed. A
 WebSocket send that stays pending for that long ends its session; over HTTP/2 a session that is
-more than a send buffer (64 KiB) ahead of what its peer has taken stops sending until the peer
+more than a send buffer (160 KiB) ahead of what its peer has taken stops sending until the peer
 catches up, and that wait counts. A connection with nothing in flight is never cut by this setting.
 A cut asset response of a type served with byte-range support (audio, video, images, PDFs and
 archives) can be resumed with a `Range` request from the first byte not received; a cut world

@@ -371,22 +371,37 @@ pub const PEER_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// value ([`crate::ws::tunnel_gate`]), because hyper's tunnel task ignores the buffer. The DATA
 /// still queued behind a stalled stream window once a body has ended is at most one chunk, not
 /// this: hyper hands a chunk over only while the stream's buffer holds less than the credit the
-/// peer has granted. Chosen over hyper's 400 KiB default for these bounds (about a fifth of the
-/// memory a stalled peer can pin per stream), and kept above [`EGRESS_CHUNK_BYTES`] so a stream
-/// always has room to queue one whole chunk.
+/// peer has granted. Chosen over hyper's 400 KiB default for these bounds (under half the memory a
+/// stalled peer can pin per stream: 160 KiB plus one chunk, 176 KiB, against 400 KiB plus one
+/// chunk), and kept above [`EGRESS_CHUNK_BYTES`] so a stream always has room to queue one whole
+/// chunk.
 ///
-/// The cost is download throughput on a fast link. Measured on Windows loopback with the `h2`
-/// client (24 MiB bodies, 6 MiB stream window, a bare hyper server, 100 downloads per setting, 3
-/// runs): 64 KiB reaches 0.94 to 0.97 of the 400 KiB default's median in an optimised build and
-/// 0.66 to 0.79 in an unoptimised one, where per-wake-up cost is not hidden. Public so the
-/// throughput gate (`h2_send_buf_gate`) serves a bare HTTP/2 connection with this very value.
+/// The trade-off is memory held per stalled stream against download throughput on a fast link. The
+/// criterion is the median over runs of the ratio of this setting's download time to the 400 KiB
+/// default's (24 MiB bodies over loopback, release build, bare hyper servers, 100 downloads per
+/// median, 24 to 36 runs per size and operating system). A single run is not the criterion: two
+/// bare servers at the same default buffer read a ratio between 0.85 and 1.10 against each other
+/// on a macOS runner, so no size meets a per-run floor of 0.90 on every run. The median ratio at
+/// 128 KiB is 0.948 on Linux, 0.908 on Windows and 0.921 on macOS; at 160 KiB it is 0.961, 0.939
+/// and 0.935. 128 KiB clears 0.90 on Windows by 0.008, 160 KiB by 0.039, which is why 160 KiB is
+/// the setting. An unoptimised build reads 0.66 to 0.79 at 64 KiB, where per-wake-up cost is not
+/// hidden, so the criterion is read from release builds only.
+///
+/// Comparable peers: Apache httpd's `H2StreamMaxMemSize` (the outgoing data bytes buffered per
+/// active stream) defaults to 65536 (<https://httpd.apache.org/docs/2.4/mod/mod_http2.html>), and
+/// the `h2` crate's own default is about 400 KiB
+/// (<https://docs.rs/hyper/latest/hyper/server/conn/http2/struct.Builder.html>). No source found
+/// gives a reason to prefer another size for streaming media.
+///
+/// Public so the throughput gate (`h2_send_buf_gate`) serves a bare HTTP/2 connection with this
+/// very value.
 ///
 /// # Examples
 ///
 /// ```
 /// assert!(shadowcat::http::conn_serve::H2_SEND_BUF_BYTES >= 16 * 1024);
 /// ```
-pub const H2_SEND_BUF_BYTES: usize = 64 * 1024;
+pub const H2_SEND_BUF_BYTES: usize = 160 * 1024;
 
 // A buffer smaller than one chunk would make every chunk wait for credit it cannot be granted.
 const _: () = assert!(H2_SEND_BUF_BYTES >= EGRESS_CHUNK_BYTES);

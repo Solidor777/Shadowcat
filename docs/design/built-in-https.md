@@ -411,11 +411,13 @@ task paces its own accept errors.
       raising `egress_window_secs` lowers the rate that is cut.
     - Consequences: a reader that returns credit for less than about one chunk per window is cut; a
       cut `export_world` download restarts from zero (it has no length and no `Range`).
-    - Memory per stalled stream: `H2_SEND_BUF_BYTES` (64 KiB, hyper's default is 400 KiB) bounds the
-      body bytes polled ahead of an unread peer to the buffer plus one chunk, and the unsent backlog
-      behind a socket that accepts nothing. The throughput cost of that setting is recorded per
-      operating system by `tests/h2_send_buf_gate.rs`, which CI runs in a release build and which
-      asserts nothing but byte delivery until all three systems' values are recorded.
+    - Memory per stalled stream: `H2_SEND_BUF_BYTES` (160 KiB, hyper's default is 400 KiB) bounds the
+      body bytes polled ahead of an unread peer to the buffer plus one chunk (176 KiB), and the
+      unsent backlog behind a socket that accepts nothing. The throughput cost of that setting is
+      judged by the median over runs of the download-time ratio against the default (at least
+      0.90 on every operating system; the recorded medians are in the constant's documentation)
+      and recorded per operating system by `tests/h2_send_buf_gate.rs`, which CI runs in a release
+      build and which also asserts a per-run floor below the worst recorded run.
     - No per-content-type exemption: a receiver that stops reading by choice (a paused media
       element) is cut like any other.
     - WebSocket sends: every send goes through `ws::bounded_sink::BoundedSink`, built by

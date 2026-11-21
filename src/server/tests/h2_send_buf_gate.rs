@@ -1,7 +1,8 @@
-//! Throughput gate for the HTTP/2 send buffer the server sets ([`H2_SEND_BUF_BYTES`], 64 KiB).
+//! Throughput gate for the HTTP/2 send buffer the server sets ([`H2_SEND_BUF_BYTES`], 160 KiB).
 //!
-//! The keep criterion is at least 90 percent of the median loopback download throughput of an
-//! HTTP/2 server at the library's default send buffer (400 KiB).
+//! The keep criterion is that the median over runs of the buffer ratio is at least 0.90: the
+//! median loopback download throughput at [`H2_SEND_BUF_BYTES`] is at least 90 percent of an
+//! HTTP/2 server's at the library's default send buffer (400 KiB).
 //!
 //! Two ratios are recorded per run, both against a bare hyper server at the library default. The
 //! buffer ratio serves a bare server with [`H2_SEND_BUF_BYTES`], so the send buffer is the only
@@ -13,11 +14,9 @@
 //! behind a socket that accepts nothing and a WebSocket tunnel's lead over the wire, at the price
 //! of more wake-ups per byte on a fast link. The 90 percent
 //! figure is an empirical keep criterion (a throughput ratio on shared hardware has no derivation),
-//! so each run is recorded per operating system with `measure::record`. The ratio asserts nothing:
-//! a per-run floor of 0.90 sits inside the run-to-run noise of a macOS CI runner, where two bare
-//! servers at the same (default) send buffer read a ratio between 0.85 and 1.10, so no send-buffer
-//! size can meet it on every run. The premises that are not empirical are asserted: every
-//! download delivers every byte.
+//! so each run is recorded per operating system with `measure::record`. The ratio is not asserted
+//! yet: the floor waits on the records of this setting. The premises that are not empirical are
+//! asserted: every download delivers every byte.
 //!
 //! The criterion is defined for the release profile: a debug build's per-frame cost dominates the
 //! loopback download, so the ratios of a debug run are not comparable with it. Each record names
