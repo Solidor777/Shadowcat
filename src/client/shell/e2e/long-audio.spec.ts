@@ -266,6 +266,20 @@ for (const leg of [...CHROMIUM_LEGS]) {
         `a response after the seek starts in the last slice region; saw ${JSON.stringify(landed)}`,
       ).toBe(true);
       const lastSlot = Math.floor(lengthSecs / MANIFEST.slot_secs) - 1;
+      if (hasWebAudio) {
+        const flips: [number, number | null, number, number][] = [];
+        let previous: number | null | undefined;
+        while (serverPositionSecs(seeked!) < lengthSecs - 7.5) {
+          const position = serverPositionSecs(seeked!);
+          const reading = await readMarker(page);
+          if (reading.code !== previous) {
+            flips.push([position, reading.code, expectedCode(leg.track, position), (await elementState(page, track.assetId))?.currentTime ?? -1]);
+            previous = reading.code;
+          }
+          await page.waitForTimeout(50);
+        }
+        process.stdout.write(`WEBKIT-AUDIBLE ${testInfo.repeatEachIndex} ${JSON.stringify(flips)}\n`);
+      }
       if (slotPhase(serverPositionSecs(seeked!)) < READ_PHASE_SECS + 1) await readSlot(seeked!, "after-seek", lastSlot - 1, true);
       await readSlot(seeked!, "after-seek", lastSlot, true);
 

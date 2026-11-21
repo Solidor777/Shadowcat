@@ -475,7 +475,7 @@ reason = "Prints the Linux TCP buffer limits the measurement below runs under; t
 [[gate]]
 workflow = "ci.yml"
 job = "e2e-long-audio"
-command = "cargo run --release -p shadowcat-test-support --bin egress_measure -- h1-progress 1,1,1,1,1,1,1,1,1,1 64 3"
+command = "cargo run --release -p shadowcat-test-support --bin egress_measure -- h1-progress 1,1,1,1,1,1,1,1,1,1 512 3"
 tier = "ci-only"
 reason = "Measures the Linux socket's acceptance lumps for a progressing HTTP/1 reader; the figure is the Linux runner's, and a developer machine's kernel differs."
 

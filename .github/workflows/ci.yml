@@ -290,7 +290,7 @@ jobs:
           pactl info
       - run: pnpm --filter @shadowcat/shell e2e:build:release
       - run: cat /proc/sys/net/ipv4/tcp_wmem /proc/sys/net/ipv4/tcp_rmem
-      - run: cargo run --release -p shadowcat-test-support --bin egress_measure -- h1-progress 1,1,1,1,1,1,1,1,1,1 64 3
+      - run: cargo run --release -p shadowcat-test-support --bin egress_measure -- h1-progress 1,1,1,1,1,1,1,1,1,1 512 3
       - run: cargo run --release -p shadowcat-test-support --bin egress_measure -- socket-grants 0 0 1048576 16384
       - run: pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-https-chromium --project=long-audio-http-chromium --project=long-audio-https-chromium-noflag --project=long-audio-https-firefox --project=long-audio-https-webkit
       - if: failure()
