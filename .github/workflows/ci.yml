@@ -71,8 +71,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Doc coverage (all OSes; cfg-gated backends only compile on their own OS)
         run: cargo clippy --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items
+      # --nocapture puts every test's stdout in the job log, which is where the RECORD lines of
+      # measure::record reach it: a passing test's output is otherwise dropped, and the step
+      # summary they are also written to is not readable through the API.
       - name: Test (emits ts-rs bindings)
-        run: cargo test --all
+        run: cargo test --all -- --nocapture
       # ts-rs regenerates bindings on test; the LF-committed files only match a
       # Linux regen (a Windows working-tree regen may differ on EOL), so the
       # sync check is Linux-only. .gitattributes pins these files to LF.

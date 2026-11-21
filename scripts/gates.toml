@@ -75,7 +75,7 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
-command = "cargo test --all"
+command = "cargo test --all -- --nocapture"
 tier = "push"
 
 [[gate]]
