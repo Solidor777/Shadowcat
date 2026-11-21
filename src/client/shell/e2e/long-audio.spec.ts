@@ -7,7 +7,6 @@ import {
   assertTrafficContract,
   contextStates,
   createWorld,
-  elementEvents,
   elementState,
   expectedCode,
   installAudioProbes,
@@ -266,20 +265,6 @@ for (const leg of [...CHROMIUM_LEGS]) {
         `a response after the seek starts in the last slice region; saw ${JSON.stringify(landed)}`,
       ).toBe(true);
       const lastSlot = Math.floor(lengthSecs / MANIFEST.slot_secs) - 1;
-      if (hasWebAudio) {
-        const flips: [number, number | null, number, number][] = [];
-        let previous: number | null | undefined;
-        while (serverPositionSecs(seeked!) < lengthSecs - 7.5) {
-          const position = serverPositionSecs(seeked!);
-          const reading = await readMarker(page);
-          if (reading.code !== previous) {
-            flips.push([position, reading.code, expectedCode(leg.track, position), (await elementState(page, track.assetId))?.currentTime ?? -1]);
-            previous = reading.code;
-          }
-          await page.waitForTimeout(50);
-        }
-        process.stdout.write(`WEBKIT-AUDIBLE ${testInfo.repeatEachIndex} ${JSON.stringify(flips)}\n`);
-      }
       if (slotPhase(serverPositionSecs(seeked!)) < READ_PHASE_SECS + 1) await readSlot(seeked!, "after-seek", lastSlot - 1, true);
       await readSlot(seeked!, "after-seek", lastSlot, true);
 
@@ -312,13 +297,6 @@ for (const leg of [...CHROMIUM_LEGS]) {
     } finally {
       testInfo.attach("samples", { body: JSON.stringify(samples, null, 1), contentType: "application/json" });
       testInfo.attach("traffic", { body: JSON.stringify({ events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
-      const elementLogs = await elementEvents(page, track.assetId);
-      testInfo.attach("element-events", { body: JSON.stringify(elementLogs), contentType: "application/json" });
-      process.stdout.write(
-        `WEBKIT-EVENTS ${testInfo.repeatEachIndex} ${JSON.stringify(
-          elementLogs.map((l) => ({ src: l.src, events: l.events.filter((e) => e.type !== "tick" || e.currentTime > 1170 || e.currentTime < 8) })),
-        )}\n`,
-      );
     }
   });
 }

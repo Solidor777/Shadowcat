@@ -4,19 +4,25 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 
 ## Flaky tests
 
-- [Flake, Linux CI] `egress_stall`'s `an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows`
-  fails intermittently on the Linux CI leg: across four consecutive Linux runs it failed in the first
-  and third (the cut came at 2.94 s in the third) and passed in the second and fourth. It has not failed on Windows (72 of 72 local
-  passes with 24 concurrent copies). Measured on Windows: the socket accepts constant 262 272 B lumps
-  roughly every 220 to 330 ms at 64 floors, unchanged with a 64 KiB receive buffer. The test now
-  prints the bytes read and the accepted grants (time, bytes) when it fails, so the next Linux
-  failure carries the Linux lump sizes. Root cause not proven; no Linux lump data exists yet.
-
-- [Flake, Linux CI] The WebKit leg of `e2e-long-audio` (`long-audio-https-webkit`, the
-  `ambient-bed streams over opus-webm` spec) fails intermittently: it failed in one CI run (the
-  element was paused at server position 1195.104 where the spec expects it playing, near the end of
-  the track) and passed in the next two. (An earlier run also failed this leg, with a Firefox leg
-  failing beside it.) Root cause not proven.
+- [Flake, Linux CI, upstream WebKit behaviour] The WebKit leg of `e2e-long-audio`
+  (`long-audio-https-webkit`, the `ambient-bed streams over opus-webm` spec) fails intermittently.
+  Measured on the Linux runner (GStreamer backend, WebM derivative):
+  - The element's `currentTime` runs ahead of the sound it plays. Reading the position code
+    through the page's mixed output right after the server `Seek` to 1185 s, the audible code
+    changes from 5 to 6 (the 1190 s slot boundary) when the server position is 1191.7 to 1192.1 s
+    and the element reports 1192.75 to 1193.13 s, so the element leads the audio by about 2.8 s
+    and the audio lags the server by about 1.8 s (Firefox and Chromium: 0.2 to 0.9 s). The same
+    lead shows as a constant `currentTime` minus server position of +1.0 s in the spec's samples.
+  - `TrackPlayer.sync` trusts `currentTime`, sees a drift over `SYNC_SEEK_THRESHOLD_SECS` every
+    tick and hard-seeks about once per second for the whole run (8 of 8 logged runs: a `seeking`
+    event every second from 0.4 s to 1199 s). No other engine has a position source the product can
+    read instead, so the product cannot correct it.
+  - Two failure shapes follow from the seeking. (a) The element fires `ended` about 3.5 s before the
+    track's end (element time about 1196.3 s), so the last-slot read at server position 1195.1
+    finds it paused (two traces). (b) After the seek near the end WebKit re-requests the whole file
+    with no `Range` header instead of the tail range (2 of 8 repeats in one CI run, 0 of 8 in the
+    run before), so the spec's "served by a ranged response" check times out.
+  Whether the spec accepts WebKit's own early end and its unranged restart is the owner's decision.
 
 ## Upstream — dockview-core `onDidPopoutGroupPositionChange` populates `screenY` from `window.screenX`
 

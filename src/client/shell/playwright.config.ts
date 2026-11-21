@@ -284,7 +284,6 @@ function longAudioProjects(LAN_IP: string): Project[] {
     },
     {
       name: "long-audio-https-webkit",
-      repeatEach: 8,
       testMatch: LONG_AUDIO_SPEC,
       use: { browserName: "webkit", baseURL: https, ignoreHTTPSErrors: true },
     },

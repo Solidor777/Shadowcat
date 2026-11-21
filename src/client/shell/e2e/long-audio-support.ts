@@ -26,8 +26,7 @@ interface TrackManifest {
   sequence: number[];
 }
 
-/** An `<audio>` element the page created, with the count of its `ended` and `error` events and the
- * log of its media events. */
+/** An `<audio>` element the page created, with the count of its `ended` and `error` events. */
 interface TrackedElement {
   /** The element. */
   el: HTMLAudioElement;
@@ -35,72 +34,7 @@ interface TrackedElement {
   ended: number;
   /** `error` events seen. */
   errors: number;
-  /** The element's media events and its once-per-second state, in arrival order. */
-  events: MediaEventRecord[];
 }
-
-/** One entry of an element's event log: a media event or the once-per-second `tick`, with the
- * element's state at that instant. */
-export interface MediaEventRecord {
-  /** Milliseconds on the page's monotonic clock. */
-  atMs: number;
-  /** The media event's type, or `tick`. */
-  type: string;
-  /** The element's `currentTime`, in seconds. */
-  currentTime: number;
-  /** The element's `duration`, in seconds. */
-  duration: number;
-  /** The element's `paused` flag. */
-  paused: boolean;
-  /** The element's `ended` flag. */
-  ended: boolean;
-  /** The element's `readyState`. */
-  readyState: number;
-  /** The element's `networkState`. */
-  networkState: number;
-  /** The element's `playbackRate`. */
-  playbackRate: number;
-  /** The element's buffered ranges as `start-end` pairs, in seconds. */
-  buffered: string;
-}
-
-/** What `installAudioProbes` hands the init script that runs in the page. */
-interface ProbeOptions {
-  /** Whether `canPlayType` hides Ogg. */
-  hide: boolean;
-  /** The media event types each element's log records. */
-  logged: readonly string[];
-}
-
-/** One element's event log with the element's `src` path and query. */
-export interface ElementLog {
-  /** The element's `src` path and query. */
-  src: string;
-  /** The element's media events and once-per-second states. */
-  events: MediaEventRecord[];
-}
-
-/** The media events an element's log records beside the once-per-second `tick`. */
-const LOGGED_MEDIA_EVENTS = [
-  "loadstart",
-  "durationchange",
-  "loadedmetadata",
-  "loadeddata",
-  "canplay",
-  "playing",
-  "play",
-  "pause",
-  "seeking",
-  "seeked",
-  "waiting",
-  "stalled",
-  "suspend",
-  "abort",
-  "emptied",
-  "ended",
-  "error",
-  "ratechange",
-] as const;
 
 /** The observers `installAudioProbes` installs on the page's `window`. */
 interface PageProbes {
@@ -173,7 +107,7 @@ export type Variant = "opus" | "opus-webm";
  * ```
  */
 export async function installAudioProbes(context: BrowserContext, hideOgg: boolean): Promise<void> {
-  await context.addInitScript(({ hide, logged }: ProbeOptions) => {
+  await context.addInitScript((hide: boolean) => {
     const w = window as unknown as Record<string, unknown>;
     const elements: TrackedElement[] = [];
     const contexts: BaseAudioContext[] = [];
@@ -185,30 +119,7 @@ export async function installAudioProbes(context: BrowserContext, hideOgg: boole
     document.createElement = ((tag: string, options?: ElementCreationOptions) => {
       const el = create(tag, options);
       if (String(tag).toLowerCase() === "audio") {
-        const audio = el as HTMLAudioElement;
-        const entry: TrackedElement = { el: audio, ended: 0, errors: 0, events: [] };
-        const record = (type: string): void => {
-          const ranges: string[] = [];
-          for (let i = 0; i < audio.buffered.length; i++) {
-            ranges.push(`${audio.buffered.start(i).toFixed(2)}-${audio.buffered.end(i).toFixed(2)}`);
-          }
-          entry.events.push({
-            atMs: Math.round(performance.now()),
-            type,
-            currentTime: audio.currentTime,
-            duration: audio.duration,
-            paused: audio.paused,
-            ended: audio.ended,
-            readyState: audio.readyState,
-            networkState: audio.networkState,
-            playbackRate: audio.playbackRate,
-            buffered: ranges.join(","),
-          });
-        };
-        for (const type of logged) audio.addEventListener(type, () => record(type));
-        setInterval(() => {
-          if (audio.src !== "") record("tick");
-        }, 1000);
+        const entry = { el: el as HTMLAudioElement, ended: 0, errors: 0 };
         el.addEventListener("ended", () => {
           entry.ended += 1;
         });
@@ -249,26 +160,7 @@ export async function installAudioProbes(context: BrowserContext, hideOgg: boole
       }
       return connect.apply(this, args);
     } as typeof AudioNode.prototype.connect;
-  }, { hide: hideOgg, logged: LOGGED_MEDIA_EVENTS });
-}
-
-/** The event log of every `<audio>` element that streamed `assetId`, with the element's `src`.
- * @param page - The page to read.
- * @param assetId - The asset id.
- * @returns One entry per element, in creation order.
- * @example
- * ```
- * declare const page: import("@playwright/test").Page;
- * const logs = await elementEvents(page, "00000000-0000-0000-0000-000000000001");
- * ```
- */
-export async function elementEvents(page: Page, assetId: string): Promise<ElementLog[]> {
-  return page.evaluate((id: string) => {
-    const all = (window as unknown as PageProbes).__scElements;
-    return all
-      .filter((e) => e.el.src.includes(`/api/assets/${id}`))
-      .map((e) => ({ src: new URL(e.el.src).pathname + new URL(e.el.src).search, events: e.events }));
-  }, assetId);
+  }, hideOgg);
 }
 
 /** What the page's analyser read at one instant. */

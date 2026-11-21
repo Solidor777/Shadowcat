@@ -3,6 +3,20 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Server — `egress_stall`'s keeps-reading control was cut on Linux because the reader's rate sat at the socket's lump interval
+
+- [Flake, FIXED] `an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows` read 64 floors
+  (1 MiB) per 1 s window. Measured on the Linux runner (`egress_measure h1-progress` and
+  `socket-grants`, `tcp_wmem` 4096 16384 4194304): the socket accepts 0.92 to 1.05 MB lumps, so a
+  1 MiB/s reader sees a lump every 0.7 to 1.1 s, the same as the window, and a gap of a whole window
+  with fewer than the floor accepted is exactly what the connection unit cuts (gaps of 1011 to 1115
+  ms were printed). At 512 floors (8 MiB per window) the same measure printed 1.1 to 1.9 MB lumps
+  with a widest gap of 305 ms in 10 runs, no cut. The unit is unchanged; the test's premise was wrong for
+  Linux. The control now reads 512 floors per window and asserts the widest gap between
+  acceptances stays under half a window (`LUMP_GAP_BOUND`) and that the reader took at least 1 MiB
+  per window (`MIN_FLOORS_PER_WINDOW_READ`, lower than the request because the Windows socket
+  accepts less than 8 MiB per window).
+
 ## Audio — a streaming track's element drifted ahead of the server position at about 2 percent per second
 
 - [High, FIXED] `TrackPlayer.sync`'s streaming arm set `el.playbackRate` to `1 + SYNC_RATE_NUDGE`
