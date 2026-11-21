@@ -120,6 +120,9 @@ export async function installAudioProbes(context: BrowserContext, hideOgg: boole
       const el = create(tag, options);
       if (String(tag).toLowerCase() === "audio") {
         const entry = { el: el as HTMLAudioElement, ended: 0, errors: 0 };
+        el.addEventListener("seeking", () => {
+          w.__scSeeks = ((w.__scSeeks as number | undefined) ?? 0) + 1;
+        });
         el.addEventListener("ended", () => {
           entry.ended += 1;
         });
