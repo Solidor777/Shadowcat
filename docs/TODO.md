@@ -7,25 +7,14 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
-## Send-buffer keep criterion: the statistic needs the owner's ruling
-- State: release `buffer_ratio` records exist for all three legs. At 64 KiB the worst run reads
-  0.853 (Linux), 0.800 (macOS) and 0.808 (Windows); Windows reads under 0.90 in every run and macOS
-  in 13 of 18. Sweeping bare-server sizes (24 to 36 runs per size and leg, 100 downloads per
-  median): the median ratio passes 0.90 on every leg from 128 KiB up (Windows median 0.908 at 128
-  KiB, 0.939 at 160 KiB), but the worst single run does not at any size up to the 400 KiB default,
-  because on macOS a second bare server at the default itself reads 0.85 to 1.10 against the first
-  (400 KiB explicit: worst 0.898). A worst-run floor of 0.90 therefore cannot be met by any size; a
-  median-over-runs statistic can. Open question: which statistic is the keep criterion, and the
-  size and floor that follow from it.
-- TODO: Make the send-buffer gate's `buffer_ratio >= 0.90` assertion blocking in release builds.
-  The gate (`h2_send_buf_gate`) records `buffer_ratio` (bare hyper at `H2_SEND_BUF_BYTES` against
-  bare hyper at the library default) and `production_ratio` per run, to stdout and the CI step
-  summary, and asserts only that every download delivers every byte. The 0.90 figure is empirical
-  (a throughput ratio on shared hardware has no derivation), so the numeric-assertion rule keeps
-  it record-only until every operating system's value is recorded (all three now are; the ruling
-  above is what remains). Records must come from the current harness (the production send buffer and
+## Ladder-versus-gate buffer-ratio gap
+- TODO: Measure why the gate and the ladder read different buffer ratios. The gate
+  (`h2_send_buf_gate`) records `buffer_ratio` (bare hyper at `H2_SEND_BUF_BYTES` against bare hyper
+  at the library default) and `production_ratio` per run, to stdout and the CI step summary.
+  Records must come from the current harness (the production send buffer and
   TCP_NODELAY set on the accepted sockets, as the production listeners do); Windows loopback in release read `buffer_ratio` 0.958,
-  0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs). Two instruments read the production
+  0.956 and 0.954 with it (4 workers, 100 downloads, 3 runs, at the 64 KiB buffer the figures
+  below were taken with). Two instruments read the production
   path against bare hyper at 64 KiB: `egress_measure layers` (2 workers by default) reads the production
   path 3.1% slower, and the gate reads it 4.9% to 6.2% slower. The owner ruled that production-path
   difference noise: there is no open reconciliation and nothing to rerun. The ruling does not cover
@@ -81,11 +70,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 
   Owner ruled: measure the buffer-ratio gap later. Host observation, not a blocker and with no
   diagnosed cause: a 2-worker process of these servers runs about 11.6 ms per download in the
-  fast regime and reads the slow ranges above in later runs of the same session. Then, in the same
-  branch: assert `buffer_ratio >= FLOOR` when `cfg!(debug_assertions)` is false, with `FLOOR` set
-  below the worst of the three legs by a stated headroom and the three recorded values written
-  beside the constant. The debug profile stays record-only (its ratio is a profile artifact, 0.66
-  to 0.79 measured) and `production_ratio` stays recorded.
+  fast regime and reads the slow ranges above in later runs of the same session.
 
 ## Blocked on verifying `--no-experimental-webstorage` against CI's pinned Node version
 - TODO: `pnpm -r test` fails locally on Node 25.3.0+ with `TypeError: localStorage.clear is not

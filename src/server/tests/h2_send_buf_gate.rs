@@ -14,9 +14,15 @@
 //! behind a socket that accepts nothing and a WebSocket tunnel's lead over the wire, at the price
 //! of more wake-ups per byte on a fast link. The 90 percent
 //! figure is an empirical keep criterion (a throughput ratio on shared hardware has no derivation),
-//! so each run is recorded per operating system with `measure::record`. The ratio is not asserted
-//! yet: the floor waits on the records of this setting. The premises that are not empirical are
-//! asserted: every download delivers every byte.
+//! so each run is recorded per operating system with `measure::record`.
+//!
+//! The criterion is a median over runs, not a per-run bound: on a macOS CI runner two bare servers
+//! at the same (default) send buffer read a ratio between 0.85 and 1.10 against each other, so no
+//! send-buffer size keeps every single run at 0.90. The blocking assertion is the guard beside the
+//! criterion: every release run's buffer ratio is at least [`BUFFER_RATIO_FLOOR`], which sits
+//! below the worst run ever recorded at this setting and so fails only on a regression far outside
+//! runner noise. The premises that are not empirical are asserted too: every download delivers
+//! every byte.
 //!
 //! The criterion is defined for the release profile: a debug build's per-frame cost dominates the
 //! loopback download, so the ratios of a debug run are not comparable with it. Each record names
@@ -49,6 +55,17 @@ const DOWNLOADS: usize = if cfg!(debug_assertions) { 8 } else { 100 };
 
 /// Independent runs. One in a debug build, for the reason [`DOWNLOADS`] gives.
 const RUNS: usize = if cfg!(debug_assertions) { 1 } else { 3 };
+
+/// The lowest buffer ratio a release run may read. Every release run asserts it; a debug run's
+/// ratios are not comparable (see the module documentation) and are not asserted.
+///
+/// Recorded buffer ratios at [`H2_SEND_BUF_BYTES`] (160 KiB), 100 downloads per median, release
+/// build, three runs per operating system on CI: Linux 0.950, 0.963, 0.960; macOS 0.912, 0.921,
+/// 0.946; Windows 0.914, 0.917, 0.912. The worst run of those is 0.912. A sweep of bare servers at
+/// 160 KiB (24 runs per operating system) read a worst of 0.954 on Linux, 0.926 on Windows and
+/// 0.810 on macOS, and the worst macOS run at any size in the sweep (192 KiB) was 0.798. 0.70 is
+/// 0.098 below that lowest run, so runner noise of the size the sweep saw does not reach it.
+const BUFFER_RATIO_FLOOR: f64 = 0.70;
 
 /// The build profile the records name: the keep criterion is read from the release records only.
 const PROFILE: &str = if cfg!(debug_assertions) {
@@ -99,6 +116,10 @@ async fn the_production_send_buffer_keeps_loopback_throughput_against_the_librar
             buffer_median.as_secs_f64() * 1e3,
             production_median.as_secs_f64() * 1e3,
         ));
+        assert!(
+            cfg!(debug_assertions) || buffer_ratio >= BUFFER_RATIO_FLOOR,
+            "run {run}: the buffer ratio {buffer_ratio:.3} is under the floor {BUFFER_RATIO_FLOOR}"
+        );
     }
     production.finish().await;
 }

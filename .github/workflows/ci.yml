@@ -86,11 +86,12 @@ jobs:
         run: cargo build --release
       # The send-buffer keep criterion (H2_SEND_BUF_BYTES against the library default) is defined
       # for the release profile: a debug build's per-frame cost dominates the loopback download
-      # and reads 0.66 to 0.79. The criterion is the median over runs of the buffer ratio; the
-      # legs' records at the 160 KiB buffer are TBD. Record-only: every run prints its
-      # buffer_ratio and production_ratio per OS leg (stdout, and the step summary), and asserts
-      # only that every download delivers every byte.
-      - name: Send-buffer throughput gate (release, record-only)
+      # and reads 0.66 to 0.79. The criterion is the median over runs of the buffer ratio. Records
+      # at the 160 KiB buffer (buffer_ratio, three runs per leg): Linux 0.950 to 0.963, macOS 0.912
+      # to 0.946, Windows 0.912 to 0.917. Every run prints its buffer_ratio and production_ratio
+      # per OS leg (stdout, and the step summary); the step asserts that every download delivers
+      # every byte and that each run's buffer_ratio is at least the floor BUFFER_RATIO_FLOOR.
+      - name: Send-buffer throughput gate (release)
         run: cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture
       # Replace and delete over a file a reader holds open: the contract is asserted and the
       # observed values are recorded per OS leg (stdout, and the step summary).
