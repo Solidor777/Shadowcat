@@ -33,7 +33,7 @@ pub fn record(line: &str) {
 /// The most a cut may land after its derived bound, as a ceiling on `observed - derived` in
 /// [`record_cut_overshoot`]. What lies beyond the derived bound is timer and task wake-up latency,
 /// which no premise bounds, so the ceiling is empirical: the worst overshoot recorded on each
-/// operating-system leg (Windows 570 ms, Linux 40 ms, macOS 9 ms; the cuts that land before their
+/// operating-system leg (Windows 570 ms, Linux 288 ms, macOS 9 ms; the cuts that land before their
 /// derived bound read negative) with 2000 ms set above it, 3.5 times the worst leg.
 pub const CUT_OVERSHOOT_MAX: Duration = Duration::from_millis(2000);
 
