@@ -133,6 +133,12 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
 /// lower rates.
 const PROGRESS_FLOORS_PER_WINDOW: usize = 512;
 
+/// The fewest multiples of `ConnLimits::egress_floor` per window the reader must actually have
+/// taken, over each of two windows, for a pass to mean progress was made: 1 MiB a window, about one
+/// Linux lump. It is below `PROGRESS_FLOORS_PER_WINDOW` because the reader takes what the socket
+/// has accepted, and on Windows the accepted lumps hold the read under the requested rate.
+const MIN_FLOORS_PER_WINDOW_READ: usize = 64;
+
 /// The longest gap between two socket acceptances the progressing reader may see before the
 /// control stops meaning anything: half a window. A gap of a whole window with fewer than the
 /// floor accepted is what the connection unit cuts, so a gap this long is the premise failing,
@@ -177,9 +183,10 @@ async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
         );
         read += n;
     }
+    let least = 2 * MIN_FLOORS_PER_WINDOW_READ * ConnLimits::default().egress_floor;
     assert!(
-        read >= 2 * per_window,
-        "the reader took {read} B, too little for the control to mean anything"
+        read >= least,
+        "the reader took {read} B, under the {least} B the control needs to mean anything"
     );
     // The first grant is the buffer filling before the reader paces it, so the gaps start at the
     // second.
