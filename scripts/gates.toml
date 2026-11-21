@@ -541,38 +541,3 @@ job = "e2e-long-audio-playthrough-h2"
 command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-https-chromium"
 tier = "ci-only"
 reason = "The full 20-minute real-time play-through of one track over HTTPS (h2): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h1 play-through."
-
-[[gate]]
-workflow = "sweep.yml"
-job = "sweep"
-command = "pnpm install --frozen-lockfile"
-tier = "setup"
-reason = "Installs the workspace's node dependencies the client bundle build imports."
-
-[[gate]]
-workflow = "sweep.yml"
-job = "sweep"
-command = "pnpm build"
-tier = "setup"
-reason = "Builds the client bundle the server embeds at compile time."
-
-[[gate]]
-workflow = "sweep.yml"
-job = "sweep"
-command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
-tier = "ci-only"
-reason = "Installs the system PipeWire dev package; apt-get with sudo exists only on the Ubuntu runner."
-
-[[gate]]
-workflow = "sweep.yml"
-job = "sweep"
-command = "cargo test --release -p shadowcat --test h2_send_buf_sweep --no-run"
-tier = "ci-only"
-reason = "Builds the candidate-size sweep on the runner before the timed runs."
-
-[[gate]]
-workflow = "sweep.yml"
-job = "sweep"
-command = "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do cargo test --release -p shadowcat --test h2_send_buf_sweep -- --nocapture done"
-tier = "ci-only"
-reason = "Measures candidate send-buffer sizes on the three CI operating systems; a developer machine's values are not the criterion's."
