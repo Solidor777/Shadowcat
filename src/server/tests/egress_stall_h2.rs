@@ -8,10 +8,11 @@
 //!
 //! Every window-sized wait asserts the cut did NOT happen before the window, from what the client
 //! observes (the time its stream was reset). How long after the window plus one sampler tick it
-//! happened is recorded per operating system (`record_cut_overshoot`), not asserted: the
-//! overshoot is timer and task wake-up latency, which no premise bounds. The one upper bound
-//! asserted is the partly drained tail's, derived from the window with its premises asserted
-//! beside it (`a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`). Cut counts
+//! happened is recorded per operating system and bounded by `CUT_OVERSHOOT_MAX`
+//! (`record_cut_overshoot`): the overshoot is timer and task wake-up latency, which no premise
+//! bounds, so its ceiling is empirical. The tighter upper bound asserted is the partly drained
+//! tail's, derived from the window with its premises asserted beside it
+//! (`a_tail_the_reader_drains_only_in_part_is_cut_at_the_end_of_the_window`). Cut counts
 //! are read from the `DrainReport` the serve loop returns at shutdown, never mid-run.
 
 use std::time::Duration;
@@ -472,11 +473,12 @@ async fn drain_without_credit(body: &mut h2::RecvStream) -> u64 {
 }
 
 /// Asserts a cut observed `cut_at` is not before `since + window` and records how far past the
-/// window plus one tick it landed.
+/// window plus one tick it landed, bounded by `CUT_OVERSHOOT_MAX`.
 ///
 /// The lower bound is derived: an entry's window starts no earlier than the body's drop, so no cut
-/// can precede it. The upper bound is not asserted here, because how late the sampler task runs is
-/// scheduling, not the unit's contract; the overshoot is recorded for each OS leg instead. That an
+/// can precede it. The upper bound asserted here is only the empirical ceiling, because how late
+/// the sampler task runs is scheduling, not the unit's contract; the overshoot is recorded for
+/// each OS leg. That an
 /// entry was not refreshed by traffic that must not count is established by the tests that drive
 /// such traffic: from the order of events they cause, or, for the partly drained tail, from a
 /// bound derived from the window with its premises asserted (see

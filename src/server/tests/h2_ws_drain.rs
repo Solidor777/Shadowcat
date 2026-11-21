@@ -29,7 +29,8 @@ const STALLED_DRAIN_BOUND: Duration = Duration::from_secs(1);
 
 /// The designed return time of a serve whose peer has stopped reading: the drain bound plus the
 /// session grace (`SESSION_GRACE`'s own doc). What lies beyond it is scheduling latency, which no
-/// premise bounds, so the overshoot is recorded per operating system and asserted on nothing.
+/// premise bounds, so the overshoot is recorded per operating system and bounded by
+/// `CUT_OVERSHOOT_MAX`.
 const STALLED_DESIGNED: Duration = Duration::from_millis(
     STALLED_DRAIN_BOUND.as_millis() as u64 + SESSION_GRACE.as_millis() as u64,
 );

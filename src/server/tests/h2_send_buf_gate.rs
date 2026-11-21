@@ -13,9 +13,11 @@
 //! behind a socket that accepts nothing and a WebSocket tunnel's lead over the wire, at the price
 //! of more wake-ups per byte on a fast link. The 90 percent
 //! figure is an empirical keep criterion (a throughput ratio on shared hardware has no derivation),
-//! so each run is recorded per operating system with `measure::record` and the ratio asserts
-//! nothing until the three operating systems' values are recorded. The premises that are not
-//! empirical are asserted: every download delivers every byte.
+//! so each run is recorded per operating system with `measure::record`. The ratio asserts nothing:
+//! a per-run floor of 0.90 sits inside the run-to-run noise of a macOS CI runner, where two bare
+//! servers at the same (default) send buffer read a ratio between 0.85 and 1.10, so no send-buffer
+//! size can meet it on every run. The premises that are not empirical are asserted: every
+//! download delivers every byte.
 //!
 //! The criterion is defined for the release profile: a debug build's per-frame cost dominates the
 //! loopback download, so the ratios of a debug run are not comparable with it. Each record names
