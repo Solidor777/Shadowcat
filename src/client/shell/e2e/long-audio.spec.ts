@@ -295,9 +295,6 @@ for (const leg of [...CHROMIUM_LEGS]) {
       assertTrafficContract(log, leg.variant, network?.rawExchanges() ?? null, browserName === "webkit");
       if (network !== null) expect(network.protocols()).toEqual([testInfo.project.name.includes("-https-") ? "h2" : "http/1.1"]);
     } finally {
-      process.stdout.write(
-        `SEEKCOUNT ${testInfo.project.name} repeat ${testInfo.repeatEachIndex} ${await page.evaluate(() => (window as unknown as Record<string, number | undefined>).__scSeeks ?? 0)}\n`,
-      );
       testInfo.attach("samples", { body: JSON.stringify(samples, null, 1), contentType: "application/json" });
       testInfo.attach("traffic", { body: JSON.stringify({ events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
     }
