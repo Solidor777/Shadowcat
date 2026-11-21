@@ -29,6 +29,25 @@ export const SYNC_RATE_RELEASE_SECS = 0.01;
  * direct `.value` write that would click (or cancel an in-flight fade's automation). */
 export const GAIN_RAMP_TAU_SECS = 0.05;
 
+/** Largest difference between the offset read before a hard seek and the offset read after it
+ * for which `syncElementPosition` treats the seek as having changed nothing, seconds. Below
+ * `SYNC_SEEK_THRESHOLD_SECS`, so a seek that does land (reading near zero after a drift just
+ * beyond the threshold) never counts as ineffective. */
+export const SYNC_STEADY_OFFSET_TOLERANCE_SECS = 0.1;
+
+/** Per-element offset bookkeeping for `syncElementPosition`. */
+interface ElementOffsetState {
+  /** The constant target-minus-`currentTime` reading the element holds after a seek, seconds
+   * (`0` for an element that reports its position faithfully). Drift is measured against it. */
+  baseline: number;
+  /** The reading taken just before the last hard seek, awaiting the post-seek reading that
+   * says whether the seek changed it; `null` when no seek is pending evaluation. */
+  seekReading: number | null;
+}
+
+/** Offset bookkeeping per element; keyed weakly so a disposed element releases its entry. */
+const elementOffsets = new WeakMap<MediaElementLike, ElementOffsetState>();
+
 /** The one rate-hysteresis decision for every playback arm (buffered source, graph-routed
  * element, bare element): engage the `SYNC_RATE_NUDGE` correction above
  * `SYNC_RATE_ENGAGE_SECS` of drift, hold it until the drift falls below
@@ -51,7 +70,12 @@ export function rateForDrift(drift: number, rate: number): number {
 
 /** Reconcile one element's position and rate against the server target: a hard seek beyond
  * `SYNC_SEEK_THRESHOLD_SECS`, otherwise `rateForDrift`'s hysteresis. Writes `playbackRate`
- * only when the rate changes. Shared by `TrackPlayer`'s streaming arm and
+ * only when the rate changes. Some engines (WebKit-GStreamer) report `currentTime` a constant
+ * offset ahead of the audible position and keep reporting it after a seek; when the reading
+ * right after a hard seek equals the one before it, that offset is adopted as the element's
+ * baseline and drift is measured from it, so a steady offset costs one seek rather than one per
+ * call. A reading that moves away from the baseline by more than the seek threshold is still a
+ * real drift or jump and is seeked. Shared by `TrackPlayer`'s streaming arm and
  * `FallbackTrackPlayer` so the two cannot disagree on the decision.
  * @param el The element to reconcile.
  * @param targetSecs The server-derived target position, seconds.
@@ -61,8 +85,26 @@ export function rateForDrift(drift: number, rate: number): number {
  * ```
  */
 export function syncElementPosition(el: MediaElementLike, targetSecs: number): void {
-  const drift = targetSecs - el.currentTime;
+  const reading = targetSecs - el.currentTime;
+  let state = elementOffsets.get(el);
+  if (!state) {
+    state = { baseline: 0, seekReading: null };
+    elementOffsets.set(el, state);
+  }
+  if (state.seekReading !== null) {
+    // The first reading after a hard seek. A seek sets `currentTime` to the target, so a
+    // healthy element reads near zero. An element that reads the same offset it read before
+    // the seek reports its position with a constant bias, which the seek cannot remove.
+    if (Math.abs(reading - state.seekReading) <= SYNC_STEADY_OFFSET_TOLERANCE_SECS) {
+      state.baseline = reading;
+    } else if (Math.abs(reading - state.baseline) > SYNC_SEEK_THRESHOLD_SECS) {
+      state.baseline = 0;
+    }
+    state.seekReading = null;
+  }
+  const drift = reading - state.baseline;
   if (Math.abs(drift) > SYNC_SEEK_THRESHOLD_SECS) {
+    state.seekReading = reading;
     el.currentTime = targetSecs;
     if (el.playbackRate !== 1) el.playbackRate = 1;
     return;
