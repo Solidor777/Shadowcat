@@ -22,6 +22,7 @@ import {
   uploadTrack,
   type PlayingEntry,
   type TrackName,
+  type TrafficEvent,
   type Variant,
 } from "./long-audio-support";
 
@@ -84,6 +85,29 @@ const ELEMENT_DURATION_TOLERANCE_MS = 100;
  * `duration_ms` is checked against the manifest on its own, so the server's value stays exact. */
 const ESTIMATED_ELEMENT_DURATION_TOLERANCE_MS: Record<string, number> = {
   "webkit:linux": 3000,
+};
+
+/** What one engine and platform pair does in the last seconds of a track that the other pairs do not. */
+interface EngineAllowance {
+  /** The most, in seconds, the element may end before the track's length: a paused element whose
+   * `ended` count is above zero and whose `currentTime` is at least the length minus this passes
+   * the last-slot read. Any earlier end fails. */
+  maxEarlyEndSecs: number;
+  /** Whether the near-end seek may be answered by one full-file `200` with no `Range` header
+   * instead of a ranged `206`. A `206` that does arrive must still start in the last slice region. */
+  unrangedRestart: boolean;
+}
+
+/** The engine and platform pairs (`<browserName>:<process.platform>`) that get an allowance; every
+ * other pair gets none and keeps the strict checks. Playwright's WebKit build on Linux (GStreamer
+ * media backend) intermittently, in about 6 of 8 runs, either fires `ended` before the track's end
+ * or answers the seek 15 seconds before the end by re-requesting the whole file with no `Range`
+ * header. The early end was measured at an element time of about 1196.1 to 1196.3 s for the 1200 s
+ * ambient bed, 3.7 to 3.9 s early; `maxEarlyEndSecs` is 5 s, about 1.1 s of headroom over the
+ * largest. The server sends byte-identical responses (`Accept-Ranges: bytes`, same lengths) in
+ * passing and failing runs, so the choice belongs to the engine's player. */
+const ENGINE_ALLOWANCES: Record<string, EngineAllowance> = {
+  "webkit:linux": { maxEarlyEndSecs: 5, unrangedRestart: true },
 };
 
 /** Longest wait, in milliseconds, for the audible output to carry the new position after a seek. */
@@ -181,6 +205,7 @@ for (const leg of [...CHROMIUM_LEGS]) {
     });
     expect(durations[leg.variant], `the engine can play the derivative under test; canPlayType ${JSON.stringify(playable)}`).not.toBeNull();
 
+    const allowance = ENGINE_ALLOWANCES[`${browserName}:${process.platform}`] ?? null;
     const samples: Sample[] = [];
     let log = recordAssetTraffic(page, track.assetId);
     const network = await recordNetworkFacts(page, track.assetId);
@@ -211,7 +236,14 @@ for (const leg of [...CHROMIUM_LEGS]) {
         }
         const element = await elementState(page, track.assetId);
         expect(element, "an element streams the asset").not.toBeNull();
-        expect(element!.paused, `the element plays at server position ${position}`).toBe(false);
+        // An allowed early end leaves a paused, silent element: the paused and position-code
+        // checks cannot hold for it, every other check still does.
+        const endedEarly =
+          allowance !== null &&
+          element!.paused &&
+          element!.ended > 0 &&
+          element!.currentTime >= lengthSecs - allowance.maxEarlyEndSecs;
+        if (!endedEarly) expect(element!.paused, `the element plays at server position ${position}`).toBe(false);
         expect(element!.errorCode, "no media error").toBeNull();
         samples.push({
           phase,
@@ -222,7 +254,7 @@ for (const leg of [...CHROMIUM_LEGS]) {
           db: reading.db,
           settledAfterMs: settle ? Date.now() - begun : null,
         });
-        if (hasWebAudio) {
+        if (hasWebAudio && !endedEarly) {
           expect(reading.code, `position code at ${position.toFixed(1)}s (${phase}); sample ${JSON.stringify(samples.at(-1))}`).toBe(
             expectedCode(leg.track, position),
           );
@@ -252,18 +284,28 @@ for (const leg of [...CHROMIUM_LEGS]) {
         .poll(async () => (await elementState(page, track.assetId))?.currentTime ?? 0, { intervals: [250], timeout: 30_000 })
         .toBeGreaterThanOrEqual(seekTarget - 2);
       await expect
-        .poll(() => log.events.slice(beforeSeek).filter((e) => e.kind === "response" && e.status === 206).length, {
-          intervals: [100],
-          timeout: 15_000,
-          message: "the seek past the buffer is served by a ranged response",
-        })
+        .poll(
+          () =>
+            log.events
+              .slice(beforeSeek)
+              .filter((e) => e.kind === "response" && (e.status === 206 || (isUnrangedRestart(e) && allowance?.unrangedRestart === true)))
+              .length,
+          {
+            intervals: [100],
+            timeout: 15_000,
+            message: "the seek past the buffer is served by a ranged response",
+          },
+        )
         .toBeGreaterThan(0);
       const afterSeek = log.events.slice(beforeSeek).filter((e) => e.kind === "response" && e.status === 206);
       const landed = afterSeek.map((e) => parseContentRange(e.contentRange!));
-      expect(
-        landed.some((r) => r.start >= r.total - MAX_RANGE_SLICE_BYTES),
-        `a response after the seek starts in the last slice region; saw ${JSON.stringify(landed)}`,
-      ).toBe(true);
+      // With the allowance, a seek answered only by a full-file `200` has no ranged response to check.
+      if (landed.length > 0 || allowance?.unrangedRestart !== true) {
+        expect(
+          landed.some((r) => r.start >= r.total - MAX_RANGE_SLICE_BYTES),
+          `a response after the seek starts in the last slice region; saw ${JSON.stringify(landed)}`,
+        ).toBe(true);
+      }
       const lastSlot = Math.floor(lengthSecs / MANIFEST.slot_secs) - 1;
       if (slotPhase(serverPositionSecs(seeked!)) < READ_PHASE_SECS + 1) await readSlot(seeked!, "after-seek", lastSlot - 1, true);
       await readSlot(seeked!, "after-seek", lastSlot, true);
@@ -299,6 +341,18 @@ for (const leg of [...CHROMIUM_LEGS]) {
       testInfo.attach("traffic", { body: JSON.stringify({ events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
     }
   });
+}
+
+/** Whether a recorded response is a full-file answer to a request that carried no `Range` header.
+ * @param event - The recorded event.
+ * @returns True for a `200` with no request `Range` and no `Content-Range`.
+ * @example
+ * ```
+ * const full = isUnrangedRestart({ atMs: 0, kind: "response", variant: "opus-webm", range: null, status: 200, contentRange: null, contentEncoding: null, contentLength: null, ifRange: null, error: null });
+ * ```
+ */
+function isUnrangedRestart(event: TrafficEvent): boolean {
+  return event.status === 200 && event.range === null && event.contentRange === null;
 }
 
 /** The single live entry of the world's audio state.

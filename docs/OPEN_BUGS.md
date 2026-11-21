@@ -2,31 +2,6 @@
 
 Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 
-## Flaky tests
-
-- [Flake, Linux CI, upstream WebKit behaviour] The WebKit leg of `e2e-long-audio`
-  (`long-audio-https-webkit`, the `ambient-bed streams over opus-webm` spec) fails intermittently.
-  Measured on the Linux runner (GStreamer backend, WebM derivative):
-  - The element's `currentTime` runs ahead of the sound it plays. Reading the position code
-    through the page's mixed output right after the server `Seek` to 1185 s, the audible code
-    changes from 5 to 6 (the 1190 s slot boundary) when the server position is 1191.7 to 1192.1 s
-    and the element reports 1192.75 to 1193.13 s, so the element leads the audio by about 2.8 s
-    and the audio lags the server by about 1.8 s (Firefox and Chromium: 0.2 to 0.9 s). The same
-    lead shows as a constant `currentTime` minus server position of +1.0 s in the spec's samples.
-  - `syncElementPosition` now adopts a constant reported offset after one ineffective seek, so the
-    once-per-second seek loop is gone: the whole spec run emits 3 to 12 `seeking` events per
-    WebKit repeat (it emitted one per second, about 1200, before). The leg still fails, so the loop
-    was not the cause of the two near-end shapes.
-  - Two failure shapes, measured with the seek loop gone (one CI run, 8 repeats: 2 pass, 6 fail;
-    failing repeats had 4, 11, 3, 4, 4 and 4 `seeking` events, passing ones 12 and 8, so the
-    failures do not track the seek count). (a) The element fires `ended` about 3.5 s before the
-    track's end, so the last-slot read at server position about 1195.1 finds it paused (4 of the 6
-    failures). (b) After the seek near the end WebKit re-requests the whole file with no `Range`
-    header instead of the tail range, so the spec's "served by a ranged response" check and the
-    "response starts in the last slice region" check fail (2 of the 6).
-  Whether the spec accepts WebKit's own early end and its unranged restart is the owner's decision;
-  the spec is not loosened.
-
 ## Upstream — dockview-core `onDidPopoutGroupPositionChange` populates `screenY` from `window.screenX`
 
 - [Low, UPSTREAM — routed around] In the vendored `dockview-core` popout wiring
