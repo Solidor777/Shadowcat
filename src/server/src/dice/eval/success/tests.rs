@@ -169,6 +169,7 @@ fn manual_raws(values: &[i32]) -> RawRoll {
             crit_success: false,
             crit_fail: false,
             kind: None,
+            best_of_branch: None,
             expertise: 0,
             label: None,
             symbols: vec![],
@@ -674,6 +675,7 @@ fn raws_with_values(values: &[i32]) -> RawRoll {
         raws.records.push(DieRecord {
             label: None,
             kind: None,
+            best_of_branch: None,
             id,
             group_index: 0,
             natural: v,

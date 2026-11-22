@@ -69,7 +69,8 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
             roll_expr(lhs, rng, raws, group_index);
             roll_expr(rhs, rng, raws, group_index);
         }
-        Expr::Call { args, .. } => {
+        // `BestOf` rolls every branch unconditionally; the winner is chosen at `evaluate`.
+        Expr::Call { args, .. } | Expr::BestOf(args) => {
             for arg in args {
                 roll_expr(arg, rng, raws, group_index);
             }

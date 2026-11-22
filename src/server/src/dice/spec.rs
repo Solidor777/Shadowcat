@@ -495,6 +495,15 @@ pub enum Expr {
         /// `name.accepts_arg_count()` at parse time.
         args: Vec<Expr>,
     },
+    /// `best(a, b, ...)`: every branch rolls, and the branch whose own total is best under
+    /// `RollSpec::direction` (greatest for `HighWins`, smallest for `LowWins`; a tie goes to the
+    /// leftmost) supplies this node's value. Every die of a losing branch is marked
+    /// `kept: false` with `DieRecord::best_of_branch` set at `evaluate` time, never at `roll`
+    /// time, so `evaluate` stays pure over the stored `RawRoll`. Total mode only (a
+    /// `SuccessCount` roll pools dice ignoring the arithmetic, so a best total has no meaning
+    /// there). Branches consume group-index slots left to right exactly like `Call`'s arguments.
+    /// At least two branches; the parser enforces it.
+    BestOf(Vec<Expr>),
 }
 
 /// SuccessCount dimension 1: the per-die predicate a die must satisfy to score

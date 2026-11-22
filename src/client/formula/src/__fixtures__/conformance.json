@@ -869,6 +869,26 @@
       }
     },
     {
+      "name": "best is notation when a paren follows, never a reference",
+      "src": "best(4d6, 4d6) + 2",
+      "bindings": {
+        "best": 9
+      },
+      "expect": {
+        "notation": "best(4d6, 4d6) + 2"
+      }
+    },
+    {
+      "name": "best without a following paren resolves as a stat",
+      "src": "best + 1",
+      "bindings": {
+        "best": 3
+      },
+      "expect": {
+        "notation": "3[best] + 1"
+      }
+    },
+    {
       "name": "a reference inside a math-function call substitutes",
       "src": "min(stats.str, 2)",
       "bindings": {

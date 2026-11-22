@@ -28,8 +28,8 @@ export const NOTATION_KEYWORDS: readonly string[] =
   [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf",
     "mn", "mx", "cse", "cso"];
 
-/** The dice-notation grammar's math-function vocabulary (`floor`, `ceil`, `round`, `abs`,
- * `min`, `max` — the server's `FnName` set). These are NOT `NOTATION_KEYWORDS` members:
+/** The dice-notation grammar's function vocabulary (`floor`, `ceil`, `round`, `abs`,
+ * `min`, `max` — the server's `FnName` set — plus `best`, the server's `Expr::BestOf` call). These are NOT `NOTATION_KEYWORDS` members:
  * the keyword list guards the dice-MECHANIC modifier vocabulary (`kh`/`cs`/`tr`/…), while
  * function names are notation only when followed by `(` after any spaces/tabs —
  * `claimNotationFunction`
@@ -37,7 +37,7 @@ export const NOTATION_KEYWORDS: readonly string[] =
  * may answer. Declared once, here, because neither template twin can read the dice parser's
  * own declaration; the notation-modifier parity gate reads all three. */
 export const NOTATION_FUNCTIONS: readonly string[] =
-  ["floor", "ceil", "round", "abs", "min", "max"];
+  ["floor", "ceil", "round", "abs", "min", "max", "best"];
 
 const I32_MAX = 2147483647;
 

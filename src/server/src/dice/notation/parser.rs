@@ -309,13 +309,16 @@ impl P {
     /// always carries an argument count its `name` accepts (exact for a fixed-arity function,
     /// at least the minimum for a variadic one such as `min`/`max`).
     fn fn_call(&mut self, name: String) -> Result<Expr, ParseError> {
+        // `None` is `best`, whose arity is variable and which is an `Expr::BestOf` node rather
+        // than an `FnName`, so `FnName::arity` stays fixed per variant.
         let fn_name = match name.as_str() {
-            "floor" => FnName::Floor,
-            "ceil" => FnName::Ceil,
-            "round" => FnName::Round,
-            "abs" => FnName::Abs,
-            "min" => FnName::Min,
-            "max" => FnName::Max,
+            "floor" => Some(FnName::Floor),
+            "ceil" => Some(FnName::Ceil),
+            "round" => Some(FnName::Round),
+            "abs" => Some(FnName::Abs),
+            "min" => Some(FnName::Min),
+            "max" => Some(FnName::Max),
+            "best" => None,
             other => {
                 return Err(ParseError::Unexpected(format!(
                     "unknown function '{other}'"
@@ -346,6 +349,12 @@ impl P {
                 )))
             }
         }
+        let Some(fn_name) = fn_name else {
+            if args.len() < 2 {
+                return Err(ParseError::BestOfRequiresTwoArgs);
+            }
+            return Ok(Expr::BestOf(args));
+        };
         let required = fn_name.arity();
         if !fn_name.accepts_arg_count(args.len()) {
             let qualifier = if matches!(fn_name, FnName::Min | FnName::Max) {

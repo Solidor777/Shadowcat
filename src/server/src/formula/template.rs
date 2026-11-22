@@ -63,16 +63,17 @@ pub(crate) const NOTATION_KEYWORDS: [&str; 19] = [
     "cso",
 ];
 
-/// The dice-notation grammar's math-function vocabulary (the six spellings
-/// `dice::spec::FnName` declares and `dice::notation::parser`'s `fn_call`
-/// recognizes). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
+/// The dice-notation grammar's function vocabulary (the six spellings
+/// `dice::spec::FnName` declares plus `best`, the `dice::spec::Expr::BestOf` call, all
+/// recognized by `dice::notation::parser`'s `fn_call`). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
 /// dice-MECHANIC modifier vocabulary, while function names are notation only
 /// when followed by `(` after any spaces/tabs — `claim_notation_function` tests exactly
 /// that, and anywhere else the same word is an ordinary identifier a resolver
 /// may answer. One of three declarations of one decision (the client
 /// template module's own list and the dice parser's match arms are the other
 /// two); the notation-modifier parity gate reads all three.
-pub(crate) const NOTATION_FUNCTIONS: [&str; 6] = ["floor", "ceil", "round", "abs", "min", "max"];
+pub(crate) const NOTATION_FUNCTIONS: [&str; 7] =
+    ["floor", "ceil", "round", "abs", "min", "max", "best"];
 
 /// Largest magnitude a substituted value may have (asymmetric about zero on
 /// purpose: the most negative representable i32 exceeds it and is rejected).

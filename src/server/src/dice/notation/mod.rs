@@ -126,6 +126,9 @@ pub enum ParseError {
     /// A second `mn<N>` or `mx<N>` appeared on one dice group. A die has one floor and one
     /// ceiling, so a repeat would silently discard one bound.
     DuplicateClamp,
+    /// `best(...)` was called with fewer than two branches; a best-of needs at least two
+    /// candidates to choose between.
+    BestOfRequiresTwoArgs,
 }
 
 /// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
@@ -179,6 +182,12 @@ impl std::fmt::Display for ParseError {
                 write!(
                     f,
                     "a dice group can only set one floor (mn<N>) and one ceiling (mx<N>)"
+                )
+            }
+            ParseError::BestOfRequiresTwoArgs => {
+                write!(
+                    f,
+                    "best(...) needs at least two expressions to choose between"
                 )
             }
         }

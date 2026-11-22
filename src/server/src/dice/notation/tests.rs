@@ -24,10 +24,11 @@ fn every_parse_error_variant_displays_without_debug_artifacts() {
         ParseError::DuplicateCritFail,
         ParseError::TooDeeplyNested,
         ParseError::DuplicateClamp,
+        ParseError::BestOfRequiresTwoArgs,
     ];
     assert_eq!(
         variants.len(),
-        14,
+        15,
         "update this test if a ParseError variant is added or removed"
     );
     for v in variants {

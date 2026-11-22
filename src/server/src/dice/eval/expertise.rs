@@ -164,6 +164,7 @@ fn run_dp(
 ///     label: None,
 ///     symbols: vec![],
 ///     kind: None,
+///     best_of_branch: None,
 ///     ordered: true,
 /// }];
 /// let cfg = SuccessConfig {
