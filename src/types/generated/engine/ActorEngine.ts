@@ -19,7 +19,7 @@ import type { VisionAssignment } from "./VisionAssignment";
  *
  * let actor = ActorEngine {
  *     display_name: "Goblin Scout".to_string(),
- *     visual: TokenVisual::Image { asset: "token-goblin.png".to_string() },
+ *     visual: TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None },
  *     size: Size { w: 1.0, h: 1.0 },
  *     shape: "square".to_string(),
  *     faction: None,

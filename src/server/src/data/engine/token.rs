@@ -484,7 +484,7 @@ pub struct VisionAssignment {
 /// ```
 /// use shadowcat::data::engine::TokenVisual;
 ///
-/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
 /// let json = serde_json::to_value(&visual).unwrap();
 /// // Internally tagged on `kind`, lowercase.
 /// assert_eq!(json["kind"], "image");
@@ -499,6 +499,11 @@ pub enum TokenVisual {
     Image {
         /// Asset id of the image.
         asset: String,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A frame-animated visual.
     Animated {
@@ -509,6 +514,11 @@ pub enum TokenVisual {
         /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A named set of switchable faces.
     Faces {
@@ -545,11 +555,17 @@ impl TokenVisual {
     /// `RenderVisual::validate`.
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            TokenVisual::Image { asset } => {
+            TokenVisual::Image { asset, transform } => {
                 crate::data::engine::geometry::validate_asset_ref(asset)
-                    .map_err(|m| format!("asset: {m}"))
+                    .map_err(|m| format!("asset: {m}"))?;
+                validate_transform(transform)
             }
-            TokenVisual::Animated { source, .. } => source.validate(),
+            TokenVisual::Animated {
+                source, transform, ..
+            } => {
+                source.validate()?;
+                validate_transform(transform)
+            }
             TokenVisual::Faces { faces, .. } => {
                 for (name, visual) in faces {
                     visual
@@ -586,7 +602,7 @@ impl TokenVisual {
 /// ```
 /// use shadowcat::data::engine::RenderVisual;
 ///
-/// let visual = RenderVisual::Image { asset: "token-goblin.png".to_string() };
+/// let visual = RenderVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
 /// let json = serde_json::to_value(&visual).unwrap();
 /// assert_eq!(json["kind"], "image");
 /// // A face's visual is a leaf kind: the `faces` discriminant is refused here.
@@ -601,6 +617,11 @@ pub enum RenderVisual {
     Image {
         /// Asset id of the image.
         asset: String,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A frame-animated visual.
     Animated {
@@ -611,6 +632,11 @@ pub enum RenderVisual {
         /// Loop playback; false = play once and hold the last frame.
         #[serde(rename = "loop")]
         loop_: bool,
+        /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+        /// default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transform: Option<VisualTransform>,
     },
     /// A generated token visual: existing art framed by a shape crop, an
     /// optional decorative border ring, and an optional background fill. The
@@ -639,11 +665,17 @@ impl RenderVisual {
     /// here, never `Faces` itself — see this enum's own doc).
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            RenderVisual::Image { asset } => {
+            RenderVisual::Image { asset, transform } => {
                 crate::data::engine::geometry::validate_asset_ref(asset)
-                    .map_err(|m| format!("asset: {m}"))
+                    .map_err(|m| format!("asset: {m}"))?;
+                validate_transform(transform)
             }
-            RenderVisual::Animated { source, .. } => source.validate(),
+            RenderVisual::Animated {
+                source, transform, ..
+            } => {
+                source.validate()?;
+                validate_transform(transform)
+            }
             RenderVisual::Generated {
                 art,
                 border,
@@ -740,6 +772,86 @@ impl GeneratedBackground {
     }
 }
 
+/// The point of the art that aligns to the token's footprint origin, as a fraction of the art's
+/// own box (`{0.5, 0.5}` is the centered default). Not clamped to `[0, 1]`: an author may anchor
+/// outside the box on purpose.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TransformAnchor;
+///
+/// let anchor = TransformAnchor { x: 0.5, y: 0.75 };
+/// assert_eq!(anchor.y, 0.75);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct TransformAnchor {
+    /// Horizontal anchor fraction.
+    pub x: f64,
+    /// Vertical anchor fraction.
+    pub y: f64,
+}
+
+/// Authored framing of a plain image or animated token visual: where the art is anchored, how
+/// much it is scaled against the token's box, and a static multiply tint. `"generated"` visuals
+/// frame their art with crop/border/background instead and carry no transform of their own; a
+/// generated visual's nested `art` may carry one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{TransformAnchor, VisualTransform};
+///
+/// let transform = VisualTransform {
+///     anchor: TransformAnchor { x: 0.5, y: 0.6 },
+///     scale: 1.25,
+///     tint: Some("#ffcc88".to_string()),
+/// };
+/// assert_eq!(transform.scale, 1.25);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VisualTransform {
+    /// Art point aligned to the token's footprint origin.
+    pub anchor: TransformAnchor,
+    /// Multiplier on the art's drawn size against the token's box; `> 1` bleeds past the
+    /// footprint. Finite and positive.
+    pub scale: f64,
+    /// Multiply tint, a css `#rrggbb` string, or `None` for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tint: Option<String>,
+}
+
+impl VisualTransform {
+    /// Ingress validation beyond serde shape: finite anchor, finite positive scale, and a css
+    /// `#rrggbb` tint when present. The anchor is deliberately not range-clamped.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !self.anchor.x.is_finite() || !self.anchor.y.is_finite() {
+            return Err("transform anchor must be finite".to_string());
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err("transform scale must be finite and positive".to_string());
+        }
+        if let Some(tint) = &self.tint {
+            crate::data::engine::geometry::validate_hex_color(tint)?;
+        }
+        Ok(())
+    }
+}
+
+/// Validates an optional `VisualTransform`, prefixing a failure with its field name; `None`
+/// passes. Shared by every `TokenVisual`/`RenderVisual` arm that carries a transform.
+fn validate_transform(transform: &Option<VisualTransform>) -> Result<(), String> {
+    match transform {
+        Some(t) => t.validate().map_err(|m| format!("transform: {m}")),
+        None => Ok(()),
+    }
+}
+
 /// An animated visual's frame source: an ordered list of individually
 /// uploaded assets, or one grid-sliced sheet asset.
 ///
@@ -815,7 +927,7 @@ impl AnimatedSource {
 ///
 /// let actor = ActorEngine {
 ///     display_name: "Goblin Scout".to_string(),
-///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string() },
+///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None },
 ///     size: Size { w: 1.0, h: 1.0 },
 ///     shape: "square".to_string(),
 ///     faction: None,

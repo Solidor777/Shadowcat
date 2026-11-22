@@ -61,7 +61,8 @@ pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC
 pub use table_folder::TableFolderEngine;
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
+    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, TransformAnchor,
+    VisionAssignment, VisualTransform,
 };
 
 use crate::data::DataError;

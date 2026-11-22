@@ -4,6 +4,7 @@ import type { GeneratedBackground } from "./GeneratedBackground";
 import type { GeneratedBorder } from "./GeneratedBorder";
 import type { GeneratedCrop } from "./GeneratedCrop";
 import type { RenderVisual } from "./RenderVisual";
+import type { VisualTransform } from "./VisualTransform";
 
 /**
  * The client-owned token/actor visual union. Internally tagged on
@@ -15,7 +16,7 @@ import type { RenderVisual } from "./RenderVisual";
  * ```
  * use shadowcat::data::engine::TokenVisual;
  *
- * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+ * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
  * let json = serde_json::to_value(&visual).unwrap();
  * // Internally tagged on `kind`, lowercase.
  * assert_eq!(json["kind"], "image");
@@ -27,7 +28,12 @@ export type TokenVisual = { "kind": "image",
 /**
  * Asset id of the image.
  */
-asset: string, } | { "kind": "animated", 
+asset: string, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "animated", 
 /**
  * Where the frames come from.
  */
@@ -39,7 +45,12 @@ fps: number,
 /**
  * Loop playback; false = play once and hold the last frame.
  */
-loop: boolean, } | { "kind": "faces", 
+loop: boolean, 
+/**
+ * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
+ * default.
+ */
+transform?: VisualTransform, } | { "kind": "faces", 
 /**
  * Face name -> drawable visual (never nested `faces`).
  */
