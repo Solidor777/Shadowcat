@@ -67,6 +67,7 @@
      * @example
      * ```
      * // private closure; not part of the public API — attached to `window` while capture is armed
+     * declare const onKeydown: (e: KeyboardEvent) => void;
      * window.addEventListener("keydown", onKeydown, true);
      * ```
      */

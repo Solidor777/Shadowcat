@@ -279,6 +279,7 @@ export class KeybindingsController {
    * @example
    * ```
    * // private field; installed on the target by the constructor
+   * declare const target: EventTarget;
    * target.addEventListener("keydown", this.#onKeydown);
    * ```
    */
@@ -332,6 +333,7 @@ export class KeybindingsController {
    * @example
    * ```
    * // private; registered as the controller's own `core:keydown` listener
+   * declare const event: KeyboardEvent;
    * this.#dispatch({ combo: "keyp", event });
    * ```
    */
@@ -354,6 +356,7 @@ export class KeybindingsController {
    * @example
    * ```
    * // private helper; not part of the public API
+   * declare const binding: Registered;
    * this.#comboOf(binding);
    * ```
    */

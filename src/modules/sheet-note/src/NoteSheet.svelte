@@ -105,6 +105,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to the body fieldset's click
+   * declare const event: MouseEvent;
    * onBodyClick(event);
    * ```
    */
