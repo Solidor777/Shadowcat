@@ -891,6 +891,75 @@ test("the wall editor's one-way and limited controls dispatch /engine/direction 
   });
 });
 
+test("the wall editor's proximity controls write the whole /engine/proximity tier with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+  const path = "/engine/proximity";
+  let seq = 10;
+  /** Applies an update to the store and lets the editor re-render before the next event. */
+  const store = async (old: unknown, value: unknown): Promise<void> => {
+    docs.applyCommand({
+      seq: seq++, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: wallId, changes: [{ path, old, new: value }] }],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  const tier = { within: 1, senses: ["sight"], soundGain: null };
+
+  // No tier: the toggle is off and the tier controls are absent. Enabling writes the default
+  // tier with a null pre-image.
+  expect((screen.getByTestId("wall-proximity") as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByTestId("wall-proximity-within")).toBeNull();
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: null, new: tier }] });
+  await store(null, tier);
+
+  // The only checked sense cannot be unchecked; the gain slider needs the sound sense.
+  expect((screen.getByTestId("wall-proximity-sight") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByTestId("wall-proximity-gain")).toBeNull();
+
+  // The distance writes the whole tier; invalid input writes nothing.
+  const count = dispatched.length;
+  const within = screen.getByTestId("wall-proximity-within") as HTMLInputElement;
+  for (const bad of ["", "0", "-2", "abc", "1001"]) await fireEvent.change(within, { target: { value: bad } });
+  expect(dispatched.length).toBe(count);
+  await fireEvent.change(within, { target: { value: "3" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: tier, new: { ...tier, within: 3 } }],
+  });
+
+  // Adding sound reveals the gain slider; the gain writes into the same tier.
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  const withSound = { ...tier, senses: ["sight", "sound"] };
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: withSound }] });
+  await store(tier, withSound);
+  await fireEvent.change(screen.getByTestId("wall-proximity-gain"), { target: { value: "0.4" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: withSound, new: { ...withSound, soundGain: 0.4 } }],
+  });
+  await store(withSound, { ...withSound, soundGain: 0.4 });
+
+  // Removing sound clears the gain in the same write (the server rejects a gain without sound).
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path, old: { ...withSound, soundGain: 0.4 }, new: tier }],
+  });
+  await store({ ...withSound, soundGain: 0.4 }, tier);
+
+  // The toggle off removes the tier, carrying the stored tier as old.
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: null }] });
+});
+
 test("Escape clears the open editor", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });

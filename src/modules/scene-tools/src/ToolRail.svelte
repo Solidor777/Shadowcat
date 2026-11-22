@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -454,6 +454,58 @@
     const next = editElevationBand(old, end, raw);
     if (next === undefined) return;
     editSelected("/engine/elevation", old, next);
+  }
+
+  /** The largest proximity distance, in cells, the server accepts (`MAX_PROXIMITY_CELLS`). */
+  const MAX_PROXIMITY_CELLS = 1000;
+
+  /** The senses a wall's proximity tier can open, in the order the editor lists them. */
+  const PROXIMITY_SENSES: readonly WallSense[] = ["sight", "light", "sound"];
+
+  /** Write the edited wall's whole `/engine/proximity` value; `old` is the raw stored value
+   * (`null` when the wall has no tier). The server validates the tier as one unit, so every edit
+   * replaces the object.
+   * @param next The tier to store, or `null` to remove it.
+   * @example
+   * ```
+   * editProximity({ within: 2, senses: ["sight"], soundGain: null });
+   * ```
+   */
+  function editProximity(next: WallProximity | null): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    editSelected("/engine/proximity", (doc.engine as WallEngine).proximity ?? null, next);
+  }
+
+  /** Write the proximity distance from the input's raw string. A value that is not a finite
+   * number in `(0, MAX_PROXIMITY_CELLS]` is ignored: the server rejects the whole update for one.
+   * @param tier The wall's stored tier.
+   * @param raw The distance input's raw string value, in cells.
+   * @example
+   * ```
+   * editProximityWithin({ within: 1, senses: ["sight"], soundGain: null }, "3");
+   * ```
+   */
+  function editProximityWithin(tier: WallProximity, raw: string): void {
+    const within = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(within) || within <= 0 || within > MAX_PROXIMITY_CELLS) return;
+    if (within === tier.within) return;
+    editProximity({ ...tier, within });
+  }
+
+  /** Add or remove one sense from the stored tier. Removing `sound` also clears the gain, which
+   * the server accepts only alongside the sound sense.
+   * @param tier The wall's stored tier.
+   * @param sense The sense whose checkbox changed.
+   * @param on Whether the sense is now checked.
+   * @example
+   * ```
+   * editProximitySense({ within: 1, senses: ["sight"], soundGain: null }, "light", true);
+   * ```
+   */
+  function editProximitySense(tier: WallProximity, sense: WallSense, on: boolean): void {
+    const senses = PROXIMITY_SENSES.filter((s) => (s === sense ? on : tier.senses.includes(s)));
+    editProximity({ ...tier, senses, soundGain: senses.includes("sound") ? (tier.soundGain ?? null) : null });
   }
 
   /** Whether an Escape keystroke is aimed at the canvas selection. Only a canvas-context Escape
@@ -994,6 +1046,61 @@
           />
           {t("tools.wallLimited")}
         </label>
+        <!-- `proximity`: the wall is absent for a sight ray, light or sound whose origin lies
+             within `within` cells of it. The last remaining sense cannot be unchecked (a tier
+             names at least one sense); the toggle removes the tier. The gain slider exists only
+             with the sound sense (`soundGain` is rejected without it). -->
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-proximity"
+            checked={eng.proximity != null}
+            onchange={(e) =>
+              editProximity(e.currentTarget.checked ? { within: 1, senses: ["sight"], soundGain: null } : null)}
+          />
+          {t("tools.wallProximity")}
+        </label>
+        {#if eng.proximity}
+          {@const tier = eng.proximity}
+          <label>
+            {t("tools.wallProximityWithin")}
+            <input
+              type="number"
+              min="0"
+              max={MAX_PROXIMITY_CELLS}
+              step="0.5"
+              data-testid="wall-proximity-within"
+              value={tier.within}
+              onchange={(e) => editProximityWithin(tier, e.currentTarget.value)}
+            />
+          </label>
+          {#each PROXIMITY_SENSES as sense (sense)}
+            <label>
+              <input
+                type="checkbox"
+                data-testid={`wall-proximity-${sense}`}
+                checked={tier.senses.includes(sense)}
+                disabled={tier.senses.length === 1 && tier.senses.includes(sense)}
+                onchange={(e) => editProximitySense(tier, sense, e.currentTarget.checked)}
+              />
+              {t(`tools.wallProximity.${sense}`)}
+            </label>
+          {/each}
+          {#if tier.senses.includes("sound")}
+            <label>
+              {t("tools.wallProximityGain")}
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                data-testid="wall-proximity-gain"
+                value={tier.soundGain ?? 1}
+                onchange={(e) => editProximity({ ...tier, soundGain: Number(e.currentTarget.value) })}
+              />
+            </label>
+          {/if}
+        {/if}
         <!-- The door state: `none` (an ordinary wall — writes `null`, removing the door) or
              `closed`/`open`/`locked`. This select is the GM's authoring surface (and the ONLY
              way onto or off `locked`); the player-facing flip is the select tool's

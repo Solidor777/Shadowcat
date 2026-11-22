@@ -136,6 +136,8 @@ export type { WallEngine } from "./generated/engine/WallEngine";
 export type { DoorState } from "./generated/engine/DoorState";
 export type { WallDirection } from "./generated/engine/WallDirection";
 export type { WallSightTier } from "./generated/engine/WallSightTier";
+export type { WallProximity } from "./generated/engine/WallProximity";
+export type { WallSense } from "./generated/engine/WallSense";
 export type { ElevationBand } from "./generated/engine/ElevationBand";
 export type { Seg } from "./generated/engine/Seg";
 export type { RegionEngine } from "./generated/engine/RegionEngine";
