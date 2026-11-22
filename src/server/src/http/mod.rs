@@ -257,6 +257,13 @@ pub async fn router(state: AppState) -> Router {
             get(routes::get_ui_state).put(routes::put_ui_state),
         )
         .route("/api/account/password", post(routes::change_own_password))
+        .route("/api/account/profile", put(routes::put_profile))
+        .route(
+            "/api/account/avatar",
+            put(routes::put_avatar)
+                .delete(routes::delete_avatar)
+                .layer(DefaultBodyLimit::max(routes::MAX_AVATAR_BYTES)),
+        )
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))
@@ -286,6 +293,10 @@ pub async fn router(state: AppState) -> Router {
         .route(
             "/api/worlds/{id}/members/{user}",
             delete(routes::remove_member),
+        )
+        .route(
+            "/api/worlds/{id}/members/{user}/avatar",
+            get(routes::get_member_avatar),
         )
         .route(
             "/api/worlds/{id}/invites",

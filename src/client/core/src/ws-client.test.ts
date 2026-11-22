@@ -1854,6 +1854,26 @@ describe("WsClient", () => {
     onMessage(JSON.stringify({ type: "modules_changed" }));
     expect(calls).toBe(1);
   });
+
+  it("a presence server frame invokes onPresence with the user and online flag", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: Array<[string, boolean]> = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onPresence: (user, online) => received.push([user, online]) },
+    });
+    await client.start();
+    onMessage(JSON.stringify({ type: "presence", user: "u1", online: true }));
+    onMessage(JSON.stringify({ type: "presence", user: "u1", online: false }));
+    expect(received).toEqual([
+      ["u1", true],
+      ["u1", false],
+    ]);
+  });
 });
 
 describe("WsClient present_note frames", () => {

@@ -1543,10 +1543,8 @@ pub(crate) async fn resolve_audience_intent(
                 .await
                 .map_err(SendMessageError::Data)?
                 .into_iter()
-                .filter(|(id, _, role)| {
-                    *id != sender && *role != crate::data::document::WorldRole::Gm
-                })
-                .map(|(id, _, _)| id)
+                .filter(|m| m.user != sender && m.role != crate::data::document::WorldRole::Gm)
+                .map(|m| m.user)
                 .collect();
             Ok(Audience::Whisper { recipients })
         }

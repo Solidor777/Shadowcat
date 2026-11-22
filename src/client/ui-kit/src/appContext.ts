@@ -213,6 +213,11 @@ export interface AppContext {
   notifyProgress: (message: string, progress: NotificationProgress) => ProgressNotification;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
+  /** userId → whether that member currently has a live connection to this world, kept current by
+   * the server's presence transitions. Transitions only: a member already online before this
+   * client connected has no entry until their next transition, so an absent key means unknown,
+   * never offline. */
+  presence: ReadonlyMap<string, boolean>;
   /** Translate a key to the active locale's string. */
   t: TFunc;
   /** Select a plural-category message for `count` — see `I18n.plural`. Every module that needs

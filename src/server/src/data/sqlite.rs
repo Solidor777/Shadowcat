@@ -28,7 +28,7 @@ use crate::data::permission::{
     declared_caps_for_path, identity_hidden_in_body, identity_hidden_touched,
     required_cap_for_path, resolve_access_world, Access,
 };
-use crate::data::repository::Repository;
+use crate::data::repository::{Repository, WorldMemberRow};
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
 use crate::data::validation;
 use crate::data::world_bundle::{
@@ -61,6 +61,8 @@ const SINGLETON_DOC_TYPES: &[&str] = &crate::data::world_seed::CONFIG_SINGLETON_
 ///     username: "MOCK_USER".into(),
 ///     password_hash: None,
 ///     server_role: ServerRole::User,
+///     colour: None,
+///     pronouns: None,
 /// };
 /// assert_eq!(record.username, "MOCK_USER");
 /// ```
@@ -74,6 +76,11 @@ pub struct UserRecord {
     pub password_hash: Option<String>,
     /// Server tier (admin/user), orthogonal to any per-world role.
     pub server_role: ServerRole,
+    /// Account colour accent as `#rrggbb`, or `None` when unset. The avatar bytes are not part
+    /// of this record (it is read on every login); `SqliteRepository::avatar_for` fetches them.
+    pub colour: Option<String>,
+    /// Free-text pronouns, or `None` when unset.
+    pub pronouns: Option<String>,
 }
 
 /// A world invite as stored. `secret_hash` is an Argon2 PHC string over the
@@ -2837,7 +2844,7 @@ impl Repository for SqliteRepository {
         self.validator_registry_cache.reset_faults(world, module);
     }
 
-    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    async fn list_members(&self, world: Uuid) -> Result<Vec<WorldMemberRow>, DataError> {
         SqliteRepository::list_members(self, world).await
     }
 

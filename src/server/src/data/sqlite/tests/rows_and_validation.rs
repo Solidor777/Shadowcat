@@ -116,7 +116,7 @@ async fn list_members_includes_usernames() {
         .unwrap();
     let w = r.create_world_owned("W", gm, 0).await.unwrap();
     let members = r.list_members(w.id).await.unwrap();
-    assert!(members.iter().any(|(_, name, _)| name == "alice"));
+    assert!(members.iter().any(|m| m.username == "alice"));
 }
 
 #[tokio::test]
@@ -140,7 +140,7 @@ async fn list_members_orders_by_username() {
     r.add_member(w.id, abby, WorldRole::Player).await.unwrap();
 
     let members = r.list_members(w.id).await.unwrap();
-    let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+    let names: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
     assert_eq!(names, vec!["abby", "mona", "zeke"]);
 }
 
@@ -166,12 +166,72 @@ async fn list_members_orders_case_insensitively() {
         .unwrap();
 
     let members = r.list_members(w.id).await.unwrap();
-    let names: Vec<&str> = members.iter().map(|(_, name, _)| name.as_str()).collect();
+    let names: Vec<&str> = members.iter().map(|m| m.username.as_str()).collect();
     assert_eq!(
         names,
         vec!["alice", "Bob", "Charlie"],
         "case-insensitive order: alice before Bob before Charlie"
     );
+}
+
+#[tokio::test]
+async fn profile_and_avatar_round_trip_and_project_into_list_members() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let pl = r
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, pl, WorldRole::Player).await.unwrap();
+
+    // Unset: every field reads back empty.
+    assert!(r.avatar_for(pl).await.unwrap().is_none());
+    let record = r.user_by_id(pl).await.unwrap().unwrap();
+    assert!(record.colour.is_none() && record.pronouns.is_none());
+
+    r.set_profile(pl, Some("#336699"), Some("she/her"))
+        .await
+        .unwrap();
+    r.set_avatar(pl, Some((&[1, 2, 3], "image/png")))
+        .await
+        .unwrap();
+
+    let record = r.user_by_username("pl").await.unwrap().unwrap();
+    assert_eq!(record.colour.as_deref(), Some("#336699"));
+    assert_eq!(record.pronouns.as_deref(), Some("she/her"));
+    assert_eq!(
+        r.avatar_for(pl).await.unwrap(),
+        Some((vec![1, 2, 3], "image/png".to_owned()))
+    );
+
+    // `has_avatar` is a computed `IS NOT NULL` read back as an integer: the avatar-less GM
+    // reads false and the avatar-bearing player reads true.
+    let members = r.list_members(w.id).await.unwrap();
+    let gm_row = members.iter().find(|m| m.user == gm).unwrap();
+    let pl_row = members.iter().find(|m| m.user == pl).unwrap();
+    assert!(!gm_row.has_avatar && gm_row.colour.is_none() && gm_row.pronouns.is_none());
+    assert!(pl_row.has_avatar);
+    assert_eq!(pl_row.colour.as_deref(), Some("#336699"));
+    assert_eq!(pl_row.pronouns.as_deref(), Some("she/her"));
+
+    // Clearing resets both columns together.
+    r.set_avatar(pl, None).await.unwrap();
+    r.set_profile(pl, None, None).await.unwrap();
+    assert!(r.avatar_for(pl).await.unwrap().is_none());
+    let row = &r.list_members(w.id).await.unwrap()[1];
+    assert!(!row.has_avatar && row.colour.is_none() && row.pronouns.is_none());
+}
+
+#[tokio::test]
+async fn profile_and_avatar_writes_reject_an_unknown_account() {
+    let r = repo().await;
+    let ghost = uuid::Uuid::new_v4();
+    assert!(r.set_profile(ghost, Some("#336699"), None).await.is_err());
+    assert!(r.set_avatar(ghost, None).await.is_err());
 }
 
 #[tokio::test]

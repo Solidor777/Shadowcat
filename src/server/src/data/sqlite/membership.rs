@@ -5,7 +5,8 @@
 
 use super::*;
 
-/// Projects a `users` row (`id, username, password_hash, server_role`) into a `UserRecord`.
+/// Projects a `users` row (`id, username, password_hash, server_role, colour, pronouns`) into a
+/// `UserRecord`.
 /// The one mapping every by-identity account lookup shares; an unrecognised role string
 /// maps to `ServerRole::User` (least privilege).
 fn user_record_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, DataError> {
@@ -20,6 +21,8 @@ fn user_record_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, DataE
         username: r.get("username"),
         password_hash: r.get("password_hash"),
         server_role,
+        colour: r.get("colour"),
+        pronouns: r.get("pronouns"),
     })
 }
 
@@ -299,7 +302,8 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// The world's members as `(user_id, username, role)`, username order.
+    /// The world's members as `WorldMemberRow`s, username order. `has_avatar` is computed in SQL
+    /// (`avatar_bytes IS NOT NULL`) so the avatar bytes never leave the database for a roster read.
     ///
     /// # Examples
     ///
@@ -313,12 +317,10 @@ impl SqliteRepository {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_members(
-        &self,
-        world: Uuid,
-    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    pub async fn list_members(&self, world: Uuid) -> Result<Vec<WorldMemberRow>, DataError> {
         let rows = sqlx::query(
-            "SELECT m.user_id, u.username, m.role \
+            "SELECT m.user_id, u.username, m.role, u.colour, u.pronouns, \
+                    u.avatar_bytes IS NOT NULL AS has_avatar \
              FROM world_members m JOIN users u ON u.id = m.user_id \
              WHERE m.world_id = ? \
              ORDER BY u.username COLLATE NOCASE",
@@ -333,7 +335,14 @@ impl SqliteRepository {
                 let username: String = r.get("username");
                 let role: WorldRole =
                     serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
-                Ok((uid, username, role))
+                Ok(WorldMemberRow {
+                    user: uid,
+                    username,
+                    role,
+                    colour: r.get("colour"),
+                    pronouns: r.get("pronouns"),
+                    has_avatar: r.get::<i64, _>("has_avatar") != 0,
+                })
             })
             .collect()
     }
@@ -498,7 +507,8 @@ impl SqliteRepository {
     /// ```
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRecord>, DataError> {
         let row = sqlx::query(
-            "SELECT id, username, password_hash, server_role FROM users WHERE username = ?",
+            "SELECT id, username, password_hash, server_role, colour, pronouns \
+             FROM users WHERE username = ?",
         )
         .bind(username)
         .fetch_optional(&self.pool)
@@ -522,12 +532,111 @@ impl SqliteRepository {
     /// # }
     /// ```
     pub async fn user_by_id(&self, id: Uuid) -> Result<Option<UserRecord>, DataError> {
-        let row =
-            sqlx::query("SELECT id, username, password_hash, server_role FROM users WHERE id = ?")
-                .bind(id.to_string())
-                .fetch_optional(&self.pool)
-                .await?;
+        let row = sqlx::query(
+            "SELECT id, username, password_hash, server_role, colour, pronouns \
+             FROM users WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
         row.as_ref().map(user_record_from_row).transpose()
+    }
+
+    /// Sets the account's colour accent and pronouns. Self-only, single-owner row, so a plain
+    /// `UPDATE` with no concurrency check; `None` clears the field. Returns `NotFound` when no
+    /// such account exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let missing = repo.set_profile(uuid::Uuid::new_v4(), Some("#336699"), None).await;
+    /// assert!(missing.is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_profile(
+        &self,
+        id: Uuid,
+        colour: Option<&str>,
+        pronouns: Option<&str>,
+    ) -> Result<(), DataError> {
+        let res = sqlx::query("UPDATE users SET colour = ?, pronouns = ? WHERE id = ?")
+            .bind(colour)
+            .bind(pronouns)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Sets (`Some`) or clears (`None`) the account's avatar. The bytes and their sniffed content
+    /// type are written together so a row never carries one without the other. Returns
+    /// `NotFound` when no such account exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let missing = repo.set_avatar(uuid::Uuid::new_v4(), None).await;
+    /// assert!(missing.is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn set_avatar(
+        &self,
+        id: Uuid,
+        avatar: Option<(&[u8], &str)>,
+    ) -> Result<(), DataError> {
+        let (bytes, content_type) = match avatar {
+            Some((b, c)) => (Some(b), Some(c)),
+            None => (None, None),
+        };
+        let res =
+            sqlx::query("UPDATE users SET avatar_bytes = ?, avatar_content_type = ? WHERE id = ?")
+                .bind(bytes)
+                .bind(content_type)
+                .bind(id.to_string())
+                .execute(&self.pool)
+                .await?;
+        if res.rows_affected() == 0 {
+            return Err(DataError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// The account's avatar bytes and content type, or `None` when it has none (or no such
+    /// account exists). Fetched only by the avatar route; `UserRecord` never carries the bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.avatar_for(uuid::Uuid::new_v4()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn avatar_for(&self, id: Uuid) -> Result<Option<(Vec<u8>, String)>, DataError> {
+        let row = sqlx::query(
+            "SELECT avatar_bytes, avatar_content_type FROM users \
+             WHERE id = ? AND avatar_bytes IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| (r.get("avatar_bytes"), r.get("avatar_content_type"))))
     }
 
     /// Whether a user row with this id exists. Used to reject a membership
