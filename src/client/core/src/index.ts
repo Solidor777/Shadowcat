@@ -197,7 +197,7 @@ export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody, appendNoteSortKey } from ".
 export type { NoteEngine, BuildNoteDocOptions } from "./note-docs";
 export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc, resolveNextTrackAsset } from "./playlist-docs";
 export type { AudioChannel, AudioStateEngine, PlayingTrack, PlaylistEngine, PlaylistMode, PlaylistTrack, BuildPlaylistDocOptions } from "./playlist-docs";
-export type { AudioChannelId, AudioChannelState, AudioApi, DuckController, DuckSource } from "./audio";
+export type { AudioChannelId, AudioChannelPatch, AudioChannelState, AudioApi, OneShotOptions, DuckController, DuckSource } from "./audio";
 export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer, normalizeBase } from "./merge";
 export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
 export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";
