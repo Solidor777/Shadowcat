@@ -154,6 +154,33 @@ pub(crate) fn walls_at_elevation(walls: &[WallEntry], elevation: f64) -> Vec<vis
 }
 
 impl SceneEcs {
+    /// The `vision::Seg::open_within` a wall's proximity tier gives the `sense` collector, in
+    /// scene units: `Some` iff `WallEngine::proximity` names `sense`. The authored cell distance
+    /// converts through `GridShape::world_units_per_cell`, resolved lazily into `units_per_cell`
+    /// (at most once per collector pass, and never when no wall carries a tier), so hex and
+    /// square scenes agree on what "N cells" means. `gain` is the tier's `sound_gain`, `1.0`
+    /// when absent.
+    fn proximity_open(
+        &self,
+        scene: Uuid,
+        wall: &eng::WallEngine,
+        sense: eng::WallSense,
+        units_per_cell: &mut Option<f64>,
+    ) -> Option<vision::OpenWithin> {
+        let tier = wall.proximity.as_ref()?;
+        if !tier.senses.contains(&sense) {
+            return None;
+        }
+        let wu = *units_per_cell.get_or_insert_with(|| {
+            let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
+            self.resolve_grid_shape(scene, cell).world_units_per_cell()
+        });
+        Some(vision::OpenWithin {
+            distance: tier.within * wu,
+            gain: tier.sound_gain.unwrap_or(1.0),
+        })
+    }
+
     /// The scene's `blocksSight` walls with their elevation bands (the shared collector
     /// behind `sight_walls`/`sight_walls_for`). The flag read goes through
     /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
@@ -162,9 +189,11 @@ impl SceneEcs {
     /// `vision::Seg::one_way` from `WallEngine::direction` (a one-way wall occludes only
     /// from its blocking side — `vision::Seg::transparent_from`) and
     /// `vision::Seg::limited` from `WallEngine::sight_tier` (a sight ray crosses one such
-    /// wall per ray — `vision::MAX_LIMITED_CROSSINGS`).
+    /// wall per ray — `vision::MAX_LIMITED_CROSSINGS`), and `vision::Seg::open_within` when
+    /// `WallEngine::proximity` names `WallSense::Sight`.
     pub(crate) fn sight_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
         let mut out = Vec::new();
+        let mut units_per_cell = None;
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -181,6 +210,12 @@ impl SceneEcs {
                     b: (wall.seg.x2, wall.seg.y2),
                     one_way: wall.direction.map(|d| d.blocking_side),
                     limited: wall.sight_tier == Some(eng::WallSightTier::Limited),
+                    open_within: self.proximity_open(
+                        scene,
+                        &wall,
+                        eng::WallSense::Sight,
+                        &mut units_per_cell,
+                    ),
                 },
                 elevation: wall.elevation,
             });
@@ -195,8 +230,11 @@ impl SceneEcs {
     /// set. Light occlusion is SYMMETRIC and immediate by design: `one_way`/`limited` are
     /// always `None`/`false` here regardless of the wall's authored `direction`/`sight_tier`
     /// (those are sight/movement gates only — see `WallEngine::direction`'s own doc).
+    /// `vision::Seg::open_within` is filled when the wall's `WallEngine::proximity` names
+    /// `WallSense::Light`.
     pub(crate) fn light_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
         let mut out = Vec::new();
+        let mut units_per_cell = None;
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -213,6 +251,12 @@ impl SceneEcs {
                     b: (wall.seg.x2, wall.seg.y2),
                     one_way: None,
                     limited: false,
+                    open_within: self.proximity_open(
+                        scene,
+                        &wall,
+                        eng::WallSense::Light,
+                        &mut units_per_cell,
+                    ),
                 },
                 elevation: wall.elevation,
             });
@@ -263,9 +307,11 @@ impl SceneEcs {
     /// SYMMETRIC and immediate by design: `one_way`/`limited` are always `None`/`false`
     /// here regardless of the wall's authored `direction`/`sight_tier` (those are
     /// sight/movement gates only — see `WallEngine::direction`'s own doc), exactly as
-    /// `light_wall_entries` treats them.
+    /// `light_wall_entries` treats them. `vision::Seg::open_within` is filled when the wall's
+    /// `WallEngine::proximity` names `WallSense::Sound`, carrying its `sound_gain`.
     pub(crate) fn sound_wall_entries(&self, scene: Uuid) -> Vec<WallEntry> {
         let mut out = Vec::new();
+        let mut units_per_cell = None;
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -282,6 +328,12 @@ impl SceneEcs {
                     b: (wall.seg.x2, wall.seg.y2),
                     one_way: None,
                     limited: false,
+                    open_within: self.proximity_open(
+                        scene,
+                        &wall,
+                        eng::WallSense::Sound,
+                        &mut units_per_cell,
+                    ),
                 },
                 elevation: wall.elevation,
             });

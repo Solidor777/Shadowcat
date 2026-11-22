@@ -163,6 +163,68 @@ pub enum WallSightTier {
     Limited,
 }
 
+/// One sense a wall's proximity tier (`WallProximity`) opens: sight (the viewpoint's visibility
+/// raycast), light (a light source's occlusion raycast) or sound (a listener's occlusion test).
+/// Each is independent: a tier naming only `Sight` leaves light and sound blocked.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WallSense;
+///
+/// let json = serde_json::to_value(WallSense::Sound).unwrap();
+/// assert_eq!(json, serde_json::json!("sound"));
+/// assert_eq!(serde_json::from_value::<WallSense>(json).unwrap(), WallSense::Sound);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum WallSense {
+    /// The wall opens for the sight raycast (`vision::nearest_hit` over the sight collector).
+    Sight,
+    /// The wall opens for the light raycast (`vision::nearest_hit` over the light collector).
+    Light,
+    /// The wall opens for the sound occlusion test (`audibility::segment_occluded`).
+    Sound,
+}
+
+/// Upper bound on `WallProximity::within`, in grid cells. A finite cap keeps a wall's open
+/// distance within the order of a scene's own extent so the `Seg::open_within` comparison never
+/// sees an absurd magnitude from a stored document.
+pub const MAX_PROXIMITY_CELLS: f64 = 1000.0;
+
+/// A wall's proximity tier (`WallEngine::proximity`): for each sense in `senses`, the wall is
+/// absent for a ray (or sound path) whose ORIGIN lies within `within` cells of the wall segment,
+/// and blocks as an ordinary wall from farther away. The origin is the viewpoint for sight, the
+/// light's position for light and the listener for sound (`vision::Seg::open_from`). Movement
+/// never reads it, and a wall with no tier behaves exactly as before.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{WallProximity, WallSense};
+///
+/// let tier = WallProximity { within: 2.0, senses: vec![WallSense::Sight], sound_gain: None };
+/// let json = serde_json::to_value(&tier).unwrap();
+/// assert_eq!(json["soundGain"], serde_json::Value::Null);
+/// assert_eq!(serde_json::from_value::<WallProximity>(json).unwrap(), tier);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WallProximity {
+    /// Open distance in grid cells (like `VisionAssignment::range`): finite, positive and at
+    /// most `MAX_PROXIMITY_CELLS`, enforced by `WallEngine::validate`. Converted to scene units
+    /// at the collectors through `GridShape::world_units_per_cell`.
+    pub within: f64,
+    /// The senses the tier applies to: non-empty, no duplicates (`WallEngine::validate`).
+    pub senses: Vec<WallSense>,
+    /// Gain a sound keeps once it passes this wall while open, `0..=1`; meaningful only when
+    /// `senses` names `Sound`. Absent = `1.0` (fully open).
+    #[serde(default)]
+    pub sound_gain: Option<f64>,
+}
+
 /// The door-resolved blocking flags of a `WallEngine` — the ONE resolver output
 /// every wall collector (`SceneEcs::sight_wall_entries`/`light_wall_entries`/
 /// `sound_wall_entries`/`move_wall_entries`) reads, never the authored `blocks_*`
@@ -202,7 +264,8 @@ pub struct EffectiveWallFlags {
 /// Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
 /// `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
 /// segment only — sight and movement, never light/sound) and `sight_tier` (a sight-only
-/// partial-blocking tier — see `WallSightTier`). None of them changes the authored flags'
+/// partial-blocking tier — see `WallSightTier`) and `proximity` (a per-sense open-when-near tier
+/// — see `WallProximity`). None of them changes the authored flags'
 /// meaning; they compose with `effective_flags`'s output at the collectors.
 ///
 /// # Examples
@@ -220,6 +283,7 @@ pub struct EffectiveWallFlags {
 ///     door: None,
 ///     direction: None,
 ///     sight_tier: None,
+///     proximity: None,
 /// };
 /// assert_eq!(wall.blocks_move, Some(true));
 /// ```
@@ -265,6 +329,11 @@ pub struct WallEngine {
     /// sight raycast only (`vision::nearest_hit`'s crossing budget) — see `WallSightTier`.
     #[serde(default)]
     pub sight_tier: Option<WallSightTier>,
+    /// Proximity sense tier; absent = no tier, the wall blocks every sense it blocks today.
+    /// Read by the sight, light and sound collectors only, each for the senses it names — see
+    /// `WallProximity`. Movement never reads it.
+    #[serde(default)]
+    pub proximity: Option<WallProximity>,
 }
 
 impl WallEngine {
@@ -293,6 +362,7 @@ impl WallEngine {
     ///     door: Some(DoorState::Open),
     ///     direction: None,
     ///     sight_tier: None,
+    ///     proximity: None,
     /// };
     /// assert!(!wall.effective_flags().blocks_move);
     /// wall.door = Some(DoorState::Closed);
@@ -318,7 +388,10 @@ impl WallEngine {
         }
     }
 
-    /// Ingress validation beyond serde shape: a present `direction.blocking_side` must be
+    /// Ingress validation beyond serde shape. A present `proximity` must carry a finite
+    /// positive `within` of at most `MAX_PROXIMITY_CELLS`, a non-empty duplicate-free `senses`,
+    /// and a `sound_gain` (only with the `Sound` sense) inside `0..=1`. A present
+    /// `direction.blocking_side` must be
     /// exactly `1.0` or `-1.0`. The cross-product side test
     /// (`vision::Seg::transparent_from`) reads it as a sign, so any other value — `0.0`
     /// above all, which would author a wall solid from NEITHER side — must fail closed at
@@ -340,6 +413,7 @@ impl WallEngine {
     ///     door: None,
     ///     direction: Some(WallDirection { blocking_side: 1.0 }),
     ///     sight_tier: None,
+    ///     proximity: None,
     /// };
     /// assert!(wall.validate().is_ok());
     /// wall.direction = Some(WallDirection { blocking_side: 0.0 });
@@ -349,6 +423,29 @@ impl WallEngine {
         if let Some(d) = self.direction {
             if d.blocking_side != 1.0 && d.blocking_side != -1.0 {
                 return Err("direction.blockingSide must be exactly 1.0 or -1.0".to_string());
+            }
+        }
+        if let Some(p) = &self.proximity {
+            if !p.within.is_finite() || p.within <= 0.0 || p.within > MAX_PROXIMITY_CELLS {
+                return Err(format!(
+                    "proximity.within must be finite, positive and at most {MAX_PROXIMITY_CELLS} cells"
+                ));
+            }
+            if p.senses.is_empty() {
+                return Err("proximity.senses must name at least one sense".to_string());
+            }
+            for (i, s) in p.senses.iter().enumerate() {
+                if p.senses[..i].contains(s) {
+                    return Err("proximity.senses must not repeat a sense".to_string());
+                }
+            }
+            if let Some(g) = p.sound_gain {
+                if !g.is_finite() || !(0.0..=1.0).contains(&g) {
+                    return Err("proximity.soundGain must be within 0..=1".to_string());
+                }
+                if !p.senses.contains(&WallSense::Sound) {
+                    return Err("proximity.soundGain requires the sound sense".to_string());
+                }
             }
         }
         Ok(())

@@ -1236,6 +1236,86 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
 }
 
 #[test]
+fn movement_gate_mask_cache_invalidates_on_a_proximity_edit() {
+    // The viewer stands 20 units (one cell) from a sight-blocking wall. A one-cell sight tier
+    // opens it, so the cell behind is visible; editing the tier down to half a cell closes it,
+    // and the cached mask must follow the edit rather than serve the wider one.
+    use serde_json::json;
+    let user = crate::test_ids::test_uuid(7);
+    let scene_id = crate::test_ids::test_uuid(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let light = entity_doc_eng(
+        20,
+        10,
+        "light",
+        json!({
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
+        }),
+    );
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({
+            "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 },
+            "blocksSight": true,
+            "proximity": { "within": 1.0, "senses": ["sight"] }
+        }),
+    );
+    let wall_id = wall.id;
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, light, wall], 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": {
+            "losRestriction": true, "fog": true,
+            "lightingEnabled": true, "lightMode": "environmentLight",
+            "environment": { "color": "#000000", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    }));
+    let target_cell = (2, 0);
+    let mask = |ecs: &SceneEcs| {
+        ecs.visible_cells_cached(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0,
+        )
+    };
+    assert!(
+        mask(&ecs).contains(&target_cell),
+        "the viewer within the tier distance sees through the wall"
+    );
+    ecs.apply_op(&Operation::Update {
+        doc_id: wall_id,
+        changes: vec![fc(
+            "/engine/proximity",
+            json!({ "within": 0.5, "senses": ["sight"] }),
+        )],
+    });
+    assert!(
+        !mask(&ecs).contains(&target_cell),
+        "a narrower tier closes the wall and the cached mask must follow"
+    );
+}
+
+#[test]
 fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask_and_clip() {
     let (mut ecs, user, scene) = scene_with_lit_player_token();
     let ctx = PermissionContext {
@@ -1771,6 +1851,7 @@ fn move_wall_entries_excludes_an_open_door() {
                 door,
                 direction: None,
                 sight_tier: None,
+                proximity: None,
             })
             .unwrap(),
         );

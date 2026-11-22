@@ -16,6 +16,7 @@ fn wall_seg(a: P, b: P) -> Seg {
         b,
         one_way: None,
         limited: false,
+        open_within: None,
     }
 }
 
@@ -265,6 +266,7 @@ fn one_way_wall() -> Seg {
         b: (0.0, 10.0),
         one_way: Some(1.0),
         limited: false,
+        open_within: None,
     }
 }
 
@@ -335,12 +337,14 @@ fn nearest_hit_limited_wall_lets_a_ray_cross_exactly_one_then_stops_at_a_second(
         b: (0.0, 10.0),
         one_way: None,
         limited: true,
+        open_within: None,
     };
     let second = Seg {
         a: (10.0, -10.0),
         b: (10.0, 10.0),
         one_way: None,
         limited: true,
+        open_within: None,
     };
     let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[first, second])
         .expect("the second limited wall terminates the ray");
@@ -368,6 +372,7 @@ fn nearest_hit_limited_wall_still_stops_at_an_ordinary_wall_after_one_limited_cr
         b: (0.0, 10.0),
         one_way: None,
         limited: true,
+        open_within: None,
     };
     let ordinary = wall_seg((10.0, -10.0), (10.0, 10.0));
     let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[limited, ordinary])
@@ -382,6 +387,7 @@ fn nearest_hit_limited_wall_still_stops_at_an_ordinary_wall_after_one_limited_cr
         b: (10.0, 10.0),
         one_way: None,
         limited: true,
+        open_within: None,
     };
     let ordinary_first = wall_seg((0.0, -10.0), (0.0, 10.0));
     let hit = nearest_hit((-5.0, 0.0), (1.0, 0.0), &[ordinary_first, limited_behind])
@@ -400,5 +406,130 @@ fn visibility_polygon_bound_edges_are_never_one_way_or_limited() {
     for edge in bound().edges() {
         assert_eq!(edge.one_way, None, "bound edges are never one-way");
         assert!(!edge.limited, "bound edges are never limited");
+        assert_eq!(
+            edge.open_within, None,
+            "bound edges never open by proximity"
+        );
+    }
+}
+
+/// A vertical wall at x = 10 spanning y in [-5, 5] that opens within `distance` of an origin.
+fn proximity_wall(distance: f64) -> Seg {
+    Seg {
+        a: (10.0, -5.0),
+        b: (10.0, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: Some(OpenWithin {
+            distance,
+            gain: 1.0,
+        }),
+    }
+}
+
+#[test]
+fn a_viewer_near_a_proximity_wall_sees_behind_it_and_a_far_viewer_does_not() {
+    // Within 2 units the wall is absent from the viewpoint, so the cell behind it is visible;
+    // from 3 units the same wall is ordinary and hides it. The control wall carries no tier and
+    // hides the cell from BOTH distances, so the near case fails without the feature.
+    let target = (30.0, 0.0);
+    let tiered = [proximity_wall(2.0)];
+    let plain = [wall_seg((10.0, -5.0), (10.0, 5.0))];
+    let near = (9.0, 0.0);
+    let far = (7.0, 0.0);
+    assert!(point_in_poly(
+        &visibility_polygon(near, &tiered, bound()),
+        target
+    ));
+    assert!(!point_in_poly(
+        &visibility_polygon(far, &tiered, bound()),
+        target
+    ));
+    assert!(!point_in_poly(
+        &visibility_polygon(near, &plain, bound()),
+        target
+    ));
+    assert!(!point_in_poly(
+        &visibility_polygon(far, &plain, bound()),
+        target
+    ));
+}
+
+#[test]
+fn a_light_near_a_proximity_wall_lights_behind_it_and_a_far_light_does_not() {
+    // The light raycast (`emitters::light_polygon`) reaches the same `nearest_hit` skip: a light
+    // within the tier distance shines through, one beyond it is shadowed. The same wall with no
+    // tier shadows both.
+    let target = (30.0, 0.0);
+    let tiered = [proximity_wall(2.0)];
+    let plain = [wall_seg((10.0, -5.0), (10.0, 5.0))];
+    let lit = |pos: P, walls: &[Seg]| {
+        point_in_poly(
+            &crate::scene::emitters::light_polygon(pos, walls, 100.0),
+            target,
+        )
+    };
+    assert!(lit((9.0, 0.0), &tiered));
+    assert!(!lit((7.0, 0.0), &tiered));
+    assert!(!lit((9.0, 0.0), &plain));
+}
+
+#[test]
+fn open_from_is_inclusive_at_the_distance_and_closed_just_beyond() {
+    let wall = proximity_wall(2.0);
+    assert!(wall.open_from((8.0, 0.0)), "exactly at the distance opens");
+    assert!(
+        !wall.open_from((7.999, 0.0)),
+        "just beyond the distance blocks"
+    );
+}
+
+#[test]
+fn open_from_measures_to_the_segment_not_its_line() {
+    // Perpendicular distance to the infinite line is 1, but the nearest SEGMENT point is the
+    // endpoint (10, 5), 4 units from (9, 9): the wall stays closed.
+    let wall = proximity_wall(2.0);
+    assert!(!wall.open_from((9.0, 9.0)));
+    assert!(wall.open_from((9.0, 6.0)));
+}
+
+#[test]
+fn open_from_fails_closed_on_bad_distance_or_origin() {
+    for distance in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+        assert!(
+            !proximity_wall(distance).open_from((10.0, 0.0)),
+            "distance {distance} must leave the wall closed"
+        );
+    }
+    assert!(!proximity_wall(2.0).open_from((f64::NAN, 0.0)));
+    assert!(!wall_seg((10.0, -5.0), (10.0, 5.0)).open_from((10.0, 0.0)));
+}
+
+#[test]
+fn sight_light_and_sound_agree_on_one_proximity_wall_and_origin() {
+    // Parity pin: the sight raycast, the light raycast (both `nearest_hit`) and the sound test
+    // (`audibility::segment_occluded`) read the SAME `Seg::open_from`. For every origin the
+    // wall is either open to all three or closed to all three. Mutating `open_from` from `<=`
+    // to `<` flips the boundary row and fails this test.
+    let wall = proximity_wall(2.0);
+    let emitter = (30.0, 0.0);
+    for (origin, open) in [
+        ((9.0, 0.0), true),
+        ((8.0, 0.0), true),
+        ((7.5, 0.0), false),
+        ((5.0, 0.0), false),
+    ] {
+        let mut segs = vec![wall];
+        segs.extend(bound().edges());
+        let ray_open =
+            nearest_hit(origin, (1.0, 0.0), &segs).is_some_and(|hit| (hit.0 - 100.0).abs() < 1e-9);
+        let (blocked, _) = crate::scene::audibility::segment_occluded(origin, emitter, &[wall]);
+        assert_eq!(ray_open, open, "raycast verdict at {origin:?}");
+        assert_eq!(!blocked, open, "sound verdict at {origin:?}");
+        assert_eq!(
+            wall.open_from(origin),
+            open,
+            "predicate verdict at {origin:?}"
+        );
     }
 }

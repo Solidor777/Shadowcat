@@ -39,6 +39,7 @@ fn wall_seg(a: (f64, f64), b: (f64, f64)) -> Seg {
         b,
         one_way: None,
         limited: false,
+        open_within: None,
     }
 }
 fn terrain_on(x0: f64, y0: f64, x1: f64, y1: f64, mult: f64) -> RegionField {

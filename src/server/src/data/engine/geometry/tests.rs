@@ -19,6 +19,7 @@ fn wall(door: Option<DoorState>) -> WallEngine {
         door,
         direction: None,
         sight_tier: None,
+        proximity: None,
     }
 }
 
@@ -421,4 +422,88 @@ fn template_engine_validate_bounds_angle_and_width() {
     assert!(template(None, Some(-0.1)).validate().is_err());
     assert!(template(None, Some(f64::NAN)).validate().is_err());
     assert!(template(None, Some(f64::INFINITY)).validate().is_err());
+}
+
+/// A wall carrying a proximity tier built from the given parts.
+fn tiered(within: f64, senses: Vec<WallSense>, sound_gain: Option<f64>) -> WallEngine {
+    let mut w = wall(None);
+    w.proximity = Some(WallProximity {
+        within,
+        senses,
+        sound_gain,
+    });
+    w
+}
+
+#[test]
+fn proximity_deserializes_absent_as_none_and_round_trips_its_wire_names() {
+    let body = serde_json::json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0 },
+    });
+    let parsed: WallEngine = serde_json::from_value(body).unwrap();
+    assert_eq!(parsed.proximity, None);
+
+    let w = tiered(2.0, vec![WallSense::Sight, WallSense::Sound], Some(0.5));
+    let json = serde_json::to_value(&w).unwrap();
+    assert_eq!(
+        json["proximity"],
+        serde_json::json!({ "within": 2.0, "senses": ["sight", "sound"], "soundGain": 0.5 })
+    );
+    let back: WallEngine = serde_json::from_value(json).unwrap();
+    assert_eq!(back, w);
+}
+
+#[test]
+fn proximity_validate_accepts_a_well_formed_tier() {
+    assert!(tiered(2.0, vec![WallSense::Light], None).validate().is_ok());
+    assert!(tiered(MAX_PROXIMITY_CELLS, vec![WallSense::Sight], None)
+        .validate()
+        .is_ok());
+    for gain in [0.0, 0.5, 1.0] {
+        assert!(tiered(1.0, vec![WallSense::Sound], Some(gain))
+            .validate()
+            .is_ok());
+    }
+}
+
+#[test]
+fn proximity_validate_rejects_a_malformed_tier() {
+    for within in [
+        0.0,
+        -1.0,
+        f64::NAN,
+        f64::INFINITY,
+        MAX_PROXIMITY_CELLS + 1.0,
+    ] {
+        assert!(
+            tiered(within, vec![WallSense::Sight], None)
+                .validate()
+                .is_err(),
+            "within {within} must be rejected"
+        );
+    }
+    assert!(
+        tiered(2.0, vec![], None).validate().is_err(),
+        "empty senses"
+    );
+    assert!(
+        tiered(2.0, vec![WallSense::Sight, WallSense::Sight], None)
+            .validate()
+            .is_err(),
+        "duplicate senses"
+    );
+    for gain in [-0.1, 1.1, f64::NAN] {
+        assert!(
+            tiered(2.0, vec![WallSense::Sound], Some(gain))
+                .validate()
+                .is_err(),
+            "sound_gain {gain} must be rejected"
+        );
+    }
+    assert!(
+        tiered(2.0, vec![WallSense::Sight], Some(0.5))
+            .validate()
+            .is_err(),
+        "a sound gain without the sound sense"
+    );
 }

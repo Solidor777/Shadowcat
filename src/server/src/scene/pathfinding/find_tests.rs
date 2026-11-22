@@ -299,6 +299,7 @@ fn pathfind_reports_unreachable_when_route_exceeds_window_margin() {
         b: (100.0, 300.0),
         one_way: None,
         limited: false,
+        open_within: None,
     }];
     let start = (50.0, 50.0);
     let goal = (150.0, 50.0);
