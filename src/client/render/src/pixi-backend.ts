@@ -57,6 +57,12 @@ interface TokenNode {
   /** Identity key of the last-applied `tokenSpec.aura` (`updateTokenAura`'s memo, same discipline
    * as `badgeKey`/`sourceKey`): an unchanged key short-circuits the redraw. */
   auraKey: string;
+  /** The facing-vision wedge, drawn by `updateTokenFacing` as a child of the rotating
+   * `visualContainer` (it turns with the token), or `null` while the last-applied spec had none. */
+  facing: Graphics | null;
+  /** Identity key of the last-applied `tokenSpec.facing` (`updateTokenFacing`'s memo): an
+   * unchanged key short-circuits the redraw. */
+  facingKey: string;
   /** The composed art-effects filter, assigned to `visualContainer.filters` by `updateTokenFx`
    * (the fx rotate with the art; the badge chips on `container` stay clean), or `null` while the
    * last-applied spec had no fx. */
@@ -866,6 +872,7 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
     this.updateTokenAura(node, tokenSpec);
+    this.updateTokenFacing(node, tokenSpec);
     this.updateTokenFx(node, tokenSpec);
   }
 
@@ -891,7 +898,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "", textureUrls: [] };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -1303,6 +1310,41 @@ export class PixiBackend implements DisplayBackend {
       node.container.addChildAt(node.aura, 0); // below visualContainer: art draws over the aura
     }
     node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
+  }
+
+  /** Redraw (or remove) `node`'s facing wedge: a translucent pie slice of `facing.arc` degrees
+   * and `facing.radius` scene units centered on +x in the rotating `visualContainer`'s local
+   * frame (so the container's `angle` turns it to the token's facing; rotation 0 = +x, clockwise
+   * on the y-down canvas), plus an outline ring of `facing.near` units when positive. A child of
+   * `visualContainer` ordered above the art. Memoized by `facingKey`; an absent spec destroys the
+   * Graphics.
+   * @param node The token render node whose wedge to redraw.
+   * @param tokenSpec The resolved token spec; only `.facing` is read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenFacing(node, tokenSpec);
+   * ```
+   */
+  private updateTokenFacing(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const facing = tokenSpec.facing;
+    const key = facing ? `${facing.arc}:${facing.near}:${facing.radius}` : "";
+    if (node.facingKey === key) return;
+    node.facingKey = key;
+    if (!facing) {
+      node.facing?.destroy();
+      node.facing = null;
+      return;
+    }
+    if (!node.facing) {
+      node.facing = new Graphics();
+      node.visualContainer.addChild(node.facing);
+    }
+    const half = (facing.arc * Math.PI) / 360;
+    node.facing.clear().moveTo(0, 0).arc(0, 0, facing.radius, -half, half).closePath().fill({ color: 0xffd400, alpha: 0.25 });
+    if (facing.near > 0) node.facing.circle(0, 0, facing.near).stroke({ color: 0xffd400, alpha: 0.5, width: 2 });
   }
 
   /** Rebuild (or remove) `node`'s art-effects filter: `tokenSpec.fx` composed into ONE

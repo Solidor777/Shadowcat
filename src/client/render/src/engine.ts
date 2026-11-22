@@ -1,5 +1,5 @@
 import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
 import type { CameraTransform, VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
@@ -145,6 +145,9 @@ export interface RenderEngineOpts {
    * other-level token is absent entirely. `true` additionally renders every other-level token
    * on the viewed scene, ghosted (`TokenView`'s `GHOST_FX`). */
   ghostOtherLevels?: () => boolean;
+  /** Whether this viewer may see a token's facing-vision wedge (Stage → owner-or-GM). Absent ⇒
+   * no wedge is ever drawn, so another creature's facing is never revealed. */
+  facingWedgeVisible?: (doc: WireDocument) => boolean;
   /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
    * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
    * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
@@ -431,7 +434,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion, opts.facingWedgeVisible);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.vfxView = new VfxView(
       opts.store,

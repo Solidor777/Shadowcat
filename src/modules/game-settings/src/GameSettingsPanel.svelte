@@ -209,6 +209,7 @@
   const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
   const FOG_POOLING = ["individual", "shared"] as const;
+  const FACING_TURN_RULE = ["free", "own_turn"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal"] as const;
   const EASING = ["easeInOut", "linear"] as const;
@@ -591,6 +592,22 @@
         onchange={(e) => set(ws.id, "/engine/scene/autoRotateTokens", wsys.scene?.autoRotateTokens, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
     {@render provControl("scene.autoRotateTokens", wsys.scene?.autoRotateTokens, "gameSettings.autoRotateTokens")}
+
+    <label>
+      {ctx.t("gameSettings.facingVision")}
+      <input type="checkbox" aria-label={ctx.t("gameSettings.facingVision")} checked={prov("scene.facingVision").value === true}
+        onchange={(e) => set(ws.id, "/engine/scene/facingVision", wsys.scene?.facingVision, (e.currentTarget as HTMLInputElement).checked)} />
+    </label>
+    {@render provControl("scene.facingVision", wsys.scene?.facingVision, "gameSettings.facingVision")}
+
+    <label>
+      {ctx.t("gameSettings.facingTurnRule")}
+      <select aria-label={ctx.t("gameSettings.facingTurnRule")} value={prov("scene.facingTurnRule").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/facingTurnRule", wsys.scene?.facingTurnRule, (e.currentTarget as HTMLSelectElement).value)}>
+        {#each FACING_TURN_RULE as r}<option value={r}>{r === "free" ? ctx.t("gameSettings.facingTurnRuleFree") : ctx.t("gameSettings.facingTurnRuleOwnTurn")}</option>{/each}
+      </select>
+    </label>
+    {@render provControl("scene.facingTurnRule", wsys.scene?.facingTurnRule, "gameSettings.facingTurnRule")}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
@@ -1098,6 +1115,33 @@
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
           <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.facingVision")}
+        <select aria-label={ctx.t("gameSettings.scene.facingVision")}
+          value={ssys.vision?.facingVision == null ? "" : ssys.vision.facingVision ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/facingVision", ssys.vision?.facingVision ?? null, v === "" ? null : v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.facingTurnRule")}
+        <select aria-label={ctx.t("gameSettings.scene.facingTurnRule")}
+          value={ssys.vision?.facingTurnRule ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/facingTurnRule", ssys.vision?.facingTurnRule ?? null, v === "" ? null : v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each FACING_TURN_RULE as r}<option value={r}>{r === "free" ? ctx.t("gameSettings.facingTurnRuleFree") : ctx.t("gameSettings.facingTurnRuleOwnTurn")}</option>{/each}
         </select>
       </label>
 

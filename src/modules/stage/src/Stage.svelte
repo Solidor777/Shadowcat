@@ -190,6 +190,9 @@
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
         ghostOtherLevels: () => ghostOtherLevels,
+        // A token's facing is shown only to a viewer who may turn it (GM always; a player for
+        // their own tokens), so another creature's facing never reaches the canvas.
+        facingWedgeVisible: (doc) => role === "gm" || ctx.canEdit(doc, "/engine/rotation"),
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
         vfxAssets: (id) => {

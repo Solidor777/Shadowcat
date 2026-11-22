@@ -126,6 +126,8 @@ export type { EnvironmentLight } from "./generated/engine/EnvironmentLight";
 export type { MovementModel } from "./generated/engine/MovementModel";
 export type { MovementRestriction } from "./generated/engine/MovementRestriction";
 export type { FogPooling } from "./generated/engine/FogPooling";
+export type { FacingTurnRule } from "./generated/engine/FacingTurnRule";
+export type { FacingVision } from "./generated/engine/FacingVision";
 export type { LightMode } from "./generated/engine/LightMode";
 export type { DiagonalRule } from "./generated/engine/DiagonalRule";
 export type { EasingMode } from "./generated/engine/EasingMode";

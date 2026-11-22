@@ -13,6 +13,8 @@ import type {
   MovementRestriction,
   MovementModel,
   FogPooling,
+  FacingTurnRule,
+  FacingVision,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -129,6 +131,8 @@ export type {
   MovementRestriction,
   MovementModel,
   FogPooling,
+  FacingTurnRule,
+  FacingVision,
   LightMode,
   DiagonalRule,
   EasingMode,
@@ -336,6 +340,12 @@ export interface ResolvedSceneSettings {
   /** Whether a completed move rotates the mover to face its movement direction (a token with
    * `lockRotation` never rotates); scene `vision` override, else the world default. */
   autoRotateTokens: boolean;
+  /** Whether tokens carrying a `FacingVision` see only their forward arc plus bubble; scene
+   * `vision` override, else the world default. */
+  facingVision: boolean;
+  /** When a player may rotate their own token under facing-limited vision; scene `vision`
+   * override, else the world default. */
+  facingTurnRule: FacingTurnRule;
   /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
@@ -680,6 +690,8 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     movementModel,
     fogPooling: v?.fogPooling ?? world?.scene?.fogPooling ?? system?.scene?.fogPooling ?? DEFAULT_WORLD_SETTINGS.scene.fogPooling,
     autoRotateTokens: v?.autoRotateTokens ?? world?.scene?.autoRotateTokens ?? system?.scene?.autoRotateTokens ?? DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens,
+    facingVision: v?.facingVision ?? world?.scene?.facingVision ?? system?.scene?.facingVision ?? DEFAULT_WORLD_SETTINGS.scene.facingVision,
+    facingTurnRule: v?.facingTurnRule ?? world?.scene?.facingTurnRule ?? system?.scene?.facingTurnRule ?? DEFAULT_WORLD_SETTINGS.scene.facingTurnRule,
     // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
