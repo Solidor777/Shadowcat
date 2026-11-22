@@ -110,6 +110,18 @@
   }
 
   /**
+   * Toggles this row's defeated state; the turn walk skips a defeated combatant.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's defeated button
+   * toggleDefeated();
+   * ```
+   */
+  function toggleDefeated(): void {
+    ctx.combat.setDefeated(row.doc.id, !engine.defeated);
+  }
+
+  /**
    * Removes this row's combatant from the combat.
    * @example
    * ```
@@ -152,7 +164,7 @@
   }
 </script>
 
-<div class="row" class:turn={isTurn} class:compact aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
+<div class="row" class:turn={isTurn} class:defeated={engine.defeated} class:compact aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
   {#if can.edit}
     <button type="button" class="drag-handle" aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
   {/if}
@@ -183,6 +195,10 @@
 
     {#if mayRoll}
       <button type="button" data-testid={"combat-tracker:roll-" + row.doc.id} disabled={busy} onclick={rollOne}>{ctx.t("combatTracker.roll")}</button>
+    {/if}
+
+    {#if can.edit || mayEditResource}
+      <button type="button" data-testid={"combat-tracker:defeated-" + row.doc.id} aria-pressed={engine.defeated} disabled={busy} onclick={toggleDefeated}>{engine.defeated ? ctx.t("combatTracker.revive") : ctx.t("combatTracker.defeated")}</button>
     {/if}
 
     {#if row.view === null}
@@ -231,6 +247,11 @@
 
     &.turn {
       border-inline-start: 2px solid var(--accent);
+    }
+
+    &.defeated .name {
+      opacity: 0.5;
+      text-decoration: line-through;
     }
 
     &.compact {

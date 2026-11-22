@@ -934,9 +934,10 @@ fn resolve_event(
 
 /// Walks `order` starting at `idx`, entering each combatant's turn
 /// (`enter_turn`: `turn_start`, `/engine/turn`, history record) and, when it
-/// is an `Event` or a hidden combatant under `TurnControl::OwnerMayEnd`,
+/// is an `Event`, a defeated combatant (under every `TurnControl`) or a hidden
+/// combatant under `TurnControl::OwnerMayEnd`,
 /// auto-resolving it in full and continuing to the next entry — every
-/// auto-resolving entry gets its own `run_turn_end` (a hidden actor
+/// auto-resolving entry gets its own `run_turn_end` (a hidden or defeated actor
 /// unconditionally, an `Event` unless its own `resolve_event` deleted it,
 /// leaving no document to write), so the start/end boundary pair is
 /// symmetric for every entry the walk touches. The step budget
@@ -976,7 +977,7 @@ fn settle_turn(
         }
         idx %= w.engine.order.len();
         let entry_id = w.engine.order[idx];
-        let (is_event, hidden) = {
+        let (is_event, hidden, defeated) = {
             let c = w
                 .combatants
                 .iter()
@@ -985,10 +986,14 @@ fn settle_turn(
             (
                 matches!(c.engine.kind, CombatantKind::Event { .. }),
                 is_hidden(c),
+                c.engine.defeated,
             )
         };
+        // A defeated combatant has no turn to take, so it auto-resolves under
+        // every `TurnControl`; a hidden one only under `OwnerMayEnd`, where the
+        // policy is about who may end a turn.
         let auto_resolves =
-            is_event || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
+            is_event || defeated || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
 
         enter_turn(w, snap, entry_id, now)?;
         if !auto_resolves {
@@ -1065,6 +1070,7 @@ fn settle_turn(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1312,6 +1318,7 @@ fn advance_impl(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1810,6 +1817,7 @@ pub fn end(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -2040,6 +2048,7 @@ pub fn roll(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     // No stored entry for "hp" yet: an absent entry reads as full.
 ///     resources: BTreeMap::new(),
 /// };
@@ -2213,6 +2222,7 @@ pub fn resource(
 ///         },
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
+///         defeated: false,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {
@@ -2363,6 +2373,7 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 ///         },
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
+///         defeated: false,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {

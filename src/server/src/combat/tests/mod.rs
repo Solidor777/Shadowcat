@@ -76,6 +76,7 @@ pub(super) fn actor_combatant(
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
         resources: BTreeMap::from([(
             "movement".to_string(),
             CombatantResource { current: movement },
@@ -109,6 +110,7 @@ pub(super) fn event_combatant(
         },
         initiative: Some(30.0),
         tiebreak: 0.0,
+        defeated: false,
         resources: BTreeMap::new(),
     };
     Combatant {

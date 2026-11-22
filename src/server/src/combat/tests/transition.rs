@@ -460,6 +460,86 @@ fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() 
     assert_eq!(e.turn, Some(crate::test_ids::test_uuid(11)));
 }
 
+/// Marks a combatant defeated, keeping its document body in step with its
+/// decoded engine so `apply` sees the flag.
+fn defeated(mut c: Combatant) -> Combatant {
+    c.engine.defeated = true;
+    c.doc.engine = Some(serde_json::to_value(&c.engine).unwrap());
+    c
+}
+
+/// A defeated combatant is skipped under every `TurnControl`. Mutation caught:
+/// the `defeated` disjunct gated behind `TurnControl::OwnerMayEnd` like the
+/// hidden one, which leaves the `GmOnly` walk parked on the defeated entry.
+#[test]
+fn settle_turn_skips_a_defeated_actor_unconditionally_of_turn_control() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let d = defeated(actor_combatant(11, combat, 0xB, None, false, 0.0));
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    for control in [TurnControl::OwnerMayEnd, TurnControl::GmOnly] {
+        let mut engine = combat_engine(vec![a.doc.id, d.doc.id, c.doc.id], Some(a.doc.id), 1, true);
+        engine.turn_control = control;
+        let snap = snapshot(engine, vec![a.clone(), d.clone(), c.clone()], vec![]);
+        let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+        let e: CombatEngine = engine_of(&docs, combat);
+        assert_eq!(
+            e.turn,
+            Some(crate::test_ids::test_uuid(12)),
+            "the defeated entry is walked past under {control:?}"
+        );
+    }
+}
+
+/// A defeated combatant keeps its boundary processing: `turn_start` then
+/// `turn_end` recovery both run, so ongoing recovery state still ticks.
+/// Mutation caught: skipping `run_turn_end` (or `enter_turn`) for the
+/// auto-resolved defeated entry.
+#[test]
+fn settle_turn_still_runs_turn_end_boundary_for_a_defeated_combatant() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let d = defeated(actor_combatant(11, combat, 0xB, None, false, 20.0));
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    let mut registry = registry_with_movement(Formula::Number(30.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, d.doc.id, c.doc.id], Some(a.doc.id), 1, true),
+        vec![a, d, c],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let d: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(11));
+    assert!(d.defeated, "the flag survives the transition");
+    assert_eq!(
+        d.resources["movement"].current, 20.0,
+        "turn_start's +30 (clamped to max 30) THEN turn_end's -10"
+    );
+}
+
+/// An order of only defeated combatants still ends: the walk's step budget
+/// parks `turn` on the last visited entry and advances the round.
+#[test]
+fn settle_turn_all_defeated_order_terminates_via_the_existing_budget_guard() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = defeated(actor_combatant(10, combat, 0xA, None, false, 0.0));
+    let b = defeated(actor_combatant(11, combat, 0xB, None, false, 0.0));
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(e.round, 2, "the walk wrapped exactly once");
+    assert_eq!(e.turn, Some(crate::test_ids::test_uuid(10)));
+}
+
 #[test]
 fn event_posts_its_message_decrements_lifespan_and_is_deleted_at_zero() {
     let combat = crate::test_ids::test_uuid(1);

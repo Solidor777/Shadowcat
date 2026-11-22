@@ -178,6 +178,7 @@ pub enum CombatError {
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let combat_engine = CombatEngine {

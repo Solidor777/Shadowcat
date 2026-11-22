@@ -38,6 +38,7 @@ import type { CombatantEngine } from "./CombatantEngine";
  *         },
  *         initiative: None,
  *         tiebreak: 0.0,
+ *         defeated: false,
  *         resources: BTreeMap::new(),
  *     },
  *     system: serde_json::json!({}),

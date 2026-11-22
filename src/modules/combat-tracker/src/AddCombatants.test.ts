@@ -10,7 +10,7 @@ import type { Row } from "./model";
 afterEach(() => cleanup());
 
 function actorRow(id: string, tokenId: string | null): Row {
-  const engine: CombatantEngine = { kind: { type: "actor", token_id: tokenId, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "actor", token_id: tokenId, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
   return { doc: buildCombatantDoc("w1", "combat-1", engine, { id }), kind: "actor", view: null, name: id, art: {} };
 }
 

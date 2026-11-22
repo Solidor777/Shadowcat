@@ -14,11 +14,11 @@ const FULL_CAN: CombatAffordances = {
   roll: () => true, resource: () => true,
 };
 
-function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: number; owner?: string | null; hidden?: boolean; view?: Row["view"] } = {}): Row {
+function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: number; owner?: string | null; hidden?: boolean; defeated?: boolean; view?: Row["view"] } = {}): Row {
   const engine: CombatantEngine = {
     kind: { type: "actor", token_id: null, actor_id: null },
     initiative: opts.initiative ?? null,
-    tiebreak: opts.tiebreak ?? 0,
+    tiebreak: opts.tiebreak ?? 0, defeated: opts.defeated ?? false,
     resources: {},
   };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, owner: opts.owner, hidden: opts.hidden, name: id });
@@ -26,7 +26,7 @@ function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: num
 }
 
 function eventRow(id: string, lifespan: number | null, message: string | null): Row {
-  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, name: "An event" });
   return { doc, kind: "event", view: null, name: "An event", art: {} };
 }
@@ -204,6 +204,23 @@ describe("CombatantRow", () => {
     const { getByText, combat } = renderRow(hidden);
     await fireEvent.click(getByText("combatTracker.visible"));
     expect(combat.calls.setHidden).toEqual([["a", false]]);
+  });
+
+  it("defeated toggle dispatches setDefeated(true) on a live row and setDefeated(false) on a defeated one", async () => {
+    const live = renderRow(actorRow("a"));
+    await fireEvent.click(live.getByText("combatTracker.defeated"));
+    expect(live.combat.calls.setDefeated).toEqual([["a", true]]);
+    cleanup();
+    const down = renderRow(actorRow("a", { defeated: true }));
+    expect(down.getByTestId("combat-tracker:row-a").classList.contains("defeated")).toBe(true);
+    await fireEvent.click(down.getByText("combatTracker.revive"));
+    expect(down.combat.calls.setDefeated).toEqual([["a", false]]);
+  });
+
+  it("a live row carries no defeated styling, and a player without edit or resource rights gets no toggle", () => {
+    const { getByTestId, queryByText } = renderRow(actorRow("a"), { can: { edit: false, resource: () => false } });
+    expect(getByTestId("combat-tracker:row-a").classList.contains("defeated")).toBe(false);
+    expect(queryByText("combatTracker.defeated")).toBeNull();
   });
 
   it("remove dispatches removeCombatant, and is disabled with a hint on the current turn", async () => {

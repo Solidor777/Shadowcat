@@ -35,7 +35,7 @@ describe("CombatTrackerPanel compact sizing", () => {
     const combatEngine = newCombatEngine("scene-1");
     combatEngine.active = true;
     const combat = buildCombatDoc("w1", combatEngine, "c1");
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
     (combat.engine as { order: string[] }).order = ["a"];
     const combatant = buildCombatantDoc("w1", "c1", combatantEngine, { id: "a", name: "a" });
     store.applyCommand({ seq: 1, world_id: "w1", author: "x", ts: 0, ops: [{ op: "create", doc: combat }, { op: "create", doc: combatant }] });

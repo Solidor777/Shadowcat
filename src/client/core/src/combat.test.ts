@@ -71,7 +71,7 @@ function seedStore(): { store: DocumentStore; combatId: string; combatants: stri
   const cc1Engine: CombatantEngine = {
     kind: { type: "actor", token_id: "tok-1", actor_id: "actor-1" },
     initiative: 10,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false,
     resources: {},
   };
   const cc1 = buildCombatantDoc(WORLD, combatId, cc1Engine, { owner: "player-1", id: c1 });
@@ -79,7 +79,7 @@ function seedStore(): { store: DocumentStore; combatId: string; combatants: stri
   const cc2Engine: CombatantEngine = {
     kind: { type: "actor", token_id: "tok-2", actor_id: null },
     initiative: 15,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false,
     resources: {},
   };
   const cc2 = buildCombatantDoc(WORLD, combatId, cc2Engine, { owner: "player-2", id: c2 });
@@ -87,7 +87,7 @@ function seedStore(): { store: DocumentStore; combatId: string; combatants: stri
   const cc3Engine: CombatantEngine = {
     kind: { type: "event", lifespan: 2, message: null },
     initiative: 5,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false,
     resources: {},
   };
   const cc3 = buildCombatantDoc(WORLD, combatId, cc3Engine, { id: c3 });
@@ -96,7 +96,7 @@ function seedStore(): { store: DocumentStore; combatId: string; combatants: stri
   const strayEngine: CombatantEngine = {
     kind: { type: "event", lifespan: null, message: null },
     initiative: null,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false,
     resources: {},
   };
   const stray = buildCombatantDoc(WORLD, combatId, strayEngine, { id: hiddenId, name: "stray" });
@@ -370,6 +370,18 @@ describe("CombatController document helpers", () => {
     combat.setInitiative("cc-1", 18, 2);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     expect(ops[0].op).toBe("update");
+  });
+
+  it("setDefeated writes /engine/defeated from the stored value", () => {
+    const { store } = seedStore();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
+    const combat = new CombatController(makeDeps(store, { dispatchIntent }));
+    combat.setDefeated("cc-1", true);
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    const change = (ops[0] as Extract<WireOperation, { op: "update" }>).changes[0];
+    expect(change.path).toBe("/engine/defeated");
+    expect(change.old).toBe(false);
+    expect(change.new).toBe(true);
   });
 });
 
