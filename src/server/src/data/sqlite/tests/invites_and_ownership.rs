@@ -1134,3 +1134,59 @@ async fn identity_hidden_authoring_is_gm_only() {
     );
     gm_create(&r, gm, w, vec![hidden], 9).await;
 }
+
+#[tokio::test]
+async fn a_player_cannot_store_an_embedded_pointer_override_that_only_a_gm_can() {
+    use crate::data::command::FieldChange;
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let write = |ctx: PermissionContext, ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/embedded/actor/0/name": "gm_only" }),
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+    // The token's owner holds WRITE_FIELDS but not EDIT_PERMISSIONS, so the pointer the widened
+    // classifier now accepts is still not theirs to store.
+    let denied = write(
+        PermissionContext {
+            user_id: p1,
+            world_role: WorldRole::Player,
+        },
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's embedded-pointer override write must be refused, got {denied:?}"
+    );
+    write(
+        PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        },
+        3,
+    )
+    .await
+    .expect("the GM may store an embedded-pointer override");
+}

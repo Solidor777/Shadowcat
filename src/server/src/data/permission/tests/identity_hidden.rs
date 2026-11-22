@@ -242,3 +242,120 @@ fn identity_hidden_in_body_reads_only_an_enabled_token_flag() {
     assert!(!identity_hidden_in_body("token", &t(false)));
     assert!(!identity_hidden_in_body("actor", &t(true)));
 }
+
+/// Marker text on the embedded actor copy's identity fields.
+const COPY_NAME: &str = "COPY-NAME-MARKER";
+/// Marker on the copy's `displayName`.
+const COPY_DISPLAY: &str = "COPY-DISPLAY-MARKER";
+/// Marker on the copy's `faction`.
+const COPY_FACTION: &str = "COPY-FACTION-MARKER";
+/// Marker asset id on the copy's visual.
+const COPY_ASSET: &str = "44444444-4444-4444-4444-444444444444";
+
+/// An actor copy with every identity-bearing field populated plus non-identity fields.
+fn actor_copy(index: u128) -> Document {
+    let mut c = doc(PermissionSet::default(), serde_json::json!({}));
+    c.id = crate::test_ids::test_uuid(100 + index);
+    c.name = Some(COPY_NAME.into());
+    c.engine = Some(serde_json::json!({
+        "displayName": COPY_DISPLAY,
+        "visual": { "kind": "image", "asset": COPY_ASSET },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": COPY_FACTION,
+        "conditions": ["prone"],
+        "prototype": false
+    }));
+    c
+}
+
+/// An instanced token: no `actor_id`, `copies` embedded actor copies.
+fn instanced_token(identity_hidden: bool, copies: u128) -> Document {
+    let mut t = token(identity_hidden);
+    t.engine.as_mut().unwrap()["actor_id"] = serde_json::Value::Null;
+    t.embedded
+        .insert("actor".into(), (0..copies).map(actor_copy).collect());
+    t
+}
+
+#[test]
+fn identity_hidden_withholds_the_instanced_actor_copys_identity_from_a_stranger() {
+    let t = instanced_token(true, 1);
+    let out = egress(&t, &non_gm());
+    let copy = &out["embedded"]["actor"][0];
+    assert!(copy["name"].is_null(), "the copy's name is nulled in place");
+    assert!(copy.pointer("/engine/displayName").is_none());
+    assert!(copy.pointer("/engine/visual").is_none());
+    assert!(copy.pointer("/engine/faction").is_none());
+    let text = out.to_string();
+    for marker in [COPY_NAME, COPY_DISPLAY, COPY_FACTION, COPY_ASSET] {
+        assert!(!text.contains(marker), "{marker} leaked in {text}");
+    }
+}
+
+#[test]
+fn identity_hidden_keeps_the_copys_non_identity_fields_for_a_stranger() {
+    // Size, shape and conditions drive footprint and rendering for every viewer.
+    let out = egress(&instanced_token(true, 1), &non_gm());
+    let engine = &out["embedded"]["actor"][0]["engine"];
+    assert_eq!(engine["shape"], "square");
+    assert_eq!(engine["conditions"], serde_json::json!(["prone"]));
+    assert!(engine.get("size").is_some());
+}
+
+#[test]
+fn identity_hidden_instanced_copy_stays_visible_to_the_owner_and_the_gm() {
+    let t = instanced_token(true, 1);
+    let raw = serde_json::to_value(&t).unwrap();
+    assert_eq!(egress(&t, &owner()), raw);
+    assert_eq!(egress(&t, &gm()), raw);
+}
+
+#[test]
+fn identity_hidden_off_leaves_the_instanced_copy_intact() {
+    let t = instanced_token(false, 1);
+    assert_eq!(egress(&t, &non_gm()), serde_json::to_value(&t).unwrap());
+}
+
+#[test]
+fn identity_hidden_withholds_every_embedded_actor_copy() {
+    let out = egress(&instanced_token(true, 3), &non_gm());
+    let text = out.to_string();
+    assert_eq!(out["embedded"]["actor"].as_array().unwrap().len(), 3);
+    for marker in [COPY_NAME, COPY_DISPLAY, COPY_FACTION, COPY_ASSET] {
+        assert!(!text.contains(marker), "{marker} leaked in {text}");
+    }
+}
+
+#[test]
+fn identity_hidden_copy_pointers_reach_the_merge_oracle_and_the_commit_time_snapshot() {
+    let t = instanced_token(true, 2);
+    let stranger = non_gm();
+    let view = RequesterView {
+        template: &stranger,
+        child: &stranger,
+    };
+    let hidden = view.hidden(Side::Template, &t).unwrap();
+    let mut collected = Vec::new();
+    collect_overrides(&t, "", &mut collected).unwrap();
+    for i in 0..2 {
+        for field in [
+            "name",
+            "engine/displayName",
+            "engine/visual",
+            "engine/faction",
+        ] {
+            let pointer = format!("/embedded/actor/{i}/{field}");
+            assert!(
+                hidden.contains(&pointer),
+                "RequesterView must hide {pointer}"
+            );
+            assert!(
+                collected
+                    .iter()
+                    .any(|(p, v)| *p == pointer && *v == Visibility::OwnerOrGm),
+                "collect_overrides must carry {pointer} at OwnerOrGm"
+            );
+        }
+    }
+}

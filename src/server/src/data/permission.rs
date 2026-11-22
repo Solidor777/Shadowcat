@@ -715,18 +715,51 @@ const IDENTITY_HIDDEN_POINTERS: [&str; 6] = [
     "/engine/actor_id",
 ];
 
+/// The embedded collection an instanced token's actor copy lives in (`Document::embedded` key).
+const EMBEDDED_ACTOR_COLLECTION: &str = "actor";
+
+/// The pointers, relative to one embedded actor copy, that name what the copy is: the envelope
+/// `name`, the engine's `displayName` (the non-secret fallback label, which still names the
+/// creature), `visual` and `faction` (the border colour). `identity_hidden_pointers` prefixes
+/// each with `/embedded/actor/<i>` for every copy of a secret-identity token. The copy's other
+/// engine fields (size, shape, conditions, light, vision, movement) stay: footprint, rendering
+/// and the movement gate read them for every viewer and none of them names the creature.
+const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
+    "/name",
+    "/engine/displayName",
+    "/engine/visual",
+    "/engine/faction",
+];
+
 /// The `OwnerOrGm` entries a secret-identity token adds to its own redaction policy, empty for
-/// every other document. Called by `own_overrides`, the one function every egress and merge
-/// path reaches a document's own hidden set through, so no call site can miss it. Reads the
-/// raw `engine` JSON rather than deserializing a `TokenEngine`: `own_overrides` runs for every
-/// `doc_type` and must not assume one document's shape.
+/// every other document: its own `IDENTITY_HIDDEN_POINTERS` plus the identity pointers of each
+/// embedded actor copy of an instanced token (`IDENTITY_HIDDEN_COPY_POINTERS`) — the copy
+/// carries the same name, visual and faction the token's `actor_id` link would resolve to, so
+/// withholding only the link would leave an instanced token fully identified. Called by
+/// `own_overrides`, the one function every egress and merge path reaches a document's own
+/// hidden set through, so no call site can miss it. Reads the raw `engine` JSON rather than
+/// deserializing a `TokenEngine`: `own_overrides` runs for every `doc_type` and must not
+/// assume one document's shape.
 fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
     let active = doc.doc_type == TOKEN_DOC_TYPE
         && identity_flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
-    IDENTITY_HIDDEN_POINTERS
+    let copies = if active {
+        doc.embedded
+            .get(EMBEDDED_ACTOR_COLLECTION)
+            .map_or(0, Vec::len)
+    } else {
+        0
+    };
+    let own = IDENTITY_HIDDEN_POINTERS
         .iter()
         .filter(move |_| active)
-        .map(|p| ((*p).to_string(), Visibility::OwnerOrGm))
+        .map(|p| (*p).to_string());
+    let copy_identity = (0..copies).flat_map(|i| {
+        IDENTITY_HIDDEN_COPY_POINTERS
+            .iter()
+            .map(move |p| format!("/embedded/{EMBEDDED_ACTOR_COLLECTION}/{i}{p}"))
+    });
+    own.chain(copy_identity).map(|p| (p, Visibility::OwnerOrGm))
 }
 
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
@@ -793,6 +826,14 @@ pub enum RedactionTarget {
 /// `validation::validate_property_overrides`, the write-side chokepoint that already calls
 /// this function — no client-writable path can ever store an override that would corrupt a
 /// `base` snapshot's own shape at egress.
+///
+/// A pointer may lead with one or more `/embedded/<coll>/<idx>` hops, each addressing a child
+/// document: the pointer classifies as the residual does inside that child (a child's `/name`
+/// is a `Band`, its `/system/hp` is `Within`). A hop needs a collection, a NUMERIC index and a
+/// residual, so a pointer naming the whole map, a collection or a whole child, or a residual
+/// that names a structural envelope field of the child, is refused. `redact_pointers` nulls a
+/// `Band` at the hop's path and strips a `Within` there, so an embedded pointer is removed by
+/// the same step as a top-level one.
 /// # Examples
 ///
 /// ```
@@ -803,9 +844,26 @@ pub enum RedactionTarget {
 /// assert_eq!(redaction_target("/permissions/default"), None);
 /// assert_eq!(redaction_target("/base/system/hp"), Some(RedactionTarget::Within));
 /// assert_eq!(redaction_target("/base/embedded"), None);
+/// assert_eq!(redaction_target("/embedded/actor/0/name"), Some(RedactionTarget::Band));
+/// assert_eq!(redaction_target("/embedded/actor/0/engine/faction"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/embedded/actor/0"), None);
 /// ```
 pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
     let rest = pointer.strip_prefix('/')?;
+    if let Some(hop) = rest.strip_prefix("embedded/") {
+        // One `/embedded/<coll>/<idx>` hop addresses a child document inside this one: the
+        // pointer is classified by what it names INSIDE that child, recursively, so a child's
+        // own `/name` is a `Band` and a path into its bands is `Within`. A pointer naming the
+        // whole map, a whole collection or a whole child (a hop missing its collection,
+        // its numeric index or its residual) fails here, as does a residual that names a
+        // structural envelope field of the child.
+        let (collection, after_collection) = hop.split_once('/')?;
+        let (index, residual) = after_collection.split_once('/')?;
+        if collection.is_empty() || residual.is_empty() || index.parse::<usize>().is_err() {
+            return None;
+        }
+        return redaction_target(&format!("/{residual}"));
+    }
     for band in REDACTABLE_BANDS {
         if rest == band {
             return Some(RedactionTarget::Band);
@@ -1434,7 +1492,7 @@ pub(crate) fn redact_pointers(
     for pointer in hidden {
         match redaction_target(pointer) {
             Some(RedactionTarget::Band) => {
-                if let Some(f) = whole.get_mut(&pointer[1..]) {
+                if let Some(f) = whole.pointer_mut(pointer) {
                     *f = serde_json::Value::Null;
                 }
             }
