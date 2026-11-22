@@ -21,6 +21,7 @@ import {
 import { ContributionRegistry, type Contribution, SYSTEM_CONTRACT } from "./contributions";
 import { satisfies } from "./semver";
 import type { I18n, Messages } from "./i18n";
+import type { BindingInfo, KeybindingOptions, KeybindingRegistration, KeybindingsController } from "./keybindings";
 
 /** Options for `ModuleContext.services.provide` — narrower than `ServiceProvideOptions`
  * (no `module` field: the wrapper stamps the calling module's id automatically). */
@@ -112,6 +113,31 @@ export interface ModuleContext {
      * @param messages The key→message fragment to merge in. */
     addMessages(locale: string, messages: Messages): void;
   };
+  /** Keybinding registration, scoped to this module for teardown. A module's bindings fire
+   * on `core:keydown` and are listed in the settings rebind UI. */
+  keybindings: {
+    /** Registers a binding, stamped with this module's id.
+     * @param bindingId The binding's id, unique within this module.
+     * @param opts The default combo, label key and action.
+     * @returns A dispose function and the module (if any) already holding the combo. */
+    register(bindingId: string, opts: KeybindingOptions): KeybindingRegistration;
+    /** Sets a binding's combo (the user's override).
+     * @param moduleId The binding's module.
+     * @param bindingId The binding's id.
+     * @param combo The new combo, or `null` to unbind. */
+    rebind(moduleId: string, bindingId: string, combo: string | null): void;
+    /** Lists one module's bindings.
+     * @param moduleId The module's id.
+     * @returns That module's bindings in registration order. */
+    bindingsFor(moduleId: string): BindingInfo[];
+    /** Lists every module's bindings, for a rebind UI.
+     * @returns All bindings in registration order. */
+    allBindings(): BindingInfo[];
+    /** Subscribes to any binding change (registration, removal, rebind).
+     * @param listener Called after each change.
+     * @returns An unsubscribe function. */
+    subscribe(listener: () => void): () => void;
+  };
   /** The shared document store every module reads through. */
   store: DocumentStore;
   /** The shared optimistic client every module dispatches intents through. */
@@ -175,6 +201,8 @@ interface Deps {
   contributions: ContributionRegistry;
   /** The shared i18n instance every module's `i18n.addMessages` wrapper delegates to. */
   i18n: I18n;
+  /** The shared keybindings controller every module's `keybindings` wrapper delegates to. */
+  keybindings: KeybindingsController;
 }
 
 /** Internal per-module bookkeeping: the module plus its current activation state. Not exported. */
@@ -213,11 +241,14 @@ export class ModuleRegistry {
    *   OptimisticClient,
    *   ContributionRegistry,
    *   I18n,
+   *   KeybindingsController,
    *   silentLogger,
    * } from "@shadowcat/core";
    *
+   * const hooks = new HookBus(silentLogger);
    * const registry = new ModuleRegistry({
-   *   hooks: new HookBus(silentLogger),
+   *   keybindings: new KeybindingsController(hooks),
+   *   hooks,
    *   services: new ServiceRegistry(),
    *   middleware: new MiddlewareChain(),
    *   store: new DocumentStore(),
@@ -407,6 +438,7 @@ export class ModuleRegistry {
     this.deps.middleware.removeModule(id);
     this.deps.contributions.removeModule(id);
     this.deps.i18n.removeModule(id);
+    this.deps.keybindings.removeModule(id);
     r.active = false;
   }
 
@@ -534,7 +566,7 @@ export class ModuleRegistry {
    * ```
    */
   private contextFor(moduleId: string): ModuleContext {
-    const { hooks, services, middleware, store, client, logger, contributions, i18n } = this.deps;
+    const { hooks, services, middleware, store, client, logger, contributions, i18n, keybindings } = this.deps;
     return {
       moduleId,
       store,
@@ -559,6 +591,13 @@ export class ModuleRegistry {
       },
       i18n: {
         addMessages: (locale, messages) => i18n.addMessages(locale, messages, { module: moduleId }),
+      },
+      keybindings: {
+        register: (bindingId, opts) => keybindings.register(moduleId, bindingId, opts),
+        rebind: (id, bindingId, combo) => keybindings.rebind(id, bindingId, combo),
+        bindingsFor: (id) => keybindings.bindingsFor(id),
+        allBindings: () => keybindings.allBindings(),
+        subscribe: (listener) => keybindings.subscribe(listener),
       },
     };
   }

@@ -18,6 +18,27 @@ export { silentLogger, consoleLogger } from "./logger";
 export type { Logger } from "./logger";
 export { HookBus, STOP } from "./hooks";
 export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks, HookFaultPayload } from "./hooks";
+export {
+  KeybindingsController,
+  KEYDOWN_HOOK,
+  KEYDOWN_HOOK_VERSION,
+  normalizeCombo,
+  canonicalizeCombo,
+  comboKey,
+  describeCombo,
+  isEditableTarget,
+  isModifierOnly,
+} from "./keybindings";
+export type {
+  BindingInfo,
+  ComboEvent,
+  ComboTranslate,
+  KeybindingHooks,
+  KeybindingOptions,
+  KeybindingOverrides,
+  KeybindingRegistration,
+  KeydownPayload,
+} from "./keybindings";
 export { ServiceRegistry } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";

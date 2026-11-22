@@ -5,6 +5,7 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { BUILTIN_THEMES, DEFAULT_THEME_ID, theme, confirmDialog } from "@shadowcat/ui-kit";
 import Settings from "./Settings.svelte";
 import SectionProbe from "./__fixtures__/SectionProbe.svelte";
+import { registerSetting } from "./registerSetting";
 
 vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
@@ -129,5 +130,18 @@ describe("Settings contributed sections", () => {
       logoutButton.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy();
     expect(screen.getByTestId("section-probe")).toBeTruthy();
+  });
+
+  it("renders a registerSetting contribution through the same loop as a hand-built one", async () => {
+    const contributions = new ContributionRegistry();
+    let on = false;
+    registerSetting(
+      { contributions },
+      { id: "example:flag", labelKey: "example.flag", field: { kind: "toggle", get: () => on, set: (v) => (on = v) } },
+    );
+    render(Settings, { context: setAppContextForTest({ role: "player", contributions }) });
+    expect(screen.getByRole("heading", { name: "example.flag" })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("checkbox", { name: "example.flag" }));
+    expect(on).toBe(true);
   });
 });

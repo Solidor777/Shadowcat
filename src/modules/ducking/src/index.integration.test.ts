@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { DuckControllerImpl } from "@shadowcat/audio";
 import { KeySource } from "./keySource";
 import { OsMonitorSource } from "./osMonitor";
+import { makeBindings } from "./__fixtures__/bindings";
 
 /** Ticks `duck` forward in 20ms steps until `totalMs` has elapsed — mirrors `AudioEngine`'s own
  * per-frame `tick(nowMs)` driver, just from a fixed step instead of `requestAnimationFrame`.
@@ -32,7 +33,7 @@ describe("ducking sources through the real DuckControllerImpl", () => {
     // Structural proof the two sources' `setSink` accepts the REAL `DuckSource` shape
     // `DuckControllerImpl.addSource` returns — no cast needed (`keySource.ts`'s own doc for
     // `DuckSink` names this as the integration task's job).
-    const key = new KeySource();
+    const key = new KeySource(makeBindings().bindings);
     const keySink = duck.addSource("ducking:key");
     key.setSink(keySink);
     const osMonitor = new OsMonitorSource({ port: 0, watch: [], logger: { debug() {}, warn() {}, error() {} } });

@@ -7,6 +7,7 @@
 // and logged — one faulty module cannot abort dispatch or corrupt a pipeline.
 import type { ChatComposerHooks } from "./chat-hooks";
 import type { CombatHooks } from "./combat-hooks";
+import type { KeybindingHooks } from "./keybindings";
 import type { Logger } from "./logger";
 import { satisfies } from "./semver";
 
@@ -51,7 +52,7 @@ export interface HookFaultPayload {
 
 /** Maps each first-party hook name to its payload type. It inherits the combat and chat
  * composer entries; declaration-merge `name -> payload` here to type another first-party hook. */
-export interface CoreHooks extends CombatHooks, ChatComposerHooks {
+export interface CoreHooks extends CombatHooks, ChatComposerHooks, KeybindingHooks {
   /** Fires whenever any hook's listener throws or rejects, across `emitInfo`/`emitMutate`/
    * `emitCancel` alike — see `HookFaultPayload`. Pre-declared on every `HookBus` instance (no
    * `defineHook` call needed before listening). Recursion-guarded: a listener registered on

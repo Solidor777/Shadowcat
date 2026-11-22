@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { httpsTargets } from "@shadowcat/core";
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { DuckSourcesController } from "./controller";
@@ -50,26 +50,11 @@
   let prefs = $state<DuckingPreferences>(readDuckingMirror(localStorage));
   let osStatus = $state<OsMonitorStatus>(controller.osMonitor.getStatus());
   let micDenial = $state<MicVadDenialReason | null>(null);
-  let capturingKey = $state(false);
   let watchListText = $state(prefs.watchList.join(", "));
-
-  /** The in-progress key-capture listener, tracked so `onDestroy`/`cancelKeyCapture` can
-   * remove it even if no keydown ever fires — `startKeyCapture`'s own inline listener had no
-   * way to reach it from outside the closure that added it. */
-  let activeKeyCaptureListener: ((e: KeyboardEvent) => void) | null = null;
 
   onMount(() => {
     controller.applyPreferences(prefs);
     return controller.osMonitor.onStatusChange((s) => (osStatus = s));
-  });
-
-  onDestroy(() => {
-    // A capture started then abandoned by navigating away, without this, leaves a capturing
-    // `keydown` listener on `window` forever, hijacking the next keydown anywhere in the app.
-    if (activeKeyCaptureListener) {
-      window.removeEventListener("keydown", activeKeyCaptureListener, true);
-      activeKeyCaptureListener = null;
-    }
   });
 
   /**
@@ -83,29 +68,6 @@
   function persist(): void {
     writeDuckingMirror(localStorage, prefs);
     controller.applyPreferences(prefs);
-  }
-
-  /**
-   * Starts listening for the next keydown and binds it as the push-to-duck key.
-   * @example
-   * ```
-   * // private function; not part of the public API — wired to the "bind" button
-   * startKeyCapture();
-   * ```
-   */
-  function startKeyCapture(): void {
-    capturingKey = true;
-    const onKeydown = (e: KeyboardEvent) => {
-      e.preventDefault();
-      window.removeEventListener("keydown", onKeydown, true);
-      activeKeyCaptureListener = null;
-      capturingKey = false;
-      if (e.code === "Escape") return; // cancels the capture rather than binding as the key
-      prefs.keyBinding = e.code;
-      persist();
-    };
-    activeKeyCaptureListener = onKeydown;
-    window.addEventListener("keydown", onKeydown, true);
   }
 
   /**
@@ -171,9 +133,6 @@
       />
       {t("ducking.keySource.enable")}
     </label>
-    <button type="button" onclick={startKeyCapture} disabled={capturingKey}>
-      {capturingKey ? t("ducking.keySource.bindPrompt") : t("ducking.keySource.bind", { key: prefs.keyBinding })}
-    </button>
   </fieldset>
 
   <fieldset disabled={!prefs.masterEnabled}>

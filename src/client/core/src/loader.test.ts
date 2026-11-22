@@ -10,10 +10,13 @@ import { OptimisticClient } from "./optimistic";
 import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
 import { I18n } from "./i18n";
+import { KeybindingsController } from "./keybindings";
 
 function registry() {
+  const hooks = new HookBus(silentLogger);
   return new ModuleRegistry({
-    hooks: new HookBus(silentLogger),
+    keybindings: new KeybindingsController(hooks),
+    hooks,
     services: new ServiceRegistry(),
     middleware: new MiddlewareChain(),
     store: new DocumentStore(),

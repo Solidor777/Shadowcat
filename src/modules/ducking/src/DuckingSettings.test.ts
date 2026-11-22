@@ -2,10 +2,25 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DuckSourcesController } from "./controller";
-import { DEFAULT_DUCKING_PREFERENCES, DUCKING_MIRROR_STORAGE_KEY } from "./duckingMirror";
+import { DEFAULT_DUCKING_PREFERENCES, DUCKING_MIRROR_STORAGE_KEY, type DuckingPreferences } from "./duckingMirror";
+import { makeBindings } from "./__fixtures__/bindings";
 import DuckingSettings from "./DuckingSettings.svelte";
 
 const logger = { debug() {}, warn() {}, error() {} };
+
+/**
+ * Builds a controller whose push-to-duck binding registers on a real keybindings controller
+ * (listening on a private target, so tests never share `window` listeners).
+ * @param prefs The initial preferences.
+ * @returns The controller.
+ * @example
+ * ```
+ * const controller = newController(DEFAULT_DUCKING_PREFERENCES);
+ * ```
+ */
+function newController(prefs: DuckingPreferences): DuckSourcesController {
+  return new DuckSourcesController(prefs, logger, makeBindings(new EventTarget()).bindings);
+}
 
 /**
  * Builds the `audio` fixture every test needs — the component reads `audio.duck.depth` at
@@ -52,7 +67,7 @@ describe("DuckingSettings", () => {
   });
 
   it("renders every control labeled and persists a master-enable toggle", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
     const master = screen.getByLabelText("ducking.masterEnable") as HTMLInputElement;
@@ -64,50 +79,16 @@ describe("DuckingSettings", () => {
     controller.dispose();
   });
 
-  it("binds a new key via the capture button", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+  it("no longer offers a ducking-specific key capture: rebinding lives in the keybindings section", () => {
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
-    await fireEvent.click(screen.getByRole("button", { name: /ducking\.keySource\.bind/ }));
-    const event = new KeyboardEvent("keydown", { code: "KeyV" });
-    window.dispatchEvent(event);
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY)!);
-      expect(stored.keyBinding).toBe("KeyV");
-    });
-    controller.dispose();
-  });
-
-  it("Escape cancels an in-progress key capture instead of binding it", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
-    const context = setAppContextForTest({ audio: audioFixture() });
-    render(DuckingSettings, { props: { controller }, context });
-    await fireEvent.click(screen.getByRole("button", { name: /ducking\.keySource\.bind/ }));
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}");
-      expect(stored.keyBinding).toBeUndefined();
-    });
-    expect(screen.queryByRole("button", { name: /ducking\.keySource\.bindPrompt/ })).toBeNull();
-    controller.dispose();
-  });
-
-  it("removes an abandoned key-capture listener on unmount, so it never hijacks a later keydown", () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
-    const context = setAppContextForTest({ audio: audioFixture() });
-    const { unmount } = render(DuckingSettings, { props: { controller }, context });
-    fireEvent.click(screen.getByRole("button", { name: /ducking\.keySource\.bind/ }));
-    unmount();
-    const stored = JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}");
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyZ" }));
-    // The listener must be gone: the mirror (written only by the component's own persist())
-    // is unchanged by a keydown dispatched after unmount.
-    expect(JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}")).toEqual(stored);
+    expect(screen.queryByRole("button", { name: /ducking\.keySource/ })).toBeNull();
     controller.dispose();
   });
 
   it("commits the watch-list text as a trimmed, filtered array on change", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
     const input = screen.getByLabelText("ducking.osSource.watchList") as HTMLInputElement;
@@ -119,7 +100,7 @@ describe("DuckingSettings", () => {
   });
 
   it("a mic denial reason shows a message and resets the checkbox", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     controller.micToggle = vi.fn().mockResolvedValue("permission-denied");
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
@@ -133,7 +114,7 @@ describe("DuckingSettings", () => {
   });
 
   it("an unavailable microphone shows its own message and resets the checkbox", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     controller.micToggle = vi.fn().mockResolvedValue("unavailable");
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
@@ -147,7 +128,7 @@ describe("DuckingSettings", () => {
   });
 
   it("an unavailable microphone on a server that answers HTTPS names the https address", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     controller.micToggle = vi.fn().mockResolvedValue("unavailable");
     const tls = {
       enabled: true,
@@ -173,7 +154,7 @@ describe("DuckingSettings", () => {
   });
 
   it("on an https page an unavailable microphone keeps the generic message, never an https address", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     controller.micToggle = vi.fn().mockResolvedValue("unavailable");
     const tls = {
       enabled: true,
@@ -196,7 +177,7 @@ describe("DuckingSettings", () => {
   });
 
   it("reflects the OS monitor's live status", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const context = setAppContextForTest({ audio: audioFixture() });
     render(DuckingSettings, { props: { controller }, context });
     expect(screen.getByText("ducking.osSource.status.connecting")).toBeTruthy();
@@ -204,7 +185,7 @@ describe("DuckingSettings", () => {
   });
 
   it("shows the loopback-ws hint on an https page while the OS monitor is not connected, never on http", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const context = setAppContextForTest({ audio: audioFixture() });
     const first = render(DuckingSettings, { props: { controller }, context });
     expect(screen.queryByText("ducking.osSource.httpsHint")).toBeNull();
@@ -220,7 +201,7 @@ describe("DuckingSettings", () => {
   });
 
   it("the depth slider forwards its value to audio.duck.setDepth and never touches the mirror", async () => {
-    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const controller = newController(DEFAULT_DUCKING_PREFERENCES);
     const setDepth = vi.fn();
     const context = setAppContextForTest({ audio: audioFixture(0.5, setDepth) });
     render(DuckingSettings, { props: { controller }, context });

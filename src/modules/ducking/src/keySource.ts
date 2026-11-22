@@ -1,3 +1,5 @@
+import { comboKey, type ModuleContext } from "@shadowcat/core";
+
 /** A ducking source's sink — the shape `AppContext.audio.duck.addSource(id)` returns
  * (`DuckSource` in `@shadowcat/core`'s not-yet-merged `audio.ts`, owned by the audio engine's
  * `DuckController`). Declared locally so this module's sources compile and test standalone
@@ -15,35 +17,32 @@ export interface DuckSink {
  * before its real `ctx.audio.duck` handle is wired in. */
 export const NULL_SINK: DuckSink = { set() {} };
 
-/** Default key `KeySource` binds to when the ducking module's settings have never chosen
- * one. */
+/** The `KeyboardEvent.code` the push-to-duck binding starts on until the user rebinds it. */
 export const DEFAULT_KEY = "Backquote";
 
+/** The ducking module's manifest id, the owner `ModuleContext.keybindings` stamps on its bindings. */
+export const DUCKING_MODULE_ID = "ducking";
+
+/** The push-to-duck binding's id within `DUCKING_MODULE_ID`. */
+export const PUSH_TO_DUCK_BINDING_ID = "push-to-duck";
+
+/** The slice of `ModuleContext.keybindings` a `KeySource` uses. */
+export type KeySourceBindings = Pick<ModuleContext["keybindings"], "register" | "bindingsFor">;
+
 /**
- * Held-key push-to-duck source: `keydown` sets demand 1, `keyup` sets demand 0. Ignores
- * events whose target is an editable element (a text input, textarea, or
- * `contenteditable`), so typing the bound key into chat does not duck.
+ * Held-key push-to-duck source: a keybinding press sets demand 1, releasing the bound key sets
+ * demand 0. The press arrives through the keybindings framework (`core:keydown`, which skips
+ * keystrokes aimed at editable elements); the release stays here because a hold gesture's
+ * second edge is not a framework concept. The binding is registered once at construction so it
+ * is always listed for rebinding; it only ducks while the source is started.
  */
 export class KeySource {
   /** The sink demand is forwarded to; replaceable via `setSink` once a real one exists. */
   private sink: DuckSink;
-  /** The bound key's `KeyboardEvent.code`. */
-  private key: string;
+  /** The keybindings the held key's current combo is read from. */
+  private readonly keybindings: KeySourceBindings;
   /** Whether `start()` has attached listeners (idempotency guard). */
   private started = false;
-  /**
-   * Bound `keydown` handler, captured so `stop()` removes exactly what `start()` added.
-   * @param e The DOM keydown event.
-   * @example
-   * ```
-   * // private field; not part of the public API — attached to `window` by `start()`
-   * window.addEventListener("keydown", this.onKeyDown);
-   * ```
-   */
-  private readonly onKeyDown = (e: KeyboardEvent): void => {
-    if (e.code !== this.key || isEditableTarget(e.target)) return;
-    this.sink.set(1);
-  };
   /**
    * Bound `keyup` handler.
    * @param e The DOM keyup event.
@@ -54,7 +53,10 @@ export class KeySource {
    * ```
    */
   private readonly onKeyUp = (e: KeyboardEvent): void => {
-    if (e.code !== this.key) return;
+    const combo = this.keybindings
+      .bindingsFor(DUCKING_MODULE_ID)
+      .find((b) => b.bindingId === PUSH_TO_DUCK_BINDING_ID)?.combo;
+    if (combo == null || comboKey(combo) !== e.code.toLowerCase()) return;
     this.sink.set(0);
   };
   /**
@@ -72,47 +74,55 @@ export class KeySource {
   };
 
   /**
-   * Constructs a push-to-duck key source.
+   * Constructs a push-to-duck key source and registers its binding.
+   * @param keybindings The module's `ctx.keybindings`; the binding is stamped with its module id.
    * @param sink The initial `DuckSource`-shaped sink to forward demand to; default `NULL_SINK`.
-   * @param key The initial bound key's `KeyboardEvent.code`; default `DEFAULT_KEY`.
    * @example
    * ```
-   * const source = new KeySource(NULL_SINK, "Backquote");
+   * declare const keybindings: KeySourceBindings;
+   * const source = new KeySource(keybindings);
    * ```
    */
-  constructor(sink: DuckSink = NULL_SINK, key: string = DEFAULT_KEY) {
+  constructor(keybindings: KeySourceBindings, sink: DuckSink = NULL_SINK) {
     this.sink = sink;
-    this.key = key;
+    this.keybindings = keybindings;
+    keybindings.register(PUSH_TO_DUCK_BINDING_ID, {
+      defaultCombo: DEFAULT_KEY,
+      labelKey: "ducking.keySource.binding",
+      action: () => {
+        if (this.started) this.sink.set(1);
+      },
+    });
   }
 
   /**
-   * Attaches the `keydown`/`keyup` listeners; a no-op if already started.
+   * Attaches the `keyup`/`blur` listeners and arms the binding; a no-op if already started.
    * @example
    * ```
-   * const source = new KeySource();
+   * declare const keybindings: KeySourceBindings;
+   * const source = new KeySource(keybindings);
    * source.start();
    * ```
    */
   start(): void {
     if (this.started) return;
     this.started = true;
-    window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("blur", this.onBlur);
   }
 
   /**
-   * Removes the listeners and resets demand to 0; a no-op if not started.
+   * Removes the listeners, disarms the binding and resets demand to 0; a no-op if not started.
    * @example
    * ```
-   * const source = new KeySource();
+   * declare const keybindings: KeySourceBindings;
+   * const source = new KeySource(keybindings);
    * source.stop();
    * ```
    */
   stop(): void {
     if (!this.started) return;
     this.started = false;
-    window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     window.removeEventListener("blur", this.onBlur);
     this.sink.set(0);
@@ -124,41 +134,12 @@ export class KeySource {
    * @param sink The replacement sink.
    * @example
    * ```
-   * const source = new KeySource();
+   * declare const keybindings: KeySourceBindings;
+   * const source = new KeySource(keybindings);
    * source.setSink(NULL_SINK);
    * ```
    */
   setSink(sink: DuckSink): void {
     this.sink = sink;
   }
-
-  /**
-   * Rebinds the held key going forward (does not affect an already-held keypress).
-   * @param key The replacement `KeyboardEvent.code`.
-   * @example
-   * ```
-   * const source = new KeySource();
-   * source.setKey("KeyV");
-   * ```
-   */
-  setKey(key: string): void {
-    this.key = key;
-  }
-}
-
-/**
- * Whether `target` is a text input, textarea, or `contenteditable` element — the held key
- * must not duck while the user is typing it into chat.
- * @param target The event's `target`, typed loosely per `KeyboardEvent`'s DOM shape.
- * @returns Whether typing should suppress the push-to-duck binding.
- * @example
- * ```
- * const suppress = isEditableTarget(document.activeElement);
- * ```
- */
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA";
 }

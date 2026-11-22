@@ -114,11 +114,14 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   OptimisticClient,
  *   ContributionRegistry,
  *   I18n,
+ *   KeybindingsController,
  *   silentLogger,
  * } from "@shadowcat/core";
  *
+ * const hooks = new HookBus(silentLogger);
  * const registry = new ModuleRegistry({
- *   hooks: new HookBus(silentLogger),
+ *   keybindings: new KeybindingsController(hooks),
+ *   hooks,
  *   services: new ServiceRegistry(),
  *   middleware: new MiddlewareChain(),
  *   store: new DocumentStore(),
