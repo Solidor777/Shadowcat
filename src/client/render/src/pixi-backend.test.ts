@@ -174,6 +174,10 @@ interface TokenNodeLike {
   fx: { matrix: number[]; _destroyed: boolean } | null;
   /** Mirror of `TokenNode.fxKey` — read to assert the rebuild memo. */
   fxKey: string;
+  /** Mirror of `TokenNode.sourceKey` — read to assert the visual-change memo. */
+  sourceKey: string | null;
+  /** Mirror of `TokenNode.anim` — read to assert no animation state survives. */
+  anim: unknown;
 }
 
 interface PixiBackendTokenInternals {
@@ -183,6 +187,8 @@ interface PixiBackendTokenInternals {
   frameTokenArt(node: TokenNodeLike, art: ResolvedArtVisual, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenGeneratedFrame`. */
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
+  /** Mirror of the private `PixiBackend.updateTokenVisual`. */
+  updateTokenVisual(id: string, node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenAura`. */
   updateTokenAura(node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenFx`. */
@@ -386,6 +392,33 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
     // Pixi's mask getter returns `undefined` (not `null`) once the mask effect is removed.
     expect(node.visual.mask).toBeUndefined();
     expect((frame.mask as unknown as { destroyed: boolean }).destroyed).toBe(true);
+  });
+});
+
+describe("PixiBackend.updateTokenVisual with a frame-only generated visual", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+  const frameOnly: TokenNodeSpec["visual"] = { kind: "generated", crop: "circle", background: { color: 0x6b6b6b } };
+
+  test("loads no texture: the sprite is emptied, the memo set, and the frame still draws", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec: TokenNodeSpec = { ...base, visual: frameOnly };
+    backend.updateTokenVisual("t1", node, spec);
+    backend.updateTokenGeneratedFrame(node, spec);
+    expect(node.sourceKey).toContain("frame-only");
+    expect(node.anim).toBeNull();
+    expect((node.visual as unknown as { texture: unknown }).texture).toBe(Texture.EMPTY);
+    expect(styleOf(node.generated!.background, "fill")?.color).toBe(0x6b6b6b);
+  });
+
+  test("swapping an animated visual for the frame-only one drops the animation sprite", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenVisual("t1", node, { ...base, visual: { kind: "animated", source: { type: "frames", urls: [] }, fps: 4, loop: true } });
+    expect(node.visual).toBeInstanceOf(AnimatedSprite);
+    backend.updateTokenVisual("t1", node, { ...base, visual: frameOnly });
+    expect(node.visual).not.toBeInstanceOf(AnimatedSprite);
+    expect(node.anim).toBeNull();
   });
 });
 

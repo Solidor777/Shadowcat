@@ -130,6 +130,72 @@ describe("resolveTokenActor movement tags", () => {
   });
 });
 
+describe("resolveTokenActor disposition", () => {
+  const HOSTILE = { goblins: { name: "Goblins", color: "#c33", stance: "hostile" as const, movement: [] } };
+  const overrides = (disposition: "friendly" | "neutral" | "hostile" | null): NonNullable<TokenEngine["overrides"]> => ({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null, disposition });
+
+  it("falls back to the faction stance, then neutral for an unfactioned or dangling-faction token", () => {
+    const factioned = buildActorDoc("w1", NAME, { ...eng, faction: "goblins" }, "act1");
+    const registry = buildFactionRegistryDoc("w1", HOSTILE, "freg1");
+    const token = buildTokenFromActor("w1", "scene1", factioned, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(token, storeWith(factioned, registry))?.disposition).toBe("hostile");
+
+    const plain = buildActorDoc("w1", NAME, eng, "act2");
+    const plainToken = buildTokenFromActor("w1", "scene1", plain, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(plainToken, storeWith(plain))?.disposition).toBe("neutral");
+
+    const dangling = buildActorDoc("w1", NAME, { ...eng, faction: "gone" }, "act3");
+    const danglingToken = buildTokenFromActor("w1", "scene1", dangling, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(danglingToken, storeWith(dangling, registry))?.disposition).toBe("neutral");
+  });
+
+  it("a per-token override wins over the faction stance without touching the shared faction", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "goblins" }, "act1");
+    const registry = buildFactionRegistryDoc("w1", HOSTILE, "freg1");
+    const charmed = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-a");
+    (charmed.engine as TokenEngine).overrides = overrides("friendly");
+    const sibling = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-b");
+    const store = storeWith(actor, registry);
+    expect(resolveTokenActor(charmed, store)?.disposition).toBe("friendly");
+    expect(resolveTokenActor(sibling, store)?.disposition).toBe("hostile");
+  });
+
+  it("an instanced token reads its embedded copy's faction stance", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "goblins" }, "act1");
+    const registry = buildFactionRegistryDoc("w1", HOSTILE, "freg1");
+    const instanced = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(instanced, storeWith(registry))?.disposition).toBe("hostile");
+  });
+
+  it("an identity-hidden token as a non-owner receives it (no actor link, identity-stripped copy) resolves no faction, stance, name or visual", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "goblins" }, "act1");
+    const registry = buildFactionRegistryDoc("w1", HOSTILE, "freg1");
+    // Linked: the server withholds `actor_id` (and the override identity fields), so the join
+    // back to the actor and its faction cannot be made.
+    const linked = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-l");
+    const linkedWire = structuredClone(linked);
+    const linkedEngine = linkedWire.engine as Partial<TokenEngine>;
+    delete linkedEngine.actor_id;
+    delete linkedEngine.visual;
+    expect(resolveTokenActor(linkedWire, storeWith(actor, registry))).toBeNull();
+    // Instanced: the embedded copy keeps its geometry and conditions but loses name,
+    // displayName, visual and faction.
+    const instanced = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-i");
+    const instancedWire = structuredClone(instanced);
+    const copy = instancedWire.embedded!.actor![0];
+    delete (copy as Partial<WireDocument>).name;
+    const copyEngine = copy.engine as Partial<ActorEngine>;
+    delete copyEngine.displayName;
+    delete copyEngine.visual;
+    delete copyEngine.faction;
+    const eff = resolveTokenActor(instancedWire, storeWith(registry));
+    expect(eff?.disposition).toBe("neutral");
+    expect(eff?.faction).toBeUndefined();
+    expect(actorDisplayName(eff!)).toBe("Unknown Creature");
+    expect(resolveTokenVisual(instancedWire, storeWith(registry), eff)).toBeNull();
+  });
+});
+
 describe("resolveConditions", () => {
   it("resolves effective condition ids through the world registry, dropping unknown ids", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["dead", "ghost"] }, "act1");
