@@ -7,6 +7,7 @@ import type {
   CombatantView,
   ResolvedResourceView,
   CombatantEngine,
+  CombatantGroupEngine,
   WorldRole,
 } from "@shadowcat/core";
 
@@ -22,6 +23,16 @@ export interface Row {
   view: CombatantView | null;
   /** Display name; `null` for a redacted or unnamed document. */
   name: string | null;
+  /** The combatant's group (id, name, accent color), or `null` when ungrouped or when the id
+   * names no readable group document. */
+  group: {
+    /** The `combatant-group` document id. */
+    id: string;
+    /** The group's display name. */
+    name: string;
+    /** The group's css `#rrggbb` accent, or `null`. */
+    color: string | null;
+  } | null;
   /** Art source: the combatant's token and/or actor id, for face-asset resolution. */
   art: {
     /** The combatant's own token id, when it names one. */
@@ -35,16 +46,19 @@ export interface Row {
  * given input order (the caller — `CombatApi.combatants` — already resolves `engine.order`).
  * @param combatants The combatant documents, in the order to render them.
  * @param resolved The latest `"combat"` derived-channel frame.
+ * @param groups The combat's `combatant-group` documents, joined onto each row's `group`.
  * @returns One `Row` per combatant document.
  * @example
  * ```
  * import type { CombatApi } from "@shadowcat/core";
  *
  * declare const combatApi: CombatApi;
- * rowsFor(combatApi.combatants("c1"), combatApi.resolved);
+ * rowsFor(combatApi.combatants("c1"), combatApi.resolved, combatApi.groups("c1"));
  * ```
  */
-export function rowsFor(combatants: WireDocument[], resolved: CombatsView): Row[] {
+export function rowsFor(combatants: WireDocument[], resolved: CombatsView, groups: WireDocument[] = []): Row[] {
+  const groupById = new Map<string, WireDocument>();
+  for (const g of groups) groupById.set(g.id, g);
   const views = new Map<string, CombatantView>();
   for (const c of resolved.combats) {
     for (const cc of c.combatants) views.set(cc.id, cc);
@@ -57,7 +71,10 @@ export function rowsFor(combatants: WireDocument[], resolved: CombatsView): Row[
       if (engine.kind.token_id) art.tokenId = engine.kind.token_id;
       if (engine.kind.actor_id) art.actorId = engine.kind.actor_id;
     }
-    return { doc, kind, view: views.get(doc.id) ?? null, name: doc.name, art };
+    const gdoc = engine.group ? groupById.get(engine.group) : undefined;
+    const gengine = gdoc?.engine as CombatantGroupEngine | undefined;
+    const group = gdoc && gengine ? { id: gdoc.id, name: gengine.name, color: gengine.color } : null;
+    return { doc, kind, view: views.get(doc.id) ?? null, name: doc.name, group, art };
   });
 }
 
@@ -85,11 +102,15 @@ export function moveInOrder(order: string[], from: number, to: number): string[]
 }
 
 /** The "Roll all" target set: actor combatants without an initiative yet, whose roll the caller
- * may make. A GM may roll every such row; a player may roll only their own.
+ * may make. A GM may roll every such row; a player may roll only their own. A grouped combatant
+ * collapses to ONE target, its group's id, placed at the group's first row: the server rolls the
+ * group once and stamps every member. A player gets a group target only when they own every
+ * actor member, mirroring the server's all-members ownership check; otherwise the group is
+ * skipped.
  * @param rows The panel's current rows.
  * @param role The caller's world role.
  * @param selfId The caller's own user id.
- * @returns The target combatant ids, in row order.
+ * @returns The target combatant and group ids, in row order.
  * @example
  * ```
  * declare const rows: Row[];
@@ -97,10 +118,23 @@ export function moveInOrder(order: string[], from: number, to: number): string[]
  * ```
  */
 export function rollTargets(rows: Row[], role: WorldRole, selfId: string): string[] {
-  return rows
-    .filter((r) => r.kind === "actor" && (r.doc.engine as CombatantEngine).initiative === null)
-    .filter((r) => role === "gm" || r.doc.owner === selfId)
-    .map((r) => r.doc.id);
+  const out: string[] = [];
+  const seenGroups = new Set<string>();
+  for (const r of rows) {
+    if (r.kind !== "actor") continue;
+    const engine = r.doc.engine as CombatantEngine;
+    if (engine.group) {
+      if (seenGroups.has(engine.group)) continue;
+      seenGroups.add(engine.group);
+      const members = rows.filter((m) => (m.doc.engine as CombatantEngine).group === engine.group);
+      const pending = members.some((m) => (m.doc.engine as CombatantEngine).initiative === null);
+      const allowed = role === "gm" || members.every((m) => m.doc.owner === selfId);
+      if (pending && allowed) out.push(engine.group);
+      continue;
+    }
+    if (engine.initiative === null && (role === "gm" || r.doc.owner === selfId)) out.push(r.doc.id);
+  }
+  return out;
 }
 
 /** Renders one resolved resource view as tracker cell text.

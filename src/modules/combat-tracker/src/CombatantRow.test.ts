@@ -19,16 +19,17 @@ function actorRow(id: string, opts: { initiative?: number | null; tiebreak?: num
     kind: { type: "actor", token_id: null, actor_id: null },
     initiative: opts.initiative ?? null,
     tiebreak: opts.tiebreak ?? 0, defeated: opts.defeated ?? false,
+    group: null,
     resources: {},
   };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, owner: opts.owner, hidden: opts.hidden, name: id });
-  return { doc, kind: "actor", view: opts.view ?? null, name: id, art: {} };
+  return { doc, kind: "actor", view: opts.view ?? null, name: id, group: null, art: {} };
 }
 
 function eventRow(id: string, lifespan: number | null, message: string | null): Row {
-  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "event", lifespan, message }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
   const doc = buildCombatantDoc("w1", "combat-1", engine, { id, name: "An event" });
-  return { doc, kind: "event", view: null, name: "An event", art: {} };
+  return { doc, kind: "event", view: null, name: "An event", group: null, art: {} };
 }
 
 function renderRow(row: Row, opts: { can?: Partial<CombatAffordances>; registry?: [string, Resource][]; isTurn?: boolean; busy?: boolean; onDragStart?: (i: number, e: PointerEvent) => void; openDocument?: (ref: unknown) => void } = {}) {
@@ -204,6 +205,17 @@ describe("CombatantRow", () => {
     const { getByText, combat } = renderRow(hidden);
     await fireEvent.click(getByText("combatTracker.visible"));
     expect(combat.calls.setHidden).toEqual([["a", false]]);
+  });
+
+  it("a grouped row carries the group accent color and name, an ungrouped row neither", () => {
+    const grouped = { ...actorRow("a"), group: { id: "g1", name: "Wolves", color: "#112233" } };
+    const withGroup = renderRow(grouped).getByTestId("combat-tracker:row-a");
+    expect(withGroup.classList.contains("grouped")).toBe(true);
+    expect(withGroup.style.getPropertyValue("--group-color")).toBe("#112233");
+    expect(withGroup.getAttribute("title")).toBe("Wolves");
+    cleanup();
+    const plain = renderRow(actorRow("a")).getByTestId("combat-tracker:row-a");
+    expect(plain.classList.contains("grouped")).toBe(false);
   });
 
   it("defeated toggle dispatches setDefeated(true) on a live row and setDefeated(false) on a defeated one", async () => {

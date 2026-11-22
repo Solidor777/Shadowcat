@@ -9,7 +9,7 @@ import type { WireDocument, ClientMsg, WireCombatRollEntry, WireResourceOp, Wire
 import type { CombatsView, CombatantView } from "./wire";
 import { EMPTY_COMBATS } from "./wire";
 import type { CombatEngine, CombatantEngine, CombatantKind } from "./scene-docs";
-import { buildCombatDoc, buildCombatantDoc, newCombatEngine } from "./scene-docs";
+import { buildCombatDoc, buildCombatantDoc, buildCombatantGroupDoc, COMBATANT_GROUP_DOC_TYPE, newCombatEngine } from "./scene-docs";
 import { effectiveOwner } from "./actor";
 import type { Logger } from "./logger";
 import { buildUpdate } from "./update-op";
@@ -38,6 +38,8 @@ export interface NewCombatant {
   actorId?: string;
   /** Hidden = unreadable to every non-GM. */
   hidden?: boolean;
+  /** The `combatant-group` document id this combatant joins, or omitted for none. */
+  group?: string;
   /** Display name override; defaults to the token's, else the actor's. */
   name?: string | null;
   /** Opaque system body. */
@@ -168,6 +170,10 @@ export interface CombatApi {
    * @param combatId The combat to query.
    * @returns Ordered combatant documents. */
   combatants(combatId: string): WireDocument[];
+  /** The combat's `combatant-group` documents, in id order.
+   * @param combatId The combat to query.
+   * @returns The group documents. */
+  groups(combatId: string): WireDocument[];
   /** The current turn's combatant document.
    * @param combatId The combat to query.
    * @returns The turn's combatant document, or `null` when there is no turn or the store
@@ -273,6 +279,19 @@ export interface CombatApi {
    * @param combatantId The combatant to update.
    * @param defeated The new defeated state. */
   setDefeated(combatantId: string, defeated: boolean): void;
+  /** Creates a `combatant-group` under `combatId`: one intent. Members join it through
+   * `NewCombatant.group` or `setGroup`.
+   * @param combatId The combat the group belongs to.
+   * @param name The group's display name.
+   * @param color Optional css `#rrggbb` accent.
+   * @returns The new group document's id.
+   * @throws {CombatClientError} `code: "not-connected"` when the host dropped the intent. */
+  createGroup(combatId: string, name: string, color?: string): string;
+  /** Moves a combatant into a group, or out of every group with `null`. A group's members
+   * share one initiative slot on the next roll or sort.
+   * @param combatantId The combatant to update.
+   * @param groupId The `combatant-group` document id, or `null` for none. */
+  setGroup(combatantId: string, groupId: string | null): void;
 }
 
 /**
@@ -401,6 +420,13 @@ export class CombatController implements CombatApi {
     return [...ordered, ...stray];
   }
 
+  groups(combatId: string): WireDocument[] {
+    return this.deps.documents
+      .query(COMBATANT_GROUP_DOC_TYPE)
+      .filter((d) => d.parent_id === combatId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
   turnOf(combatId: string): WireDocument | null {
     const combat = this.deps.documents.get(combatId);
     const turn = (combat?.engine as CombatEngine | undefined)?.turn;
@@ -521,7 +547,14 @@ export class CombatController implements CombatApi {
       const name = entry.name ?? host?.name ?? null;
       const owner = host ? effectiveOwner(host, this.deps.documents) : null;
       const kind: CombatantKind = { type: "actor", token_id: entry.tokenId ?? null, actor_id: actorId };
-      const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+      const cengine: CombatantEngine = {
+        kind,
+        initiative: null,
+        tiebreak: 0,
+        defeated: false,
+        group: entry.group ?? null,
+        resources: {},
+      };
       const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
         owner,
         hidden: entry.hidden,
@@ -541,7 +574,7 @@ export class CombatController implements CombatApi {
     const engine = combat?.engine as CombatEngine | undefined;
     const oldOrder = engine?.order ?? [];
     const kind: CombatantKind = { type: "event", lifespan: ev.lifespan, message: ev.message };
-    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
       hidden: ev.hidden,
       system: ev.system,
@@ -614,5 +647,17 @@ export class CombatController implements CombatApi {
     const doc = this.deps.documents.get(combatantId);
     const engine = doc?.engine as CombatantEngine | undefined;
     this.dispatch([buildUpdate(combatantId, [{ path: "/engine/defeated", old: engine?.defeated ?? false, value: defeated }])]);
+  }
+
+  createGroup(combatId: string, name: string, color?: string): string {
+    const doc = buildCombatantGroupDoc(this.deps.world(), combatId, name, color);
+    this.dispatch([{ op: "create", doc }]);
+    return doc.id;
+  }
+
+  setGroup(combatantId: string, groupId: string | null): void {
+    const doc = this.deps.documents.get(combatantId);
+    const engine = doc?.engine as CombatantEngine | undefined;
+    this.dispatch([buildUpdate(combatantId, [{ path: "/engine/group", old: engine?.group ?? null, value: groupId }])]);
   }
 }

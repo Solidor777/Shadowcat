@@ -83,6 +83,7 @@ import type {
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
+  CombatantGroupEngine,
   CombatantKind,
   CombatantResource,
   MovementRules,
@@ -190,6 +191,7 @@ export type {
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
+  CombatantGroupEngine,
   CombatantKind,
   CombatantResource,
   MovementRules,
@@ -1224,6 +1226,8 @@ export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDoc
 export const COMBAT_DOC_TYPE = "combat";
 /** Engine-defined doc_type of a combatant, always a child of a combat. */
 export const COMBATANT_DOC_TYPE = "combatant";
+/** Engine-defined doc_type of a combatant group, always a child of a combat. */
+export const COMBATANT_GROUP_DOC_TYPE = "combatant-group";
 /** Engine-defined doc_type of the singleton turn-resource registry. */
 export const RESOURCE_REGISTRY_DOC_TYPE = "resource-registry";
 /** Engine-defined doc_type of an effect. */
@@ -1357,7 +1361,7 @@ export interface CombatantDocOptions {
  *
  * const engine: CombatantEngine = {
  *   kind: { type: "event", lifespan: 3, message: "The floor shakes" },
- *   initiative: 20, tiebreak: 0, defeated: false, resources: {},
+ *   initiative: 20, tiebreak: 0, defeated: false, group: null, resources: {},
  * };
  * buildCombatantDoc("world-1", "combat-1", engine, { hidden: true }).permissions.default; // "none"
  * ```
@@ -1376,6 +1380,28 @@ export function buildCombatantDoc(worldId: string, combatId: string, engine: Com
   // widening deliberately overwrites this entry after building.
   doc.permissions.property_overrides["/engine/resources"] = "owner_or_gm";
   return doc;
+}
+
+/** A `combatant-group` document parented to `combatId`: a named set of combatants (members name
+ * it through `CombatantEngine.group`) that share one initiative slot. Readable by everyone who
+ * can read the combat; a member's own hidden state stays on the member.
+ * @param worldId The owning world's id.
+ * @param combatId The parent combat document's id.
+ * @param name The group's display name.
+ * @param color Optional css `#rrggbb` accent, or `undefined` for none.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "combatant-group"` and `parent_id: combatId`.
+ * @example
+ * ```ts
+ * import { buildCombatantGroupDoc } from "@shadowcat/core";
+ *
+ * const doc = buildCombatantGroupDoc("world-1", "combat-1", "Rat swarm", "#3fb950");
+ * doc.doc_type; // "combatant-group"
+ * ```
+ */
+export function buildCombatantGroupDoc(worldId: string, combatId: string, name: string, color?: string, id?: string): WireDocument {
+  const engine: CombatantGroupEngine = { name, color: color ?? null };
+  return envelope(worldId, COMBATANT_GROUP_DOC_TYPE, combatId, {}, id, engine, null);
 }
 
 /** A top-level (world-scoped, parentless) resource-registry document.

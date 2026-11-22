@@ -60,7 +60,12 @@
     subscribeDocs();
     subscribeResolved();
     if (!selectedCombat) return [];
-    return rowsFor(ctx.combat.combatants(selectedCombat.id), ctx.combat.resolved);
+    return rowsFor(ctx.combat.combatants(selectedCombat.id), ctx.combat.resolved, ctx.combat.groups(selectedCombat.id));
+  });
+
+  const groups = $derived.by((): WireDocument[] => {
+    subscribeDocs();
+    return selectedCombat ? ctx.combat.groups(selectedCombat.id) : [];
   });
 
   const registry = $derived.by((): [string, Resource][] => {
@@ -232,7 +237,7 @@
         </div>
       {/each}
     </div>
-    <AddCombatants combatId={selectedCombat.id} {rows} />
+    <AddCombatants combatId={selectedCombat.id} {rows} {groups} />
   {:else if ctx.role === "gm"}
     <p>{ctx.t("combatTracker.noCombat")}</p>
     <button type="button" data-testid="combat-tracker:create" disabled={busy} onclick={create}>{ctx.t("combatTracker.create")}</button>

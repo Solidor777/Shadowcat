@@ -1,19 +1,19 @@
 import { describe, it, expect } from "vitest";
 import { rowsFor, moveInOrder, rollTargets, formatResource, type Row } from "./model";
-import { buildCombatantDoc, type CombatantEngine, type WireDocument, type CombatsView } from "@shadowcat/core";
+import { buildCombatantDoc, buildCombatantGroupDoc, type CombatantEngine, type WireDocument, type CombatsView } from "@shadowcat/core";
 
 function actorCombatant(id: string, opts: { initiative?: number | null; owner?: string | null; tokenId?: string; hidden?: boolean } = {}): WireDocument {
   const engine: CombatantEngine = {
     kind: { type: "actor", token_id: opts.tokenId ?? null, actor_id: null },
     initiative: opts.initiative ?? null,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   return buildCombatantDoc("w1", "combat-1", engine, { id, owner: opts.owner, hidden: opts.hidden, name: id });
 }
 
 function eventCombatant(id: string, lifespan: number | null = 1): WireDocument {
-  const engine: CombatantEngine = { kind: { type: "event", lifespan, message: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "event", lifespan, message: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
   return buildCombatantDoc("w1", "combat-1", engine, { id, name: "An event" });
 }
 
@@ -98,6 +98,44 @@ describe("rollTargets", () => {
     const mine = actorCombatant("mine", { initiative: 3, owner: "user-1" });
     const targets = rollTargets(rows([mine]), "player", "user-1");
     expect(targets).toEqual([]);
+  });
+
+  const inGroup = (id: string, group: string, owner: string): WireDocument => {
+    const doc = actorCombatant(id, { owner });
+    (doc.engine as CombatantEngine).group = group;
+    return doc;
+  };
+
+  it("GM: a group collapses to one target, its group id, at the group's first row", () => {
+    const docs = [inGroup("a", "g1", "u2"), actorCombatant("solo"), inGroup("b", "g1", "u2")];
+    expect(rollTargets(rows(docs), "gm", "gm-1")).toEqual(["g1", "solo"]);
+  });
+
+  it("player: a group is a target only when every member is theirs", () => {
+    const allMine = [inGroup("a", "g1", "user-1"), inGroup("b", "g1", "user-1")];
+    expect(rollTargets(rows(allMine), "player", "user-1")).toEqual(["g1"]);
+    const mixed = [inGroup("a", "g1", "user-1"), inGroup("b", "g1", "user-2")];
+    expect(rollTargets(rows(mixed), "player", "user-1")).toEqual([]);
+  });
+
+  it("a group whose members all have an initiative is not a target", () => {
+    const a = inGroup("a", "g1", "user-1");
+    (a.engine as CombatantEngine).initiative = 4;
+    expect(rollTargets(rows([a]), "gm", "gm-1")).toEqual([]);
+  });
+});
+
+describe("rowsFor groups", () => {
+  it("joins a combatant to its group's name and color, and leaves an unknown group null", () => {
+    const a = actorCombatant("a");
+    (a.engine as CombatantEngine).group = "g1";
+    const b = actorCombatant("b");
+    (b.engine as CombatantEngine).group = "ghost";
+    const g = buildCombatantGroupDoc("w1", "combat-1", "Wolves", "#112233", "g1");
+    const rows = rowsFor([a, b, actorCombatant("c")], { combats: [] }, [g]);
+    expect(rows[0].group).toEqual({ id: "g1", name: "Wolves", color: "#112233" });
+    expect(rows[1].group).toBeNull();
+    expect(rows[2].group).toBeNull();
   });
 });
 

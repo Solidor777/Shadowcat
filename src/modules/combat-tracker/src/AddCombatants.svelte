@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { CombatantEngine } from "@shadowcat/core";
+  import type { CombatantEngine, CombatantGroupEngine, WireDocument } from "@shadowcat/core";
   import type { Row } from "./model";
 
   /** Shape of an `Actor`-kind combatant's `engine.kind` narrowed cast, read for its
@@ -21,8 +21,10 @@
     combatId: string;
     /** The combat's current rows — used to filter out already-added tokens. */
     rows: Row[];
+    /** The combat's `combatant-group` documents, offered by the group picker. */
+    groups: WireDocument[];
   }
-  const { combatId, rows }: Props = $props();
+  const { combatId, rows, groups }: Props = $props();
 
   const ctx = getAppContext();
 
@@ -40,10 +42,15 @@
   const selectableTokenIds = $derived.by((): string[] => [...ctx.tokenSelection.ids].filter((id) => !alreadyAdded.has(id)));
 
   let hiddenOnAdd = $state(false);
+  /** The group picker value: `""` none, `"new"` create one, else an existing group id. */
+  let groupChoice = $state("");
+  let newGroupName = $state("");
+  let newGroupColor = $state("#888888");
 
   /**
    * Adds every currently-selected, not-yet-added token as a combatant of `combatId`, each
-   * hidden per the `hiddenOnAdd` toggle.
+   * hidden per the `hiddenOnAdd` toggle and joined to the picked group. The `"new"` choice
+   * creates the group first (a blank name is refused) so every added combatant shares it.
    * @example
    * ```
    * // private function; not part of the public API — invoked from the "add selected" button
@@ -51,9 +58,19 @@
    * ```
    */
   function addSelected(): void {
+    let group: string | undefined;
+    if (groupChoice === "new") {
+      const name = newGroupName.trim();
+      if (!name) return;
+      group = ctx.combat.createGroup(combatId, name, newGroupColor);
+      groupChoice = group;
+      newGroupName = "";
+    } else if (groupChoice !== "") {
+      group = groupChoice;
+    }
     ctx.combat.addCombatants(
       combatId,
-      selectableTokenIds.map((tokenId) => ({ tokenId, hidden: hiddenOnAdd })),
+      selectableTokenIds.map((tokenId) => ({ tokenId, hidden: hiddenOnAdd, group })),
     );
   }
 
@@ -96,6 +113,20 @@
     <input type="checkbox" bind:checked={hiddenOnAdd} />
     {ctx.t("combatTracker.hidden")}
   </label>
+  <label>
+    {ctx.t("combatTracker.group")}
+    <select aria-label={ctx.t("combatTracker.group")} data-testid="combat-tracker:group-picker" bind:value={groupChoice}>
+      <option value="">{ctx.t("combatTracker.groupNone")}</option>
+      {#each groups as g (g.id)}
+        <option value={g.id}>{(g.engine as CombatantGroupEngine).name}</option>
+      {/each}
+      <option value="new">{ctx.t("combatTracker.groupNew")}</option>
+    </select>
+  </label>
+  {#if groupChoice === "new"}
+    <input type="text" aria-label={ctx.t("combatTracker.groupName")} bind:value={newGroupName} />
+    <input type="color" aria-label={ctx.t("combatTracker.groupColor")} bind:value={newGroupColor} />
+  {/if}
   <button type="button" data-testid="combat-tracker:add-selected" disabled={selectableTokenIds.length === 0} onclick={addSelected}>
     {ctx.plural("combatTracker.addSelected", selectableTokenIds.length, { n: selectableTokenIds.length })}
   </button>
