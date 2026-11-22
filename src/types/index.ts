@@ -68,6 +68,12 @@ export type { TlsAdminStatus } from "./generated/TlsAdminStatus";
 export type { WorldEntry } from "./generated/WorldEntry";
 export type { BackupManifest } from "./generated/BackupManifest";
 export type { BackupKind } from "./generated/BackupKind";
+export type { BackupEntry } from "./generated/BackupEntry";
+export type { BackupListing } from "./generated/BackupListing";
+export type { BackupRetention } from "./generated/BackupRetention";
+export type { RestoreFailed } from "./generated/RestoreFailed";
+export type { RestoreStaged } from "./generated/RestoreStaged";
+export type { PruneResult } from "./generated/PruneResult";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
