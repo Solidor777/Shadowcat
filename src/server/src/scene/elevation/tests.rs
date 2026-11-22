@@ -38,6 +38,7 @@ fn scene_with_door_walls(doors: &[Option<eng::DoorState>]) -> (SceneEcs, Uuid) {
                 door: *door,
                 direction: None,
                 sight_tier: None,
+                proximity: None,
             })
             .unwrap(),
         );
@@ -113,6 +114,7 @@ fn scene_with_directed_wall(
             door: None,
             direction: direction.map(|blocking_side| eng::WallDirection { blocking_side }),
             sight_tier,
+            proximity: None,
         })
         .unwrap(),
     );
@@ -192,6 +194,7 @@ fn scene_with_sound_wall(
             door,
             direction: None,
             sight_tier: None,
+            proximity: None,
         })
         .unwrap(),
     );
@@ -251,6 +254,81 @@ fn sound_wall_entries_stay_symmetric_under_a_one_way_or_limited_wall() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].seg.one_way, None);
     assert!(!entries[0].seg.limited);
+}
+
+/// A scene (id 10, 100-unit square grid) with one all-flags wall carrying a proximity tier of
+/// `within` cells over `senses` and `sound_gain`. Returns the ECS and the scene id.
+fn scene_with_proximity_wall(
+    within: f64,
+    senses: Vec<eng::WallSense>,
+    sound_gain: Option<f64>,
+) -> (SceneEcs, Uuid) {
+    let (mut ecs, scene_id) = scene_with_directed_wall(None, None);
+    let mut wall = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "wall")
+        .map(|e| e.doc.clone())
+        .expect("the fixture carries one wall");
+    let mut body: eng::WallEngine = serde_json::from_value(wall.engine.clone().unwrap()).unwrap();
+    body.proximity = Some(eng::WallProximity {
+        within,
+        senses,
+        sound_gain,
+    });
+    wall.engine = Some(serde_json::to_value(body).unwrap());
+    let scene = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "scene")
+        .map(|e| e.doc.clone())
+        .unwrap();
+    ecs = SceneEcs::from_documents(vec![scene, wall], 0);
+    (ecs, scene_id)
+}
+
+#[test]
+fn each_sense_collector_fills_open_within_only_for_a_sense_the_tier_names() {
+    // Two cells on a 100-unit grid = 200 scene units; the sound gain rides along. A sense
+    // the tier omits keeps the wall ordinary, and movement never reads the tier.
+    let (ecs, scene) = scene_with_proximity_wall(
+        2.0,
+        vec![eng::WallSense::Sight, eng::WallSense::Sound],
+        Some(0.4),
+    );
+    let sight = ecs.sight_wall_entries(scene)[0].seg.open_within;
+    assert_eq!(
+        sight,
+        Some(vision::OpenWithin {
+            distance: 200.0,
+            gain: 0.4
+        })
+    );
+    assert_eq!(ecs.light_wall_entries(scene)[0].seg.open_within, None);
+    assert_eq!(
+        ecs.sound_wall_entries(scene)[0].seg.open_within,
+        Some(vision::OpenWithin {
+            distance: 200.0,
+            gain: 0.4
+        })
+    );
+    assert_eq!(ecs.move_wall_entries(scene, None)[0].seg.open_within, None);
+}
+
+#[test]
+fn a_tier_naming_only_light_opens_only_the_light_collector() {
+    let (ecs, scene) = scene_with_proximity_wall(1.0, vec![eng::WallSense::Light], None);
+    assert_eq!(ecs.sight_wall_entries(scene)[0].seg.open_within, None);
+    assert_eq!(
+        ecs.light_wall_entries(scene)[0].seg.open_within,
+        Some(vision::OpenWithin {
+            distance: 100.0,
+            gain: 1.0
+        })
+    );
+    assert_eq!(ecs.sound_wall_entries(scene)[0].seg.open_within, None);
 }
 
 #[test]

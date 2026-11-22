@@ -30,7 +30,8 @@ token: string,
  */
 asset: string, 
 /**
- * Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* throughWallGain` if
+ * Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* soundGain` of every crossed
+ * wall open to the listener by proximity (`WallProximity::sound_gain`), then `* throughWallGain` if
  * occluded under `Occlusion::Walls` (never reduced to exactly `0` by occlusion alone — a
  * player still learns something is behind the door).
  */

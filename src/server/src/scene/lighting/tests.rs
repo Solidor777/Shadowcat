@@ -391,24 +391,28 @@ fn env_light_polys_seal_a_blocks_light_box_interior() {
             b: (300.0, 200.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (300.0, 200.0),
             b: (300.0, 300.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (300.0, 300.0),
             b: (200.0, 300.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
         vision::Seg {
             a: (200.0, 300.0),
             b: (200.0, 200.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
     ];
     let polys = env_light_polys(origin_extent(500.0, 500.0), 100.0, &walls);

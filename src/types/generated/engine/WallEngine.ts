@@ -3,6 +3,7 @@ import type { DoorState } from "./DoorState";
 import type { ElevationBand } from "./ElevationBand";
 import type { Seg } from "./Seg";
 import type { WallDirection } from "./WallDirection";
+import type { WallProximity } from "./WallProximity";
 import type { WallSightTier } from "./WallSightTier";
 
 /**
@@ -16,7 +17,8 @@ import type { WallSightTier } from "./WallSightTier";
  * Three orthogonal modifiers sit beside the flags: `door` (a hole when open, resolved by
  * `WallEngine::effective_flags`), `direction` (a one-way wall, solid from one side of the
  * segment only — sight and movement, never light/sound) and `sight_tier` (a sight-only
- * partial-blocking tier — see `WallSightTier`). None of them changes the authored flags'
+ * partial-blocking tier — see `WallSightTier`) and `proximity` (a per-sense open-when-near tier
+ * — see `WallProximity`). None of them changes the authored flags'
  * meaning; they compose with `effective_flags`'s output at the collectors.
  *
  * # Examples
@@ -34,6 +36,7 @@ import type { WallSightTier } from "./WallSightTier";
  *     door: None,
  *     direction: None,
  *     sight_tier: None,
+ *     proximity: None,
  * };
  * assert_eq!(wall.blocks_move, Some(true));
  * ```
@@ -86,4 +89,10 @@ direction: WallDirection | null,
  * Partial-blocking sight tier; absent = the wall blocks sight immediately. Read by the
  * sight raycast only (`vision::nearest_hit`'s crossing budget) — see `WallSightTier`.
  */
-sightTier: WallSightTier | null, };
+sightTier: WallSightTier | null, 
+/**
+ * Proximity sense tier; absent = no tier, the wall blocks every sense it blocks today.
+ * Read by the sight, light and sound collectors only, each for the senses it names — see
+ * `WallProximity`. Movement never reads it.
+ */
+proximity: WallProximity | null, };

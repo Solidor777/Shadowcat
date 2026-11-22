@@ -40,6 +40,7 @@ fn step_crossing_a_blocks_move_wall_is_not_enterable() {
         b: (100.0, 200.0),
         one_way: None,
         limited: false,
+        open_within: None,
     }];
     let g = grid(&walls, None, 0.2);
     assert!(
@@ -59,12 +60,14 @@ fn footprint_disc_too_wide_for_a_gap_is_not_enterable() {
             b: (100.0, 200.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
         Seg {
             a: (200.0, 0.0),
             b: (200.0, 200.0),
             one_way: None,
             limited: false,
+            open_within: None,
         },
     ];
     let wide = grid(&walls, None, 0.7);
@@ -191,6 +194,7 @@ fn cell_enterable_respects_one_way_wall_direction() {
         b: (100.0, 200.0),
         one_way: Some(1.0),
         limited: false,
+        open_within: None,
     };
     let walls = vec![one_way];
     let g = grid(&walls, None, 0.6);
@@ -210,6 +214,7 @@ fn cell_enterable_respects_one_way_wall_direction() {
         b: (100.0, 200.0),
         one_way: None,
         limited: false,
+        open_within: None,
     }];
     let g2 = grid(&two_sided, None, 0.6);
     assert!(

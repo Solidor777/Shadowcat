@@ -22,10 +22,11 @@ pub type P = (f64, f64);
 /// Some(sign)` makes the wall solid only from the side where `(b - a) × (p - a)` carries the
 /// sign `sign` and transparent from the other (a one-way arrow slit); `limited: true` lets a
 /// sight ray cross this wall while the ray's `MAX_LIMITED_CROSSINGS` budget lasts ("see
-/// through one such wall, not two"). Both stay `None`/`false` for an ordinary wall and for
-/// every bound-box edge (`Rect::edges`), and every construction site spells them out — never
-/// a `..` rest-default — so a forgotten populate site fails to compile rather than silently
-/// reverting to symmetric.
+/// through one such wall, not two"). `open_within: Some(..)` makes the wall absent for a ray or
+/// sound path whose origin lies within the carried distance of it (`Seg::open_from`). All three
+/// stay `None`/`false` for an ordinary wall and for every bound-box edge (`Rect::edges`), and
+/// every construction site spells them out — never a `..` rest-default — so a forgotten
+/// populate site fails to compile rather than silently reverting to symmetric.
 ///
 /// # Examples
 ///
@@ -35,6 +36,7 @@ pub type P = (f64, f64);
 ///     b: (1.0, 0.0),
 ///     one_way: None,
 ///     limited: false,
+///     open_within: None,
 /// };
 /// assert_eq!(wall.a, (0.0, 0.0));
 /// ```
@@ -55,9 +57,51 @@ pub struct Seg {
     /// `MAX_LIMITED_CROSSINGS` budget lasts. Populated by the sight collector from
     /// `WallEngine::sight_tier`; movement and light collectors always pass `false`.
     pub limited: bool,
+    /// Proximity opening for the sense this segment was collected for: `Some` = the wall is
+    /// absent for an origin within `OpenWithin::distance` of it. Populated by each sense's
+    /// collector from `WallEngine::proximity` only when the tier names that sense; the
+    /// movement collector and every bound edge pass `None`.
+    pub open_within: Option<OpenWithin>,
+}
+
+/// A wall's proximity opening, in scene units, for one sense (`Seg::open_within`).
+///
+/// # Examples
+///
+/// ```
+/// let open = shadowcat::scene::vision::OpenWithin { distance: 2.0, gain: 0.5 };
+/// assert_eq!(open.gain, 0.5);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenWithin {
+    /// Origin-to-segment distance at or under which the wall is open, scene units.
+    pub distance: f64,
+    /// Gain a sound keeps crossing the open wall (`WallProximity::sound_gain`, `1.0` when
+    /// absent). Read by `audibility::segment_occluded` only; sight and light ignore it.
+    pub gain: f64,
 }
 
 impl Seg {
+    /// Whether this segment is open to a ray or sound path whose ORIGIN is `from`: `open_within`
+    /// is set and `from` lies within its distance of the segment (`point_segment_distance`,
+    /// inclusive). The one proximity predicate sight (`nearest_hit` over the sight collector),
+    /// light (the same `nearest_hit` over the light collector) and sound
+    /// (`audibility::segment_occluded`) share, so the three senses cannot disagree about a
+    /// given wall and origin. Fail-closed to `false` (the wall blocks) on a non-finite or
+    /// non-positive distance or a non-finite `from`.
+    pub(crate) fn open_from(&self, from: P) -> bool {
+        let Some(open) = self.open_within else {
+            return false;
+        };
+        if !open.distance.is_finite() || open.distance <= 0.0 {
+            return false;
+        }
+        if !from.0.is_finite() || !from.1.is_finite() {
+            return false;
+        }
+        point_segment_distance(from, self.a, self.b) <= open.distance
+    }
+
     /// Whether this segment is transparent to a sight ray or movement step whose ORIGIN is
     /// `from` — the one cross-product side test every one-way consumer (`nearest_hit`,
     /// `move_exec`'s per-step wall filter, `pathfinding::cell_enterable`) shares, so vision
@@ -140,24 +184,28 @@ impl Rect {
                 b: tr,
                 one_way: None,
                 limited: false,
+                open_within: None,
             },
             Seg {
                 a: tr,
                 b: br,
                 one_way: None,
                 limited: false,
+                open_within: None,
             },
             Seg {
                 a: br,
                 b: bl,
                 one_way: None,
                 limited: false,
+                open_within: None,
             },
             Seg {
                 a: bl,
                 b: tl,
                 one_way: None,
                 limited: false,
+                open_within: None,
             },
         ]
     }
@@ -173,7 +221,7 @@ impl Rect {
 /// ```
 /// use shadowcat::scene::vision::{bound_for, Seg};
 ///
-/// let wall = Seg { a: (2.0, 0.0), b: (2.0, 4.0), one_way: None, limited: false };
+/// let wall = Seg { a: (2.0, 0.0), b: (2.0, 4.0), one_way: None, limited: false, open_within: None };
 /// let bound = bound_for((0.0, 0.0), &[wall], 1.0);
 /// assert_eq!(bound.maxx, 3.0);
 /// assert_eq!(bound.miny, -1.0);
@@ -284,7 +332,8 @@ pub(crate) const MAX_LIMITED_CROSSINGS: u8 = 1;
 /// carrying neither flag therefore returns the minimum-`t` hit, earliest in input order on
 /// ties. Per hit, in order:
 /// (a) a one-way wall whose transparent side faces `origin` (`Seg::transparent_from`) is
-/// skipped outright — the segment is absent FOR THIS RAY; (b) a `limited` wall is skipped
+/// skipped outright — the segment is absent FOR THIS RAY, as is a wall `Seg::open_from` the
+/// origin by proximity; (b) a `limited` wall is skipped
 /// while budget remains (the budget is spent, so a second `limited` wall on the same ray
 /// still stops it); (c) any other hit is the ray's terminus. The polygon's endpoint-angle
 /// sampling in `visibility_polygon` is unconditional, so a skipped `limited` wall's own
@@ -298,7 +347,7 @@ fn nearest_hit(origin: P, dir: P, segs: &[Seg]) -> Option<P> {
     hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut budget = MAX_LIMITED_CROSSINGS;
     for (t, s) in hits {
-        if s.transparent_from(origin) {
+        if s.transparent_from(origin) || s.open_from(origin) {
             continue;
         }
         if s.limited && budget > 0 {

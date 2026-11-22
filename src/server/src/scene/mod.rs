@@ -2624,6 +2624,7 @@ impl SceneEcs {
                     b: (wall.seg.x2, wall.seg.y2),
                     one_way: wall.direction.map(|d| d.blocking_side),
                     limited: false,
+                    open_within: None,
                 },
                 elevation: wall.elevation,
             });
@@ -4828,6 +4829,7 @@ impl SceneEcs {
                     b: (wall.seg.x2, wall.seg.y2),
                     one_way: wall.direction.map(|d| d.blocking_side),
                     limited: false,
+                    open_within: None,
                 },
                 elevation: wall.elevation,
             });

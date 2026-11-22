@@ -110,12 +110,14 @@ fn segment_occluded_agrees_with_segments_cross() {
         b: (5.0, 5.0),
         one_way: None,
         limited: false,
+        open_within: None,
     };
     let clear = vision::Seg {
         a: (5.0, -5.0),
         b: (5.0, -1.0),
         one_way: None,
         limited: false,
+        open_within: None,
     };
     for (listener, emitter, wall) in [
         ((0.0, 0.0), (10.0, 0.0), crossing),
@@ -126,7 +128,7 @@ fn segment_occluded_agrees_with_segments_cross() {
     ] {
         assert_eq!(
             segment_occluded(listener, emitter, &[wall]),
-            segments_cross(listener, emitter, wall.a, wall.b),
+            (segments_cross(listener, emitter, wall.a, wall.b), 1.0),
             "segment_occluded must agree with segments_cross for {listener:?} -> {emitter:?}"
         );
     }
@@ -471,6 +473,120 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
         em.muffled,
         "the same occluded branch that reduces gain flags the emitter muffled"
     );
+}
+
+/// The shared fixture plus a vertical wall between the listener (50, 50) and the emitter
+/// (250, 50), 100 units (one cell) from the listener, carrying the given `proximity` body.
+fn fixture_with_proximity_wall(user: Uuid, proximity: serde_json::Value) -> SceneEcs {
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({
+                "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150},
+                "blocksSight": true,
+                "proximity": proximity,
+            }),
+        ),
+    });
+    ecs
+}
+
+/// The single emitter of the fixture's slice for `user`.
+fn only_emitter(ecs: &SceneEcs, user: Uuid) -> AudibleEmitter {
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    slice.emitters[0].clone()
+}
+
+#[test]
+fn a_listener_within_a_sound_tier_wall_hears_at_the_sound_gain_unmuffled() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(
+        user,
+        json!({ "within": 1.5, "senses": ["sound"], "soundGain": 0.5 }),
+    );
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.5).abs() < 1e-9,
+        "an open wall scales by soundGain only: {}",
+        em.gain
+    );
+    assert!(!em.muffled, "an open wall is not an occluded path");
+}
+
+#[test]
+fn an_absent_sound_gain_passes_the_sound_at_full_volume() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(user, json!({ "within": 1.5, "senses": ["sound"] }));
+    let em = only_emitter(&ecs, user);
+    assert!((em.gain - 0.8 * 8.0 / 9.0).abs() < 1e-9, "{}", em.gain);
+    assert!(!em.muffled);
+}
+
+#[test]
+fn a_listener_beyond_the_tier_distance_hears_the_wall_as_ordinary() {
+    // The listener stands 1 cell from the wall; a 0.5-cell tier leaves it closed.
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = fixture_with_proximity_wall(
+        user,
+        json!({ "within": 0.5, "senses": ["sound"], "soundGain": 0.5 }),
+    );
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "{}",
+        em.gain
+    );
+    assert!(em.muffled);
+}
+
+#[test]
+fn a_tier_that_omits_the_sound_sense_leaves_the_wall_closed_to_sound() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs =
+        fixture_with_proximity_wall(user, json!({ "within": 1.5, "senses": ["sight", "light"] }));
+    let em = only_emitter(&ecs, user);
+    assert!(
+        (em.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "{}",
+        em.gain
+    );
+    assert!(em.muffled);
+}
+
+#[test]
+fn segment_occluded_multiplies_open_wall_gains_and_still_blocks_on_a_closed_one() {
+    let open = |x: f64, gain: f64| vision::Seg {
+        a: (x, -5.0),
+        b: (x, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: Some(vision::OpenWithin {
+            distance: 100.0,
+            gain,
+        }),
+    };
+    let closed = vision::Seg {
+        a: (9.0, -5.0),
+        b: (9.0, 5.0),
+        one_way: None,
+        limited: false,
+        open_within: None,
+    };
+    let (blocked, gain) =
+        segment_occluded((0.0, 0.0), (10.0, 0.0), &[open(3.0, 0.5), open(6.0, 0.5)]);
+    assert!(!blocked);
+    assert!((gain - 0.25).abs() < 1e-12);
+    let (blocked, gain) = segment_occluded((0.0, 0.0), (10.0, 0.0), &[open(3.0, 0.5), closed]);
+    assert!(blocked, "one closed crossing blocks");
+    assert!((gain - 0.5).abs() < 1e-12);
 }
 
 #[test]

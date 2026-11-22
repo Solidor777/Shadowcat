@@ -50,19 +50,33 @@ pub(crate) fn pan_for(dx: f64, radius_world: f64) -> f64 {
     (dx / radius_world).clamp(-1.0, 1.0)
 }
 
-/// Whether any wall in `walls` crosses the listener–emitter segment (`segments_cross`, the SAME
-/// proper-crossing/touching-endpoint test `move_exec::execute_move` uses). `walls` is caller-filtered to the relevant elevation band
-/// (`elevation::walls_at_elevation`) before this is called — this function performs no band
-/// test of its own, mirroring `light_polygon`'s own division of labor (caller filters, this
-/// function only crosses segments).
+/// The listener–emitter segment's wall verdict: `(blocked, gain)`. `blocked` is `true` iff a
+/// wall of `walls` crosses the segment (`segments_cross`, the SAME proper-crossing/touching-
+/// endpoint test `move_exec::execute_move` uses) and is not open to the listener by proximity
+/// (`vision::Seg::open_from`, evaluated at the listener — the sound's origin for this test).
+/// `gain` is the product of `OpenWithin::gain` over every crossed wall that IS open to the
+/// listener (`1.0` when none is), so a wall the listener stands near passes sound at its
+/// authored `sound_gain` instead of blocking it. `walls` is caller-filtered to the relevant
+/// elevation band (`elevation::walls_at_elevation`) before this is called — this function
+/// performs no band test of its own, mirroring `light_polygon`'s own division of labor (caller
+/// filters, this function only crosses segments).
 pub(crate) fn segment_occluded(
     listener: (f64, f64),
     emitter: (f64, f64),
     walls: &[vision::Seg],
-) -> bool {
-    walls
-        .iter()
-        .any(|w| segments_cross(listener, emitter, w.a, w.b))
+) -> (bool, f64) {
+    let mut blocked = false;
+    let mut gain = 1.0;
+    for w in walls {
+        if !segments_cross(listener, emitter, w.a, w.b) {
+            continue;
+        }
+        match w.open_within {
+            Some(open) if w.open_from(listener) => gain *= open.gain,
+            _ => blocked = true,
+        }
+    }
+    (blocked, gain)
 }
 
 /// `WorldSettingsEngine.audio`'s leaves resolved to their engine-literal defaults — the SAME
@@ -191,7 +205,8 @@ pub struct AudibleEmitter {
     pub token: Uuid,
     /// Asset id to play.
     pub asset: String,
-    /// Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* throughWallGain` if
+    /// Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* soundGain` of every crossed
+    /// wall open to the listener by proximity (`WallProximity::sound_gain`), then `* throughWallGain` if
     /// occluded under `Occlusion::Walls` (never reduced to exactly `0` by occlusion alone — a
     /// player still learns something is behind the door).
     pub gain: f64,
@@ -347,12 +362,13 @@ impl SceneEcs {
                         };
                         let mut g = volume * falloff(t);
                         let mut muffled = false;
-                        if g > 0.0
-                            && overlay.occlusion == eng::Occlusion::Walls
-                            && segment_occluded(*lp, pos, walls)
-                        {
-                            g = (g * overlay.through_wall_gain).max(0.0);
-                            muffled = true;
+                        if g > 0.0 && overlay.occlusion == eng::Occlusion::Walls {
+                            let (blocked, open_gain) = segment_occluded(*lp, pos, walls);
+                            g *= open_gain;
+                            if blocked {
+                                g = (g * overlay.through_wall_gain).max(0.0);
+                                muffled = true;
+                            }
                         }
                         (g, pan_for(dx, radius_world), muffled)
                     }

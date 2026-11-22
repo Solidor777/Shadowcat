@@ -247,6 +247,7 @@ async fn toggle_door_succeeds_when_in_reach_visible_and_wall_visible() {
                     b: (NEAR_SEG.2, NEAR_SEG.3),
                     one_way: None,
                     limited: false,
+                    open_within: None,
                 }),
         "an open door must drop out of the movement wall set"
     );
