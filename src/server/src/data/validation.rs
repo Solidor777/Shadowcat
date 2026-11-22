@@ -989,7 +989,9 @@ pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
 }
 
 /// Placement rules that need no database: a `combat` is never parented and
-/// never embedded; a `table` is likewise never parented and never embedded;
+/// never embedded; a `table` and a `table_folder` are never embedded (their
+/// optional parent must be a `table_folder`, checked at the persistence
+/// chokepoint, `SqliteRepository::check_table_folder_parent`);
 /// a `combatant`/`combat-history` is always parented (its
 /// parent must be a `combat`, checked at the persistence chokepoint where
 /// the parent can be loaded) and never embedded; an `asset_folder` is never
@@ -1034,11 +1036,6 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
                 "a combat document cannot have a parent".into(),
             ));
         }
-        t if t == engine::TABLE_DOC_TYPE && doc.parent_id.is_some() => {
-            return Err(DataError::OpFailed(
-                "a table document cannot have a parent".into(),
-            ));
-        }
         t if (t == engine::COMBATANT_DOC_TYPE || t == engine::COMBAT_HISTORY_DOC_TYPE)
             && doc.parent_id.is_none() =>
         {
@@ -1054,6 +1051,7 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
                 || child.doc_type == engine::COMBATANT_DOC_TYPE
                 || child.doc_type == engine::COMBAT_HISTORY_DOC_TYPE
                 || child.doc_type == engine::ASSET_FOLDER_DOC_TYPE
+                || child.doc_type == engine::TABLE_FOLDER_DOC_TYPE
                 || child.doc_type == engine::TABLE_DOC_TYPE
                 || child.doc_type == engine::NOTE_DOC_TYPE
             {

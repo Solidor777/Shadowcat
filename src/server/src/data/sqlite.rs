@@ -977,10 +977,17 @@ impl Repository for SqliteRepository {
         // (undo/replay), so unlike apply_intent the descendants are not
         // capability-checked.
         let mut ops = Vec::with_capacity(cmd.ops.len());
+        let doomed = Self::deleted_ids(&cmd.ops);
         for op in cmd.ops {
             match op {
                 Operation::Delete { doc } => {
-                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
+                    // Tables filed under a deleted table folder move out first,
+                    // so the descendant walk below finds only nested folders.
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
+                    let kept = Self::moved_ids(&lifted);
+                    ops.extend(lifted);
+                    for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
@@ -1473,11 +1480,11 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-        // `batch_folders` plays the same role for `asset_folder` AND `note`
-        // documents (a mixed-doc_type map keyed by id, since ids are unique
-        // regardless of type): a folder/note Created earlier in this batch is
-        // a valid parent for a later one, and `check_asset_folder_parent`/
-        // `check_note_parent` — plus `check_move_acyclic`'s cycle walk, shared
+        // `batch_folders` plays the same role for `asset_folder`, `note` AND
+        // `table_folder` documents (a mixed-doc_type map keyed by id, since ids
+        // are unique regardless of type): a folder/note Created earlier in this
+        // batch is a valid parent for a later one, and `check_asset_folder_parent`/
+        // `check_note_parent`/`check_table_folder_parent` — plus `check_move_acyclic`'s cycle walk, shared
         // across every doc_type that supports a parent tree — resolve through
         // it before falling back to the database.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
@@ -1803,6 +1810,7 @@ impl Repository for SqliteRepository {
                     .await?;
                     if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE
                         || doc.doc_type == crate::data::engine::NOTE_DOC_TYPE
+                        || doc.doc_type == crate::data::engine::TABLE_FOLDER_DOC_TYPE
                     {
                         batch_folders.insert(doc.id, doc.clone());
                     }
@@ -2109,6 +2117,7 @@ impl Repository for SqliteRepository {
         // (whose forged permissions would otherwise drive per-recipient
         // redaction and persist into the authoritative event log).
         let mut authoritative_ops = Vec::with_capacity(ops.len());
+        let doomed = Self::deleted_ids(&ops);
         for op in ops {
             match op {
                 Operation::Delete { doc } => {
@@ -2119,7 +2128,16 @@ impl Repository for SqliteRepository {
                     // discovered here in the apply pass, so each is authorized against
                     // its stored doc with the same DELETE gate the validation pass applies to
                     // the submitted op.
-                    for desc in Self::descendants_first(&mut tx, doc.id).await? {
+                    //
+                    // Tables filed under a deleted table folder are lifted out
+                    // first by explicit `Move` ops (the stored folder's parent
+                    // is the target, never the client body's), and the walk
+                    // skips them.
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
+                    let kept = Self::moved_ids(&lifted);
+                    authoritative_ops.extend(lifted);
+                    for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {
                         let cur = Self::load_document(&mut *tx, desc).await?.ok_or_else(|| {
                             DataError::Conflict(format!("descendant {desc} missing"))
                         })?;
@@ -3037,6 +3055,7 @@ mod documents;
 mod export_import;
 mod membership;
 mod notes;
+mod tables;
 mod ui_state;
 mod worlds;
 

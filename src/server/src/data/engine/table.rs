@@ -16,7 +16,8 @@ use uuid::Uuid;
 use crate::chat::{DocLinkTarget, MAX_IMAGE_ALT_CHARS};
 
 /// Doc_type for a rollable table: a standalone world document, never embedded
-/// (see `data::validation::validate_containment`'s `table` arm).
+/// (see `data::validation::validate_containment`). Its optional `parent_id`
+/// names a `table_folder` (see `SqliteRepository::check_table_folder_parent`).
 pub const TABLE_DOC_TYPE: &str = "table";
 
 /// Row cap: `TableEngine::validate` refuses a table beyond this size.

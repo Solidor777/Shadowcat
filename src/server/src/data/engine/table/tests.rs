@@ -302,9 +302,17 @@ fn sequential_ranges_mirroring_next_free_range_are_accepted_duplicates_are_rejec
 }
 
 #[test]
-fn a_table_document_cannot_have_a_parent() {
+fn a_table_document_may_carry_a_parent_id_for_the_persistence_chokepoint_to_judge() {
     let doc = table_doc_with_parent(Some(Uuid::new_v4()));
-    assert!(crate::data::validation::validate_containment(&doc).is_err());
+    assert!(crate::data::validation::validate_containment(&doc).is_ok());
+}
+
+#[test]
+fn a_table_cannot_be_embedded() {
+    let mut host = table_doc_with_parent(None);
+    host.embedded
+        .insert("tables".into(), vec![table_doc_with_parent(None)]);
+    assert!(crate::data::validation::validate_containment(&host).is_err());
 }
 
 #[test]

@@ -85,6 +85,7 @@ export type { AssetOp } from "./generated/AssetOp";
 // Engine band (data/engine/*.rs) — server-validated per-doc-type bodies + shared shapes.
 export type { TokenEngine } from "./generated/engine/TokenEngine";
 export type { AssetFolderEngine } from "./generated/engine/AssetFolderEngine";
+export type { TableFolderEngine } from "./generated/engine/TableFolderEngine";
 export type { TokenOverrides } from "./generated/engine/TokenOverrides";
 export type { TokenVisual } from "./generated/engine/TokenVisual";
 export type { RenderVisual } from "./generated/engine/RenderVisual";
