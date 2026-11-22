@@ -1,3 +1,4 @@
+import type { RenderHint, VisionTreatmentMeta } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { LightingInput, LitCell, Point, Polygon } from "./types";
 
@@ -17,8 +18,22 @@ export interface LitDrawCell {
   tint: number;
   /** Tint fill opacity — `0` when `tint === 0` (nothing to paint), else `TINT_ALPHA`. */
   tintAlpha: number;
-  /** Whether to paint the flat desaturation wash — see `resolve`'s doc for the hint-name rule. */
+  /** Whether to paint the flat desaturation wash — set by the `desaturate` render hint only. */
   desaturate: boolean;
+  /** A tinted fill painted over the cell on top of its darkening and tint, from a `colorWash`
+   * hint or a registered treatment's `fill` paint; absent when the cell has none. */
+  colorWash?: {
+    /** Packed `0xRRGGBB` wash color. */
+    color: number;
+    /** Wash opacity in `[0, 1]`. */
+    opacity: number;
+  };
+  /** A stroke-only outline of the cell polygon, from an `outline` hint or a registered
+   * treatment's `outline` paint; absent when the cell has none. */
+  outline?: {
+    /** Packed `0xRRGGBB` stroke color. */
+    color: number;
+  };
   /** This cell's scene-coordinate corners, carried through from `LitCell.corners` unchanged —
    * see the interface doc. */
   corners: Point[];
@@ -41,7 +56,7 @@ export interface LightingFrame {
  * A content fingerprint of one `LightingFrame`. It is a SUPERSET of the fields
  * `PixiBackend.setLighting` actually reads: `frame.cell` and each cell's `i`/`j` are included in
  * the key but never read by `setLighting` itself, which paints only `darkness`'s polygons and
- * each cell's `alpha`/`tint`/`tintAlpha`/`desaturate`/`corners`. Including the extra fields is
+ * each cell's `alpha`/`tint`/`tintAlpha`/`desaturate`/`colorWash`/`outline`/`corners`. Including the extra fields is
  * the safe direction, deliberately — it can only ever force an unnecessary repaint (`cell` or a
  * cell's `i`/`j` changing with no visual difference), never an incorrectly-skipped one, and
  * narrowing the key to match `setLighting` exactly would risk silently dropping a field some
@@ -65,7 +80,7 @@ export interface LightingFrame {
 export function lightingFrameKey(frame: LightingFrame): string {
   const poly = (p: Polygon): string => p.points.join(",");
   const cell = (c: LitDrawCell): string =>
-    `${c.i},${c.j},${c.alpha},${c.tint},${c.tintAlpha},${c.desaturate ? 1 : 0},${c.corners.map((pt) => `${pt.x}:${pt.y}`).join(",")}`;
+    `${c.i},${c.j},${c.alpha},${c.tint},${c.tintAlpha},${c.desaturate ? 1 : 0},${c.colorWash ? `${c.colorWash.color}@${c.colorWash.opacity}` : ""},${c.outline ? c.outline.color : ""},${c.corners.map((pt) => `${pt.x}:${pt.y}`).join(",")}`;
   return `${frame.cell}|${frame.darkness.map(poly).join(";")}|${frame.cells.map(cell).join(";")}`;
 }
 
@@ -257,6 +272,8 @@ export class Lighting {
    * @param backend The display backend `apply()` paints resolved frames into.
    * @param onApply Optional observer of every painted frame (the engine's host observability
    * hook); receives exactly what `backend.setLighting` was handed.
+   * @param treatments Optional reader resolving a `custom` render hint's treatment name to its
+   * registered `VisionTreatmentMeta`; absent means every `custom` hint resolves to no treatment.
    * @example
    * ```ts
    * import { Lighting, type DisplayBackend } from "@shadowcat/render";
@@ -268,6 +285,7 @@ export class Lighting {
   constructor(
     private readonly backend: DisplayBackend,
     private readonly onApply?: (frame: LightingFrame) => void,
+    private readonly treatments?: VisionTreatments,
   ) {}
 
   /**
@@ -335,7 +353,7 @@ export class Lighting {
   setTarget(input: LightingInput | null): void {
     // Capture whatever is on-screen right now as the interpolation start point.
     this.prev = this.currentInterpolated();
-    this.target = input ? resolve(input) : { cell: this.target.cell, cells: [], darkness: [] };
+    this.target = input ? resolve(input, this.treatments) : { cell: this.target.cell, cells: [], darkness: [] };
     this.hasModel = input !== null;
     this.elapsed = 0;
     this.apply();
@@ -447,35 +465,132 @@ export class Lighting {
       // desaturate is boolean — snaps (no gradient between saturation states). corners are
       // carried from the target unchanged: cell geometry is fixed by the active grid, not
       // something a day/night fade interpolates.
-      return { i: tc.i, j: tc.j, alpha: lerp(pc.alpha, tc.alpha, t), tint, tintAlpha, desaturate: tc.desaturate, corners: tc.corners };
+      // colorWash and outline snap to the target's like desaturate: a treatment is not a gradient.
+      return { i: tc.i, j: tc.j, alpha: lerp(pc.alpha, tc.alpha, t), tint, tintAlpha, desaturate: tc.desaturate, colorWash: tc.colorWash, outline: tc.outline, corners: tc.corners };
     });
     return { cell: this.target.cell, cells, darkness: [] };
+  }
+}
+
+/** Reads the registered vision treatment for a `custom` render hint's treatment name; `undefined`
+ * when no module registered that name. */
+export type VisionTreatments = (kind: string) => VisionTreatmentMeta | undefined;
+
+/** Parse a `#rrggbb` css color into a packed `0xRRGGBB` number.
+ * @param css The color string.
+ * @returns The packed color, or `null` when `css` is not exactly `#` plus six hex digits.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * parseCssColor("#00aa00"); // 0x00aa00
+ * ```
+ */
+function parseCssColor(css: unknown): number | null {
+  if (typeof css !== "string" || !/^#[0-9a-fA-F]{6}$/.test(css)) return null;
+  return parseInt(css.slice(1), 16);
+}
+
+/** Narrow one `renderHints` wire table entry to a `RenderHint`. The server validates every hint
+ * at ingress, so a well-formed entry passes through unchanged; anything else (a bare string, an
+ * unknown `kind`, a missing field) becomes `{ kind: "none" }`, because lighting is cosmetic and
+ * the fog and lit mask, not this table, decide what is visible.
+ * @param raw One entry of the `vision` payload's `renderHints` table.
+ * @returns The entry as a `RenderHint`, or `{ kind: "none" }` when it is not one.
+ * @example
+ * ```ts
+ * import { parseRenderHint } from "@shadowcat/render";
+ *
+ * parseRenderHint({ kind: "desaturate" }); // { kind: "desaturate" }
+ * parseRenderHint("desaturate"); // { kind: "none" }
+ * ```
+ */
+export function parseRenderHint(raw: unknown): RenderHint {
+  const h = raw as Record<string, unknown> | null;
+  if (typeof h !== "object" || h === null) return { kind: "none" };
+  switch (h.kind) {
+    case "desaturate":
+      return { kind: "desaturate" };
+    case "colorWash":
+      return typeof h.color === "string" && typeof h.opacity === "number"
+        ? { kind: "colorWash", color: h.color, opacity: h.opacity }
+        : { kind: "none" };
+    case "outline":
+      return typeof h.color === "string" ? { kind: "outline", color: h.color } : { kind: "none" };
+    case "custom":
+      return typeof h.treatment === "string" ? { kind: "custom", treatment: h.treatment, params: h.params } : { kind: "none" };
+    default:
+      return { kind: "none" };
+  }
+}
+
+/** Resolve one render hint to the treatment fields of a `LitDrawCell`, dispatching exhaustively
+ * on `RenderHint.kind`. A `custom` hint calls its registered treatment's `resolve` with the
+ * cell's already-decided corner geometry only; an unregistered treatment name, like the `none`
+ * hint, yields no treatment. A treatment composes on top of the band darkening and never
+ * replaces it.
+ * @param hint The cell's render hint, or `undefined` for a cell with no hint.
+ * @param corners The cell's scene-coordinate corners.
+ * @param treatments The registered-treatment reader, if any.
+ * @returns The `desaturate`, `colorWash` and `outline` fields for the cell.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * hintTreatment({ kind: "desaturate" }, [], undefined); // { desaturate: true }
+ * ```
+ */
+function hintTreatment(
+  hint: RenderHint | undefined,
+  corners: Point[],
+  treatments: VisionTreatments | undefined,
+): Pick<LitDrawCell, "desaturate" | "colorWash" | "outline"> {
+  const none = { desaturate: false };
+  if (!hint) return none;
+  switch (hint.kind) {
+    case "desaturate":
+      return { desaturate: true };
+    case "colorWash": {
+      const color = parseCssColor(hint.color);
+      return color === null ? none : { desaturate: false, colorWash: { color, opacity: hint.opacity } };
+    }
+    case "outline": {
+      const color = parseCssColor(hint.color);
+      return color === null ? none : { desaturate: false, outline: { color } };
+    }
+    case "none":
+      return none;
+    case "custom": {
+      const paint = treatments?.(hint.treatment)?.resolve(hint.params, { corners });
+      if (!paint || paint.shape === "none") return none;
+      return paint.shape === "fill"
+        ? { desaturate: false, colorWash: { color: paint.color, opacity: paint.opacity } }
+        : { desaturate: false, outline: { color: paint.color } };
+    }
   }
 }
 
 /** Resolve a parsed LightingInput into a LightingFrame with computed per-cell values.
  * alpha = `bandAlpha(band, bandCount)`; band 0 (brightest) → 0 darkening.
  * tintAlpha = 0 when tint===0 (no color), else TINT_ALPHA.
- * desaturate = hint index is in-range and names "desaturate" — any OTHER hint string (e.g. a
- * custom vision mode's `renderHint: "outline"`) resolves `desaturate: false`, silently applying
- * no visual treatment; `"desaturate"` is the only render hint this layer currently interprets.
+ * `desaturate`, `colorWash` and `outline` come from the cell's render hint (`hintTreatment`);
+ * they are mutually exclusive per cell, and a hint index outside the table resolves no treatment.
  * @param input The parsed lighting for the active scene.
+ * @param treatments The registered-treatment reader for `custom` hints, if any.
  * @returns A `LightingFrame` with one `LitDrawCell` per input cell, in the same order.
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to Lighting.setTarget
  * resolve({ cell: 100, bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
- *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0, corners: [] }] });
+ *   hints: [{ kind: "desaturate" }], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0, corners: [] }] }, undefined);
  * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true, corners: [] }], darkness: [] }
  * ```
  */
-function resolve(input: LightingInput): LightingFrame {
+function resolve(input: LightingInput, treatments: VisionTreatments | undefined): LightingFrame {
   const cells: LitDrawCell[] = input.cells.map((c) => ({
     i: c.i, j: c.j,
     alpha: bandAlpha(c.band, input.bands.length),
     tint: c.tint,
     tintAlpha: c.tint === 0 ? 0 : TINT_ALPHA,
-    desaturate: c.hint >= 0 && input.hints[c.hint] === "desaturate",
+    ...hintTreatment(c.hint >= 0 ? input.hints[c.hint] : undefined, c.corners, treatments),
     corners: c.corners,
   }));
   return { cell: input.cell, cells, darkness: [] };
