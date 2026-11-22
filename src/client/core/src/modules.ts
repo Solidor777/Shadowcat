@@ -38,6 +38,36 @@ export interface ModuleUnloadOptions {
   cascade?: boolean;
 }
 
+/** One module's activation outcome, collected by `ModuleRegistry.activate()` as well as logged. */
+export interface ModuleActivationOutcome {
+  /** The module's registry id. */
+  id: string;
+  /** `"activated"` (no issue), `"skipped-deps-unmet"` (a `dependencies` or `requires` entry was
+   * not satisfied, the module stays inactive) or `"failed"` (its `register()` threw and was
+   * rolled back). */
+  status: "activated" | "skipped-deps-unmet" | "failed";
+  /** The thrown error's message, present only when `status` is `"failed"`. */
+  error?: string;
+}
+
+/** The result of one `ModuleRegistry.activate()` pass. */
+export interface ModuleActivationResult {
+  /** One outcome per module the pass processed, in dependency order. */
+  outcomes: ModuleActivationOutcome[];
+}
+
+/** The last known problem with one installed module, as shown to the GM: an activation outcome
+ * (`ModuleActivationOutcome`) or a load-time failure (`ModuleLoadResult.failed`, which happens
+ * before activation and so has no activation outcome). */
+export interface ModuleStatusEntry {
+  /** The module's id: the install folder id for a load failure, the registry id otherwise. */
+  id: string;
+  /** The problem class. */
+  status: "skipped-deps-unmet" | "failed" | "load-failed";
+  /** The failure message; absent for `"skipped-deps-unmet"`. */
+  error?: string;
+}
+
 /** The capability-scoped surface a module's `register` receives — the trust chokepoint every
  * module is confined to (`contextFor` builds one per module, stamping `moduleId` onto each
  * registration so `unload` can find and strip them again). A module never reaches the host's
@@ -352,25 +382,30 @@ export class ModuleRegistry {
    * contract it lost (`computeSingletonWinners` decides the winner). An
    * already-active module is skipped as a no-op.
    * @returns Resolves once every module has been attempted (activated, skipped,
-   * or rolled back on failure) — a single module's activation failure never
-   * rejects the call. Rejects only if the dependency graph itself has a cycle
-   * (`topoSort`, thrown before any module is touched).
+   * or rolled back on failure) with one `ModuleActivationOutcome` per module this
+   * pass processed, in `topoSort` order (an already-active module is not
+   * reported). A single module's activation failure never rejects the call.
+   * Rejects only if the dependency graph itself has a cycle (`topoSort`, thrown
+   * before any module is touched).
    * @example
    * ```ts
    * import { ModuleRegistry } from "@shadowcat/core";
    *
    * declare const registry: ModuleRegistry;
-   * await registry.activate();
+   * const { outcomes } = await registry.activate();
+   * const problems = outcomes.filter((o) => o.status !== "activated");
    * ```
    */
-  async activate(): Promise<void> {
+  async activate(): Promise<ModuleActivationResult> {
     const order = this.topoSort(); // throws on cycle
     const singletonWinners = this.computeSingletonWinners(order);
+    const outcomes: ModuleActivationOutcome[] = [];
     for (const id of order) {
       const r = this.records.get(id)!;
       if (r.active) continue;
       if (!this.depsSatisfied(r.module)) {
         this.deps.logger.warn(`module ${id} not activated: dependency unmet`);
+        outcomes.push({ id, status: "skipped-deps-unmet" });
         continue;
       }
       r.demoted = new Set();
@@ -386,10 +421,11 @@ export class ModuleRegistry {
       try {
         await r.module.register(this.contextFor(id));
         r.active = true;
+        outcomes.push({ id, status: "activated" });
       } catch (e) {
-        this.deps.logger.warn(
-          `module ${id} failed to activate: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        const error = e instanceof Error ? e.message : String(e);
+        this.deps.logger.warn(`module ${id} failed to activate: ${error}`);
+        outcomes.push({ id, status: "failed", error });
         // r.active is still false here (only set true after register() returns),
         // so unload's activeDependentsOf/unregister guards correctly no-op — this
         // only tears down whatever partial hooks/services/contributions register()
@@ -407,6 +443,7 @@ export class ModuleRegistry {
         }
       }
     }
+    return { outcomes };
   }
 
   /** Unloads a module: calls its `unregister()` (if active and provided), then

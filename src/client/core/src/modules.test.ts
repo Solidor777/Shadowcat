@@ -172,7 +172,7 @@ test("a singleton contract collision is reported but does not abort activation o
     register: registerB,
   });
   r.add({ manifest: { id: "c", version: "1.0.0", dependencies: {} }, register: vi.fn() });
-  await expect(r.activate()).resolves.toBeUndefined();
+  await expect(r.activate()).resolves.toBeDefined();
   expect(r.list().find((m) => m.id === "a")!.active).toBe(true);
   // b loses the collision (a activated first in insertion/topological order), but still
   // activates in full — only its claim to the contested contract is demoted.
@@ -291,7 +291,7 @@ test("a module whose register() throws is left inactive but a sibling module sti
     },
   });
   r.add({ manifest: { id: "sibling", version: "1.0.0", dependencies: {} }, register: sibling });
-  await expect(r.activate()).resolves.toBeUndefined();
+  await expect(r.activate()).resolves.toBeDefined();
   expect(r.list().find((m) => m.id === "broken")!.active).toBe(false);
   expect(r.list().find((m) => m.id === "sibling")!.active).toBe(true);
   expect(sibling).toHaveBeenCalledOnce();
@@ -314,7 +314,7 @@ test("activate() containment survives unload() itself throwing during rollback",
     },
   });
   r.add({ manifest: { id: "after", version: "1.0.0", dependencies: {} }, register: after });
-  await expect(r.activate()).resolves.toBeUndefined();
+  await expect(r.activate()).resolves.toBeDefined();
   expect(r.list().find((m) => m.id === "broken")!.active).toBe(false);
   expect(r.list().find((m) => m.id === "after")!.active).toBe(true);
   expect(after).toHaveBeenCalledOnce();
@@ -346,7 +346,7 @@ test("activate() rolls back partial side effects when register() throws after co
       throw new Error("boom mid-register");
     },
   });
-  await expect(r.activate()).resolves.toBeUndefined();
+  await expect(r.activate()).resolves.toBeDefined();
   expect(r.list().find((m) => m.id === "throwing-module")!.active).toBe(false);
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(0);
 });
@@ -510,4 +510,45 @@ test("systemModule() is undefined when nothing provides the system contract", as
   const r = new ModuleRegistry(deps());
   await r.activate();
   expect(r.systemModule()).toBeUndefined();
+});
+
+test("activate() returns one outcome per module, classified activated, skipped-deps-unmet and failed", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add(mod("ok", {}));
+  r.add({
+    manifest: { id: "needy", version: "1.0.0", dependencies: {}, requires: ["s:missing"] },
+    register: vi.fn(),
+  });
+  r.add(
+    mod(
+      "boom",
+      {},
+      vi.fn(() => {
+        throw new Error("register exploded");
+      }),
+    ),
+  );
+  const result = await r.activate();
+  const byId = new Map(result.outcomes.map((o) => [o.id, o]));
+  expect(result.outcomes).toHaveLength(3);
+  expect(byId.get("ok")).toEqual({ id: "ok", status: "activated" });
+  expect(byId.get("needy")).toEqual({ id: "needy", status: "skipped-deps-unmet" });
+  expect(byId.get("boom")).toEqual({ id: "boom", status: "failed", error: "register exploded" });
+});
+
+test("activate() outcomes follow the dependency order the pass processed", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add(mod("late", { early: "*" }));
+  r.add(mod("early", {}));
+  const result = await r.activate();
+  expect(result.outcomes.map((o) => o.id)).toEqual(["early", "late"]);
+});
+
+test("a module already active is not reported again by a later activate() pass", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add(mod("ok", {}));
+  await r.activate();
+  r.add(mod("second", {}));
+  const result = await r.activate();
+  expect(result.outcomes.map((o) => o.id)).toEqual(["second"]);
 });
