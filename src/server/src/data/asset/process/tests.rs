@@ -681,6 +681,43 @@ fn generate_grid_sheet_never_exceeds_the_max_axis_after_downscale() {
     );
 }
 
+/// A failed rename trashes the temporary derivative file. Replacing the discard with an outright
+/// removal leaves the trash empty; dropping it leaves the temporary file beside the destination.
+#[test]
+fn a_write_atomic_failure_trashes_its_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    // The destination is a non-empty directory, so the final rename cannot succeed.
+    let dest = dir.path().join("derivative.webp");
+    std::fs::create_dir_all(dest.join("inner")).unwrap();
+    std::fs::write(dest.join("inner").join("f"), b"x").unwrap();
+    let trash = crate::trash::Trash::new(
+        dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+
+    assert!(write_atomic(&dest, b"derivative bytes", &trash).is_err());
+
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1);
+    let name = entries[0]
+        .manifest
+        .original_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        name.starts_with("derivative.webp.") && name.ends_with(".tmp"),
+        "unexpected trashed name: {name}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary file left: {leftovers:?}");
+}
+
 /// A trash that removes outright: these tests never inspect trashed files.
 fn test_trash() -> crate::trash::Trash {
     crate::trash::Trash::new(

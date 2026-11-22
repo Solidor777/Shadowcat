@@ -14,9 +14,12 @@
 //! restrict one of those is logged and non-fatal because the key file's own protection is what
 //! guards the secret.
 //!
-//! INVARIANT: A failed write moves its `<key>.tmp` temporary file, which may hold secret bytes,
-//! into the trash. The file keeps the owner-only protection it was restricted with, because a
-//! rename on one volume carries the file's mode and ACL with it. The move is best-effort.
+//! INVARIANT: The trash never holds private key bytes. A failed write truncates its `<key>.tmp`
+//! temporary file to zero length BEFORE moving it into the trash (`discard_failed_temp`); the
+//! trash exists to undo a mistaken delete and a half-written key is never wanted back, while a
+//! retention of `Never` would keep leaked key bytes forever. A temporary file that cannot be
+//! truncated stays in the protected key directory instead of entering the trash. The trash move is
+//! best-effort.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -53,9 +56,8 @@ pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
 
 /// Writes `contents` to `path` readable only by the current user: the bytes go to a sibling
 /// temporary file that is protected BEFORE any secret byte is written, then renamed over `path`
-/// so a reader never observes a partial key. Fails (writing nothing secret, leaving no temporary
-/// file) when the file cannot be protected. A temporary file left by a failed write moves into
-/// `trash`.
+/// so a reader never observes a partial key. Fails (writing nothing secret) when the file cannot
+/// be protected. The temporary file of a failed write is emptied, then moved into `trash`.
 ///
 /// # Examples
 ///
@@ -95,10 +97,26 @@ fn write_private_with(
         std::fs::rename(&tmp, path)
     })();
     if result.is_err() {
-        // Best effort: the temporary file may hold secret bytes, so it leaves the key directory.
-        let _ = trash.discard_sync(&tmp);
+        discard_failed_temp(&tmp, trash);
     }
     result
+}
+
+/// Disposes of the temporary key file of a failed write. The file is truncated to zero length
+/// BEFORE it moves into `trash`, so the trash never holds key bytes. When the file cannot be
+/// truncated it stays where it is (owner-only protected, in the protected key directory, and
+/// truncated by the next write's `open_private`) rather than carrying its bytes into the trash.
+/// A file that does not exist needs no disposal.
+fn discard_failed_temp(tmp: &Path, trash: &Trash) {
+    let emptied = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(tmp)
+        .is_ok();
+    if emptied {
+        // Best effort: an empty file in the trash is harmless if the move fails.
+        let _ = trash.discard_sync(tmp);
+    }
 }
 
 /// Opens `path` for writing, truncating, with owner-only mode on Unix.

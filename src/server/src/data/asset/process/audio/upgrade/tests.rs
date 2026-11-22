@@ -370,6 +370,115 @@ fn a_reader_held_across_the_swap_leaves_the_old_or_the_new_file_intact() {
     assert!(asset.leftovers().is_empty());
 }
 
+/// The original file names of every entry in `trash`, sorted.
+fn trashed_names(trash: &crate::trash::Trash) -> Vec<String> {
+    let mut names: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The file names of the staged temporary files of `staged`, sorted.
+fn staged_names(staged: &[Staged]) -> Vec<String> {
+    let mut names: Vec<String> = staged
+        .iter()
+        .map(|s| s.tmp.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// `discard` moves every staged temporary file into the trash. Replacing the move with an outright
+/// removal leaves the trash empty; dropping it leaves the files beside the asset.
+#[test]
+fn discarding_a_plan_moves_every_staged_file_into_the_trash() {
+    let asset = stored(649, true, true, true);
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
+        panic!("expected a write");
+    };
+    assert_eq!(staged.len(), 2);
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = kept_trash(trash_dir.path());
+    discard(&staged, &trash);
+    assert!(asset.leftovers().is_empty());
+    assert_eq!(trashed_names(&trash), staged_names(&staged));
+}
+
+/// A target replaced after staging sends the staged file to the trash. Replacing the discard with an
+/// outright removal leaves the trash empty; dropping it leaves the staged file beside the asset.
+#[test]
+fn a_skipped_swap_for_a_changed_target_trashes_the_staged_file() {
+    let asset = stored(648, true, true, true);
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
+        panic!("expected a write");
+    };
+    std::fs::write(asset.webm(), b"a newer derivative of a different length").unwrap();
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = kept_trash(trash_dir.path());
+    assert!(matches!(
+        apply(&staged, rename_file, &trash),
+        Applied::Skipped(_)
+    ));
+    assert!(asset.leftovers().is_empty());
+    assert_eq!(trashed_names(&trash), staged_names(&staged));
+}
+
+/// A failed rename trashes the staged file that was not swapped in and only that one: the WebM that
+/// was already renamed is the live sibling and is not trashed. Replacing the discard with an
+/// outright removal leaves the trash empty; dropping it leaves the Ogg's staged file beside the
+/// asset; discarding the whole plan instead of the unswapped tail trashes two entries.
+#[test]
+fn a_failed_rename_trashes_only_the_unswapped_staged_files() {
+    fn fail_the_ogg(from: &Path, to: &Path) -> io::Result<()> {
+        if to.to_string_lossy().ends_with(OPUS_SUFFIX) {
+            return Err(io::Error::other("injected"));
+        }
+        rename_file(from, to)
+    }
+    let asset = stored(649, true, true, true);
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
+        panic!("expected a write");
+    };
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = kept_trash(trash_dir.path());
+    assert!(matches!(
+        apply(&staged, fail_the_ogg, &trash),
+        Applied::Skipped(_)
+    ));
+    assert!(asset.leftovers().is_empty());
+    assert_eq!(trashed_names(&trash), staged_names(&staged[1..]));
+}
+
+/// A swap that completes trashes nothing: both staged files became the live siblings. Discarding
+/// after a successful swap would leave one or two entries here.
+#[test]
+fn a_completed_swap_trashes_nothing() {
+    let asset = stored(649, true, true, true);
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
+        panic!("expected a write");
+    };
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = kept_trash(trash_dir.path());
+    assert_eq!(apply(&staged, rename_file, &trash), Applied::Done(2));
+    assert!(trash.list().unwrap().is_empty());
+}
+
+/// A trash under `dir` that keeps what it receives, so a test can see where a file went.
+fn kept_trash(dir: &Path) -> crate::trash::Trash {
+    crate::trash::Trash::new(dir.join("trash"), crate::trash::TrashRetention::default())
+}
+
 /// A trash that removes outright: these tests never inspect trashed files.
 fn test_trash() -> crate::trash::Trash {
     crate::trash::Trash::new(
