@@ -8,8 +8,12 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use shadowcat::auth::password::hash_password;
 use shadowcat::auth::role::ServerRole;
+use shadowcat::chat::CHAT_SETTINGS_DOC_TYPE;
 use shadowcat::config::Config;
-use shadowcat::data::document::WorldRole;
+use shadowcat::data::command::{Operation, WriteOrigin};
+use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
+use shadowcat::data::membership::PermissionContext;
+use shadowcat::data::repository::Repository;
 use shadowcat::data::sqlite::SqliteRepository;
 use shadowcat::http::{self, AppState};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -24,6 +28,8 @@ struct Harness {
     world: Uuid,
     /// The backing repository.
     repo: Arc<SqliteRepository>,
+    /// The world owner, who is the GM.
+    gm: Uuid,
 }
 
 /// Spawns the server; the world owner `u` is the GM.
@@ -67,6 +73,7 @@ async fn spawn() -> Harness {
         addr,
         world: world.id,
         repo,
+        gm: uid,
     }
 }
 
@@ -117,6 +124,44 @@ impl Harness {
             .unwrap();
         self.repo.add_member(self.world, id, role).await.unwrap();
         self.login(username, "pw").await
+    }
+
+    /// The GM stores the world's `chat-settings` document with `blind_visible_to_players` on,
+    /// through the ordinary client write path.
+    async fn let_players_see_blind_rolls(&self) {
+        let gm = PermissionContext {
+            user_id: self.gm,
+            world_role: WorldRole::Gm,
+        };
+        let doc = Document {
+            id: Uuid::new_v4(),
+            scope: Scope::World {
+                world_id: self.world,
+            },
+            doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(self.gm),
+            permissions: PermissionSet::default(),
+            embedded: Default::default(),
+            parent_id: None,
+            engine: Some(serde_json::json!({ "blind_visible_to_players": true })),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        self.repo
+            .apply_intent(
+                &gm,
+                self.world,
+                vec![Operation::Create { doc }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
     }
 
     /// `GET /api/worlds/{world}/documents?type=message` as `cookie`.
@@ -206,10 +251,13 @@ fn assert_blinded(doc: &serde_json::Value, path: &str) {
 }
 
 /// The roller, another player and the GM each read the blind roll through broadcast, resync and
-/// search; only the GM gets the formula and result.
+/// search; only the GM gets the formula and result. The world lets players see blind rolls, so
+/// the other player holds the redacted card; with that setting off the other player holds no
+/// card at all, which `chat::blind_settings_tests` covers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_blind_roll_is_hidden_from_the_roller_and_others_on_every_egress_path() {
     let h = spawn().await;
+    h.let_players_see_blind_rolls().await;
     let gm_cookie = h.login("u", "pw").await;
     let roller_cookie = h.add_member("roller", WorldRole::Player).await;
     let other_cookie = h.add_member("other", WorldRole::Player).await;
