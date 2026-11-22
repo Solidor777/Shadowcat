@@ -1899,6 +1899,7 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
     let mut expected = v.as_object().unwrap().clone();
     expected.insert("elevation".to_string(), serde_json::Value::Null);
     expected.insert("ambient_override".to_string(), serde_json::Value::Null);
+    expected.insert("occludes".to_string(), serde_json::Value::Null);
     expected.insert(
         "cost_by_tag".to_string(),
         serde_json::Value::Object(serde_json::Map::new()),
@@ -2460,6 +2461,7 @@ fn region_with_teleport(target: PortalTarget) -> RegionEngine {
         }],
         elevation: None,
         ambient_override: None,
+        occludes: None,
     }
 }
 

@@ -921,6 +921,57 @@ pub struct AmbientLightOverride {
     pub level: f64,
 }
 
+/// Which senses a region's boundary blocks. `SceneEcs::region_occluder_entries` turns the
+/// region's covered-cell outline into wall segments for every sense flagged here, so a region
+/// can seal off sight (fog bank), light (darkness globe) or sound (silence zone) like a closed
+/// wall ring. A separate field from `RegionEngine::behavior` because that string is exclusive
+/// while a fog bank can also be difficult terrain and a silence zone can carry a trigger.
+/// `RegionEngine::validate` rejects a value with all three flags false.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{RegionOcclusion, WallSense};
+///
+/// let fog = RegionOcclusion { sight: true, light: false, sound: false };
+/// assert!(fog.blocks(WallSense::Sight));
+/// assert!(!fog.blocks(WallSense::Sound));
+/// let json = serde_json::to_value(fog).unwrap();
+/// assert_eq!(json, serde_json::json!({ "sight": true, "light": false, "sound": false }));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct RegionOcclusion {
+    /// The boundary occludes the sight raycast (visibility polygons, fog).
+    pub sight: bool,
+    /// The boundary occludes the light raycast (emitter polygons and environment ambient).
+    pub light: bool,
+    /// The boundary occludes the sound test (`scene::audibility`).
+    pub sound: bool,
+}
+
+impl RegionOcclusion {
+    /// Whether this flag set blocks `sense`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::{RegionOcclusion, WallSense};
+    ///
+    /// let silence = RegionOcclusion { sight: false, light: false, sound: true };
+    /// assert!(silence.blocks(WallSense::Sound));
+    /// assert!(!silence.blocks(WallSense::Light));
+    /// ```
+    pub fn blocks(&self, sense: WallSense) -> bool {
+        match sense {
+            WallSense::Sight => self.sight,
+            WallSense::Light => self.light,
+            WallSense::Sound => self.sound,
+        }
+    }
+}
+
 /// A region document's engine body: a vector-shaped zone that weights,
 /// blocks, or arrests grid movement, or edits its cells' ambient light, and
 /// optionally fires triggers on entering tokens. Client mirror: `RegionEngine` (`@shadowcat/core`).
@@ -945,6 +996,7 @@ pub struct AmbientLightOverride {
 ///     triggers: Vec::new(),
 ///     elevation: None,
 ///     ambient_override: None,
+///     occludes: None,
 /// };
 /// assert!(region.validate().is_ok());
 /// ```
@@ -998,6 +1050,12 @@ pub struct RegionEngine {
     /// (serde default).
     #[serde(default)]
     pub ambient_override: Option<AmbientLightOverride>,
+    /// The senses this region's boundary occludes (`RegionOcclusion`), read by
+    /// `SceneEcs::region_occluder_entries` for the sight, light and sound wall collectors
+    /// alongside whatever `behavior` the region carries. Movement is never affected. Absent =
+    /// the region occludes nothing (serde default).
+    #[serde(default)]
+    pub occludes: Option<RegionOcclusion>,
 }
 
 impl RegionEngine {
@@ -1036,6 +1094,7 @@ impl RegionEngine {
     ///     }],
     ///     elevation: None,
     ///     ambient_override: None,
+    ///     occludes: None,
     /// };
     /// assert!(region.validate().is_err()); // empty condition id
     /// ```
@@ -1055,6 +1114,11 @@ impl RegionEngine {
                 "shape has an unrecognized kind or a point count that does not match it"
                     .to_string(),
             );
+        }
+        if let Some(occ) = &self.occludes {
+            if !(occ.sight || occ.light || occ.sound) {
+                return Err("occludes must flag at least one of sight, light or sound".to_string());
+            }
         }
         if let Some(ambient) = &self.ambient_override {
             if self.behavior != "ambient_light" {

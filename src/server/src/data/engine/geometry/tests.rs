@@ -289,6 +289,7 @@ fn ambient_region(mode: AmbientLightMode, level: f64) -> RegionEngine {
         triggers: Vec::new(),
         elevation: None,
         ambient_override: Some(AmbientLightOverride { mode, level }),
+        occludes: None,
     }
 }
 
@@ -376,6 +377,58 @@ fn ambient_light_behavior_without_an_override_is_a_valid_no_op() {
     absent.as_object_mut().unwrap().remove("ambient_override");
     let parsed: RegionEngine = serde_json::from_value(absent).unwrap();
     assert_eq!(parsed.ambient_override, None);
+}
+
+// --- Region occlusion flags ---
+
+#[test]
+fn region_occludes_rejects_an_all_false_flag_set() {
+    let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
+    region.occludes = Some(RegionOcclusion {
+        sight: false,
+        light: false,
+        sound: false,
+    });
+    assert!(
+        region.validate().is_err(),
+        "an occludes block that blocks nothing is rejected"
+    );
+    region.occludes = Some(RegionOcclusion {
+        sight: false,
+        light: false,
+        sound: true,
+    });
+    assert!(region.validate().is_ok(), "any single flag is enough");
+}
+
+#[test]
+fn region_occludes_defaults_to_none_and_round_trips() {
+    let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
+    let json = serde_json::to_value(&region).unwrap();
+    assert_eq!(json["occludes"], serde_json::Value::Null);
+    let mut absent = json;
+    absent.as_object_mut().unwrap().remove("occludes");
+    let parsed: RegionEngine = serde_json::from_value(absent).unwrap();
+    assert_eq!(
+        parsed.occludes, None,
+        "a stored body without the key reads as no occlusion"
+    );
+
+    region.occludes = Some(RegionOcclusion {
+        sight: true,
+        light: false,
+        sound: true,
+    });
+    let json = serde_json::to_value(&region).unwrap();
+    assert_eq!(
+        json["occludes"],
+        serde_json::json!({ "sight": true, "light": false, "sound": true })
+    );
+    let back: RegionEngine = serde_json::from_value(json).unwrap();
+    assert_eq!(back, region);
+    assert!(region.occludes.unwrap().blocks(WallSense::Sight));
+    assert!(!region.occludes.unwrap().blocks(WallSense::Light));
+    assert!(region.occludes.unwrap().blocks(WallSense::Sound));
 }
 
 /// A template with a valid color and no `angle`/`width` authored.

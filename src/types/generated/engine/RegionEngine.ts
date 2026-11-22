@@ -2,6 +2,7 @@
 import type { AmbientLightOverride } from "./AmbientLightOverride";
 import type { ElevationBand } from "./ElevationBand";
 import type { RegionGeometry } from "./RegionGeometry";
+import type { RegionOcclusion } from "./RegionOcclusion";
 import type { RegionTrigger } from "./RegionTrigger";
 
 /**
@@ -29,6 +30,7 @@ import type { RegionTrigger } from "./RegionTrigger";
  *     triggers: Vec::new(),
  *     elevation: None,
  *     ambient_override: None,
+ *     occludes: None,
  * };
  * assert!(region.validate().is_ok());
  * ```
@@ -91,4 +93,11 @@ elevation: ElevationBand | null,
  * Absent on documents written before ambient-light regions existed
  * (serde default).
  */
-ambient_override: AmbientLightOverride | null, };
+ambient_override: AmbientLightOverride | null, 
+/**
+ * The senses this region's boundary occludes (`RegionOcclusion`), read by
+ * `SceneEcs::region_occluder_entries` for the sight, light and sound wall collectors
+ * alongside whatever `behavior` the region carries. Movement is never affected. Absent =
+ * the region occludes nothing (serde default).
+ */
+occludes: RegionOcclusion | null, };

@@ -1277,6 +1277,7 @@ test("exposes the viewed scene's region geometry forms as data-region-shapes", a
           triggers: [],
           elevation: null,
           ambient_override: null,
+          occludes: null,
         }, "r-compound"),
       },
       {
@@ -1290,6 +1291,7 @@ test("exposes the viewed scene's region geometry forms as data-region-shapes", a
           triggers: [],
           elevation: null,
           ambient_override: null,
+          occludes: null,
         }, "r-legacy"),
       },
     ],

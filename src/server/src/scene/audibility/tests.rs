@@ -475,6 +475,45 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
     );
 }
 
+#[test]
+fn a_sound_occluding_region_muffles_an_emitter_behind_it_like_a_wall() {
+    let user = crate::test_ids::test_uuid(7);
+    let region = |occludes: serde_json::Value| {
+        entity_doc_eng(
+            50,
+            10,
+            "region",
+            json!({
+                "shape": { "kind": "rect", "points": [100.0, -100.0, 200.0, 200.0] },
+                "behavior": "terrain", "cost": 1.0, "enabled": true,
+                "occludes": occludes,
+            }),
+        )
+    };
+    let gain_of = |occludes: serde_json::Value| {
+        let mut ecs = listener_and_emitter(user, 12);
+        ecs.apply_op(&Operation::Create {
+            doc: region(occludes),
+        });
+        only_emitter(&ecs, user)
+    };
+    let silenced = gain_of(json!({ "sight": false, "light": false, "sound": true }));
+    assert!(
+        silenced.muffled,
+        "the region boundary occludes the sound path"
+    );
+    assert!(
+        (silenced.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
+        "the same through-wall attenuation a wall applies: {}",
+        silenced.gain
+    );
+    let sight_only = gain_of(json!({ "sight": true, "light": true, "sound": false }));
+    assert!(
+        !sight_only.muffled,
+        "a region that does not flag sound leaves the emitter clear"
+    );
+}
+
 /// The shared fixture plus a vertical wall between the listener (50, 50) and the emitter
 /// (250, 50), 100 units (one cell) from the listener, carrying the given `proximity` body.
 fn fixture_with_proximity_wall(user: Uuid, proximity: serde_json::Value) -> SceneEcs {

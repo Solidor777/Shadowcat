@@ -2299,6 +2299,7 @@ async fn convert_template_then_enter(
         "triggers": [],
         "elevation": null,
         "ambient_override": null,
+        "occludes": null,
     });
     let typed: crate::data::engine::RegionEngine =
         serde_json::from_value(region_engine.clone()).expect("the converted body deserializes");
