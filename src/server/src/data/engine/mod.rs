@@ -17,6 +17,7 @@ pub mod registries;
 pub mod scene;
 pub mod system_defaults;
 pub mod table;
+pub mod table_folder;
 pub mod token;
 
 pub use audio::{
@@ -56,6 +57,7 @@ pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
+pub use table_folder::TableFolderEngine;
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
     Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
@@ -93,6 +95,8 @@ pub const SYSTEM_DEFAULTS_DOC_TYPE: &str = "system-defaults";
 pub const COMBAT_HISTORY_DOC_TYPE: &str = "combat-history";
 /// Doc_type for an asset folder (`assets.folder_id` names one); parent = `parent_id`.
 pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
+/// Doc_type for a table folder: a `table` or another `table_folder` names one as its `parent_id`.
+pub const TABLE_FOLDER_DOC_TYPE: &str = "table_folder";
 
 /// Every doc_type carrying a typed `engine` band, the single data source
 /// `is_engine_doc_type` and `search_text` both dispatch from — so the
@@ -128,6 +132,7 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "system-defaults",
     "combat-history",
     "asset_folder",
+    "table_folder",
     "table",
     "note",
     "playlist",
@@ -420,6 +425,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             Ok(serde_json::to_value(typed)?)
         }
         "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
+        "table_folder" => round_trip::<table_folder::TableFolderEngine>(v, "table_folder"),
         "table" => {
             let typed: TableEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("table: {e}")))?;
@@ -621,7 +627,9 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
             .unwrap_or_default(),
         "scene" | "wall" | "region" | "light" | "drawing" | "template" | "world-settings"
         | "chat-settings" | "dice-settings" | "combat" | "combatant" | "effect"
-        | "system-defaults" | "asset_folder" | "playlist" | "audio-state" => String::new(),
+        | "system-defaults" | "asset_folder" | "table_folder" | "playlist" | "audio-state" => {
+            String::new()
+        }
         _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
     })
 }

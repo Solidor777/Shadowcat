@@ -1585,6 +1585,14 @@ fn empty_default_config_bodies_are_valid() {
 }
 
 #[test]
+fn table_folder_is_engine_type_with_sort_only() {
+    assert!(is_engine_doc_type("table_folder"));
+    assert!(validate_engine("table_folder", Some(&json!({ "sort": 3 }))).is_ok());
+    assert!(validate_engine("table_folder", Some(&json!({ "sort": 3, "name": "x" }))).is_err());
+    assert!(validate_engine("table_folder", None).is_err());
+}
+
+#[test]
 fn asset_folder_is_engine_type_with_sort_only() {
     assert!(is_engine_doc_type("asset_folder"));
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3 }))).is_ok());

@@ -1045,6 +1045,16 @@ fn validate_containment_forbids_embedding_an_asset_folder() {
     assert!(validate_containment(&actor).is_err());
 }
 
+#[test]
+fn validate_containment_forbids_embedding_a_table_folder() {
+    let mut actor = crate::data::document::tests::sample_doc();
+    let mut folder = crate::data::document::tests::sample_doc();
+    folder.doc_type = "table_folder".into();
+    folder.engine = Some(serde_json::json!({ "sort": 0 }));
+    actor.embedded.insert("stuff".into(), vec![folder]);
+    assert!(validate_containment(&actor).is_err());
+}
+
 /// A stored `world-settings` document serialized the way `apply_intent`'s
 /// validation pass serializes the current row (`whole`).
 fn stored_world_settings(combat: serde_json::Value) -> serde_json::Value {

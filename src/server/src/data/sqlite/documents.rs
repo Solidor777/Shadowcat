@@ -277,7 +277,8 @@ impl SqliteRepository {
     /// a combat (batch-aware), an `asset_folder` parent must be a
     /// same-scope folder (`check_asset_folder_parent`, batch-aware), and a
     /// `note` parent must be a same-scope note (`check_note_parent`,
-    /// batch-aware). A parent this same batch Creates is not in the database
+    /// batch-aware), and a `table`/`table_folder` parent must be a same-scope
+    /// table folder (`check_table_folder_parent`, batch-aware). A parent this same batch Creates is not in the database
     /// yet — it resolves through the batch maps, and its own Create was
     /// scope-checked; a parent that exists nowhere yet is left to the
     /// self-FK at apply time, so batched parent+child creates still pass.
@@ -323,6 +324,7 @@ impl SqliteRepository {
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
         Self::check_note_parent(&mut *tx, doc, batch_folders).await?;
+        Self::check_table_folder_parent(&mut *tx, doc, batch_folders).await?;
         Ok(())
     }
 
@@ -469,11 +471,17 @@ impl SqliteRepository {
     /// self-reference or cycle: a single `INSERT` whose `parent_id` equals its
     /// own `id` satisfies the self-FK and commits, so without this guard a
     /// `WHERE parent_id = root` row referencing `root` would recurse forever.
+    ///
+    /// `kept` holds ids that survive the delete (the tables a table-folder
+    /// delete moves out): the walk neither reports nor descends into them,
+    /// since their own subtree travels with them.
     pub(super) async fn descendants_first(
         tx: &mut sqlx::SqliteConnection,
         root: Uuid,
+        kept: &std::collections::HashSet<Uuid>,
     ) -> Result<Vec<Uuid>, DataError> {
-        let mut seen = std::collections::HashSet::from([root]);
+        let mut seen = kept.clone();
+        seen.insert(root);
         let mut out = Vec::new();
         Self::collect_descendants(tx, root, &mut seen, &mut out).await?;
         Ok(out)
