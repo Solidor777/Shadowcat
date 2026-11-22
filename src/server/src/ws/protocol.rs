@@ -1363,6 +1363,13 @@ pub enum ServerMsg {
         /// Who pinged (senders receive their own echo).
         user: Uuid,
     },
+    /// A GM changed this world's enabled-module set (`http::module_routes::set_world_enabled_modules`
+    /// succeeded). Tells every connection to re-run its own module reconcile, the same
+    /// per-module-contained load/unload pass the saving GM's client runs directly after a
+    /// save. Out-of-band (no seq, never buffered/resynced), mirroring `ScenePing`. Carries no
+    /// payload: each client re-fetches the enabled set itself, and "the set changed" is already
+    /// visible to every world member through the membership-gated enabled-modules route.
+    ModulesChanged,
     /// A relayed emote: the sender's transient glyph over a token. Out-of-band
     /// (no seq, never buffered/resynced), mirroring `ScenePing`.
     Emote {

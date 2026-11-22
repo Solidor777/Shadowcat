@@ -497,6 +497,10 @@ export interface WsClientHandlers {
    * reflects the cleared memory — this exists for UI feedback only.
    * @param msg The reset's scene and its user/level scope. */
   onExploredFogReset?(msg: ExploredFogResetNotice): void;
+  /** A GM changed the world's enabled-module set (carries no seq, no payload); delivered to
+   * every connection in the room, the saving GM's own included. The handler re-runs the
+   * session's module reconcile, which is idempotent when nothing differs. */
+  onModulesChanged?(): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -1463,6 +1467,9 @@ export class WsClient {
         this.safeEmit(() =>
           this.opts.handlers.onExploredFogReset?.({ scene: msg.scene, user: msg.user, level: msg.level }),
         );
+        break;
+      case "modules_changed":
+        this.safeEmit(() => this.opts.handlers.onModulesChanged?.());
         break;
       case "scrolling_text":
         this.safeEmit(() =>
