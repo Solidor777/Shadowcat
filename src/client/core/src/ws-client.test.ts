@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { WsClient, NotConnectedError, RequestTimeoutError, PathfindError } from "./ws-client";
+import { WsClient, NotConnectedError, RequestTimeoutError, PathfindError, SessionPausedError } from "./ws-client";
 import type { MoveStream } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
@@ -1264,6 +1264,35 @@ describe("WsClient", () => {
     const p = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
     onMessage(JSON.stringify({ type: "combat_error", request_id: "r1", message: "combat rejected" }));
     await expect(p).rejects.toThrow("combat rejected");
+  });
+
+  it("a combat_error and a move_error with the paused reason reject with SessionPausedError; others stay plain", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const combat = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    onMessage(JSON.stringify({ type: "combat_error", request_id: "r1", message: "the game is paused", reason: "paused" }));
+    await expect(combat).rejects.toBeInstanceOf(SessionPausedError);
+
+    const move = client.moveRequest("scene1", "tok1", [[0, 0], [100, 0]]);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "move_request")!);
+    onMessage(JSON.stringify({ type: "move_error", request_id: frame.request_id, message: "the game is paused", reason: "paused" }));
+    await expect(move).rejects.toBeInstanceOf(SessionPausedError);
+
+    const plain = client.combat({ type: "combat_advance", request_id: "r2", combat_id: "c1" });
+    onMessage(JSON.stringify({ type: "combat_error", request_id: "r2", message: "combat rejected", reason: null }));
+    const err = await plain.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SessionPausedError);
   });
 
   it("combat() times out and clears its entry when neither combat_result nor combat_error arrives", async () => {

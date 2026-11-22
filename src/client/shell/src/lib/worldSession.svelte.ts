@@ -2,6 +2,7 @@ import {
   randomUuid,
   WsClient,
   NotConnectedError,
+  SessionPausedError,
   OptimisticClient,
   DocumentStore,
   ContributionRegistry,
@@ -307,6 +308,8 @@ export class WorldSession {
       /** The derived outcome; see `moveRequest`'s doc for how `executed`/`truncated`
        * are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
+      /** `true` on a `rejected` outcome the whole-session pause caused. */
+      paused?: boolean;
     }) => void
   >();
   /** Live `subscribeScene` records, keyed by a locally-generated subscription id. */
@@ -1315,8 +1318,9 @@ export class WorldSession {
       // disconnect — not exclusively "the server refused the move". Fail-safe by construction:
       // a legal move whose confirmation is merely lost/delayed surfaces as "rejected", never
       // as a false "executed".
-      () => {
-        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected" });
+      (reason: unknown) => {
+        const paused = reason instanceof SessionPausedError;
+        for (const cb of this.#moveOutcomeListeners) cb({ tokenId, gesture, outcome: "rejected", ...(paused ? { paused } : {}) });
       },
     );
     return p;
@@ -1346,6 +1350,8 @@ export class WorldSession {
       /** The derived outcome — see `moveRequest`'s doc for how `executed`/
        * `truncated` are derived and how they differ from `MoveStream.truncated`. */
       outcome: "executed" | "truncated" | "rejected";
+      /** `true` on a `rejected` outcome the whole-session pause caused. */
+      paused?: boolean;
     }) => void,
   ): () => void {
     this.#moveOutcomeListeners.add(cb);

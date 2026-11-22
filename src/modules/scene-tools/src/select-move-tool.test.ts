@@ -143,6 +143,8 @@ function harness(opts: {
   pathfindError?: () => unknown;
   /** Only these token ids' route requests reject; the rest resolve normally. */
   routeRejectsFor?: string[];
+  /** The session pause freezes this user's token movement (`ToolContext.movesFrozen`). */
+  movesFrozen?: boolean;
 }) {
   const docs = new DocumentStore();
   docs.applyCommand({
@@ -201,6 +203,7 @@ function harness(opts: {
     pathfind,
     moveRequest,
     notify: (message, level) => notices.push({ message, level }),
+    movesFrozen: () => opts.movesFrozen ?? false,
   };
   const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
 
@@ -246,6 +249,16 @@ test("a non-GM drag issues exactly one moveRequest per selected token, on releas
     { scene: "s1", token: "t2", goal: [200, 0] },
   ]);
   expect(h.dispatchedOps).toEqual([]);
+});
+
+test("a drag while the session pause freezes movement sends nothing, raises the paused notice once and clears the preview", async () => {
+  const h = harness({ role: "player", tokens: [{ id: "t1", x: 0, y: 0 }, { id: "t2", x: 100, y: 0 }], movesFrozen: true });
+  h.select(["t1", "t2"]);
+  await h.drag({ dx: 100, dy: 0 });
+  expect(h.moveRequests).toEqual([]);
+  expect(h.dispatchedOps).toEqual([]);
+  expect(h.notices).toEqual([{ message: "intent.rejected.paused", level: "warning" }]);
+  expect(h.previewOverlayCalls.at(-1)).toEqual([]);
 });
 
 test("a GM drag issues one batched update and zero move requests", async () => {

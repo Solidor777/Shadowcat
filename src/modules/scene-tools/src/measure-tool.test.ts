@@ -781,6 +781,28 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
   expect(moves).toEqual([{ tokenId: "tok1", path: [[0, 0], [100, 0], [100, 100]] }]);
 });
 
+test("double-click commit while the session pause freezes movement sends no moveRequest and raises the paused notice", async () => {
+  const moves: Array<unknown> = [];
+  const notices: string[] = [];
+  const { ctx, now } = seedRouteCtx({
+    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
+    moveRequest: async (_s, tokenId, path) => {
+      moves.push({ tokenId, path });
+      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
+    },
+    tokenAt: { id: "tok1", x: 0, y: 0 },
+    notify: (message) => { notices.push(message); },
+  });
+  ctx.movesFrozen = () => true;
+  const tool = makeMeasureTool(ctx);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  now.advance(100);
+  tool.onPointerDown({ x: 100, y: 100 }, ev()); tool.onPointerUp({ x: 100, y: 100 }, ev());
+  await drain();
+  expect(moves).toEqual([]);
+  expect(notices).toEqual(["intent.rejected.paused"]);
+});
+
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
   const { ctx } = seedRouteCtx({

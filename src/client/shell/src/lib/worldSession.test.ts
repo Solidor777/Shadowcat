@@ -1378,6 +1378,25 @@ test("onMoveOutcome: a move_error rejection fires 'rejected'", async () => {
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected" });
 });
 
+test("onMoveOutcome: a move_error carrying the paused reason fires 'rejected' flagged paused", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const got: Array<{ tokenId: string; outcome: string; paused?: boolean }> = [];
+  session.onMoveOutcome((m) => got.push(m));
+  const resolved = session.moveRequest("s1", "tok1", [[0, 0], [100, 0]]);
+  resolved.catch(() => {});
+  await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
+  const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
+  push({ type: "move_error", request_id: reqId, message: "the game is paused", reason: "paused" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0]).toEqual({ tokenId: "tok1", outcome: "rejected", paused: true });
+});
+
 test("onMoveOutcome: a move requested with no live transport fires 'rejected' and rejects", async () => {
   const session = new WorldSession({ selfId: "u1", connect: () => { throw new Error("unused"); }, modules: [coreUiStub], logger: silentLogger });
   const got: Array<{ tokenId: string; outcome: string }> = [];
