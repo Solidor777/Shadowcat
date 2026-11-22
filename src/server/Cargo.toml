@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "signal"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "signal", "net"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["uuid-impl"] }
