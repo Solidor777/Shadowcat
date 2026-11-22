@@ -133,6 +133,54 @@ export async function deleteUser(id: string): Promise<void> {
   if (!res.ok) throw new Error(await restError(res, "delete user failed"));
 }
 
+/** The failure `changeOwnPassword` throws. Carries the HTTP status so a caller can tell a
+ * refused credential (401) from a refused new password (422) without parsing the message. */
+export class ChangePasswordError extends Error {
+  /** The HTTP status of the refused request. */
+  readonly status: number;
+
+  /** Builds the error from the server's client-actionable message and the response status.
+   * @param message The server's error text, or the bare-status fallback.
+   * @param status The HTTP status of the refused request.
+   * @example
+   * ```ts
+   * import { ChangePasswordError } from "@shadowcat/core";
+   *
+   * const err = new ChangePasswordError("unauthorized", 401);
+   * ```
+   */
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ChangePasswordError";
+    this.status = status;
+  }
+}
+
+/** Change the signed-in account's own password. The server re-verifies `current` (a wrong one
+ * is a 401, indistinguishable from any other credential refusal) and checks `next` against its
+ * password policy (422). On success the server revokes EVERY session for the account, this
+ * one included, so the caller must end its own session state instead of carrying on.
+ * @param current The account's current plaintext password.
+ * @param next The new plaintext password.
+ * @throws ChangePasswordError On any non-204 response, carrying the response status.
+ * @example
+ * ```ts
+ * import { changeOwnPassword } from "@shadowcat/core";
+ *
+ * await changeOwnPassword("current-password", "a-new-password");
+ * ```
+ */
+export async function changeOwnPassword(current: string, next: string): Promise<void> {
+  const res = await fetch("/api/account/password", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ current_password: current, new_password: next }),
+  });
+  if (!res.ok) {
+    throw new ChangePasswordError(await restError(res, "change password failed"), res.status);
+  }
+}
+
 /** A minted invite. `code` is a bearer credential the server keeps only as a
  * hash — it is returned once, at mint, and is unrecoverable afterwards. */
 export interface MintedInvite {

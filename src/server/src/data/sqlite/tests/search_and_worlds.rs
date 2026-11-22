@@ -952,6 +952,23 @@ async fn user_by_username_and_admin_exists() {
 }
 
 #[tokio::test]
+async fn user_by_id_matches_user_by_username_and_misses_unknown_ids() {
+    use crate::auth::role::ServerRole;
+    let r = repo().await;
+    let id = r
+        .create_user("user-one", Some("phc-hash"), ServerRole::User, 100)
+        .await
+        .unwrap();
+    let by_id = r.user_by_id(id).await.unwrap().unwrap();
+    let by_name = r.user_by_username("user-one").await.unwrap().unwrap();
+    assert_eq!(by_id.id, by_name.id);
+    assert_eq!(by_id.username, by_name.username);
+    assert_eq!(by_id.password_hash, by_name.password_hash);
+    assert_eq!(by_id.server_role, ServerRole::User);
+    assert!(r.user_by_id(Uuid::new_v4()).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn settings_get_set_round_trip() {
     let r = repo().await;
     assert!(r.get_setting("k").await.unwrap().is_none());

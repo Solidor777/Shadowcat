@@ -8,6 +8,7 @@
   import ModuleManager from "./ModuleManager.svelte";
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
+  import ChangePasswordForm from "./ChangePasswordForm.svelte";
   import TrashManager from "./TrashManager.svelte";
   import ThemeEditor from "./ThemeEditor.svelte";
   import PerformanceEditor from "./PerformanceEditor.svelte";
@@ -149,6 +150,7 @@
   <!-- Each self-gates: InviteManager on the world GM role, UserManager and TrashManager on
        the server admin tier. All gates are advisory; the server re-checks. -->
   <InviteManager />
+  <ChangePasswordForm />
   <UserManager />
   <TrashManager />
   <button onclick={leaveWorld}>{t("settings.leaveWorld")}</button>
