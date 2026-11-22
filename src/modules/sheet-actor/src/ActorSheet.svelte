@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
+  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor, EffectsList } from "@shadowcat/ui-kit";
   import { getPointer, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type WireDocument, type ActorEngine, type FactionRegistryEngine, type VisionMode } from "@shadowcat/core";
 
   // Actor sheet: envelope `name` + engine-known fields (displayName, faction, shape, size)
@@ -201,6 +201,8 @@
         {/each}
       </ul>
     {/if}
+
+    <EffectsList host={doc} heading={t("sheetActor.effects")} />
 
     <details>
       <summary>{t("sheetActor.system")}</summary>
