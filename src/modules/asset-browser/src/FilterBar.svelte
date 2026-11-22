@@ -1,15 +1,22 @@
 <script lang="ts">
   import { getAppContext, TagChips } from "@shadowcat/ui-kit";
   import type { FilterState } from "./filterState";
+  import type { ViewMode } from "./favorites";
 
   let {
     filter,
     onChange,
+    viewMode = "grid",
+    onViewModeChange,
   }: {
     /** The current filter (owned by the browser). */
     filter: FilterState;
     /** Called with the full next filter on any control change. */
     onChange: (next: FilterState) => void;
+    /** The active listing layout. */
+    viewMode?: ViewMode;
+    /** Called with the chosen layout when a view-mode button is pressed. */
+    onViewModeChange?: (mode: ViewMode) => void;
   } = $props();
 
   const { t } = getAppContext();
@@ -92,6 +99,40 @@
     <option value="name">{t("assetBrowser.sortName")}</option>
     <option value="size">{t("assetBrowser.sortSize")}</option>
   </select>
+
+  <button
+    type="button"
+    class="toggle"
+    data-testid="filter-favorites"
+    class:active={filter.favoritesOnly}
+    aria-pressed={filter.favoritesOnly}
+    onclick={() => onChange({ ...filter, favoritesOnly: !filter.favoritesOnly })}
+  >{t("assetBrowser.favoritesOnly")}</button>
+
+  {#if onViewModeChange}
+    <span class="view-modes">
+      <button
+        type="button"
+        class="toggle"
+        data-testid="view-mode-grid"
+        class:active={viewMode === "grid"}
+        aria-pressed={viewMode === "grid"}
+        aria-label={t("assetBrowser.viewGrid")}
+        title={t("assetBrowser.viewGrid")}
+        onclick={() => onViewModeChange("grid")}
+      >▦</button>
+      <button
+        type="button"
+        class="toggle"
+        data-testid="view-mode-list"
+        class:active={viewMode === "list"}
+        aria-pressed={viewMode === "list"}
+        aria-label={t("assetBrowser.viewList")}
+        title={t("assetBrowser.viewList")}
+        onclick={() => onViewModeChange("list")}
+      >☰</button>
+    </span>
+  {/if}
 </div>
 
 <style lang="scss">
@@ -116,6 +157,18 @@
       background: var(--accent);
       color: var(--on-accent);
     }
+  }
+  .toggle {
+    min-width: 44px;
+    padding: 0 0.5rem;
+    &.active {
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+  }
+  .view-modes {
+    display: inline-flex;
+    gap: 0.125rem;
   }
   .tags {
     display: inline-flex;

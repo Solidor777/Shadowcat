@@ -190,6 +190,10 @@ pub struct Cli {
     /// pending, before the server cuts it (`Config.egress_window_secs`; 1 to 3600).
     #[arg(long)]
     pub egress_window_secs: Option<u64>,
+    /// Fixes automatic router port forwarding on or off (`Config.port_forward`), overriding the
+    /// admin toggle in both directions.
+    #[arg(long)]
+    pub port_forward: Option<bool>,
     /// One-shot: regenerate the persisted self-signed certificate and exit. Mutually exclusive
     /// with `--backup-to`, `--restore-from` and any subcommand.
     #[arg(long)]
@@ -408,6 +412,11 @@ pub struct Config {
     /// while still reading; raise this on extremely slow networks. A connection with nothing in
     /// flight is never cut by it.
     pub egress_window_secs: u64,
+    /// Fixes automatic router port forwarding (NAT-PMP, PCP, UPnP) on or off. `None` (default)
+    /// leaves it to the admin toggle stored in the database, which is off until an admin turns it
+    /// on. When set it wins over the stored toggle in both directions and the admin route refuses
+    /// to change it. Enabling opens the server's port to the internet.
+    pub port_forward: Option<bool>,
 }
 
 /// The least [`Config::egress_window_secs`] accepts.
@@ -461,6 +470,7 @@ impl Default for Config {
             acme_directory: DEFAULT_ACME_DIRECTORY.into(),
             hsts_max_age_secs: None,
             egress_window_secs: crate::http::conn_serve::PEER_STALL_TIMEOUT.as_secs(),
+            port_forward: None,
         }
     }
 }
@@ -785,6 +795,9 @@ impl Config {
         }
         if let Some(v) = cli.egress_window_secs {
             cfg.egress_window_secs = v;
+        }
+        if let Some(v) = cli.port_forward {
+            cfg.port_forward = Some(v);
         }
         if !(EGRESS_WINDOW_SECS_MIN..=EGRESS_WINDOW_SECS_MAX).contains(&cfg.egress_window_secs) {
             return Err(Box::new(figment::Error::from(format!(

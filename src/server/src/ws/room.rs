@@ -1409,7 +1409,21 @@ impl Room {
         } else {
             None
         };
+        let session_before = self.session_before_write(&ops).await;
         let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if let Some(before) = session_before {
+            let after = self.session_state().await;
+            crate::audio::transport::on_session_pause(
+                repo,
+                ctx,
+                self,
+                self.world_id,
+                &before,
+                &after,
+                ts,
+            )
+            .await;
+        }
         if let Some(ws_doc_id) = active_scene_write {
             let new_active_scene = self
                 .scene

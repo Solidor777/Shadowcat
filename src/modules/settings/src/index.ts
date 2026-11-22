@@ -2,6 +2,7 @@ import { PANEL_CONTRACT, SETTINGS_SECTION_CONTRACT, type Module } from "@shadowc
 import Settings from "./Settings.svelte";
 import KeybindingsSection from "./KeybindingsSection.svelte";
 import BackupManager from "./BackupManager.svelte";
+import PortForwardSection from "./PortForwardSection.svelte";
 
 export { registerSetting, type SettingField, type SettingSelectOption, type RegisterSettingOptions } from "./registerSetting";
 export { default as SettingRow } from "./SettingRow.svelte";
@@ -12,7 +13,7 @@ export { default as SettingRow } from "./SettingRow.svelte";
  * launcher-closed by default. Also PROVIDES `shadowcat.settings-section` — the
  * extension seam `Settings.svelte` renders after its own built-in content (any module may
  * `requires: [SETTINGS_SECTION_CONTRACT]` and contribute a labeled section). Contributes the
- * keybindings section and the server-admin-only backup manager through that same seam. */
+ * keybindings section and the server-admin-only backup manager and port-forwarding section through that same seam. */
 export const settings: Module = {
   manifest: {
     id: "settings",
@@ -41,6 +42,12 @@ export const settings: Module = {
       contract: SETTINGS_SECTION_CONTRACT,
       component: BackupManager,
       settingsSection: { labelKey: "settings.backups.title", serverAdminOnly: true },
+    });
+    ctx.contributions.contribute({
+      id: "settings:port-forward",
+      contract: SETTINGS_SECTION_CONTRACT,
+      component: PortForwardSection,
+      settingsSection: { labelKey: "settings.portForward.title", serverAdminOnly: true },
     });
   },
 };

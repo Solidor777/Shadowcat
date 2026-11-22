@@ -27,11 +27,7 @@ async fn an_intent_over_the_op_cap_is_rejected_before_any_op_is_applied() {
         .await
         .unwrap();
 
-    let Ok(Some(Ok(m))) = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
-    else {
-        panic!("no frame received");
-    };
-    let frame: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+    let frame = common::next_non_presence_frame(&mut ws).await;
     assert_eq!(frame["type"], "reject");
     assert_eq!(frame["reason"], "invalid");
     assert!(
@@ -60,11 +56,7 @@ async fn an_intent_at_exactly_the_op_cap_is_not_rejected_for_its_length() {
         .await
         .unwrap();
 
-    let Ok(Some(Ok(m))) = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
-    else {
-        panic!("no frame received");
-    };
-    let frame: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+    let frame = common::next_non_presence_frame(&mut ws).await;
     // Confirmed by the broadcast echo of the authored Event, never a Reject -- the op count
     // itself must not be the reason for any rejection at exactly the cap.
     assert_eq!(

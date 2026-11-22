@@ -2,7 +2,7 @@
 // import these seams from here — never from each other (the contract-only
 // element boundary).
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
-export type { AppContext, TFunc, HooksEmitApi, ProgressNotification } from "./appContext";
+export type { AppContext, TFunc, HooksEmitApi, ProgressNotification, MemberProfile } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
 export { t, locale, i18n, plural, compare } from "./i18n.svelte";
 export { notifications, activeNotifications } from "./notifications.svelte";
@@ -48,6 +48,15 @@ export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
 export { default as TagChips } from "./TagChips.svelte";
+export { default as DocFolderTree } from "./DocFolderTree.svelte";
+export {
+  typedFolderChildren,
+  typedFolderSiblings,
+  appendTypedFolderSortKey,
+  buildTypedFolderDoc,
+  isDescendantOrSelf,
+} from "./folderTree";
+export type { FolderTreeLabels, FolderDeleteChoice } from "./folderTree";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";

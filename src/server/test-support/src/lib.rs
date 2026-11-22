@@ -169,6 +169,7 @@ async fn spawn_inner(mutate: impl FnOnce(&mut Config), setup: TlsSetup) -> Harne
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
         trash: Arc::new(shadowcat::trash::Trash::from_config(&cfg)),
     };
     let ws_state = state.ws.clone();
@@ -629,6 +630,27 @@ where
             if v["type"].as_str() == Some(ty) {
                 return v;
             }
+        }
+    }
+}
+
+/// Read the next frame that is not a `presence` frame (5s budget per frame), returning it.
+///
+/// A connecting socket receives its own `presence` frame, which can arrive before or after the
+/// reply to the first request, so a test reading "the reply" skips it.
+pub async fn next_non_presence_frame<S>(ws: &mut S) -> serde_json::Value
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            panic!("no frame received");
+        };
+        let v: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+        if v["type"] != "presence" {
+            return v;
         }
     }
 }

@@ -2,6 +2,7 @@ use super::*;
 use std::sync::atomic::AtomicBool;
 
 mod account_profile;
+mod port_forward;
 
 pub(crate) async fn test_state() -> AppState {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
@@ -18,6 +19,7 @@ pub(crate) async fn test_state() -> AppState {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: crate::tls::TlsRuntime::disabled(),
+        portmap: crate::portmap::PortMapRuntime::disabled(),
         trash: Arc::new(crate::trash::Trash::new(
             std::env::temp_dir(),
             crate::trash::TrashRetention::Disabled,
@@ -3168,6 +3170,7 @@ async fn file_backed_state() -> (AppState, tempfile::TempDir) {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: crate::tls::TlsRuntime::disabled(),
+        portmap: crate::portmap::PortMapRuntime::disabled(),
         trash: Arc::new(crate::trash::Trash::new(
             std::env::temp_dir(),
             crate::trash::TrashRetention::Disabled,

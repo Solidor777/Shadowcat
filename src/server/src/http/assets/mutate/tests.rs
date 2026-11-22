@@ -58,6 +58,7 @@ impl PairingFixture {
                 crate::http::assets::permits::StreamedFilePermits::production(),
             ),
             tls: crate::tls::TlsRuntime::disabled(),
+            portmap: crate::portmap::PortMapRuntime::disabled(),
             trash: std::sync::Arc::new(crate::trash::Trash::new(
                 std::env::temp_dir(),
                 crate::trash::TrashRetention::Disabled,

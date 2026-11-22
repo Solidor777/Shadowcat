@@ -1086,6 +1086,42 @@ fn egress_window_layers_cli_over_env_over_default() {
     assert_eq!(cfg.egress_window_secs, 30);
 }
 
+/// Loads a config with `SHADOWCAT_PORT_FORWARD` set to `value` (or removed) for the call.
+fn load_with_port_forward_env(value: Option<&str>, cli: Cli) -> Config {
+    let _guard = config_env_test_lock();
+    // SAFETY: single-threaded test-only env mutation under `config_env_test_lock`, restored below.
+    unsafe {
+        match value {
+            Some(v) => std::env::set_var("SHADOWCAT_PORT_FORWARD", v),
+            None => std::env::remove_var("SHADOWCAT_PORT_FORWARD"),
+        }
+    }
+    let loaded = Config::load(cli).unwrap();
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("SHADOWCAT_PORT_FORWARD") };
+    loaded
+}
+
+#[test]
+fn port_forward_is_unset_by_default_and_layers_cli_over_env() {
+    assert_eq!(
+        load_with_port_forward_env(None, Cli::default()).port_forward,
+        None
+    );
+    assert_eq!(
+        load_with_port_forward_env(Some("true"), Cli::default()).port_forward,
+        Some(true)
+    );
+    let cli = Cli {
+        port_forward: Some(false),
+        ..Cli::default()
+    };
+    assert_eq!(
+        load_with_port_forward_env(Some("true"), cli).port_forward,
+        Some(false)
+    );
+}
+
 #[test]
 fn backup_retention_defaults_to_unlimited_and_takes_cli_values() {
     let _guard = config_env_test_lock();

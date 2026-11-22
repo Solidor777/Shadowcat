@@ -4,7 +4,26 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import FilterBar from "./FilterBar.svelte";
 import type { FilterState } from "./filterState";
 
-const BASE: FilterState = { query: "", queryIsRegex: false, tags: [], kind: undefined, sort: "created" };
+const BASE: FilterState = { query: "", queryIsRegex: false, tags: [], kind: undefined, sort: "created", favoritesOnly: false };
+
+test("the favorites toggle flips favoritesOnly", async () => {
+  const onChange = vi.fn();
+  render(FilterBar, { props: { filter: BASE, onChange }, context: setAppContextForTest() });
+  await fireEvent.click(screen.getByTestId("filter-favorites"));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ favoritesOnly: true }));
+});
+
+test("the view-mode buttons report the chosen layout and mark the active one", async () => {
+  const onViewModeChange = vi.fn();
+  render(FilterBar, {
+    props: { filter: BASE, onChange: vi.fn(), viewMode: "list", onViewModeChange },
+    context: setAppContextForTest(),
+  });
+  expect(screen.getByTestId("view-mode-list").getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByTestId("view-mode-grid").getAttribute("aria-pressed")).toBe("false");
+  await fireEvent.click(screen.getByTestId("view-mode-grid"));
+  expect(onViewModeChange).toHaveBeenCalledWith("grid");
+});
 
 test("typing a query emits the updated filter state", async () => {
   const onChange = vi.fn();

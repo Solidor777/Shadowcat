@@ -1,12 +1,12 @@
 import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
 import type { CameraTransform, VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { EasingMode, TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
-import { holdLightingCells, unionLightingInputs } from "./lighting";
+import { holdLightingCells, parseRenderHint, unionLightingInputs, type VisionTreatments } from "./lighting";
 import { Camera, type PanTarget } from "./camera";
 import { Compositor } from "./compositor";
 import { isTokenRevealed } from "./reveal";
@@ -119,6 +119,10 @@ export interface RenderEngineOpts {
    * backend was handed and whether a carried-light sweep is in flight — so a host can surface
    * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
   onLightingApplied?: (frame: LightingFrame, sweeping: boolean) => void;
+  /** Resolves a `custom` render hint's treatment name to the registered `VisionTreatmentMeta`
+   * (Stage → the `VISION_TREATMENT_CONTRACT` contributions). Absent ⇒ every `custom` hint
+   * resolves to no treatment. */
+  visionTreatments?: VisionTreatments;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ `resolveViewedScene` over `store`. */
   viewedSceneId?: () => string | null;
@@ -141,6 +145,9 @@ export interface RenderEngineOpts {
    * other-level token is absent entirely. `true` additionally renders every other-level token
    * on the viewed scene, ghosted (`TokenView`'s `GHOST_FX`). */
   ghostOtherLevels?: () => boolean;
+  /** Whether this viewer may see a token's facing-vision wedge (Stage → owner-or-GM). Absent ⇒
+   * no wedge is ever drawn, so another creature's facing is never revealed. */
+  facingWedgeVisible?: (doc: WireDocument) => boolean;
   /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
    * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
    * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
@@ -427,7 +434,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion, opts.facingWedgeVisible);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.vfxView = new VfxView(
       opts.store,
@@ -448,7 +455,7 @@ export class RenderEngine implements SceneToolHost {
     this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.lights = new LightView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.compositor = new Compositor(this.backend, () => this.opts.onVisibilityApplied?.());
-    this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
+    this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0), opts.visionTreatments);
   }
 
   /** Wires the engine to its backend and store. In order: creates the backend's layer
@@ -1070,8 +1077,9 @@ export class RenderEngine implements SceneToolHost {
          * `scene::lighting::Band.min_illumination`, wire-keyed `min` by `compute_derived`. */
         min?: number;
       }[];
-      /** `renderHints` lookup table; indexed by a cell's packed `hint` field. */
-      renderHints?: string[];
+      /** `renderHints` lookup table of tagged `RenderHint` objects; indexed by a cell's packed
+       * `hint` field. Each entry is narrowed by `parseRenderHint`. */
+      renderHints?: unknown[];
       /** Per-token lit-cell groups. */
       lit?: {
         /** The scene id this cell group belongs to. */
@@ -1130,7 +1138,7 @@ export class RenderEngine implements SceneToolHost {
           )
           .map((b) => ({ name: b.name, min: b.min }))
       : [];
-    const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
+    const hints = Array.isArray(p.renderHints) ? p.renderHints.map(parseRenderHint) : [];
     return { cell: group.cell, bands, hints, cells };
   }
 

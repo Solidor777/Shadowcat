@@ -716,5 +716,6 @@ fn to_server_msg(request_id: Uuid, e: CombatError) -> ServerMsg {
     ServerMsg::CombatError {
         request_id,
         message: e.to_string(),
+        reason: None,
     }
 }

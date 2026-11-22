@@ -3570,6 +3570,7 @@ mod mover_light;
 mod presence;
 mod region_triggers;
 mod rotation_gate;
+mod session_pause;
 
 // ---------- Room::disable_faulting_validator_locked ----------
 

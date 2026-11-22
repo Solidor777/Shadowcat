@@ -16,4 +16,7 @@ export interface FilterState {
   kind?: "image" | "other" | "audio";
   /** Sort key. */
   sort: "name" | "created" | "size";
+  /** Show only the account's favorites. Applied client-side to the fetched listing; never
+   * sent to the server. */
+  favoritesOnly: boolean;
 }

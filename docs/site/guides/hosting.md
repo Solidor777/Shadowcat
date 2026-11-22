@@ -112,6 +112,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `public_url` | *(unset)* | The `https://` origin players should use (scheme, host and optional port only: user information, a path, a query or a fragment stop the server at start), published in `GET /api/config` |
 | `egress_window_secs` | `60` | Seconds a peer may make no progress receiving data before the server cuts it (1 to 3600; anything else stops the server at start). Applies to every response and to each pending WebSocket send; see [Slow readers](#slow-readers) |
 | `hsts_max_age_secs` | *(unset: no HSTS)* | Opt-in `Strict-Transport-Security` (read the HSTS section first) |
+| `port_forward` | *(unset: the admin toggle decides, off until turned on)* | Fixes automatic router port forwarding on or off, overriding the admin toggle in both directions (see [Automatic port forwarding](#automatic-port-forwarding)) |
 | `acme_domains`, `acme_email`, `acme_terms_agreed`, `acme_challenge`, `acme_directory`, `acme_ca_root` | *(unset)* | Accepted and validated; certificate issuance is not available in this version |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.
@@ -542,6 +543,36 @@ close the upstream connection after every ordinary request and leaves the `keepa
 WebSocket connections are unaffected by Shadowcat's idle bounds: the HTTP/1.1 bound applies to the
 wait for a request head, not to an upgraded connection, and an HTTP/2 connection carrying a live
 WebSocket is not idle.
+
+### Automatic port forwarding
+
+Instead of forwarding the port by hand, the server can ask your home router to do it. It tries
+NAT-PMP, then PCP, then UPnP, and keeps the first mapping the router grants: one TCP mapping from
+the server's port to the same external port (the router may grant another port; the status shows
+the one it granted). The mapping is renewed at half its lease and removed when the server shuts
+down.
+
+It is **off by default**, because turning it on opens the server's port to the whole internet. An
+admin turns it on in Settings, under **Port forwarding**, and the change applies at once with no
+restart. The section shows where the server stands: looking for the router, mapped (with the
+protocol, the external address and port, and the lease), mapped but not public, or failed. Failures
+never stop the server or affect LAN play; a router that refuses or does not answer leaves the server
+as if the feature were off, and the server retries with a growing delay (one minute, up to fifteen).
+
+- **Fix it in the configuration.** Set `port_forward = true` or `port_forward = false` (or
+  `--port-forward`, `SHADOWCAT_PORT_FORWARD`) to decide without the admin toggle. The configuration
+  wins in both directions, and the Settings toggle is then disabled with a note saying so.
+- **A loopback bind cannot be forwarded.** With `bind = "127.0.0.1:30000"` a router has nothing to
+  forward to; the section says so. Bind to `0.0.0.0` (see above).
+- **Double NAT.** If your provider shares one public address between customers, or a second router
+  sits in front of this one, the router reports an address that is not public. The mapping is kept,
+  the section says internet players cannot reach it, and you need to forward on the outer router
+  by hand or ask your provider for a public address.
+- **Which address players use.** Internet players should use `https://`: the self-signed
+  certificate warns once per browser, and plain `http://` stays available (see
+  [HTTPS and plain HTTP on one port](#https-and-plain-http-on-one-port)).
+- **The external address is for admins only.** It is your home address, so only the admin
+  Settings section and the startup log show it; no player-visible page does.
 
 ### Connection caps and open-file limits
 

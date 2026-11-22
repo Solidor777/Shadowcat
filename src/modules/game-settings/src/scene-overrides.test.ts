@@ -201,6 +201,46 @@ describe("per-scene overrides", () => {
     ]);
   });
 
+  it("the facing-vision override writes a boolean, shows a stored false, and inherit clears it to null", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    const view = render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    await fireEvent.change(screen.getByLabelText("gameSettings.scene.facingVision"), { target: { value: "true" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/facingVision", old: null, new: true }] },
+    ]);
+
+    view.unmount();
+    const stored = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null, facingVision: false } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, stored), dispatchIntent }) });
+    const sel = screen.getByLabelText("gameSettings.scene.facingVision") as HTMLSelectElement;
+    expect(sel.value).toBe("false");
+    await fireEvent.change(sel, { target: { value: "" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/facingVision", old: false, new: null }] },
+    ]);
+  });
+
+  it("the facing turn-rule override writes the wire value and inherit clears it to null", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null, facingTurnRule: "own_turn" } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.facingTurnRule") as HTMLSelectElement;
+    expect(sel.value).toBe("own_turn");
+    await fireEvent.change(sel, { target: { value: "free" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/facingTurnRule", old: "own_turn", new: "free" }] },
+    ]);
+    await fireEvent.change(sel, { target: { value: "" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/facingTurnRule", old: "own_turn", new: null }] },
+    ]);
+  });
+
   it("setting fog pooling override writes to the selected scene doc", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");

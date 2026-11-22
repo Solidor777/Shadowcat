@@ -7,7 +7,8 @@
     resolveGradation,
     buildUpdate,
     listAssets, queryScenesInCreationOrder,
-    type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type Perception,
+    VISION_TREATMENT_CONTRACT,
+    type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type RenderHint, type Perception,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
@@ -208,6 +209,7 @@
   const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
   const FOG_POOLING = ["individual", "shared"] as const;
+  const FACING_TURN_RULE = ["free", "own_turn"] as const;
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan", "approximate", "orthogonal"] as const;
   const EASING = ["easeInOut", "linear"] as const;
@@ -430,24 +432,113 @@
     set(vmDoc.id, `/engine/modes/${id}/name`, mode.name, name);
   }
 
+  /** The treatment names modules registered under `VISION_TREATMENT_CONTRACT`, in contribution
+   * order: the names a `custom` render hint can resolve. */
+  const treatmentKinds = $derived(
+    ctx.contributions.contributionsFor(VISION_TREATMENT_CONTRACT).flatMap((c) => (c.visionTreatment ? [c.visionTreatment.kind] : [])),
+  );
+
+  /** Mode ids whose params JSON textarea currently holds text that does not parse. */
+  let paramsInvalid = $state<Record<string, boolean>>({});
+
   /**
-   * Commit a mode's render-hint edit; an emptied input writes `null` (the field is
-   * `string | null`, absent = no render treatment).
-   * @param id The mode's registry id.
-   * @param raw The render-hint input's raw string value.
+   * The select value a render hint shows: a stored `none` hint and an absent hint both read as
+   * the empty "no treatment" option.
+   * @param hint The mode's stored render hint.
+   * @returns The hint's kind, or `""` for none.
    * @example
    * ```
-   * // private function; not part of the public API — wired to each mode's render-hint input
-   * commitModeRenderHint("darkvision", "desaturate");
+   * // private function; not part of the public API — drives each mode's render-hint select
+   * hintKind({ kind: "desaturate" }); // "desaturate"
    * ```
    */
-  function commitModeRenderHint(id: string, raw: string): void {
+  function hintKind(hint: RenderHint | null | undefined): RenderHint["kind"] | "" {
+    return !hint || hint.kind === "none" ? "" : hint.kind;
+  }
+
+  /**
+   * Switch a mode's render hint to another kind, writing the whole hint at
+   * `/engine/modes/<id>/renderHint` with that kind's defaults (`""` writes `null`). A `custom`
+   * hint starts on the first registered treatment, since the server refuses an empty name.
+   * @param id The mode's registry id.
+   * @param kind The chosen kind, or `""` for no treatment.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each mode's render-hint select
+   * commitModeRenderHintKind("darkvision", "outline");
+   * ```
+   */
+  function commitModeRenderHintKind(id: string, kind: string): void {
     const mode = vmsys?.modes[id];
-    if (!vmDoc || !mode) return;
-    const hint = raw.trim();
-    const next = hint === "" ? null : hint;
-    if (next === mode.renderHint) return;
+    if (!vmDoc || !mode || kind === hintKind(mode.renderHint)) return;
+    let next: RenderHint | null;
+    switch (kind) {
+      case "desaturate": next = { kind: "desaturate" }; break;
+      case "colorWash": next = { kind: "colorWash", color: "#808080", opacity: 0.25 }; break;
+      case "outline": next = { kind: "outline", color: "#ffffff" }; break;
+      case "custom": next = { kind: "custom", treatment: treatmentKinds[0] ?? "", params: null }; break;
+      default: next = null;
+    }
+    paramsInvalid[id] = false;
     set(vmDoc.id, `/engine/modes/${id}/renderHint`, mode.renderHint ?? null, next);
+  }
+
+  /**
+   * Write one field of a mode's current render hint, replacing the whole hint.
+   * @param id The mode's registry id.
+   * @param patch The hint fields to change.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each hint sub-control
+   * patchModeRenderHint("darkvision", { color: "#ff0000" });
+   * ```
+   */
+  function patchModeRenderHint(id: string, patch: Record<string, unknown>): void {
+    const mode = vmsys?.modes[id];
+    if (!vmDoc || !mode?.renderHint) return;
+    set(vmDoc.id, `/engine/modes/${id}/renderHint`, mode.renderHint, { ...mode.renderHint, ...patch });
+  }
+
+  /**
+   * Commit a `custom` hint's treatment name; a blank name is ignored (the server refuses it).
+   * @param id The mode's registry id.
+   * @param raw The treatment input's raw string value.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the treatment input
+   * commitHintTreatment("custom-1", "blood-sense");
+   * ```
+   */
+  function commitHintTreatment(id: string, raw: string): void {
+    const treatment = raw.trim();
+    if (treatment === "") return;
+    patchModeRenderHint(id, { treatment });
+  }
+
+  /**
+   * Commit a `custom` hint's opaque params from JSON text. Text that does not parse writes
+   * nothing and flags the textarea invalid; the engine never interprets the payload, so the
+   * registering module owns its shape.
+   * @param id The mode's registry id.
+   * @param raw The params textarea's raw text; blank means `null`.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the params textarea
+   * commitHintParams("custom-1", '{"strength":2}');
+   * ```
+   */
+  function commitHintParams(id: string, raw: string): void {
+    let params: unknown = null;
+    if (raw.trim() !== "") {
+      try {
+        params = JSON.parse(raw);
+      } catch {
+        paramsInvalid[id] = true;
+        return;
+      }
+    }
+    paramsInvalid[id] = false;
+    patchModeRenderHint(id, { params });
   }
 </script>
 
@@ -501,6 +592,22 @@
         onchange={(e) => set(ws.id, "/engine/scene/autoRotateTokens", wsys.scene?.autoRotateTokens, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
     {@render provControl("scene.autoRotateTokens", wsys.scene?.autoRotateTokens, "gameSettings.autoRotateTokens")}
+
+    <label>
+      {ctx.t("gameSettings.facingVision")}
+      <input type="checkbox" aria-label={ctx.t("gameSettings.facingVision")} checked={prov("scene.facingVision").value === true}
+        onchange={(e) => set(ws.id, "/engine/scene/facingVision", wsys.scene?.facingVision, (e.currentTarget as HTMLInputElement).checked)} />
+    </label>
+    {@render provControl("scene.facingVision", wsys.scene?.facingVision, "gameSettings.facingVision")}
+
+    <label>
+      {ctx.t("gameSettings.facingTurnRule")}
+      <select aria-label={ctx.t("gameSettings.facingTurnRule")} value={prov("scene.facingTurnRule").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/facingTurnRule", wsys.scene?.facingTurnRule, (e.currentTarget as HTMLSelectElement).value)}>
+        {#each FACING_TURN_RULE as r}<option value={r}>{r === "free" ? ctx.t("gameSettings.facingTurnRuleFree") : ctx.t("gameSettings.facingTurnRuleOwnTurn")}</option>{/each}
+      </select>
+    </label>
+    {@render provControl("scene.facingTurnRule", wsys.scene?.facingTurnRule, "gameSettings.facingTurnRule")}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
@@ -627,13 +734,74 @@
           </label>
           <label>
             {ctx.t("gameSettings.visionModeRenderHint")}
-            <input
-              type="text"
+            <select
               aria-label={ctx.t("gameSettings.visionModeRenderHintFor", { id: mode.id })}
-              value={mode.renderHint ?? ""}
-              onchange={(e) => commitModeRenderHint(mode.id, (e.currentTarget as HTMLInputElement).value)}
-            />
+              value={hintKind(mode.renderHint)}
+              onchange={(e) => commitModeRenderHintKind(mode.id, (e.currentTarget as HTMLSelectElement).value)}
+            >
+              <option value="">{ctx.t("gameSettings.renderHintNone")}</option>
+              <option value="desaturate">{ctx.t("gameSettings.renderHintDesaturate")}</option>
+              <option value="colorWash">{ctx.t("gameSettings.renderHintColorWash")}</option>
+              <option value="outline">{ctx.t("gameSettings.renderHintOutline")}</option>
+              {#if treatmentKinds.length > 0 || mode.renderHint?.kind === "custom"}
+                <option value="custom">{ctx.t("gameSettings.renderHintCustom")}</option>
+              {/if}
+            </select>
           </label>
+          {#if mode.renderHint?.kind === "colorWash" || mode.renderHint?.kind === "outline"}
+            {@const hint = mode.renderHint}
+            <label>
+              {ctx.t("gameSettings.renderHintColor")}
+              <input
+                type="color"
+                aria-label={ctx.t("gameSettings.renderHintColorFor", { id: mode.id })}
+                value={hint.color}
+                onchange={(e) => patchModeRenderHint(mode.id, { color: (e.currentTarget as HTMLInputElement).value })}
+              />
+            </label>
+          {/if}
+          {#if mode.renderHint?.kind === "colorWash"}
+            {@const wash = mode.renderHint}
+            <label>
+              {ctx.t("gameSettings.renderHintOpacity")}
+              <input
+                type="number" min="0" max="1" step="0.05"
+                aria-label={ctx.t("gameSettings.renderHintOpacityFor", { id: mode.id })}
+                value={wash.opacity}
+                onchange={(e) => {
+                  const opacity = Number((e.currentTarget as HTMLInputElement).value);
+                  if (Number.isFinite(opacity)) patchModeRenderHint(mode.id, { opacity });
+                }}
+              />
+            </label>
+          {/if}
+          {#if mode.renderHint?.kind === "custom"}
+            {@const hint = mode.renderHint}
+            <label>
+              {ctx.t("gameSettings.renderHintTreatment")}
+              <input
+                type="text" list={"treatments-" + mode.id}
+                aria-label={ctx.t("gameSettings.renderHintTreatmentFor", { id: mode.id })}
+                value={hint.treatment}
+                onchange={(e) => commitHintTreatment(mode.id, (e.currentTarget as HTMLInputElement).value)}
+              />
+              <datalist id={"treatments-" + mode.id}>
+                {#each treatmentKinds as k}<option value={k}></option>{/each}
+              </datalist>
+            </label>
+            <label>
+              {ctx.t("gameSettings.renderHintParams")}
+              <textarea
+                aria-label={ctx.t("gameSettings.renderHintParamsFor", { id: mode.id })}
+                aria-invalid={paramsInvalid[mode.id] ? "true" : undefined}
+                value={JSON.stringify(hint.params ?? null)}
+                onchange={(e) => commitHintParams(mode.id, (e.currentTarget as HTMLTextAreaElement).value)}
+              ></textarea>
+            </label>
+            {#if paramsInvalid[mode.id]}
+              <p class="hint" role="alert">{ctx.t("gameSettings.renderHintParamsInvalid")}</p>
+            {/if}
+          {/if}
           <label>
             {ctx.t("gameSettings.illuminationFloor")}
             <select
@@ -947,6 +1115,33 @@
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           <option value="true">{ctx.t("gameSettings.enabled")}</option>
           <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.facingVision")}
+        <select aria-label={ctx.t("gameSettings.scene.facingVision")}
+          value={ssys.vision?.facingVision == null ? "" : ssys.vision.facingVision ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/facingVision", ssys.vision?.facingVision ?? null, v === "" ? null : v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.facingTurnRule")}
+        <select aria-label={ctx.t("gameSettings.scene.facingTurnRule")}
+          value={ssys.vision?.facingTurnRule ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/facingTurnRule", ssys.vision?.facingTurnRule ?? null, v === "" ? null : v);
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          {#each FACING_TURN_RULE as r}<option value={r}>{r === "free" ? ctx.t("gameSettings.facingTurnRuleFree") : ctx.t("gameSettings.facingTurnRuleOwnTurn")}</option>{/each}
         </select>
       </label>
 

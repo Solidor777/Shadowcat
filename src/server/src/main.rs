@@ -132,8 +132,11 @@ async fn main() -> anyhow::Result<()> {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        portmap: shadowcat::portmap::PortMapRuntime::new(Arc::new(config.clone())),
         trash: trash.clone(),
     };
+    let portmap = state.portmap.clone();
+    let stored_port_forward = shadowcat::portmap::runtime::read_stored_toggle(&state.repo).await;
 
     shadowcat::auth::session::spawn_housekeeping_sweep(&state.repo);
     shadowcat::http::assets::uploads::spawn_sweeper(
@@ -169,6 +172,10 @@ async fn main() -> anyhow::Result<()> {
     for line in tls.startup_lines(bound) {
         tracing::info!("reachable at {line}");
     }
+    // Router port forwarding starts only now that the listener is bound, so accepting connections
+    // never waits on it, and no router answer (or silence) can fail startup: the task reports
+    // failures as status (`portmap::runtime`).
+    portmap.activate(bound, stored_port_forward).await;
     // Upgrades stored Opus derivatives written by an older encoder or muxer, one asset at a time
     // in the background. Started after the listener is bound so it never delays accepting; it
     // writes no database row and bumps no version (`data::asset::audio_upgrade`).
@@ -182,7 +189,11 @@ async fn main() -> anyhow::Result<()> {
     // so `throttle::ClientIp` and the scheme decider see a real peer; header-read, HTTP/2 idle,
     // keep-alive and live-connection bounds), tells live WebSocket sessions to close when the
     // drain begins, and then waits for their tasks; see `http::serve_with`.
-    http::serve_with(listener, state, shutdown_signal(), conn_limits).await?;
+    let served = http::serve_with(listener, state, shutdown_signal(), conn_limits).await;
+    // After the HTTP drain, whether it ended cleanly or not: deletes the router mapping within its
+    // deadline.
+    portmap.shutdown().await;
+    served?;
     Ok(())
 }
 

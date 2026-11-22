@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
-  import { noticeOncePerGesture, resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
+  import { noticeOncePerGesture, resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, VISION_TREATMENT_CONTRACT, type Logger, type SceneEngine, type RegionGeometry } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -190,6 +190,9 @@
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
         ghostOtherLevels: () => ghostOtherLevels,
+        // A token's facing is shown only to a viewer who may turn it (GM always; a player for
+        // their own tokens), so another creature's facing never reaches the canvas.
+        facingWedgeVisible: (doc) => role === "gm" || ctx.canEdit(doc, "/engine/rotation"),
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
         vfxAssets: (id) => {
@@ -223,6 +226,10 @@
         // Re-runs every overlay reader of `ctx.stageView.isTokenRevealed` on each applied fog mask.
         onVisibilityApplied: () => ctx.stageView.noteMaskApplied(),
         onCameraApplied: (c) => { host.dataset.cameraCenter = `${c.x},${c.y}`; },
+        visionTreatments: (kind) =>
+          ctx.contributions
+            .contributionsFor(VISION_TREATMENT_CONTRACT)
+            .find((c) => c.visionTreatment?.kind === kind)?.visionTreatment,
         onLightingApplied: (frame, sweeping) => {
           // Read-only observability signals: the painted lighting overlay's cell count and
           // whether a carried-light sweep is driving it — an e2e can see a torch light a
@@ -245,6 +252,10 @@
           if (host.dataset.litCells !== litCells) host.dataset.litCells = litCells;
           if (host.dataset.lightSweep !== lightSweep) host.dataset.lightSweep = lightSweep;
           if (host.dataset.litBbox !== litBbox) host.dataset.litBbox = litBbox;
+          // Cells carrying a render-hint treatment, "wash,outline" counts — an e2e sees a vision
+          // mode's treatment reach the painted frame without pixel diffing.
+          const treatment = `${frame.cells.filter((c) => c.colorWash).length},${frame.cells.filter((c) => c.outline).length}`;
+          if (host.dataset.lightTreatment !== treatment) host.dataset.lightTreatment = treatment;
         },
       });
       const e = engine;

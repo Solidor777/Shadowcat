@@ -82,6 +82,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     notifyProgress:
       over.notifyProgress ?? (() => ({ id: "progress", update: () => {}, dismiss: () => {} })),
     members: over.members ?? new Map(),
+    memberProfiles: over.memberProfiles ?? new Map(),
     presence: over.presence ?? new Map(),
     t: over.t ?? ((k: string) => k),
     plural: over.plural ?? ((k: string) => k),

@@ -709,6 +709,70 @@ impl AudioOverlay {
     }
 }
 
+/// Longest `SessionState.message`, in characters.
+pub const MAX_SESSION_MESSAGE_CHARS: usize = 280;
+
+/// The live whole-session pause switch, stored on the world-settings document so every member
+/// receives it through the ordinary document broadcast, resync and reconnect. Absent means not
+/// paused. While `paused`, a non-GM member cannot move tokens or use combat controls
+/// (`ws::session_pause` decides); chat, dice, pings, doors, scene edits and sheets keep working.
+/// It is live world state like `WorldSettingsEngine.active_scene`, not a layer of the settings
+/// chain, and it carries no timestamp: nothing reads one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SessionState;
+///
+/// let s = SessionState::default();
+/// assert!(!s.paused);
+/// assert!(!s.pause_audio);
+/// assert!(s.validate().is_ok());
+/// ```
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+pub struct SessionState {
+    /// `true` while the GM has the session paused.
+    pub paused: bool,
+    /// Plain text shown to every member while paused, at most `MAX_SESSION_MESSAGE_CHARS`
+    /// characters with no control characters. Clients render it as a text node, never HTML.
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
+    /// `true` pauses the world's playing audio when the session pauses and resumes it when the
+    /// session resumes. Absent or `false` leaves audio playing.
+    pub pause_audio: bool,
+}
+
+impl SessionState {
+    /// Ingress validation beyond serde shape: `message` is at most `MAX_SESSION_MESSAGE_CHARS`
+    /// characters and holds no control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::SessionState;
+    ///
+    /// let ok = SessionState { message: Some("Back in ten".into()), ..Default::default() };
+    /// assert!(ok.validate().is_ok());
+    /// let bad = SessionState { message: Some("a\nb".into()), ..Default::default() };
+    /// assert!(bad.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(m) = &self.message {
+            if m.chars().count() > MAX_SESSION_MESSAGE_CHARS {
+                return Err(format!(
+                    "session message exceeds {MAX_SESSION_MESSAGE_CHARS} characters"
+                ));
+            }
+            if m.chars().any(char::is_control) {
+                return Err("session message must not contain control characters".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The engine body of a "world-settings" config document: the world layer of
 /// the settings chain, an `Option`-lifted overlay (mirrors the client's
 /// `WorldSettingsEngine`). Every leaf is optional; absent and `null` both
@@ -752,6 +816,9 @@ pub struct WorldSettingsEngine {
     /// back to the engine literals on `AudioOverlay`'s own doc.
     #[ts(optional = nullable)]
     pub audio: Option<AudioOverlay>,
+    /// The whole-session pause switch; absent = not paused.
+    #[ts(optional = nullable)]
+    pub session: Option<SessionState>,
 }
 
 impl WorldSettingsEngine {
@@ -770,6 +837,9 @@ impl WorldSettingsEngine {
         }
         if let Some(a) = &self.audio {
             a.validate()?;
+        }
+        if let Some(s) = &self.session {
+            s.validate()?;
         }
         Ok(())
     }

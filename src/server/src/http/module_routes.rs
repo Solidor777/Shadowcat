@@ -111,6 +111,7 @@ impl InstalledModuleInfo {
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 /// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 /// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
@@ -197,6 +198,7 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 /// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 /// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
@@ -294,6 +296,7 @@ const MAX_ENABLED_MODULES: usize = 256;
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
@@ -367,6 +370,7 @@ fn declared_conflicts(m: &crate::modules::InstalledModule) -> Vec<String> {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };

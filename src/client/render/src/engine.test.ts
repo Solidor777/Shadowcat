@@ -912,7 +912,7 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
   });
   onUpdate({ payload: {
     mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
-    renderHints: ["desaturate"], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
+    renderHints: [{ kind: "desaturate" }], lit: [{ scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] }],
   }, computedAtSeq: 1 });
   backend.tick?.(1000); // settle the fade
   expect(backend.lighting!.cells.length).toBe(1);
@@ -921,6 +921,30 @@ test("applying a derived frame drives the lighting overlay; GM clears it", () =>
   onUpdate({ payload: { mode: "all" }, computedAtSeq: 2 });
   backend.tick?.(1000);
   expect(backend.lighting!.cells).toEqual([]); // GM → no overlay
+});
+
+test("toLighting narrows tagged renderHints entries and reads a bare string entry as no treatment", () => {
+  const store = new DocumentStore();
+  const engine = new RenderEngine({ store, assets: new AssetResolver(), backend: new MockBackend(), grid: { kind: "square", size: 100 } });
+  engine.start();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: {
+      id: "s1", scope: { kind: "world", world_id: "w1" }, doc_type: "scene", schema_version: 1, name: null,
+      source: null, owner: null,
+      permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+      embedded: {}, parent_id: null, engine: { grid: { kind: "square", size: 100, distance: null }, background: null, bounds: null, snapToGrid: null, vision: null, lighting: null }, system: {}, created_at: 0, updated_at: 0,
+    } }],
+  });
+  const input = engine.toLightingForTest({
+    mode: "masked", bands: [], lit: [{ scene: "s1", cell: 100, cells: [] }],
+    renderHints: [{ kind: "colorWash", color: "#00aa00", opacity: 0.25 }, "desaturate", { kind: "custom", treatment: "t", params: { x: 1 } }],
+  });
+  expect(input!.hints).toEqual([
+    { kind: "colorWash", color: "#00aa00", opacity: 0.25 },
+    { kind: "none" },
+    { kind: "custom", treatment: "t", params: { x: 1 } },
+  ]);
 });
 
 test("lighting is applied eagerly on a deferred fog frame; fog flush does not restart the fade", () => {
@@ -1243,7 +1267,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   });
   const li = engine.toLightingForTest({
     mode: "masked", bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
-    renderHints: ["desaturate"],
+    renderHints: [{ kind: "desaturate" }],
     lit: [
       { scene: "s1", cell: 100, cells: [0, 0, 2, 0, 0] },      // active: dark band, hint "desaturate"
       { scene: "other", cell: 100, cells: [9, 9, 0, 0, -1] },  // other scene: dropped
@@ -1254,7 +1278,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   expect(li!.cells).toEqual([
     { i: 0, j: 0, band: 2, tint: 0, hint: 0, corners: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] },
   ]);
-  expect(li!.hints).toEqual(["desaturate"]);
+  expect(li!.hints).toEqual([{ kind: "desaturate" }]);
   expect(li!.bands).toEqual([{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }]);
   // GM / garbled → null (cosmetic, no overlay).
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();

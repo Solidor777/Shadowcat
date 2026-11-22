@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs, holdLightingCells } from "./index";
+import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs, holdLightingCells, lightingFrameKey, parseRenderHint, type LitDrawCell, type VisionTreatments } from "./index";
 import type { DisplayBackend } from "./backend";
 
 const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
@@ -7,7 +7,7 @@ const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name
 test("resolves band index to darkening alpha and the desaturate hint", () => {
   const backend = new MockBackend();
   const l = new Lighting(backend);
-  l.setTarget({ cell: 100, bands, hints: ["desaturate"], cells: [
+  l.setTarget({ cell: 100, bands, hints: [{ kind: "desaturate" }], cells: [
     { i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] },        // bright → no darkening
     { i: 1, j: 0, band: 2, tint: 0, hint: 0, corners: [] },         // dark + desaturate
   ] });
@@ -183,14 +183,14 @@ test("unionLightingInputs keeps prev cells next does not restate; next wins a sh
     { i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] },
     { i: 1, j: 0, band: 1, tint: 0, hint: -1, corners: [] },
   ] };
-  const next = { cell: 50, bands, hints: ["desaturate"], cells: [
+  const next = { cell: 50, bands, hints: [{ kind: "desaturate" } as const], cells: [
     { i: 1, j: 0, band: 2, tint: 0xffcc66, hint: 0, corners: [] },
     { i: 3, j: 0, band: 0, tint: 0, hint: -1, corners: [] },
   ] };
   const out = unionLightingInputs(prev, next);
   expect(out.cell).toBe(50);
   expect(out.bands).toBe(bands);
-  expect(out.hints).toEqual(["desaturate"]);
+  expect(out.hints).toEqual([{ kind: "desaturate" }]);
   expect(out.cells.map((c) => [c.i, c.j, c.band])).toEqual([[1, 0, 2], [3, 0, 0], [0, 0, 0]]);
   expect(prev.cells).toHaveLength(2); // pure
   expect(next.cells).toHaveLength(2);
@@ -200,7 +200,7 @@ test("holdLightingCells keeps held keys at prev's values (absent when prev lacks
   const prev = { cell: 100, bands: [{ name: "bright", min: 0.67 }], hints: [], cells: [
     { i: 3, j: 0, band: 1, tint: 0, hint: -1, corners: [] },
   ] };
-  const next = { cell: 50, bands, hints: ["desaturate"], cells: [
+  const next = { cell: 50, bands, hints: [{ kind: "desaturate" } as const], cells: [
     { i: 3, j: 0, band: 0, tint: 0xffcc66, hint: 0, corners: [] }, // held: prev's band-1 cell stands in
     { i: 4, j: 0, band: 0, tint: 0xffcc66, hint: 0, corners: [] }, // held: prev has none → absent
     { i: 7, j: 7, band: 0, tint: 0, hint: -1, corners: [] },       // applies at once
@@ -267,4 +267,65 @@ test("setSweep paints the committed frame unioned with the sweep at once, and cl
   // (`lightingFrameKey`) but NOT by `onApply`, which has its own observer contract (see
   // `Lighting.apply`'s doc).
   expect(painted).toEqual([1, 1, 2, 1]); // setTarget, settle tick, sweep on, sweep off
+});
+
+// One cell at hint index 0, band 2, on a unit-square polygon so a registered treatment sees
+// real geometry.
+const square = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+const resolveOne = (hint: unknown, treatments?: VisionTreatments) => {
+  const backend = new MockBackend();
+  const l = new Lighting(backend, undefined, treatments);
+  l.setTarget({ cell: 100, bands, hints: [parseRenderHint(hint)], cells: [{ i: 0, j: 0, band: 2, tint: 0, hint: 0, corners: square }] });
+  l.tick(1000);
+  return backend.lighting!.cells[0];
+};
+
+test("each render hint kind resolves its own treatment field and leaves the others unset", () => {
+  const d = resolveOne({ kind: "desaturate" });
+  expect([d.desaturate, d.colorWash, d.outline]).toEqual([true, undefined, undefined]);
+  const w = resolveOne({ kind: "colorWash", color: "#00aa00", opacity: 0.25 });
+  expect([w.desaturate, w.colorWash, w.outline]).toEqual([false, { color: 0x00aa00, opacity: 0.25 }, undefined]);
+  const o = resolveOne({ kind: "outline", color: "#ff0000" });
+  expect([o.desaturate, o.colorWash, o.outline]).toEqual([false, undefined, { color: 0xff0000 }]);
+  const n = resolveOne({ kind: "none" });
+  expect([n.desaturate, n.colorWash, n.outline]).toEqual([false, undefined, undefined]);
+  expect(w.alpha).toBeCloseTo(0.6); // a treatment composes on the band darkening, never replaces it
+});
+
+test("a bare string hint, an unknown kind and a malformed entry parse to no treatment", () => {
+  for (const raw of ["desaturate", { kind: "sepia" }, { kind: "colorWash", color: 5 }, null, 7]) {
+    const c = resolveOne(raw);
+    expect([c.desaturate, c.colorWash, c.outline]).toEqual([false, undefined, undefined]);
+  }
+});
+
+test("a registered custom treatment resolves through its resolve fn with the params and corners", () => {
+  const seen: unknown[] = [];
+  const treatments: VisionTreatments = (kind) => kind === "blood-sense"
+    ? { kind, resolve: (params, cell) => { seen.push(params, cell.corners); return { shape: "fill", color: 0x8b0000, opacity: 0.3 }; } }
+    : undefined;
+  const c = resolveOne({ kind: "custom", treatment: "blood-sense", params: { a: 1 } }, treatments);
+  expect(c.colorWash).toEqual({ color: 0x8b0000, opacity: 0.3 });
+  expect(seen).toEqual([{ a: 1 }, square]);
+});
+
+test("a custom outline paint lands in the outline field", () => {
+  const treatments: VisionTreatments = (kind) => ({ kind, resolve: () => ({ shape: "outline", color: 0x123456 }) });
+  const c = resolveOne({ kind: "custom", treatment: "t", params: null }, treatments);
+  expect([c.colorWash, c.outline]).toEqual([undefined, { color: 0x123456 }]);
+});
+
+test("an unregistered custom treatment is the documented no-op, never a throw or a default paint", () => {
+  const c = resolveOne({ kind: "custom", treatment: "missing", params: null }, () => undefined);
+  expect([c.desaturate, c.colorWash, c.outline]).toEqual([false, undefined, undefined]);
+  const noReader = resolveOne({ kind: "custom", treatment: "missing", params: null });
+  expect([noReader.desaturate, noReader.colorWash, noReader.outline]).toEqual([false, undefined, undefined]);
+});
+
+test("lightingFrameKey differs when only a cell's colorWash or outline differs", () => {
+  const base: LitDrawCell = { i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: square };
+  const f = (cell: LitDrawCell) => lightingFrameKey({ cell: 100, cells: [cell], darkness: [] });
+  expect(f(base)).not.toBe(f({ ...base, colorWash: { color: 1, opacity: 0.5 } }));
+  expect(f({ ...base, colorWash: { color: 1, opacity: 0.5 } })).not.toBe(f({ ...base, colorWash: { color: 2, opacity: 0.5 } }));
+  expect(f(base)).not.toBe(f({ ...base, outline: { color: 1 } }));
 });

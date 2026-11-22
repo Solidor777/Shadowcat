@@ -140,6 +140,77 @@ test("filter changes map 1:1 onto queryAssets params, q vs nameRegex exclusive",
   );
 });
 
+/** A minimal listing row. */
+function row(id: string) {
+  return {
+    id,
+    world_id: "w1",
+    storage_key: "",
+    original_name: `${id}.png`,
+    content_type: "image/webp",
+    byte_size: 1,
+    created_by: null,
+    created_at: 0,
+    version: 1,
+    folder_id: null,
+    tags: [],
+    derived_tags: [],
+  };
+}
+
+/** Stubs the account's stored browser preferences and a three-asset listing. */
+function stubPrefs(slice: Record<string, unknown>) {
+  vi.spyOn(api, "queryAssets").mockResolvedValue({
+    items: [row("a1"), row("a2"), row("a3")],
+    next_cursor: null,
+  } as never);
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+    modules: { "asset-browser": slice },
+  });
+  return vi.spyOn(api, "putUiState").mockResolvedValue();
+}
+
+test("the favorites-only toggle narrows the rendered tiles to the stored favorites", async () => {
+  stubPrefs({ favorites: ["a2"] });
+  render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(3));
+  await fireEvent.click(screen.getByTestId("filter-favorites"));
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(1));
+  expect(screen.getByTestId("asset-tile").getAttribute("title")).toBe("a2.png");
+});
+
+test("pressing a star stores the toggled favorites", async () => {
+  const put = stubPrefs({ favorites: [] });
+  render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
+  const stars = await screen.findAllByTestId("asset-favorite");
+  await fireEvent.click(stars[0]);
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith({ modules: { "asset-browser": { favorites: ["a1"] } } }),
+  );
+  await waitFor(() =>
+    expect(screen.getAllByTestId("asset-favorite")[0].getAttribute("aria-pressed")).toBe("true"),
+  );
+});
+
+test("the stored list view renders rows, and the toggle swaps views keeping the selection", async () => {
+  const put = stubPrefs({ viewMode: "list" });
+  render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
+  const rows = await screen.findAllByTestId("asset-row");
+  expect(rows).toHaveLength(3);
+  expect(screen.queryByTestId("asset-tile")).toBeNull();
+  await fireEvent.click(rows[1]);
+
+  await fireEvent.click(screen.getByTestId("view-mode-grid"));
+  const tiles = await screen.findAllByTestId("asset-tile");
+  expect(tiles[1].getAttribute("aria-pressed")).toBe("true");
+  expect(tiles[0].getAttribute("aria-pressed")).toBe("false");
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith({ modules: { "asset-browser": { viewMode: "grid" } } }),
+  );
+});
+
 test("an asset notice refetches the listing", async () => {
   const q = vi
     .spyOn(api, "queryAssets")

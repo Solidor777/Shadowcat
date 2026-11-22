@@ -78,8 +78,8 @@ export { bandContains, levelOf } from "./levels";
 export type { SceneLevel, ElevationBand } from "./levels";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
-export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, STAGE_OVERLAY_CONTRACT, SETTINGS_SECTION_CONTRACT, SCENE_TOOL_CONTRACT, CHAT_CARD_EXTENSION_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SettingsSectionMeta, SceneToolMeta, ChatCardExtensionMeta } from "./contributions";
+export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, STAGE_OVERLAY_CONTRACT, SETTINGS_SECTION_CONTRACT, SCENE_TOOL_CONTRACT, VISION_TREATMENT_CONTRACT, CHAT_CARD_EXTENSION_CONTRACT } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SettingsSectionMeta, SceneToolMeta, VisionTreatmentMeta, VisionTreatmentPaint, VisionTreatmentCell, ChatCardExtensionMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
@@ -192,8 +192,8 @@ export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from ".
 export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
 export type { InstalledModuleInfo } from "@shadowcat/types";
-export { listUsers, createUser, deleteUser, changeOwnPassword, ChangePasswordError, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite, getUiState, putUiState, defaultUiState } from "./user-rest";
-export type { ServerUser, WorldMember, MintedInvite, InviteEntry, UiState, UiStatePatch } from "./user-rest";
+export { listUsers, createUser, deleteUser, changeOwnPassword, ChangePasswordError, updateProfile, uploadAvatar, deleteAvatar, avatarUrl, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite, getUiState, putUiState, defaultUiState } from "./user-rest";
+export type { ServerUser, WorldMember, ProfileUpdate, MintedInvite, InviteEntry, UiState, UiStatePatch } from "./user-rest";
 export { listTrash, emptyTrash, deleteTrashEntry, TrashEntryGoneError } from "./trash-rest";
 export type { TrashEntry, ListTrashOptions, EmptyTrashResult } from "./trash-rest";
 export {
@@ -210,10 +210,12 @@ export type {
   BackupListingView,
   RestoreFailedView,
 } from "./backup-rest";
+export { getPortMapStatus, setPortForward } from "./portmap-rest";
+export type { PortMapStatus } from "@shadowcat/types";
 export { fmtBytes } from "./format";
 export { ACTOR_DOC_TYPE, buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, compareScenesByCreation, queryScenesInCreationOrder, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildRegionDoc, setRegionVisibility, templateToRegionShape, buildRegionFromTemplate, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId, COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, COMBATANT_GROUP_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, buildCombatDoc, buildCombatantDoc, buildCombatantGroupDoc, newCombatEngine, ENGINE_COMBAT_DEFAULTS, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, SYSTEM_DEFAULTS_DOC_TYPE, buildSystemDefaultsDoc, resolveSettingProvenance, AUTHOR_CAPS, grantAuthor } from "./scene-docs";
-export type { TemplateRegionRefusal, TemplateRegionShapeResult, TemplateRegionBatchResult, SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, VisualTransform, TransformAnchor, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, FogPooling, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, SceneAmbience, Occlusion, AudioOverlay, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionGeometry, CompoundShapePart, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, PortalTarget, NoticeAudience, AmbientLightMode, AmbientLightOverride, RegionOcclusion, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, DoorState, WallDirection, WallSightTier, WallProximity, WallSense, CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, EffectOrigin, ExpiryNotice, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
-export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
+export type { TemplateRegionRefusal, TemplateRegionShapeResult, TemplateRegionBatchResult, SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, VisualTransform, TransformAnchor, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, FogPooling, FacingTurnRule, FacingVision, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, SceneAmbience, Occlusion, AudioOverlay, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, RenderHint, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionGeometry, CompoundShapePart, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, PortalTarget, NoticeAudience, AmbientLightMode, AmbientLightOverride, RegionOcclusion, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, DoorState, WallDirection, WallSightTier, WallProximity, WallSense, CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, EffectOrigin, ExpiryNotice, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
+export { resolveTokenActor, resolveTokenFacingVision, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";
 export type { FootprintExtent, FootprintLookup } from "./footprints";
@@ -250,8 +252,16 @@ export { createDragController, dropIndex, DEFAULT_LONG_PRESS_MS } from "./dnd";
 export type { DragTarget, DropPlacement, DropResult, DragControllerOptions, DragController } from "./dnd";
 export { buildUpdate } from "./update-op";
 export type { FieldEdit } from "./update-op";
-export { TABLE_DOC_TYPE, buildTableDoc } from "./table-docs";
-export type { TableEngine, DrawRule, TableRow, RowRange, TableEntry, BuildTableDocOptions } from "./table-docs";
+export { TABLE_DOC_TYPE, TABLE_FOLDER_DOC_TYPE, buildTableDoc, buildTableFolderDoc } from "./table-docs";
+export type {
+  TableEngine,
+  DrawRule,
+  TableRow,
+  RowRange,
+  TableEntry,
+  BuildTableDocOptions,
+  BuildTableFolderDocOptions,
+} from "./table-docs";
 export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody, parseNotePageKind, appendNoteSortKey } from "./note-docs";
 export type { NoteEngine, NotePageKind, BuildNoteDocOptions } from "./note-docs";
 export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc, resolveNextTrackAsset } from "./playlist-docs";

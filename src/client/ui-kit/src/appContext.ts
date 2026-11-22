@@ -38,6 +38,17 @@ export interface ProgressNotification {
   dismiss: () => void;
 }
 
+/** One world member's display profile, from the roster. A member absent from
+ * `AppContext.memberProfiles` has no profile set. */
+export interface MemberProfile {
+  /** Colour accent as `#rrggbb`, or `null` when unset. */
+  colour: string | null;
+  /** Pronouns display text, or `null` when unset. */
+  pronouns: string | null;
+  /** URL of the member's avatar image (`avatarUrl` in `@shadowcat/core`), or `null` when unset. */
+  avatar: string | null;
+}
+
 /** Options for `AppContext.subscribeScene`. Shares its one field's shape with `@shadowcat/shell`'s
  * `SubscribeSceneOpts` by coincidence, not by a package-boundary dependency — check that type too
  * if this one's fields change. */
@@ -213,6 +224,11 @@ export interface AppContext {
   notifyProgress: (message: string, progress: NotificationProgress) => ProgressNotification;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
+  /** userId → display profile (colour accent, pronouns, avatar URL) for the world's members,
+   * refreshed with `members` on every (re)connect. The signed-in user's own profile editor writes
+   * its saved values here so the roster shows them without a reconnect. A member with no entry
+   * has nothing set. */
+  memberProfiles: Map<string, MemberProfile>;
   /** userId → whether that member currently has a live connection to this world, kept current by
    * the server's presence transitions. Transitions only: a member already online before this
    * client connected has no entry until their next transition, so an absent key means unknown,
