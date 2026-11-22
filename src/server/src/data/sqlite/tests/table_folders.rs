@@ -304,16 +304,83 @@ async fn the_reparent_step_emits_no_moves_for_an_empty_folder_or_a_non_folder() 
     let note = note_doc(2, w, "n", None);
     create_all(&r, &ctx, w, &[folder.clone(), note.clone()], 1).await;
     let mut tx = r.pool.begin().await.unwrap();
+    let none = std::collections::HashSet::new();
     assert!(
-        SqliteRepository::table_folder_reparent_moves(&mut tx, folder.id)
+        SqliteRepository::table_folder_reparent_moves(&mut tx, folder.id, &none)
             .await
             .unwrap()
             .is_empty()
     );
     assert!(
-        SqliteRepository::table_folder_reparent_moves(&mut tx, note.id)
+        SqliteRepository::table_folder_reparent_moves(&mut tx, note.id, &none)
             .await
             .unwrap()
             .is_empty()
     );
+}
+
+/// Builds `outer > top > sub` with one table under each, deletes `outer` and `top` in one
+/// command in the order given, and asserts every table survives at the world root (the nearest
+/// ancestor the command does not delete).
+async fn delete_outer_and_nested_in_one_command(outer_first: bool, via_intent: bool) {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let outer = table_folder_doc(1, w, "outer", None);
+    let top = table_folder_doc(2, w, "top", Some(outer.id));
+    let sub = table_folder_doc(3, w, "sub", Some(top.id));
+    create_all(&r, &ctx, w, &[outer.clone(), top.clone(), sub.clone()], 1).await;
+    let tables = [
+        table_doc(10, w, Some(outer.id)),
+        table_doc(11, w, Some(top.id)),
+        table_doc(12, w, Some(sub.id)),
+    ];
+    create_all(&r, &ctx, w, &tables, 2).await;
+    let outer_stored = r.get_document(outer.id).await.unwrap().unwrap();
+    let top_stored = r.get_document(top.id).await.unwrap().unwrap();
+    let mut ops = vec![
+        Operation::Delete { doc: outer_stored },
+        Operation::Delete { doc: top_stored },
+    ];
+    if !outer_first {
+        ops.reverse();
+    }
+    if via_intent {
+        r.apply_intent(&ctx, w, ops, 3, WriteOrigin::Client)
+            .await
+            .unwrap();
+    } else {
+        r.apply_command(UnsequencedCommand {
+            world_id: w,
+            author: ctx.user_id,
+            ts: 3,
+            ops,
+        })
+        .await
+        .unwrap();
+    }
+    assert!(r.get_document(outer.id).await.unwrap().is_none());
+    assert!(r.get_document(top.id).await.unwrap().is_none());
+    assert!(r.get_document(sub.id).await.unwrap().is_none());
+    let ids: Vec<Uuid> = tables.iter().map(|t| t.id).collect();
+    assert_tables_under(&r, &ids, None).await;
+}
+
+#[tokio::test]
+async fn deleting_outer_then_nested_folder_in_one_intent_keeps_every_table() {
+    delete_outer_and_nested_in_one_command(true, true).await;
+}
+
+#[tokio::test]
+async fn deleting_nested_then_outer_folder_in_one_intent_keeps_every_table() {
+    delete_outer_and_nested_in_one_command(false, true).await;
+}
+
+#[tokio::test]
+async fn deleting_outer_then_nested_folder_in_one_command_keeps_every_table() {
+    delete_outer_and_nested_in_one_command(true, false).await;
+}
+
+#[tokio::test]
+async fn deleting_nested_then_outer_folder_in_one_command_keeps_every_table() {
+    delete_outer_and_nested_in_one_command(false, false).await;
 }

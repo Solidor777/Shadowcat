@@ -977,12 +977,14 @@ impl Repository for SqliteRepository {
         // (undo/replay), so unlike apply_intent the descendants are not
         // capability-checked.
         let mut ops = Vec::with_capacity(cmd.ops.len());
+        let doomed = Self::deleted_ids(&cmd.ops);
         for op in cmd.ops {
             match op {
                 Operation::Delete { doc } => {
                     // Tables filed under a deleted table folder move out first,
                     // so the descendant walk below finds only nested folders.
-                    let lifted = Self::table_folder_reparent_moves(&mut tx, doc.id).await?;
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
                     let kept = Self::moved_ids(&lifted);
                     ops.extend(lifted);
                     for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {
@@ -2115,6 +2117,7 @@ impl Repository for SqliteRepository {
         // (whose forged permissions would otherwise drive per-recipient
         // redaction and persist into the authoritative event log).
         let mut authoritative_ops = Vec::with_capacity(ops.len());
+        let doomed = Self::deleted_ids(&ops);
         for op in ops {
             match op {
                 Operation::Delete { doc } => {
@@ -2130,7 +2133,8 @@ impl Repository for SqliteRepository {
                     // first by explicit `Move` ops (the stored folder's parent
                     // is the target, never the client body's), and the walk
                     // skips them.
-                    let lifted = Self::table_folder_reparent_moves(&mut tx, doc.id).await?;
+                    let lifted =
+                        Self::table_folder_reparent_moves(&mut tx, doc.id, &doomed).await?;
                     let kept = Self::moved_ids(&lifted);
                     authoritative_ops.extend(lifted);
                     for desc in Self::descendants_first(&mut tx, doc.id, &kept).await? {

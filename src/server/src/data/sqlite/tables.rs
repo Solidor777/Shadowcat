@@ -53,9 +53,23 @@ impl SqliteRepository {
             .collect()
     }
 
+    /// The ids of every `Delete` op in `ops`: the set of documents the command removes, which
+    /// `table_folder_reparent_moves` must not pick as a lift target.
+    pub(super) fn deleted_ids(ops: &[Operation]) -> std::collections::HashSet<Uuid> {
+        ops.iter()
+            .filter_map(|op| match op {
+                Operation::Delete { doc } => Some(doc.id),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The `Move` ops that lift every `table` out of the `table_folder` `folder_id`'s subtree
     /// before that folder is deleted: each table filed anywhere under the folder or one of its
-    /// nested sub-folders is moved to the deleted folder's own parent (`None` = world root).
+    /// nested sub-folders is moved to the nearest ancestor of the folder that the command does
+    /// not also delete (`doomed` holds every id the command deletes; `None` = world root).
+    /// A command that deletes an outer folder and a nested one therefore lifts the tables to
+    /// the same surviving ancestor in either order, never onto a folder about to be deleted.
     /// The nested sub-folders themselves are left for the caller's descendant expansion, which
     /// deletes them. Empty for a missing document and for every doc_type but `table_folder`.
     ///
@@ -66,12 +80,25 @@ impl SqliteRepository {
     pub(super) async fn table_folder_reparent_moves(
         tx: &mut sqlx::SqliteConnection,
         folder_id: Uuid,
+        doomed: &std::collections::HashSet<Uuid>,
     ) -> Result<Vec<Operation>, DataError> {
         let Some(folder) = Self::load_document(&mut *tx, folder_id).await? else {
             return Ok(Vec::new());
         };
         if folder.doc_type != TABLE_FOLDER_DOC_TYPE {
             return Ok(Vec::new());
+        }
+        // Walk up past every ancestor this command also deletes; the visited set
+        // bounds the walk on a cyclic parent chain.
+        let mut target = folder.parent_id;
+        let mut climbed = std::collections::HashSet::from([folder_id]);
+        while let Some(p) = target {
+            if !doomed.contains(&p) || !climbed.insert(p) {
+                break;
+            }
+            target = Self::load_document(&mut *tx, p)
+                .await?
+                .and_then(|d| d.parent_id);
         }
         // Breadth-first closure of `table_folder` descendants; the visited set
         // bounds the walk on a self-referencing or cyclic parent chain.
@@ -109,7 +136,7 @@ impl SqliteRepository {
                     .map_err(|e| DataError::OpFailed(e.to_string()))?;
                 moves.push(Operation::Move {
                     doc_id: table,
-                    parent_id: folder.parent_id,
+                    parent_id: target,
                     old_parent_id: Some(holder),
                 });
             }
