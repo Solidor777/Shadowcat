@@ -207,6 +207,22 @@ async fn config_reports_initialized_state_and_is_public_pre_init() {
 }
 
 #[tokio::test]
+async fn config_publishes_onboarding_enabled_from_the_server_configuration() {
+    let server = axum_test::TestServer::new(router(initialized_state().await).await).unwrap();
+    let body = server.get("/api/config").await.json::<serde_json::Value>();
+    assert_eq!(body["onboarding_enabled"], true);
+
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        onboarding_enabled: false,
+        ..Default::default()
+    });
+    let server = axum_test::TestServer::new(router(state).await).unwrap();
+    let body = server.get("/api/config").await.json::<serde_json::Value>();
+    assert_eq!(body["onboarding_enabled"], false);
+}
+
+#[tokio::test]
 async fn ui_state_get_put_round_trip_and_validation() {
     let state = initialized_state().await;
     seed_user(&state, "u").await;

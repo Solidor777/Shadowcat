@@ -194,6 +194,9 @@ pub struct Cli {
     /// admin toggle in both directions.
     #[arg(long)]
     pub port_forward: Option<bool>,
+    /// Turns the guided onboarding tours on or off for every user (`Config.onboarding_enabled`).
+    #[arg(long)]
+    pub onboarding_enabled: Option<bool>,
     /// One-shot: regenerate the persisted self-signed certificate and exit. Mutually exclusive
     /// with `--backup-to`, `--restore-from` and any subcommand.
     #[arg(long)]
@@ -417,6 +420,10 @@ pub struct Config {
     /// on. When set it wins over the stored toggle in both directions and the admin route refuses
     /// to change it. Enabling opens the server's port to the internet.
     pub port_forward: Option<bool>,
+    /// Whether clients offer the guided onboarding tours. Default `true`; `false` suppresses the
+    /// offer for every user on this server. Published as `onboarding_enabled` in `/api/config`
+    /// (`http::routes::ServerConfig`).
+    pub onboarding_enabled: bool,
 }
 
 /// The least [`Config::egress_window_secs`] accepts.
@@ -471,6 +478,7 @@ impl Default for Config {
             hsts_max_age_secs: None,
             egress_window_secs: crate::http::conn_serve::PEER_STALL_TIMEOUT.as_secs(),
             port_forward: None,
+            onboarding_enabled: true,
         }
     }
 }
@@ -798,6 +806,9 @@ impl Config {
         }
         if let Some(v) = cli.port_forward {
             cfg.port_forward = Some(v);
+        }
+        if let Some(v) = cli.onboarding_enabled {
+            cfg.onboarding_enabled = v;
         }
         if !(EGRESS_WINDOW_SECS_MIN..=EGRESS_WINDOW_SECS_MAX).contains(&cfg.egress_window_secs) {
             return Err(Box::new(figment::Error::from(format!(

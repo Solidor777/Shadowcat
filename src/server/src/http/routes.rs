@@ -330,9 +330,14 @@ pub async fn put_ui_state(
 /// ```
 /// use shadowcat::http::routes::ServerConfig;
 ///
-/// let cfg = ServerConfig { initialized: true, tls: shadowcat::tls::TlsRuntime::disabled().status() };
+/// let cfg = ServerConfig {
+///     initialized: true,
+///     tls: shadowcat::tls::TlsRuntime::disabled().status(),
+///     onboarding_enabled: true,
+/// };
 /// let json = serde_json::to_value(&cfg).unwrap();
 /// assert_eq!(json["initialized"], true);
+/// assert_eq!(json["onboarding_enabled"], true);
 /// assert_eq!(json["tls"]["enabled"], false);
 /// ```
 #[derive(Serialize, TS)]
@@ -343,6 +348,8 @@ pub struct ServerConfig {
     /// Built-in HTTPS status: whether TLS is answered, the source of the certificate, the
     /// published `https://` origins and the negotiated ALPN protocols.
     pub tls: crate::tls::TlsStatus,
+    /// Whether clients offer the guided onboarding tours (`Config.onboarding_enabled`).
+    pub onboarding_enabled: bool,
 }
 
 /// Whether a first admin exists. Unauthenticated; reachable before init.
@@ -381,6 +388,7 @@ pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         initialized: state.initialized.load(Ordering::Relaxed),
         tls: state.tls.status(),
+        onboarding_enabled: state.config.onboarding_enabled,
     })
 }
 
