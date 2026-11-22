@@ -10,7 +10,7 @@ import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
   newCombatEngine, ENGINE_COMBAT_DEFAULTS,
-  type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
+  type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine, type EffectOrigin,
 } from "./scene-docs";
 import { readFileSync } from "node:fs";
 import {
@@ -750,6 +750,17 @@ describe("combat document builders", () => {
     expect(d.engine).toEqual(eng);
     expect(d.name).toBe("Bless");
     expect(d.system).toEqual({ mechanics: { modifiers: {} } });
+  });
+
+  it("buildEffectDoc round-trips an origin through the engine band untouched", () => {
+    const origin: EffectOrigin = { source: "item-1", label: "Aldric's blessing" };
+    const eng: EffectEngine = { active: true, transfer: false, duration: null, origin };
+    const d = buildEffectDoc("world-1", eng, {}, undefined, "Bless");
+    expect((d.engine as EffectEngine).origin).toEqual(origin);
+    const labelOnly = buildEffectDoc("world-1", { ...eng, origin: { label: "Spider Queen" } }, {});
+    expect((labelOnly.engine as EffectEngine).origin).toEqual({ label: "Spider Queen" });
+    const unrecorded = buildEffectDoc("world-1", { active: true, transfer: false, duration: null }, {});
+    expect((unrecorded.engine as EffectEngine).origin).toBeUndefined();
   });
 
   it("buildCombatHistoryDoc parents to the combat and is GM-only", () => {

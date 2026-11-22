@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSettingProvenance, type WireDocument, type SceneEngine, type CombatDefaults, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
+  import { resolveSettingProvenance, type WireDocument, type SceneEngine, type CombatDefaults, type ExpiryNotice, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
   import { parseFormula } from "@shadowcat/formula";
 
   /** CombatSceneOverrides props. */
@@ -32,6 +32,7 @@
   const INTERPRETATION = ["per_cell", "spaces"] as const;
   const ENFORCEMENT = ["none", "warn", "hard"] as const;
   const TURN_CONTROL = ["owner_may_end", "gm_only"] as const;
+  const EXPIRY_NOTICE = ["visible", "gm_only"] as const;
 
   /** Reads the `combat.<leaf>` chain resolved AT this scene — `resolveSettingProvenance`
    * already re-roots to the scene tier when a real scene (not `undefined`) is passed, so this
@@ -266,6 +267,20 @@
     </label>
     <p data-testid={"provenance:combat.scene." + key}>{ctx.t("gameSettings.source." + prov(("combat." + key) as SettingPath).source)}</p>
   {/each}
+
+  <label>
+    {ctx.t("gameSettings.combat.scene.expiryNotice")}
+    <select aria-label={ctx.t("gameSettings.combat.scene.expiryNotice")} value={ssys?.combat?.expiryNotice ?? "__inherit"}
+      onchange={(e) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v === "__inherit") leafRemove("expiryNotice");
+        else leafSet("expiryNotice", v as ExpiryNotice);
+      }}>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
+      {#each EXPIRY_NOTICE as v (v)}<option value={v}>{ctx.t("gameSettings.combat.expiryNotice." + v)}</option>{/each}
+    </select>
+  </label>
+  <p data-testid="provenance:combat.scene.expiryNotice">{ctx.t("gameSettings.source." + prov("combat.expiryNotice").source)}</p>
 
   <fieldset>
     <legend>{ctx.t("gameSettings.combat.lifecycle")}</legend>

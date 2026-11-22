@@ -6,5 +6,6 @@
   "effectCleanup": true,
   "effectLifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null },
   "rewindRestore": true,
-  "forwardRestore": false
+  "forwardRestore": false,
+  "expiryNotice": "visible"
 }

@@ -1054,6 +1054,17 @@ pub struct EffectOrigin {
 impl EffectOrigin {
     /// At least one of `source` and `label` is present, and a present `label` is 1 to
     /// `MAX_ORIGIN_LABEL_CHARS` characters with no control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::combat::EffectOrigin;
+    ///
+    /// let labelled = EffectOrigin { source: None, label: Some("Spider Queen".to_string()) };
+    /// assert!(labelled.validate().is_ok());
+    /// let empty_label = EffectOrigin { source: None, label: Some(String::new()) };
+    /// assert!(empty_label.validate().is_err());
+    /// ```
     pub fn validate(&self) -> Result<(), String> {
         if self.source.is_none() && self.label.is_none() {
             return Err("origin needs a source or a label".into());

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSettingProvenance, type WireDocument, type WorldSettingsEngine, type CombatDefaults, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
+  import { resolveSettingProvenance, type WireDocument, type WorldSettingsEngine, type CombatDefaults, type ExpiryNotice, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
   import { parseFormula } from "@shadowcat/formula";
 
   /** CombatSettings props. */
@@ -40,6 +40,7 @@
   const INTERPRETATION = ["per_cell", "spaces"] as const;
   const ENFORCEMENT = ["none", "warn", "hard"] as const;
   const TURN_CONTROL = ["owner_may_end", "gm_only"] as const;
+  const EXPIRY_NOTICE = ["visible", "gm_only"] as const;
 
   /** Writes the WHOLE `/engine/combat` object: `set_pointer` cannot create a missing `/engine/
    * combat` from a leaf sub-path, so every combat-leaf write replaces the object outright, with
@@ -182,7 +183,7 @@
 
   const EFFECTIVE_PATHS: SettingPath[] = [
     "combat.movementResource", "combat.interpretation", "combat.enforcement", "combat.turnControl",
-    "combat.effectCleanup", "combat.rewindRestore", "combat.forwardRestore",
+    "combat.effectCleanup", "combat.rewindRestore", "combat.forwardRestore", "combat.expiryNotice",
     "combat.effectLifecycle.onCombatEnd", "combat.effectLifecycle.onTurnEnd", "combat.effectLifecycle.onAdvance",
   ];
 
@@ -295,6 +296,23 @@
       <button type="button" onclick={() => leafRemove(k)}>{ctx.t("gameSettings.resetToSystem")}</button>
     {/if}
   {/each}
+
+  <label>
+    {ctx.t("gameSettings.combat.expiryNotice")}
+    <select aria-label={ctx.t("gameSettings.combat.expiryNotice")} value={wsys?.combat?.expiryNotice ?? "__inherit"}
+      onchange={(e) => {
+        const v = (e.currentTarget as HTMLSelectElement).value;
+        if (v === "__inherit") leafRemove("expiryNotice");
+        else leafSet("expiryNotice", v as ExpiryNotice);
+      }}>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
+      {#each EXPIRY_NOTICE as v (v)}<option value={v}>{ctx.t("gameSettings.combat.expiryNotice." + v)}</option>{/each}
+    </select>
+  </label>
+  <p data-testid="provenance:combat.expiryNotice">{ctx.t("gameSettings.source." + prov("combat.expiryNotice").source)}</p>
+  {#if prov("combat.expiryNotice").source === "world"}
+    <button type="button" onclick={() => leafRemove("expiryNotice")}>{ctx.t("gameSettings.resetToSystem")}</button>
+  {/if}
 
   <fieldset>
     <legend>{ctx.t("gameSettings.combat.lifecycle")}</legend>

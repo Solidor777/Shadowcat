@@ -538,6 +538,7 @@ fn engine_combat_defaults_matches_the_shared_fixture() {
         },
         "rewindRestore": r.rewind_restore,
         "forwardRestore": r.forward_restore,
+        "expiryNotice": r.expiry_notice,
     });
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../../client/core/src/__fixtures__/engine-combat-defaults.json"
@@ -583,6 +584,7 @@ fn resolve_combat_rules_matches_the_shared_provenance_fixture() {
             "combat.effectCleanup" => json!(r.effect_cleanup),
             "combat.rewindRestore" => json!(r.rewind_restore),
             "combat.forwardRestore" => json!(r.forward_restore),
+            "combat.expiryNotice" => json!(r.expiry_notice),
             "combat.effectLifecycle.onCombatEnd" => json!(r.effect_lifecycle.on_combat_end),
             "combat.effectLifecycle.onTurnEnd" => json!(r.effect_lifecycle.on_turn_end),
             "combat.effectLifecycle.onAdvance" => json!(r.effect_lifecycle.on_advance),

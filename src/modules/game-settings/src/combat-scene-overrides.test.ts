@@ -64,6 +64,18 @@ describe("CombatSceneOverrides (per-scene chain editor)", () => {
     ]);
   });
 
+  it("the expiry-note override writes the chosen audience onto the scene and reports the scene tier", async () => {
+    const dispatchIntent = vi.fn();
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws({ expiryNotice: "visible" }), scene({ expiryNotice: "gm_only" })), dispatchIntent }) });
+    expect(screen.getByTestId("provenance:combat.scene.expiryNotice").textContent).toBe("gameSettings.source.scene");
+    const sel = screen.getByLabelText("gameSettings.combat.scene.expiryNotice") as HTMLSelectElement;
+    expect(sel.value).toBe("gm_only");
+    await fireEvent.change(sel, { target: { value: "__inherit" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "s1", changes: [{ path: "/engine/combat", old: { expiryNotice: "gm_only" }, new: null }] },
+    ]);
+  });
+
   it("the movement-resource select lists the resource registry's keys", async () => {
     const store = storeWith(ws(), scene(), buildResourceRegistryDoc("w1", { gold: { name: "Gold", order: 0, binding: { kind: "mirror", value: 0 } } }));
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn() }) });
