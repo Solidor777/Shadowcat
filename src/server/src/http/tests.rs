@@ -1034,6 +1034,122 @@ async fn user_password_reset_by_admin_on_their_own_account_evicts_their_own_sess
 }
 
 #[tokio::test]
+async fn change_own_password_succeeds_revokes_the_session_and_swaps_the_credential() {
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    me.get("/api/me").await.assert_status(StatusCode::OK);
+
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // Every session for the account is revoked, the caller's own included.
+    me.get("/api/me")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    let anon = anon_server(&state).await;
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Skipping the current-password check would turn a stolen session into an account takeover:
+/// the wrong current password must be refused and the stored hash must stay as it was.
+#[tokio::test]
+async fn change_own_password_with_the_wrong_current_password_is_401_and_changes_nothing() {
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let hash_before = state
+        .repo
+        .user_by_id(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash;
+
+    me.post("/api/account/password")
+        .json(
+            &serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }),
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+
+    let hash_after = state
+        .repo
+        .user_by_id(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash;
+    assert_eq!(hash_before, hash_after, "a refused change writes nothing");
+    // The session survives a refused change.
+    me.get("/api/me").await.assert_status(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn change_own_password_rejects_a_policy_failure_with_422_and_changes_nothing() {
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "short" }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    let anon = anon_server(&state).await;
+    anon.post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn change_own_password_requires_authentication() {
+    let state = initialized_state().await;
+    anon_server(&state)
+        .await
+        .post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+}
+
+/// One Argon2 verify per change, on the same constant-cost path `login` uses; a refused
+/// change must not skip it and a policy failure is decided after it.
+#[tokio::test]
+async fn change_own_password_spends_exactly_one_verify_per_call() {
+    use crate::auth::password::verify_count;
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(
+            &serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }),
+        )
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    assert_eq!(verify_count() - before, 1, "wrong current password");
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "short" }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(verify_count() - before, 1, "policy failure");
+}
+
+#[tokio::test]
 async fn world_delete_authz_matrix() {
     use crate::data::document::WorldRole;
     use crate::data::repository::Repository;

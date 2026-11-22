@@ -5,6 +5,24 @@
 
 use super::*;
 
+/// Projects a `users` row (`id, username, password_hash, server_role`) into a `UserRecord`.
+/// The one mapping every by-identity account lookup shares; an unrecognised role string
+/// maps to `ServerRole::User` (least privilege).
+fn user_record_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, DataError> {
+    let role_str: String = r.get("server_role");
+    let server_role = match role_str.as_str() {
+        "admin" => ServerRole::Admin,
+        _ => ServerRole::User,
+    };
+    Ok(UserRecord {
+        id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+            .map_err(|e| DataError::OpFailed(e.to_string()))?,
+        username: r.get("username"),
+        password_hash: r.get("password_hash"),
+        server_role,
+    })
+}
+
 impl SqliteRepository {
     /// Revokes every live session belonging to `user`, on the caller's own transaction
     /// connection. INVARIANT: a password change or an account deletion must invalidate every
@@ -485,23 +503,31 @@ impl SqliteRepository {
         .bind(username)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(match row {
-            Some(r) => {
-                let role_str: String = r.get("server_role");
-                let server_role = match role_str.as_str() {
-                    "admin" => ServerRole::Admin,
-                    _ => ServerRole::User,
-                };
-                Some(UserRecord {
-                    id: Uuid::parse_str(r.get::<String, _>("id").as_str())
-                        .map_err(|e| DataError::OpFailed(e.to_string()))?,
-                    username: r.get("username"),
-                    password_hash: r.get("password_hash"),
-                    server_role,
-                })
-            }
-            None => None,
-        })
+        row.as_ref().map(user_record_from_row).transpose()
+    }
+
+    /// Look up an account by id, or `None`. Same projection as `user_by_username`
+    /// (both go through `user_record_from_row`), so a caller already authenticated by
+    /// id can re-verify the stored credential without carrying the hash in its session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.user_by_id(uuid::Uuid::new_v4()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn user_by_id(&self, id: Uuid) -> Result<Option<UserRecord>, DataError> {
+        let row =
+            sqlx::query("SELECT id, username, password_hash, server_role FROM users WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        row.as_ref().map(user_record_from_row).transpose()
     }
 
     /// Whether a user row with this id exists. Used to reject a membership

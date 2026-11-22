@@ -191,7 +191,7 @@ export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from ".
 export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
 export type { InstalledModuleInfo } from "@shadowcat/types";
-export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite, getUiState, putUiState, defaultUiState } from "./user-rest";
+export { listUsers, createUser, deleteUser, changeOwnPassword, ChangePasswordError, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite, getUiState, putUiState, defaultUiState } from "./user-rest";
 export type { ServerUser, WorldMember, MintedInvite, InviteEntry, UiState, UiStatePatch } from "./user-rest";
 export { listTrash, emptyTrash, deleteTrashEntry, TrashEntryGoneError } from "./trash-rest";
 export type { TrashEntry, ListTrashOptions, EmptyTrashResult } from "./trash-rest";

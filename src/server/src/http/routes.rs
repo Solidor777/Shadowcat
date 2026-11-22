@@ -1035,6 +1035,109 @@ pub async fn reset_user_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Body of `POST /api/account/password`: the self-service change. Distinct from
+/// `ResetPasswordRequest` (admin reset) because this route also requires the caller's
+/// current password.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::ChangePasswordRequest;
+///
+/// let body: ChangePasswordRequest =
+///     serde_json::from_str(r#"{"current_password":"old-password","new_password":"a-new-password"}"#).unwrap();
+/// assert_eq!(body.new_password, "a-new-password");
+/// ```
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    /// The caller's current plaintext password, re-verified; a mismatch rejects the request.
+    pub current_password: String,
+    /// The new plaintext password, checked by `validate_password_policy` (the same policy
+    /// `create_user` and `reset_user_password` apply).
+    pub new_password: String,
+}
+
+/// POST /api/account/password — any authenticated account changes its OWN password.
+/// There is no path parameter, so the target is always the caller and no cross-account
+/// write surface exists. `current_password` is re-verified through the same
+/// `verify_password_async` path `login` uses, exactly one Argon2 verify per call, so a
+/// session stolen without the password cannot lock the real owner out. After the check the
+/// route shares `validate_password_policy`, `SqliteRepository::set_user_password` (which
+/// revokes every session for the account in the hash-update transaction) and
+/// `evict_user` with `reset_user_password`; the caller's own session and live connections
+/// end too, as for any password change. A wrong current password, or an account with no
+/// stored credential, is a uniform `AppError::Unauthorized` (401); a new password failing
+/// policy is `AppError::Unprocessable` (422).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::password::hash_password;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{change_own_password, ChangePasswordRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let hash = hash_password("old-password").unwrap();
+/// let id = repo.create_user("gm", Some(&hash), ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// // The change also clears the account's session-store rows, so the `tower_sessions`
+/// // table must exist first, same as `reset_user_password`'s own example.
+/// let _ = shadowcat::http::router(state.clone()).await;
+/// let user = AuthUser { id, username: "gm".into(), role: ServerRole::User };
+/// let body = ChangePasswordRequest {
+///     current_password: "old-password".into(),
+///     new_password: "a-new-password".into(),
+/// };
+/// let result = change_own_password(user, State(state), Json(body)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
+pub async fn change_own_password(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    let record = state.repo.user_by_id(user.id).await?;
+    // Exactly one Argon2 verify on every path, like `login`: a missing credential still pays
+    // for a throwaway-hash verify so the cost does not depend on the account's state.
+    let verify_target = record
+        .as_ref()
+        .and_then(|u| u.password_hash.as_deref())
+        .map(str::to_owned)
+        .unwrap_or_else(|| anti_enumeration_phc().to_owned());
+    let verified = verify_password_async(body.current_password, verify_target).await;
+    if !verified || record.is_none_or(|u| u.password_hash.is_none()) {
+        return Err(AppError::Unauthorized);
+    }
+    validate_password_policy(&body.new_password)?;
+    let hash = crate::auth::password::hash_password_async(body.new_password)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    state.repo.set_user_password(user.id, &hash).await?;
+    state.ws.rooms.evict_user(user.id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // --- Worlds, membership, and documents ---
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting
