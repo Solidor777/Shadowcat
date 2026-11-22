@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use axum::http::Request;
-use shadowcat::http::conn_serve::{ConnLimits, ABORT_WAIT};
-use shadowcat::http::{self, SESSION_GRACE};
+use shadowcat::http;
+use shadowcat::http::conn_serve::ConnLimits;
 use shadowcat::ws::protocol::{ServerMsg, WsErrorCode};
 use shadowcat::ws::WsState;
 use shadowcat_test_support::h2::client::Builder as H2Builder;
@@ -24,22 +24,13 @@ use tokio::time::timeout;
 /// rather than on the sessions being told to end is visible as a slow return.
 const DRAIN_BOUND: Duration = Duration::from_secs(6);
 
-/// The drain bound of the stalled-peer test: short, so the abort that ends it is observable.
-const STALLED_DRAIN_BOUND: Duration = Duration::from_secs(1);
-
-/// The designed return time of a serve whose peer has stopped reading: the drain bound plus the
-/// session grace (`SESSION_GRACE`'s own doc). What lies beyond it is scheduling latency, which no
+/// The drain bound of the stalled-peer test, and the designed return time of a serve whose peer
+/// has stopped reading over HTTP/2: the connection's IO is killed at the drain bound, which fails
+/// the session's blocked send, so the session ends there and the wait that follows
+/// (`SESSION_GRACE` at most) returns at once. What lies beyond it is scheduling latency, which no
 /// premise bounds, so the overshoot is recorded per operating system and bounded by
 /// `CUT_OVERSHOOT_MAX`.
-const STALLED_DESIGNED: Duration = Duration::from_millis(
-    STALLED_DRAIN_BOUND.as_millis() as u64 + SESSION_GRACE.as_millis() as u64,
-);
-
-/// The documented worst case of `serve_with` (`SESSION_GRACE`'s doc): the designed time plus
-/// `ABORT_WAIT` when a connection task outlives its killed IO. Derived from the serve constants,
-/// so the blocking assertion carries no empirical margin.
-const STALLED_WORST: Duration =
-    Duration::from_millis(STALLED_DESIGNED.as_millis() as u64 + ABORT_WAIT.as_millis() as u64);
+const STALLED_DRAIN_BOUND: Duration = Duration::from_secs(1);
 
 /// Size of the frames the stalled test broadcasts to block the session: far below the wire
 /// message cap, large enough to pass any small window.
@@ -180,15 +171,10 @@ async fn shutdown_returns_within_the_bound_when_an_h2_client_has_stopped_reading
         .await
         .expect("serve never returned: a peer that stopped reading held the drain")
         .unwrap();
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed <= STALLED_WORST,
-        "serve outlasted its documented worst case while a peer had stopped reading: {elapsed:?}"
-    );
     record_cut_overshoot(
         "h2 websocket stalled peer at shutdown",
-        elapsed,
-        STALLED_DESIGNED,
+        started.elapsed(),
+        STALLED_DRAIN_BOUND,
     );
     result.expect("a requested shutdown is not an error");
     assert_eq!(live.ws.live_connection_count(), 0);

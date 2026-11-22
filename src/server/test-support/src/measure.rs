@@ -40,10 +40,13 @@ pub const CUT_OVERSHOOT_MAX: Duration = Duration::from_millis(2000);
 /// Records how long after its derived bound a cut was observed, and asserts the overshoot is at
 /// most [`CUT_OVERSHOOT_MAX`].
 ///
-/// `derived` is the part of the detection delay the design fixes (the window plus one sampler
-/// tick: the cut lands at the first tick at or after the window). What lies beyond it is timer
-/// and task wake-up latency, which no premise bounds; the record carries it per operating system
-/// and the ceiling catches a cut that comes a whole extra window late.
+/// `derived` is the part of the delay the design fixes for the path the caller measures (for a
+/// sampler cut, the window plus one sampler tick: the cut lands at the first tick at or after the
+/// window; for a shutdown, the bound at which the session's IO is killed or its send is cut). What
+/// lies beyond it is timer and task wake-up latency, which no premise bounds; the record carries
+/// it per operating system. The ceiling catches a cut observed more than `CUT_OVERSHOOT_MAX`
+/// (2 s) past `derived`: on a one-second window that is a cut more than two whole windows late, so a
+/// cut one extra window late passes.
 ///
 /// # Panics
 ///

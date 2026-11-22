@@ -12,9 +12,9 @@
 //!
 //! A smaller send buffer bounds the body bytes polled ahead of an unread peer, the unsent backlog
 //! behind a socket that accepts nothing and a WebSocket tunnel's lead over the wire, at the price
-//! of more wake-ups per byte on a fast link. The 90 percent
-//! figure is an empirical keep criterion (a throughput ratio on shared hardware has no derivation),
-//! so each run is recorded per operating system with `measure::record`.
+//! of more wake-ups per byte on a fast link. The 90 percent figure is an empirical keep criterion
+//! (a throughput ratio on shared hardware has no derivation), so each run is recorded per operating
+//! system with `measure::record`.
 //!
 //! The criterion is a median over runs, not a per-run bound: on a macOS CI runner two bare servers
 //! at the same (default) send buffer read a ratio between 0.85 and 1.10 against each other, so no
@@ -60,11 +60,16 @@ const RUNS: usize = if cfg!(debug_assertions) { 1 } else { 3 };
 /// ratios are not comparable (see the module documentation) and are not asserted.
 ///
 /// Recorded buffer ratios at [`H2_SEND_BUF_BYTES`] (160 KiB), 100 downloads per median, release
-/// build, three runs per operating system on CI: Linux 0.950, 0.963, 0.960; macOS 0.912, 0.921,
-/// 0.946; Windows 0.914, 0.917, 0.912. The worst run of those is 0.912. A sweep of bare servers at
-/// 160 KiB (24 runs per operating system) read a worst of 0.954 on Linux, 0.926 on Windows and
-/// 0.810 on macOS, and the worst macOS run at any size in the sweep (192 KiB) was 0.798. 0.70 is
-/// 0.098 below that lowest run, so runner noise of the size the sweep saw does not reach it.
+/// build, three runs per operating system in each of two CI runs. First run: Linux 0.950, 0.963,
+/// 0.960; macOS 0.912, 0.921, 0.946; Windows 0.914, 0.917, 0.912. Second run: Linux 0.969, 0.958,
+/// 0.962; macOS 0.981, 0.892, 0.942; Windows 0.955, 0.957, 0.956. One macOS run read 0.892, under
+/// the 0.90 criterion; the median of each leg's six runs is Linux 0.961, macOS 0.932 and Windows
+/// 0.936, all at or above it.
+///
+/// Separately, 24 runs per operating system of a bare server at 160 KiB against the default read a
+/// worst of 0.954 on Linux, 0.926 on Windows and 0.810 on macOS. The floor sits 0.110 below that
+/// lowest recorded run (macOS 0.810), the worst value it is measured from, so runner noise of the
+/// size those runs saw does not reach it.
 const BUFFER_RATIO_FLOOR: f64 = 0.70;
 
 /// The build profile the records name: the keep criterion is read from the release records only.

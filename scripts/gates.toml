@@ -75,7 +75,7 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
-command = "cargo test --all -- --nocapture"
+command = "cargo test --all"
 tier = "push"
 
 [[gate]]
@@ -100,6 +100,12 @@ tier = "push"
 workflow = "ci.yml"
 job = "rust"
 command = "cargo test -p shadowcat --test asset_open_handle -- --nocapture --test-threads 1"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo test -p shadowcat --test egress_stall --test egress_stall_h2 --test egress_boundary --test h2_ws_drain --test h2_ws_tunnel_backpressure --test ws_h1_stalled_session -- --nocapture"
 tier = "push"
 
 [[gate]]
