@@ -20,6 +20,12 @@ import {
 } from "./manifest";
 import { ContributionRegistry, type Contribution, SYSTEM_CONTRACT } from "./contributions";
 import { satisfies } from "./semver";
+import type { WireOperation } from "./wire";
+import {
+  buildWorldModuleSettingsUpdate,
+  readWorldModuleSettings,
+  type UserModuleSettings,
+} from "./module-settings";
 import type { I18n, Messages } from "./i18n";
 import type { BindingInfo, KeybindingOptions, KeybindingRegistration, KeybindingsController } from "./keybindings";
 
@@ -167,6 +173,37 @@ export interface ModuleContext {
      * @param listener Called after each change.
      * @returns An unsubscribe function. */
     subscribe(listener: () => void): () => void;
+  };
+  /** This module's persistent settings, scoped automatically to its own id: a module never
+   * receives another module's id, so it cannot address another module's slice through this seam
+   * (the same "stamped with this module's id" scoping `hooks`, `services` and `contributions`
+   * use). Installed modules are admin-trusted, so there is no server-side per-module ACL. */
+  settings: {
+    /** This module's slice of the world's `module-settings` document, read from the optimistic
+     * view (a pending write is visible).
+     * @returns The slice, or `{}` when unset. */
+    getWorld(): Record<string, unknown>;
+    /** Merges `patch` into this module's world slice as ONE Update carrying one field change per
+     * top-level patch key, each with its own OCC pre-image, so keys the patch does not name are
+     * untouched. Subject to the caller's ordinary write capability on `module-settings` (GM-only
+     * by default, loosened per world through the capability defaults). A write the server rejects
+     * rolls back through the same optimistic rejection path as any other Update; this promise
+     * settles once the intent is predicted and handed to the transport, not on the server's reply.
+     * @param patch The fields to merge into this module's world-scoped settings.
+     * @returns Resolves when the intent was dispatched.
+     * @throws {Error} When the world has no `module-settings` document yet, or the host dropped
+     * the intent because the world session is stopped. */
+    setWorld(patch: Record<string, unknown>): Promise<void>;
+    /** This module's slice of the caller's account-wide `ui_state.modules` namespace. A plain
+     * snapshot of the loaded state, refreshed by this module's own `setUser` calls: the UI-state
+     * route is fetched, never pushed.
+     * @returns The slice, or `{}` when unset. */
+    getUser(): Record<string, unknown>;
+    /** Merges `patch` into `ui_state.modules.<moduleId>` through the merge-patch route; a `null`
+     * value removes that key.
+     * @param patch The fields to merge into this module's account-scoped settings.
+     * @returns Resolves when the server accepted the patch. */
+    setUser(patch: Record<string, unknown>): Promise<void>;
   };
   /** The shared document store every module reads through. */
   store: DocumentStore;
@@ -332,6 +369,11 @@ interface Deps {
   i18n: I18n;
   /** The shared keybindings controller every module's `keybindings` wrapper delegates to. */
   keybindings: KeybindingsController;
+  /** Predicts and transmits `ops` as one intent (`WorldSession.dispatchIntent`); `false` when the
+   * host dropped them. `settings.setWorld` sends its Update through this. */
+  dispatchIntent: (ops: WireOperation[]) => boolean;
+  /** The account-scoped settings store every module's `settings.getUser`/`setUser` delegates to. */
+  userSettings: UserModuleSettings;
 }
 
 /** Internal per-module bookkeeping: the module plus its current activation state. Not exported. */
@@ -371,6 +413,7 @@ export class ModuleRegistry {
    *   ContributionRegistry,
    *   I18n,
    *   KeybindingsController,
+   *   UserModuleSettings,
    *   silentLogger,
    * } from "@shadowcat/core";
    *
@@ -385,6 +428,8 @@ export class ModuleRegistry {
    *   logger: silentLogger,
    *   i18n: new I18n("en", { en: {} }),
    *   contributions: new ContributionRegistry(),
+   *   dispatchIntent: () => true,
+   *   userSettings: new UserModuleSettings({}),
    * });
    * ```
    */
@@ -718,9 +763,31 @@ export class ModuleRegistry {
    * ```
    */
   private contextFor(moduleId: string): ModuleContext {
-    const { hooks, services, middleware, store, client, logger, contributions, i18n, keybindings } = this.deps;
+    const {
+      hooks,
+      services,
+      middleware,
+      store,
+      client,
+      logger,
+      contributions,
+      i18n,
+      keybindings,
+      dispatchIntent,
+      userSettings,
+    } = this.deps;
     return {
       moduleId,
+      settings: {
+        getWorld: () => readWorldModuleSettings(client, moduleId),
+        setWorld: async (patch) => {
+          if (!dispatchIntent([buildWorldModuleSettingsUpdate(client, moduleId, patch)])) {
+            throw new Error("module settings write dropped: the world session is stopped");
+          }
+        },
+        getUser: () => userSettings.get(moduleId),
+        setUser: (patch) => userSettings.patch(moduleId, patch),
+      },
       store,
       client,
       logger,

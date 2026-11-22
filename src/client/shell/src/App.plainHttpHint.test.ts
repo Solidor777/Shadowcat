@@ -79,7 +79,7 @@ function bootIntoWorld(tls: () => Promise<TlsStatus>, me: () => Promise<{ ok: bo
   vi.stubGlobal("fetch", vi.fn(async () => me()));
   vi.spyOn(api, "getTlsStatus").mockImplementation(tls);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "w1" }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: "w1" }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
   const realEnter = WorldSession.prototype.enter;

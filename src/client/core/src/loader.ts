@@ -115,6 +115,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   ContributionRegistry,
  *   I18n,
  *   KeybindingsController,
+ *   UserModuleSettings,
  *   silentLogger,
  * } from "@shadowcat/core";
  *
@@ -129,6 +130,8 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   logger: silentLogger,
  *   i18n: new I18n("en", { en: {} }),
  *   contributions: new ContributionRegistry(),
+ *   dispatchIntent: () => true,
+ *   userSettings: new UserModuleSettings({}),
  * });
  * await loadModules({
  *   entries: [],

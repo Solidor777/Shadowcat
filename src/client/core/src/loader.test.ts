@@ -11,6 +11,7 @@ import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
 import { I18n } from "./i18n";
 import { KeybindingsController } from "./keybindings";
+import { UserModuleSettings } from "./module-settings";
 
 function registry() {
   const hooks = new HookBus(silentLogger);
@@ -24,6 +25,8 @@ function registry() {
     logger: silentLogger,
     contributions: new ContributionRegistry(),
     i18n: new I18n("en", { en: {} }),
+    dispatchIntent: () => true,
+    userSettings: new UserModuleSettings({}, async () => {}),
   });
 }
 
