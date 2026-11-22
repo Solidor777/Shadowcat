@@ -55,7 +55,7 @@ internals (the contract-only element boundary).
   layer draws each sense on its own channel (`regionShapeSpec`): sight swaps
   the fill for a pale haze, light darkens and thickens the rim, sound dashes
   the ring (`ShapeNodeSpec.stroke.dash`, painted by `PixiBackend` as one
-  subpath per dash from `dashRing`). The server turns the covered-cell outline
+  subpath per dash from `dashPath`). The server turns the covered-cell outline
   into walls for the blocked senses; movement is unaffected.
 - **`Teleport` region trigger**: `ToolController.beginPickPortalTarget`/
   `endPickPortalTarget` capture one stage click as the trigger's destination

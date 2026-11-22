@@ -9,8 +9,7 @@ import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
 import type { RemoteRulerPath } from "./remote-ruler-view";
 import { TextureCacheManager } from "./texture-cache";
-import { dashSegments } from "./geometry";
-import { dashRing } from "./dash";
+import { dashPath } from "./dash";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -2100,8 +2099,7 @@ export class PixiBackend implements DisplayBackend {
  * ```
  */
 function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void {
-  if (tokenSpec.dash && !tokenSpec.closed) paintDashed(g, tokenSpec.points, tokenSpec.dash.on, tokenSpec.dash.off);
-  else paintRing(g, tokenSpec.points, tokenSpec.closed);
+  paintRing(g, tokenSpec.points, tokenSpec.closed);
   // Compound additive rings are always closed fills (a region is always an area).
   for (const ring of tokenSpec.extraParts ?? []) paintRing(g, ring, true);
   if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
@@ -2112,32 +2110,10 @@ function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void 
     g.beginPath();
     const rings = [tokenSpec.points, ...(tokenSpec.extraParts ?? [])];
     rings.forEach((ring, i) => {
-      for (const d of dashRing(ring, i > 0 || tokenSpec.closed, dash.on, dash.off)) paintRing(g, d, false);
+      for (const d of dashPath(ring, i > 0 || tokenSpec.closed, dash.on, dash.off)) paintRing(g, d, false);
     });
     g.stroke({ width: stroke.width, color: stroke.color });
   } else if (stroke) g.stroke({ width: stroke.width, color: stroke.color });
-}
-
-/** Trace an open polyline as dashes: each polyline segment is split by `dashSegments` into
- * its own subpaths, which share the caller's single stroke.
- * @param g The graphics context to trace into.
- * @param p The polyline's flat point list (`[x0, y0, x1, y1, ...]`).
- * @param on Drawn length of each dash, in scene units.
- * @param off Gap length between dashes, in scene units.
- * @example
- * ```
- * // module-private helper; not exported from @shadowcat/render
- * import { Graphics } from "pixi.js";
- * const g = new Graphics();
- * paintDashed(g, [0, 0, 10, 0], 4, 2);
- * ```
- */
-function paintDashed(g: Graphics, p: number[], on: number, off: number): void {
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    for (const [ax, ay, bx, by] of dashSegments(p[i], p[i + 1], p[i + 2], p[i + 3], on, off)) {
-      g.moveTo(ax, ay).lineTo(bx, by);
-    }
-  }
 }
 
 /** Trace one ring onto `g` without filling or stroking — one shape primitive per ring, so a
