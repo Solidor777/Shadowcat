@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
 import * as core from "@shadowcat/core";
-import { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, linePoints, DEFAULT_CONE_ANGLE_DEGREES } from "./geometry";
+import { dashSegments, parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, linePoints, DEFAULT_CONE_ANGLE_DEGREES } from "./geometry";
 
 test("parseColor reads #rrggbb (with or without #); malformed → 0", () => {
   expect(parseColor("#ff8000")).toBe(0xff8000);
@@ -21,4 +21,17 @@ test("the render tessellation exports are the same function objects as the core 
   expect(squarePoints).toBe(core.squarePoints);
   expect(linePoints).toBe(core.linePoints);
   expect(DEFAULT_CONE_ANGLE_DEGREES).toBe(core.DEFAULT_CONE_ANGLE_DEGREES);
+});
+
+test("dashSegments alternates on/off from the start and clips the last dash to the segment end", () => {
+  expect(dashSegments(0, 0, 10, 0, 4, 2)).toEqual([[0, 0, 4, 0], [6, 0, 10, 0]]);
+  expect(dashSegments(0, 0, 9, 0, 4, 2)).toEqual([[0, 0, 4, 0], [6, 0, 9, 0]]);
+  expect(dashSegments(0, 0, 0, 5, 2, 1)).toEqual([[0, 0, 0, 2], [0, 3, 0, 5]]);
+});
+
+test("dashSegments returns nothing for a zero-length segment or a non-positive or non-finite pattern", () => {
+  expect(dashSegments(1, 1, 1, 1, 4, 2)).toEqual([]);
+  expect(dashSegments(0, 0, 10, 0, 0, 2)).toEqual([]);
+  expect(dashSegments(0, 0, 10, 0, 4, 0)).toEqual([]);
+  expect(dashSegments(0, 0, 10, 0, Number.NaN, 2)).toEqual([]);
 });

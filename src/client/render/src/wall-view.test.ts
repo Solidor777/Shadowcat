@@ -31,6 +31,20 @@ test("a wall reconciles to a stroked segment in the walls layer", () => {
   expect(s.stroke).not.toBeNull();
 });
 
+test("a wall with a proximity tier renders dashed and an ordinary wall renders solid", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const tiered = wallDoc("wl-tier", { x1: 0, y1: 0, x2: 100, y2: 0 });
+  (tiered.engine as Record<string, unknown>).proximity = { within: 2, senses: ["sight"], soundGain: null };
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: tiered },
+    { op: "create", doc: wallDoc("wl-plain", { x1: 0, y1: 10, x2: 100, y2: 10 }) },
+  ]));
+  new WallView(store, backend).reconcile();
+  expect(backend.shapes.get("wl-tier")!.dash).toEqual({ on: 12, off: 8 });
+  expect(backend.shapes.get("wl-plain")!.dash).toBeUndefined();
+});
+
 test("a deleted wall removes its segment", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
