@@ -2103,7 +2103,6 @@ pub fn roll_with_groups(
             world,
             author,
             MessageDraft {
-                system: None,
                 channel: channel.to_string(),
                 actor_owner: None,
                 audience: if members.iter().any(|c| is_hidden(c)) {
@@ -2126,6 +2125,7 @@ pub fn roll_with_groups(
                     },
                 ],
                 source: None,
+                system: None,
             },
             now,
         );
