@@ -9,7 +9,7 @@ use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError, MAX_NESTING_DEPTH};
 use crate::dice::spec::{
     BinOp, Comparator, ConstTerm, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind,
-    Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, RollSpec, SuccessConfig,
+    Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, Parity, RollSpec, SuccessConfig,
     SuccessRule, Tier, TotalConfig,
 };
 
@@ -368,6 +368,8 @@ impl P {
     /// reroll, comparator targets); `sides` feeds default explode targets.
     fn modifiers(&mut self, sides: i32) -> Result<Vec<GroupModifier>, ParseError> {
         let mut mods = Vec::new();
+        // Index in `mods` of this group's single `Clamp`, once an `mn`/`mx` token has created it.
+        let mut clamp_slot: Option<usize> = None;
         loop {
             match self.peek() {
                 Some(Token::Bang) => {
@@ -404,6 +406,42 @@ impl P {
                                 return Err(ParseError::DuplicateSuccessRule);
                             }
                             self.success = Some(SuccessRule::Numeric { comp, target });
+                        }
+                        "cse" | "cso" => {
+                            if self.success.is_some() {
+                                return Err(ParseError::DuplicateSuccessRule);
+                            }
+                            let parity = if id == "cse" {
+                                Parity::Even
+                            } else {
+                                Parity::Odd
+                            };
+                            self.success = Some(SuccessRule::Parity(parity));
+                        }
+                        "mn" | "mx" => {
+                            let n = self.expect_int()?;
+                            // One `Clamp` per group, placed where its first token appeared, so
+                            // `mn1mx5` and `mx5mn1` build the same modifier in the same slot.
+                            let slot = match clamp_slot {
+                                Some(slot) => slot,
+                                None => {
+                                    mods.push(GroupModifier::Clamp {
+                                        min: None,
+                                        max: None,
+                                    });
+                                    let slot = mods.len() - 1;
+                                    clamp_slot = Some(slot);
+                                    slot
+                                }
+                            };
+                            let GroupModifier::Clamp { min, max } = &mut mods[slot] else {
+                                unreachable!("clamp_slot always indexes the Clamp modifier")
+                            };
+                            let bound = if id == "mn" { min } else { max };
+                            if bound.is_some() {
+                                return Err(ParseError::DuplicateClamp);
+                            }
+                            *bound = Some(n);
                         }
                         "t" => {
                             let n = self.expect_int()?;

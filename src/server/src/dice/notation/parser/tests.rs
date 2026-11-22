@@ -686,3 +686,122 @@ fn nesting_past_the_cap_is_refused_on_a_default_stack() {
         );
     }
 }
+
+/// The modifiers of a single-group notation string.
+fn modifiers_of(input: &str) -> Vec<GroupModifier> {
+    match parse(input, ParseContext::default()).unwrap().expr {
+        Expr::Dice(group) => group.modifiers,
+        other => panic!("expected a dice group, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_mn_alone() {
+    assert_eq!(
+        modifiers_of("4d6mn2"),
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: None
+        }]
+    );
+}
+
+#[test]
+fn parses_mx_alone() {
+    assert_eq!(
+        modifiers_of("4d6mx5"),
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: Some(5)
+        }]
+    );
+}
+
+#[test]
+fn mn_and_mx_in_either_order_fold_into_one_clamp_at_the_first_token() {
+    let both = GroupModifier::Clamp {
+        min: Some(1),
+        max: Some(5),
+    };
+    assert_eq!(modifiers_of("4d6mn1mx5"), vec![both.clone()]);
+    assert_eq!(modifiers_of("4d6mx5mn1"), vec![both.clone()]);
+    // The clamp sits at the first of its tokens, so a later modifier stays after it.
+    assert_eq!(
+        modifiers_of("4d6mn1kh3mx5"),
+        vec![both, GroupModifier::KeepHighest(3)]
+    );
+}
+
+#[test]
+fn duplicate_mn_or_mx_errors() {
+    for input in ["4d6mn1mn2", "4d6mx5mx6", "4d6mn1mx5mn2", "4d6mx5mn1mx6"] {
+        assert_eq!(
+            parse(input, ParseContext::default()),
+            Err(ParseError::DuplicateClamp),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn a_clamp_is_per_group() {
+    let spec = parse("2d6mn2+2d6mx4", ParseContext::default()).unwrap();
+    let Expr::Bin { lhs, rhs, .. } = spec.expr else {
+        panic!("expected a binary expression")
+    };
+    let clamp_of = |e: Expr| match e {
+        Expr::Dice(g) => g.modifiers,
+        other => panic!("expected dice, got {other:?}"),
+    };
+    assert_eq!(
+        clamp_of(*lhs),
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: None
+        }]
+    );
+    assert_eq!(
+        clamp_of(*rhs),
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: Some(4)
+        }]
+    );
+}
+
+#[test]
+fn mn_without_a_number_is_refused() {
+    assert!(matches!(
+        parse("4d6mn", ParseContext::default()),
+        Err(ParseError::Unexpected(_))
+    ));
+}
+
+#[test]
+fn cse_and_cso_set_the_parity_success_rule_and_force_success_count() {
+    for (input, parity) in [("5d6cse", Parity::Even), ("5d6cso", Parity::Odd)] {
+        match parse(input, ParseContext::default()).unwrap().mode {
+            Mode::SuccessCount(cfg) => assert_eq!(cfg.success, SuccessRule::Parity(parity)),
+            other => panic!("expected SuccessCount for {input}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cse_and_cso_collide_with_every_other_success_rule() {
+    for input in [
+        "5d6cs>=4cse",
+        "5d6cse cs>=4",
+        "5d6cf<3cso",
+        "5d6cse t4",
+        "5d6t4cso",
+        "5d6cse cso",
+        "5d6cse cse",
+    ] {
+        assert_eq!(
+            parse(input, ParseContext::default()),
+            Err(ParseError::DuplicateSuccessRule),
+            "{input}"
+        );
+    }
+}

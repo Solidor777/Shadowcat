@@ -23,10 +23,11 @@ fn every_parse_error_variant_displays_without_debug_artifacts() {
         ParseError::DuplicateCritSuccess,
         ParseError::DuplicateCritFail,
         ParseError::TooDeeplyNested,
+        ParseError::DuplicateClamp,
     ];
     assert_eq!(
         variants.len(),
-        13,
+        14,
         "update this test if a ParseError variant is added or removed"
     );
     for v in variants {
@@ -53,6 +54,8 @@ fn real_parse_failures_render_without_debug_artifacts() {
         "foo(3)",                   // fn_call: unknown function name
         "4d6cs>=4rs2rs3",           // duplicate rs
         "4d6cs>=4xs5xs6",           // duplicate xs
+        "4d6mn1mn2",                // duplicate clamp
+        "4d6cse cso",               // duplicate success rule
     ];
     for input in inputs {
         let err = parse(input, ParseContext::default())

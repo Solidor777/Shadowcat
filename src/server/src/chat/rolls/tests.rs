@@ -665,3 +665,46 @@ fn a_reference_free_template_is_byte_identical_after_resolution() {
         assert_eq!(formula, src);
     }
 }
+
+#[test]
+fn a_floor_above_the_ceiling_is_refused_before_any_roll() {
+    // `mn5mx2` parses; the pre-roll guard is what keeps an untrusted floor/ceiling pair out of
+    // the evaluator, through both entry points.
+    let expected = Err(RollError::InvalidClamp { min: 5, max: 2 });
+    assert_eq!(validate_formula("4d6mn5mx2", total_ctx()), expected);
+    assert_eq!(
+        execute_roll("4d6mx2mn5", total_ctx(), None).map(|_| ()),
+        expected
+    );
+}
+
+#[test]
+fn a_clamp_with_floor_at_or_below_the_ceiling_is_accepted() {
+    for src in ["4d6mn2mx2", "4d6mn1mx5", "4d6mn3", "4d6mx3"] {
+        assert!(validate_formula(src, total_ctx()).is_ok(), "{src}");
+    }
+}
+
+#[test]
+fn a_clamped_roll_round_trips_through_execute_roll() {
+    let (formula, outcome, spec, raw) =
+        execute_roll_with_seed("6d6mn3mx4", total_ctx(), None, 9).unwrap();
+    assert_eq!(formula, "6d6mn3mx4");
+    assert_eq!(outcome.records.len(), 6);
+    assert!(outcome.records.iter().all(|r| (3..=4).contains(&r.value)));
+    assert_eq!(crate::dice::eval::evaluate(&spec, &raw), outcome);
+}
+
+#[test]
+fn invalid_clamp_displays_without_debug_artifacts() {
+    let text = RollError::InvalidClamp { min: 5, max: 2 }.to_string();
+    assert_eq!(text, "that die's floor (mn5) is above its ceiling (mx2)");
+}
+
+#[test]
+fn a_parity_roll_round_trips_through_execute_roll() {
+    let (_, outcome, spec, raw) = execute_roll_with_seed("6d6cse", total_ctx(), None, 9).unwrap();
+    let evens = outcome.records.iter().filter(|r| r.value % 2 == 0).count() as i32;
+    assert_eq!(outcome.successes, Some(evens));
+    assert_eq!(crate::dice::eval::evaluate(&spec, &raw), outcome);
+}

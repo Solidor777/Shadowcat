@@ -246,6 +246,16 @@ pub fn resolve_group(
                     i += 1;
                 }
             }
+            GroupModifier::Clamp { min, max } => {
+                // `max` then `min` rather than `i32::clamp`, which panics when the floor
+                // exceeds the ceiling; a hand-built spec can carry that pair, so the ceiling
+                // wins instead.
+                let floor = min.unwrap_or(i32::MIN);
+                let ceiling = max.unwrap_or(i32::MAX);
+                for r in recs.iter_mut().filter(|r| r.kept) {
+                    r.value = r.value.max(floor).min(ceiling);
+                }
+            }
             GroupModifier::KeepHighest(n) => keep(&mut recs, *n as usize, true, true),
             GroupModifier::KeepLowest(n) => keep(&mut recs, *n as usize, false, true),
             GroupModifier::DropHighest(n) => keep(&mut recs, *n as usize, true, false),

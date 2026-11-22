@@ -229,7 +229,9 @@ proptest! {
         match sc.mode {
             Mode::SuccessCount(c) => match c.success {
                 SuccessRule::Numeric { target: t, .. } => prop_assert_eq!(t, target),
-                SuccessRule::HasSymbol(_) => prop_assert!(false, "expected a Numeric success rule"),
+                SuccessRule::HasSymbol(_) | SuccessRule::Parity(_) => {
+                    prop_assert!(false, "expected a Numeric success rule")
+                }
             },
             _ => prop_assert!(false, "expected SuccessCount mode"),
         }

@@ -25,7 +25,8 @@ const DICE_OPERATOR = "d";
  * on `NotationKeyCheck` and nowhere else, so no second copy of that taxonomy can drift from
  * the type a consuming authoring UI actually branches on. */
 export const NOTATION_KEYWORDS: readonly string[] =
-  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf"];
+  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf",
+    "mn", "mx", "cse", "cso"];
 
 /** The dice-notation grammar's math-function vocabulary (`floor`, `ceil`, `round`, `abs`,
  * `min`, `max` — the server's `FnName` set). These are NOT `NOTATION_KEYWORDS` members:

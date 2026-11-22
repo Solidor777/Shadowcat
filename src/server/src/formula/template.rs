@@ -41,7 +41,7 @@ const DICE_OPERATOR: &str = "d";
 /// chain. A consuming system's stat-key authoring validation calls the client
 /// package's `checkNotationKey`, which RUNS that chain, and must not
 /// reimplement a rule over this list instead.
-pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
+pub(crate) const NOTATION_KEYWORDS: [&str; 19] = [
     DICE_OPERATOR,
     "kh",
     "kl",
@@ -57,6 +57,10 @@ pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
     "rs",
     "xs",
     "xf",
+    "mn",
+    "mx",
+    "cse",
+    "cso",
 ];
 
 /// The dice-notation grammar's math-function vocabulary (the six spellings

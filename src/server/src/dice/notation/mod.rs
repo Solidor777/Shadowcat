@@ -95,8 +95,8 @@ pub enum ParseError {
     /// constructed with a degenerate (non-positive-span) range; `rng::roll_uniform`
     /// only `debug_assert!`s that invariant, which is a no-op in release builds.
     InvalidDieSides(i32),
-    /// A second `cs`/`cf` modifier appeared anywhere in the expression, OR a
-    /// `t<N>` target and a `cs`/`cf` rule both set the per-die success rule.
+    /// A second `cs`/`cf`/`cse`/`cso` modifier appeared anywhere in the expression, OR a
+    /// `t<N>` target and a `cs`/`cf`/`cse`/`cso` rule both set the per-die success rule.
     /// `success`/`t_target` are shared parser state (one `RollSpec`, not
     /// per-`DiceGroup`), so a silent last-write-wins overwrite would discard
     /// one rule with no error.
@@ -123,6 +123,9 @@ pub enum ParseError {
     DuplicateCritFail,
     /// Parentheses, unary `-` and function-call arguments nest deeper than `MAX_NESTING_DEPTH`.
     TooDeeplyNested,
+    /// A second `mn<N>` or `mx<N>` appeared on one dice group. A die has one floor and one
+    /// ceiling, so a repeat would silently discard one bound.
+    DuplicateClamp,
 }
 
 /// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
@@ -139,7 +142,10 @@ impl std::fmt::Display for ParseError {
                 write!(f, "a die must have at least 1 side (got {n})")
             }
             ParseError::DuplicateSuccessRule => {
-                write!(f, "a roll can only set one success rule (cs, cf, or t<N>)")
+                write!(
+                    f,
+                    "a roll can only set one success rule (cs, cf, cse, cso, or t<N>)"
+                )
             }
             ParseError::DuplicateExpertise => {
                 write!(f, "a roll can only set one expertise budget (e<N>)")
@@ -167,6 +173,12 @@ impl std::fmt::Display for ParseError {
                 write!(
                     f,
                     "the dice expression is nested more than {MAX_NESTING_DEPTH} levels deep"
+                )
+            }
+            ParseError::DuplicateClamp => {
+                write!(
+                    f,
+                    "a dice group can only set one floor (mn<N>) and one ceiling (mx<N>)"
                 )
             }
         }

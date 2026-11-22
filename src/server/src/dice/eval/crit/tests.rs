@@ -192,6 +192,37 @@ fn die_net_is_the_exact_sum_before_any_clamp() {
     assert_eq!(scored.net(), 1);
 }
 
+fn parity_cfg(parity: crate::dice::spec::Parity) -> SuccessConfig {
+    SuccessConfig {
+        success: SuccessRule::Parity(parity),
+        ..cfg(None, None)
+    }
+}
+
+#[test]
+fn parity_rule_scores_even_and_odd_values() {
+    use crate::dice::spec::Parity;
+    let even = parity_cfg(Parity::Even);
+    let odd = parity_cfg(Parity::Odd);
+    assert!(score_die_net(Direction::HighWins, &even, 4, &[]).base_success);
+    assert!(!score_die_net(Direction::HighWins, &even, 3, &[]).base_success);
+    assert!(score_die_net(Direction::HighWins, &odd, 3, &[]).base_success);
+    assert!(!score_die_net(Direction::HighWins, &odd, 4, &[]).base_success);
+}
+
+#[test]
+fn parity_rule_classifies_negative_and_zero_values_by_rem_euclid() {
+    use crate::dice::spec::Parity;
+    // `%` would give -3 % 2 == -1, matching neither parity; `rem_euclid` gives 1.
+    let even = parity_cfg(Parity::Even);
+    let odd = parity_cfg(Parity::Odd);
+    assert!(score_die_net(Direction::HighWins, &odd, -3, &[]).base_success);
+    assert!(!score_die_net(Direction::HighWins, &even, -3, &[]).base_success);
+    assert!(score_die_net(Direction::HighWins, &even, -4, &[]).base_success);
+    assert!(score_die_net(Direction::HighWins, &even, 0, &[]).base_success);
+    assert!(!score_die_net(Direction::HighWins, &odd, 0, &[]).base_success);
+}
+
 #[test]
 fn die_net_is_exact_below_the_i32_range() {
     let negative = DieScore {
