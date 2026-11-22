@@ -99,6 +99,7 @@ pub fn resolve_group(
                 label: group.label.clone(),
                 symbols,
                 kind: Some(d.kind.clone()),
+                best_of_branch: None,
                 ordered,
             }
         })
@@ -228,6 +229,7 @@ pub fn resolve_group(
                                         label: group.label.clone(),
                                         symbols,
                                         kind: Some(group.kind.clone()),
+                                        best_of_branch: None,
                                         // Reached only inside the `!ordered { continue }`-gated
                                         // modifier loop, so the producing group is always ordered.
                                         ordered: true,
@@ -326,6 +328,7 @@ fn push_extra(recs: &mut Vec<DieRecord>, raws: &mut RawRoll, extra: ExtraDie) {
         label: extra.label,
         symbols: vec![],
         kind: Some(kind),
+        best_of_branch: None,
         ordered: extra.ordered,
     });
 }

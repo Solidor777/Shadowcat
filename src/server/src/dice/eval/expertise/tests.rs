@@ -136,6 +136,7 @@ fn raws_of(values: &[i32], min: i32, max: i32) -> RawRoll {
         raws.records.push(DieRecord {
             label: None,
             kind: None,
+            best_of_branch: None,
             id,
             group_index: 0,
             natural: v,
@@ -452,6 +453,7 @@ fn expertise_never_allocates_to_an_ordered_faces_die() {
             expertise: 0,
             label: None,
             kind: None,
+            best_of_branch: None,
             symbols: vec![],
             ordered: true,
         },
@@ -468,6 +470,7 @@ fn expertise_never_allocates_to_an_ordered_faces_die() {
             expertise: 0,
             label: None,
             kind: None,
+            best_of_branch: None,
             symbols: vec![],
             ordered: true,
         },
@@ -550,6 +553,7 @@ fn allocate_accounts_for_fixed_contribution_from_excluded_faces_dice() {
         expertise: 0,
         label: None,
         kind: None,
+        best_of_branch: None,
         symbols: symbols.into_iter().map(String::from).collect(),
         ordered: true,
     };

@@ -45,6 +45,7 @@ fn labeled_record_ordered(label: &str, value: i32, kept: bool, ordered: bool) ->
         label: Some(label.to_string()),
         symbols: vec![],
         kind: None,
+        best_of_branch: None,
         ordered,
     }
 }

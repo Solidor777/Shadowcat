@@ -479,6 +479,28 @@ fn bare_ident_not_followed_by_lparen_is_not_a_function_call() {
 }
 
 #[test]
+fn parses_best_with_two_or_more_branches() {
+    let spec = parse("best(1d6, 1d8, 3)", ParseContext::default()).unwrap();
+    match spec.expr {
+        Expr::BestOf(args) => assert_eq!(args.len(), 3),
+        other => panic!("expected a 3-branch BestOf, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_best_with_one_branch() {
+    assert_eq!(
+        parse("best(1d6)", ParseContext::default()),
+        Err(ParseError::BestOfRequiresTwoArgs)
+    );
+}
+
+#[test]
+fn bare_best_not_followed_by_lparen_is_not_a_call() {
+    assert!(parse("best", ParseContext::default()).is_err());
+}
+
+#[test]
 fn parses_single_tier_rung_with_value_and_label() {
     let spec = parse("4d6cs>4tr3:1[Good]", ParseContext::default()).unwrap();
     match spec.mode {

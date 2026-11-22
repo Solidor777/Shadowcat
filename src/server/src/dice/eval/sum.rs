@@ -9,7 +9,7 @@
 
 use crate::dice::eval::classify;
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{BinOp, ConstTerm, Expr, FnName, RollSpec, TotalConfig};
+use crate::dice::spec::{BinOp, ConstTerm, Direction, Expr, FnName, RollSpec, TotalConfig};
 
 /// Fold the AST to a total. Each `Dice` node contributes the sum of its group's kept
 /// records (matched by `group_index`); a cursor consumes groups in AST order. If
@@ -36,7 +36,12 @@ use crate::dice::spec::{BinOp, ConstTerm, Expr, FnName, RollSpec, TotalConfig};
 /// ```
 pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> RollOutcome {
     let mut next_group = 0usize;
-    let total = fold(&spec.expr, raws, &mut next_group);
+    let mut state = FoldState {
+        direction: spec.direction,
+        labeled_consts: Vec::new(),
+        losers: Vec::new(),
+    };
+    let total = fold(&spec.expr, raws, &mut next_group, 1, &mut state);
     let (pass, margin, tier_label, tier_value) = match cfg.difficulty {
         None => (None, None, None, None),
         Some(diff) => {
@@ -45,11 +50,22 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
             (c.pass, Some(m), c.tier_label, c.tier_value)
         }
     };
-    let mut labeled_consts = Vec::new();
-    collect_labeled_consts(&spec.expr, 1, &mut labeled_consts);
+    // Losing `best(...)` branches are marked on this clone, never on `raws`, so `evaluate`
+    // stays pure over the stored roll. `losers` lists inner calls before the calls enclosing
+    // them, so the outermost losing branch's index is the one left on a die.
+    let mut records = raws.records.clone();
+    for (range, branch) in &state.losers {
+        for rec in records
+            .iter_mut()
+            .filter(|r| range.contains(&r.group_index))
+        {
+            rec.kept = false;
+            rec.best_of_branch = Some(*branch);
+        }
+    }
     RollOutcome {
         total,
-        records: raws.records.clone(),
+        records,
         successes: None,
         pass,
         margin,
@@ -60,53 +76,19 @@ pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> Rol
         positive_counter: 0,
         negative_counter: 0,
         symbol_counts: Default::default(),
-        labeled_consts,
+        labeled_consts: state.labeled_consts,
     }
 }
 
-/// Collects every labeled `Const` term, in AST left-to-right order, for
-/// chat-embed display (`RollOutcome::labeled_consts`), carrying the term's
-/// EFFECTIVE additive sign: negation (`Neg`) and the right side of `Sub` flip
-/// it, so `-3[dex]` and `1d20 - 3[dex]` both display -3. Multiplicative
-/// context (`Mul`/`Div`) is NOT folded in — a `2 * 3[dex]` displays its
-/// literal 3, mirroring how a `DieRecord`'s raw face is shown regardless of
-/// the arithmetic around its group. Total mode only; SuccessCount ignores the
-/// arithmetic entirely.
-fn collect_labeled_consts(expr: &Expr, sign: i32, out: &mut Vec<ConstTerm>) {
-    match expr {
-        Expr::Const(c) => {
-            if c.label.is_some() {
-                out.push(ConstTerm {
-                    // saturating_neg: i32::MIN has no i32 negation.
-                    value: if sign < 0 {
-                        c.value.saturating_neg()
-                    } else {
-                        c.value
-                    },
-                    label: c.label.clone(),
-                });
-            }
-        }
-        Expr::Dice(_) => {}
-        Expr::Neg(inner) => collect_labeled_consts(inner, -sign, out),
-        Expr::Bin {
-            op: BinOp::Sub,
-            lhs,
-            rhs,
-        } => {
-            collect_labeled_consts(lhs, sign, out);
-            collect_labeled_consts(rhs, -sign, out);
-        }
-        Expr::Bin { lhs, rhs, .. } => {
-            collect_labeled_consts(lhs, sign, out);
-            collect_labeled_consts(rhs, sign, out);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_labeled_consts(arg, sign, out);
-            }
-        }
-    }
+/// Mutable state `fold` threads through the AST besides the group cursor.
+struct FoldState {
+    /// `RollSpec::direction`, which decides which `best(...)` branch wins.
+    direction: Direction,
+    /// Every labeled `Const` of the WINNING path, in AST left-to-right order, carrying its
+    /// effective additive sign (see `fold`'s `sign`). Becomes `RollOutcome::labeled_consts`.
+    labeled_consts: Vec<ConstTerm>,
+    /// `(group-index range, branch index)` of each losing `best(...)` branch.
+    losers: Vec<(std::ops::Range<usize>, u32)>,
 }
 
 /// Accumulates via `checked_add`, saturating at `i64::MAX`/`MIN` instead of
@@ -159,14 +141,43 @@ fn mul_saturating(l: i64, r: i64) -> i64 {
 /// Recursive Total-mode fold: consts as-is, dice groups as their kept-record
 /// sums (consumed left-to-right via `next_group`), operators saturating, `Call`
 /// nodes folding each argument in left-to-right order (the same cursor-threading
-/// `Bin` uses, generalized to N children) then applying `apply_fn`.
-fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
+/// `Bin` uses, generalized to N children) then applying `apply_fn`. A `BestOf` node folds
+/// every branch the same way, then yields the branch total that is best under
+/// `FoldState::direction` (ties go to the leftmost) and records the other branches'
+/// group-index ranges in `FoldState::losers`.
+///
+/// `sign` is the EFFECTIVE additive sign of the subtree, used only for the labeled-const
+/// chips (`RollOutcome::labeled_consts`): negation (`Neg`) and the right side of `Sub` flip it,
+/// so `-3[dex]` and `1d20 - 3[dex]` both display -3. Multiplicative context (`Mul`/`Div`) is NOT
+/// folded in: a `2 * 3[dex]` displays its literal 3, mirroring how a `DieRecord`'s raw face is
+/// shown regardless of the arithmetic around its group. Only the winning `BestOf` branch
+/// contributes chips.
+fn fold(
+    expr: &Expr,
+    raws: &RawRoll,
+    next_group: &mut usize,
+    sign: i32,
+    state: &mut FoldState,
+) -> i64 {
     match expr {
-        Expr::Const(c) => c.value as i64,
+        Expr::Const(c) => {
+            if c.label.is_some() {
+                state.labeled_consts.push(ConstTerm {
+                    // saturating_neg: i32::MIN has no i32 negation.
+                    value: if sign < 0 {
+                        c.value.saturating_neg()
+                    } else {
+                        c.value
+                    },
+                    label: c.label.clone(),
+                });
+            }
+            c.value as i64
+        }
         // `i64::MIN.checked_neg()` is `None` (its magnitude has no positive
         // i64 representation); saturate to `i64::MAX` instead of the raw `-`
         // negation, which is checked-overflow (panics) even in release.
-        Expr::Neg(inner) => fold(inner, raws, next_group)
+        Expr::Neg(inner) => fold(inner, raws, next_group, -sign, state)
             .checked_neg()
             .unwrap_or(i64::MAX),
         Expr::Dice(_) => {
@@ -179,8 +190,13 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 .fold(0i64, checked_add_saturating)
         }
         Expr::Bin { op, lhs, rhs } => {
-            let l = fold(lhs, raws, next_group);
-            let r = fold(rhs, raws, next_group);
+            let l = fold(lhs, raws, next_group, sign, state);
+            let rhs_sign = if matches!(op, BinOp::Sub) {
+                -sign
+            } else {
+                sign
+            };
+            let r = fold(rhs, raws, next_group, rhs_sign, state);
             match op {
                 BinOp::Add => add_saturating(l, r),
                 BinOp::Sub => sub_saturating(l, r),
@@ -207,9 +223,38 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
         Expr::Call { name, args } => {
             let mut vals = Vec::with_capacity(args.len());
             for arg in args {
-                vals.push(fold(arg, raws, next_group));
+                vals.push(fold(arg, raws, next_group, sign, state));
             }
             apply_fn(*name, &vals)
+        }
+        Expr::BestOf(args) => {
+            let mut totals = Vec::with_capacity(args.len());
+            let mut ranges = Vec::with_capacity(args.len());
+            let mut chips = Vec::with_capacity(args.len());
+            for arg in args {
+                let start = *next_group;
+                let outer_chips = std::mem::take(&mut state.labeled_consts);
+                totals.push(fold(arg, raws, next_group, sign, state));
+                chips.push(std::mem::replace(&mut state.labeled_consts, outer_chips));
+                ranges.push(start..*next_group);
+            }
+            let mut winner = 0usize;
+            for (i, total) in totals.iter().enumerate().skip(1) {
+                let better = match state.direction {
+                    Direction::HighWins => *total > totals[winner],
+                    Direction::LowWins => *total < totals[winner],
+                };
+                if better {
+                    winner = i;
+                }
+            }
+            for (i, range) in ranges.into_iter().enumerate() {
+                if i != winner {
+                    state.losers.push((range, i as u32));
+                }
+            }
+            state.labeled_consts.append(&mut chips.swap_remove(winner));
+            totals[winner]
         }
     }
 }
@@ -242,5 +287,7 @@ fn apply_fn(name: FnName, args: &[i64]) -> i64 {
     }
 }
 
+#[cfg(test)]
+mod best_of;
 #[cfg(test)]
 mod tests;

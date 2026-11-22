@@ -321,6 +321,9 @@ pub enum RollError {
     /// -- a table needs a single Total value to range-match against, not a
     /// success count.
     TableNeedsTotal,
+    /// A `best(...)` call appears in a roll that resolved to `Mode::SuccessCount`, which pools
+    /// dice across the whole roll and ignores the arithmetic a best total is chosen from.
+    BestOfRequiresTotal,
     /// A dice group's `mn<N>` floor is above its `mx<N>` ceiling, so no value satisfies both.
     InvalidClamp {
         /// The group's floor.
@@ -390,6 +393,10 @@ impl std::fmt::Display for RollError {
                     "a table's formula must resolve to a single total, not a success count"
                 )
             }
+            RollError::BestOfRequiresTotal => write!(
+                f,
+                "best(...) needs a total, so it cannot be combined with counting successes"
+            ),
             RollError::InvalidClamp { min, max } => write!(
                 f,
                 "that die's floor (mn{min}) is above its ceiling (mx{max})"
@@ -406,22 +413,34 @@ impl std::error::Error for RollError {}
 /// checks below. Recurses into `Expr::Call`'s `args` too, so a dice
 /// group nested inside a math-function argument still counts toward `MAX_ROLL_DICE` and is validated
 /// by the per-group cap checks below — a `Call` node is not a way to smuggle dice groups past this
-/// walk.
-fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGroup>) {
+/// walk. Every `Expr::BestOf` branch is counted as well, because every branch really rolls, and
+/// `has_best_of` is set when the tree holds any `BestOf` node.
+fn walk_groups<'a>(
+    expr: &'a Expr,
+    total: &mut u64,
+    groups: &mut Vec<&'a DiceGroup>,
+    has_best_of: &mut bool,
+) {
     match expr {
         Expr::Dice(group) => {
             *total += group.count as u64;
             groups.push(group);
         }
         Expr::Const(_) => {}
-        Expr::Neg(inner) => walk_groups(inner, total, groups),
+        Expr::Neg(inner) => walk_groups(inner, total, groups, has_best_of),
         Expr::Bin { lhs, rhs, .. } => {
-            walk_groups(lhs, total, groups);
-            walk_groups(rhs, total, groups);
+            walk_groups(lhs, total, groups, has_best_of);
+            walk_groups(rhs, total, groups, has_best_of);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                walk_groups(arg, total, groups);
+                walk_groups(arg, total, groups, has_best_of);
+            }
+        }
+        Expr::BestOf(args) => {
+            *has_best_of = true;
+            for arg in args {
+                walk_groups(arg, total, groups, has_best_of);
             }
         }
     }
@@ -434,7 +453,8 @@ fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGro
 fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
     let mut total: u64 = 0;
     let mut groups: Vec<&DiceGroup> = Vec::new();
-    walk_groups(&spec.expr, &mut total, &mut groups);
+    let mut has_best_of = false;
+    walk_groups(&spec.expr, &mut total, &mut groups, &mut has_best_of);
     if total > MAX_ROLL_DICE as u64 {
         return Err(RollError::TooManyDice(total.min(u32::MAX as u64) as u32));
     }
@@ -473,6 +493,9 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
     match &spec.mode {
         Mode::Total(cfg) => validate_tiers(&cfg.tiers)?,
         Mode::SuccessCount(cfg) => {
+            if has_best_of {
+                return Err(RollError::BestOfRequiresTotal);
+            }
             validate_tiers(&cfg.tiers)?;
             if cfg.expertise > MAX_EXPERTISE {
                 return Err(RollError::ExpertiseTooLarge(cfg.expertise));

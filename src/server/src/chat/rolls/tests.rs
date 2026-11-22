@@ -428,6 +428,24 @@ fn dice_nested_inside_a_call_argument_still_counts_toward_max_roll_dice() {
 }
 
 #[test]
+fn every_best_of_branch_counts_toward_max_roll_dice() {
+    assert!(validate_formula("best(50d6, 50d6)", total_ctx()).is_ok());
+    match validate_formula("best(50d6, 51d6)", total_ctx()) {
+        Err(RollError::TooManyDice(101)) => {}
+        other => panic!("expected TooManyDice(101), got {other:?}"),
+    }
+}
+
+#[test]
+fn best_of_is_refused_in_success_count_mode_but_accepted_in_total_mode() {
+    assert_eq!(
+        validate_formula("best(3d6cs>=5, 3d6)", success_ctx()),
+        Err(RollError::BestOfRequiresTotal)
+    );
+    assert!(validate_formula("best(3d6, 3d6)", total_ctx()).is_ok());
+}
+
+#[test]
 fn xs_modifier_from_notation_fires_crit_success_end_to_end() {
     let spec = notation::parse("6d6cs>=4xs6", total_ctx()).unwrap();
     // Seed chosen so at least one d6 rolls a 6 (verified: exactly one) -- required
@@ -491,10 +509,11 @@ fn roll_error_display_has_no_debug_artifacts() {
         RollError::ImagesDisabled,
         RollError::AltTooLong,
         RollError::TableNeedsTotal,
+        RollError::BestOfRequiresTotal,
     ];
     assert_eq!(
         variants.len(),
-        15,
+        16,
         "update this test if a RollError variant is added or removed"
     );
     for v in variants {

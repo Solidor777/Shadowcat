@@ -170,6 +170,13 @@ pub struct DieRecord {
     /// and dice-3d renders no 3D dice for it, fail closed.
     #[serde(default)]
     pub kind: Option<DieKind>,
+    /// Index of the losing branch, within its `Expr::BestOf` node, that discarded this die
+    /// (`kept` is `false`); `None` for every die that no `best(...)` branch discarded. Set by
+    /// `eval::sum::evaluate_total` only, never by `roll`; with nested `best(...)` calls the
+    /// outermost losing branch's index wins. Display-only: selection is fully decided
+    /// server-side, so a reader uses this to say why a die is struck, never to re-select.
+    #[serde(default)]
+    pub best_of_branch: Option<u32>,
 }
 
 /// `serde(default)` fallback for `ordered`: a record deserialized without this
