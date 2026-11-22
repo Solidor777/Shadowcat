@@ -255,6 +255,9 @@ impl Repository for StubRepo {
     ) -> Result<Option<Uuid>, DataError> {
         unimplemented!()
     }
+    async fn last_whisper_to(&self, _world: Uuid, _user: Uuid) -> Result<Option<Uuid>, DataError> {
+        unimplemented!()
+    }
     async fn world_cap_defaults(&self, _world: Uuid) -> Result<WorldCapDefaults, DataError> {
         Ok(self.defaults.clone())
     }

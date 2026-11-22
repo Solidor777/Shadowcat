@@ -2713,6 +2713,12 @@ impl Repository for SqliteRepository {
         SqliteRepository::member_id_by_username(self, world, username).await
     }
 
+    async fn last_whisper_to(&self, world: Uuid, user: Uuid) -> Result<Option<Uuid>, DataError> {
+        // Delegates to the inherent method of the same name (see `member_role`
+        // above for why this is not infinite recursion).
+        SqliteRepository::last_whisper_to(self, world, user).await
+    }
+
     async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
         // Delegates to the inherent method of the same name (see `member_role`
         // above for why this is not infinite recursion).

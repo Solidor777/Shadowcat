@@ -145,7 +145,8 @@ impl From<SendMessageError> for DrawTableError {
             | SendMessageError::Forbidden
             | SendMessageError::AudienceLocked
             | SendMessageError::Roll(_)
-            | SendMessageError::RollImmutable => DrawTableError::Forbidden,
+            | SendMessageError::RollImmutable
+            | SendMessageError::NoReplyTarget => DrawTableError::Forbidden,
         }
     }
 }

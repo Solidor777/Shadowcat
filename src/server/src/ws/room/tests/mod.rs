@@ -149,6 +149,9 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<Option<Uuid>, DataError> {
         self.inner.member_id_by_username(world, username).await
     }
+    async fn last_whisper_to(&self, world: Uuid, user: Uuid) -> Result<Option<Uuid>, DataError> {
+        self.inner.last_whisper_to(world, user).await
+    }
     async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
         self.inner.asset_id_by_name(world, name).await
     }

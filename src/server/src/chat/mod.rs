@@ -51,7 +51,7 @@ mod sanitize;
 mod search_text;
 mod settings;
 mod shortcodes;
-pub use commands::{parse_command, ParsedCommand};
+pub use commands::{parse_command, AudienceIntent, ParsedCommand};
 pub use link_preview::{
     build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
     EnrichDeps, LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
@@ -251,7 +251,7 @@ impl WireRecalcOp {
 }
 
 /// Message subtype, orthogonal to channel. Rides the opaque body (no ts-rs).
-/// `Emote`/`Roll` are set by `parse_command`, `System` by server-authored
+/// `Emote`/`Roll`/`Ooc` are set by `parse_command`, `System` by server-authored
 /// notices; a message carrying no command prefix stays `Normal`.
 ///
 /// # Examples
@@ -273,6 +273,9 @@ pub enum MessageKind {
     Emote,
     /// A message whose content came from the roll pipeline.
     Roll,
+    /// `/ooc` out-of-character text: a display distinction only, with no effect on
+    /// the audience.
+    Ooc,
     /// Server-authored notice (never client-set).
     System,
 }
@@ -1062,6 +1065,8 @@ pub enum SendMessageError {
     /// outside the sending room's world, or its effective owner (own override, else linked
     /// actor's owner) is someone else and the sender is not a GM.
     ActorNotSpeakable,
+    /// `/reply` found no whisper addressed to the sender from another member.
+    NoReplyTarget,
 }
 
 /// Player-presentable text for the sender's failure notice (correlated `ChatError`
@@ -1099,6 +1104,11 @@ impl std::fmt::Display for SendMessageError {
             }
             SendMessageError::RollImmutable => {
                 f.write_str("A roll cannot be edited once it has been sent.")
+            }
+            SendMessageError::NoReplyTarget => {
+                // Safe: reveals only that the sender has received no whisper, which
+                // the sender can already see in their own chat log.
+                f.write_str("There is no whisper to reply to.")
             }
             // Authorization-class: generic only. The inner value is deliberately unused.
             SendMessageError::ActorNotSpeakable => {
@@ -1206,6 +1216,63 @@ pub(crate) async fn validate_audience(
         }
     }
     Ok(())
+}
+
+/// Resolves a command's `AudienceIntent` into a concrete `Audience`: the one decider for
+/// every content-level audience shortcut. `Whisper` resolves each `@username` to a member
+/// uuid (unknown name fails the whole send); `GmOnly` and `Public` map directly; `Players`
+/// snapshots every current non-GM member except the sender into a whisper roster;
+/// `ReplyToLastWhisper` targets the author of the sender's most recent received whisper
+/// (`Repository::last_whisper_to`). The caller still runs `validate_audience` on the result.
+pub(crate) async fn resolve_audience_intent(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    sender: Uuid,
+    intent: AudienceIntent,
+) -> Result<Audience, SendMessageError> {
+    match intent {
+        AudienceIntent::Whisper(names) => {
+            let mut recipients = Vec::with_capacity(names.len());
+            for name in &names {
+                match repo
+                    .member_id_by_username(world_id, name)
+                    .await
+                    .map_err(SendMessageError::Data)?
+                {
+                    Some(uid) => recipients.push(uid),
+                    None => return Err(SendMessageError::UnknownRecipient),
+                }
+            }
+            Ok(Audience::Whisper { recipients })
+        }
+        AudienceIntent::GmOnly => Ok(Audience::GmOnly),
+        AudienceIntent::Public => Ok(Audience::Public),
+        AudienceIntent::Players => {
+            let recipients = repo
+                .list_members(world_id)
+                .await
+                .map_err(SendMessageError::Data)?
+                .into_iter()
+                .filter(|(id, _, role)| {
+                    *id != sender && *role != crate::data::document::WorldRole::Gm
+                })
+                .map(|(id, _, _)| id)
+                .collect();
+            Ok(Audience::Whisper { recipients })
+        }
+        AudienceIntent::ReplyToLastWhisper => {
+            match repo
+                .last_whisper_to(world_id, sender)
+                .await
+                .map_err(SendMessageError::Data)?
+            {
+                Some(target) => Ok(Audience::Whisper {
+                    recipients: vec![target],
+                }),
+                None => Err(SendMessageError::NoReplyTarget),
+            }
+        }
+    }
 }
 
 /// The world-pinned `Actor`/`TokenInstance` attribution gate: `actor_owner`
@@ -1500,31 +1567,19 @@ pub async fn handle_send_message(
     // `@name` token ahead of the cap check, reproducing the exact unbounded
     // per-recipient resource-amplification risk `MAX_WHISPER_RECIPIENTS` exists
     // to prevent (see that constant's doc comment).
-    if let Some(names) = &parsed.whisper_to {
+    if let Some(AudienceIntent::Whisper(names)) = &parsed.audience_intent {
         if names.len() > MAX_WHISPER_RECIPIENTS {
             return Err(SendMessageError::TooLong);
         }
     }
-    // Captured BEFORE `parsed.whisper_to` is consumed below — drives the
-    // /w-prefix strip on `source` (see build_message_doc call).
-    let had_whisper = parsed.whisper_to.is_some();
-    // Effective audience: an explicit /w wins; otherwise the `SendMessage`
-    // frame's own `audience` field.
-    let audience = if let Some(names) = parsed.whisper_to {
-        let mut recipients = Vec::with_capacity(names.len());
-        for name in &names {
-            match repo
-                .member_id_by_username(room.world_id, name)
-                .await
-                .map_err(SendMessageError::Data)?
-            {
-                Some(uid) => recipients.push(uid),
-                None => return Err(SendMessageError::UnknownRecipient),
-            }
-        }
-        Audience::Whisper { recipients }
-    } else {
-        audience
+    // Captured BEFORE `parsed.audience_intent` is consumed below — drives the
+    // command-prefix strip on `source` (see build_message_doc call).
+    let had_intent = parsed.audience_intent.is_some();
+    // Effective audience: an explicit command intent wins; otherwise the
+    // `SendMessage` frame's own `audience` field.
+    let audience = match parsed.audience_intent {
+        Some(intent) => resolve_audience_intent(repo, room.world_id, ctx.user_id, intent).await?,
+        None => audience,
     };
     // Re-validate the EFFECTIVE audience (whisper cap + membership) — see
     // `validate_audience`'s doc comment. The cap is ALSO checked above
@@ -1661,10 +1716,10 @@ pub async fn handle_send_message(
         )
         .await;
     }
-    // `source` = raw author input for client edit-prefill, with a parsed /w
-    // prefix STRIPPED — an unmodified resubmit of the prefill must not trip
-    // handle_edit_message's AudienceLocked rejection (edit always rejects /w).
-    let source = Some(if had_whisper {
+    // `source` = raw author input for client edit-prefill, with a parsed audience
+    // command prefix STRIPPED — an unmodified resubmit of the prefill must not trip
+    // handle_edit_message's AudienceLocked rejection (edit rejects any audience command).
+    let source = Some(if had_intent {
         parsed.body.clone()
     } else {
         content.clone()
@@ -1888,8 +1943,9 @@ pub async fn handle_edit_message(
         (sys.kind, content.clone())
     } else {
         let parsed = parse_command(&content);
-        // Audience is frozen on edit — a /w in an edit is rejected, not applied.
-        if parsed.whisper_to.is_some() {
+        // Audience is frozen on edit — any audience command in an edit is rejected,
+        // not applied.
+        if parsed.audience_intent.is_some() {
             return Err(SendMessageError::AudienceLocked);
         }
         // Roll immutability: editing content INTO a roll (e.g. a plain message
@@ -2438,6 +2494,9 @@ pub async fn handle_recalc_roll(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod audience_command_tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;
