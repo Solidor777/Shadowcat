@@ -264,6 +264,26 @@
     erroredFor = mediaAssetId;
   }
 
+  /** Presents the note to every connected client. A private note is first shared with an
+   * ordinary visibility `Update` (the server never presents an unshared note), and the
+   * presentation request follows on the same ordered connection. A refusal surfaces as a
+   * notification with the server's reason.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the "Present to players" button
+   * void present();
+   * ```
+   */
+  async function present(): Promise<void> {
+    if (!doc) return;
+    if (doc.permissions.default === "none") setVisibility("observer");
+    try {
+      await ctx.notes.present(docId);
+    } catch (e) {
+      ctx.notify(e instanceof Error ? e.message : String(e), "warning");
+    }
+  }
+
   /** Opens the shared asset picker and swaps the page's media asset, keeping its kind. Cancel
    * writes nothing. The picker's `kind` filter is `image` for an image page and `other` for a
    * PDF or video page.
@@ -316,6 +336,10 @@
     {/if}
 
     <PermissionsEditor {docId} />
+
+    {#if ctx.role === "gm"}
+      <button type="button" data-testid="note-present" onclick={() => void present()}>{t("sheetNote.present")}</button>
+    {/if}
 
     {#if mediaAssetId !== null && mediaUrl !== null}
       <div class="media" data-testid="note-media" data-media-kind={pageKind.kind}>

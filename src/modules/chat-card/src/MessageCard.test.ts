@@ -1275,3 +1275,54 @@ describe("MessageCard — chat-card extensions", () => {
     expect((await screen.findByTestId("ext-probe")).textContent).toBe("late:t:general");
   });
 });
+
+describe("MessageCard — blind rolls", () => {
+  const blindCopy = (content: unknown[]) =>
+    msgDoc("m1", baseSystem({ kind: "roll", audience: { kind: "blind" }, content }));
+
+  it("shows a reader the server withheld the roll from only a 'rolled blind' card, with no formula or digits", () => {
+    const doc = blindCopy([{ kind: "roll_embed", roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "player" }),
+    });
+    expect(container.querySelector("[data-testid='blind-roll-card']")?.textContent).toBe("chat.blind.rolled");
+    expect(container.querySelector(".roll-block")).toBeNull();
+    expect(container.querySelector(".roll-pending")).toBeNull();
+    expect(container.querySelector("[data-testid='blind-badge']")).toBeNull();
+    expect(container.querySelector(".body")?.textContent).not.toMatch(/\d/);
+  });
+
+  it("shows the GM the full roll and a blind badge", () => {
+    const doc = blindCopy([{ kind: "roll_embed", formula: "2d6+1", outcome: rollOutcome({ total: 9 }), roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "gm" }),
+    });
+    expect(container.querySelector(".roll-formula")?.textContent).toBe("2d6+1");
+    expect(container.querySelector(".roll-total")?.textContent).toBe("9");
+    expect(container.querySelector("[data-testid='blind-badge']")?.textContent).toBe("chat.blind.badge");
+    expect(container.querySelector("[data-testid='blind-roll-card']")).toBeNull();
+  });
+
+  it("shows a withheld table draw as the same card, with no row label", () => {
+    const doc = blindCopy([{ kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "d1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "player" }),
+    });
+    expect(container.querySelector("[data-testid='blind-roll-card']")).not.toBeNull();
+    expect(container.querySelector(".table-draw-no-row")).toBeNull();
+  });
+
+  it("offers the GM the blind audience when revising a blind message", async () => {
+    const doc = blindCopy([{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome(), roll_id: "r1" }]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, role: "gm" }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    const select = container.querySelector(".revise-box select") as HTMLSelectElement;
+    expect(select.value).toBe("blind");
+  });
+});

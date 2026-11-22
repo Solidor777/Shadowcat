@@ -100,6 +100,12 @@ export type WireAudience =
       /** Only whoever currently holds the GM role (plus the sender) may read — resolved
        * dynamically, not a frozen roster at send time. */
       kind: "gm_only";
+    }
+  | {
+      /** Every member holds the message, but each roll in it carries its formula and result
+       * only for the GM; any other reader (the roller included) gets the roll with both
+       * keys absent. */
+      kind: "blind";
     };
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -107,6 +113,7 @@ export const audienceSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public") }),
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
+  z.object({ kind: z.literal("blind") }),
 ]);
 /** Validator for a `WireAudience`. */
 export const AudienceSchema: z.ZodType<WireAudience> = audienceSchemaImpl;
@@ -1280,6 +1287,15 @@ export type ServerMsg =
       elevation: number | null;
       /** Fresh per-broadcast id — the render layer's one-shot node key. */
       id: string;
+    }
+  | {
+      /** A relayed "the GM is presenting this note" focus signal. Out-of-band (no seq, never
+       * buffered/resynced), mirroring `vfx`; carries no note content. */
+      type: "present_note";
+      /** The `note` document being presented. */
+      note_id: string;
+      /** The GM who presented it (server-stamped). */
+      presented_by: string;
     };
 
 // Unannotated impl const — see the module-level note above the `z` import. This is the
@@ -1515,6 +1531,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     elevation: z.number().nullable(),
     id: z.string(),
   }),
+  z.object({ type: z.literal("present_note"), note_id: z.string(), presented_by: z.string() }),
 ]);
 /** Validator for every frame the server sends, discriminated by `type`. */
 export const ServerMsgSchema: z.ZodType<ServerMsg, z.ZodTypeDef, unknown> = serverMsgSchemaImpl;
@@ -1957,6 +1974,16 @@ export type ClientMsg =
       actor_owner: WireActorOwnerRef | null;
       /** Visibility policy (public / gm-only / whisper). */
       audience: WireAudience;
+    }
+  | {
+      /** GM-only: ask the server to tell every connected client to open a shared note. Authors
+       * no document; a refusal is a correlated `chat_error`, same asymmetric reply protocol as
+       * `send_message`. */
+      type: "present_note";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The `note` document to present. */
+      note_id: string;
     }
   | {
       /** Activate a combat: pauses any other active combat on its scene in the same command;

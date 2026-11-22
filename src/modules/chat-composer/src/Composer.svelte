@@ -179,6 +179,39 @@
     });
   }
 
+  // Roll-mode picker: each entry is a leading command the server's `parse_command` already
+  // accepts. Picking one rewrites the visible draft's leading roll command, so the user reads
+  // exactly what will be sent and the server stays the only parser of what it means.
+  const ROLL_MODES = [
+    { command: "/blindroll ", labelKey: "chat.composer.rollModeBlind" },
+    { command: "/selfroll ", labelKey: "chat.composer.rollModeSelf" },
+  ] as const;
+  // Every leading roll command the picker replaces: the picker's own, their aliases, and `/roll`.
+  const REPLACEABLE_ROLL_COMMANDS = ["/blindroll ", "/br ", "/selfroll ", "/sr ", "/roll ", "/r "];
+  let rollMode = $state("");
+
+  /** Puts `command` at the start of the draft, replacing a roll command the draft already
+   * starts with, then returns focus to the textarea and resets the picker to its prompt.
+   * @param command One of the picker's `ROLL_MODES` commands, trailing space included.
+   * @example
+   * ```
+   * // internal; wired to the roll-mode select's change handler
+   * applyRollMode("/blindroll ");
+   * ```
+   */
+  function applyRollMode(command: string): void {
+    if (!command) return;
+    let body = value.trimStart();
+    const existing = REPLACEABLE_ROLL_COMMANDS.find((c) => body.startsWith(c));
+    if (existing) body = body.slice(existing.length);
+    value = command + body;
+    rollMode = "";
+    queueMicrotask(() => {
+      autoGrow();
+      textarea?.focus();
+    });
+  }
+
   // The server's player-presentable rejection reason for the last send, shown
   // inline so a refused message does not vanish silently. Already classified
   // server-side (authorization/existence/internal errors are generic there).
@@ -445,6 +478,13 @@
     <option value="">{t("chat.composer.myself")}</option>
     {#each speakableActors as actor (actor.id)}
       <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { /** The actor's authored display name, if any. */ displayName?: string } | undefined)?.displayName })}</option>
+    {/each}
+  </select>
+  <label class="visually-hidden" for="chat-composer-roll-mode">{t("chat.composer.rollMode")}</label>
+  <select id="chat-composer-roll-mode" data-testid="roll-mode" bind:value={rollMode} onchange={() => applyRollMode(rollMode)}>
+    <option value="">{t("chat.composer.rollMode")}</option>
+    {#each ROLL_MODES as mode (mode.command)}
+      <option value={mode.command}>{t(mode.labelKey)}</option>
     {/each}
   </select>
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>

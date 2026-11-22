@@ -955,7 +955,7 @@ async fn handle_socket(
                                         sound: sound.clone(),
                                         elevation,
                                     };
-                                    if vfx_rate.check(user_id, now_millis(), 30)
+                                    if vfx_rate.check(user_id, now_millis(), crate::ws::VFX_RATE_PER_MIN)
                                         && crate::ws::vfx::validate_bounds(&req)
                                         && crate::ws::vfx::vfx_permitted(scene, &ctx, world_id, repo.as_ref()).await
                                     {
@@ -1295,6 +1295,30 @@ async fn handle_socket(
                                             }))).await.is_err() {
                                                 break;
                                             }
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::PresentNote { request_id, note_id }) => {
+                                    // Out-of-band focus signal; success is the broadcast
+                                    // `PresentNote` echo, a refusal is a correlated `ChatError`
+                                    // to this connection only (same asymmetric reply protocol as
+                                    // SendMessage). Spends the shared `vfx_rate` bucket.
+                                    if let Err(e) = crate::notes::handle_present_note(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &vfx_rate,
+                                        note_id,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "present_note rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
                                         }
                                     }
                                 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { tick } from "svelte";
 import {
   AssetResolver,
@@ -390,5 +390,55 @@ describe("NoteSheet typed pages", () => {
   it("hides Change media when the viewer cannot edit the kind", () => {
     const { queryByTestId } = sheetFor({ kind: "image", asset_id: ASSET }, { canEdit: () => false });
     expect(queryByTestId("note-change-media")).toBeNull();
+  });
+});
+
+describe("NoteSheet present to players", () => {
+  /** Renders a sheet for a note with the given default role, as `role`, recording intents and notices. */
+  function presentSheet(role: "gm" | "player", defaultRole: "none" | "observer", present: (id: string) => Promise<void>) {
+    const intents: unknown[] = [];
+    const doc = buildNoteDoc("w1", "Handout", "# Hi", { id: "n1", owner: SELF });
+    doc.permissions.default = defaultRole;
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const notices: string[] = [];
+    const context = setAppContextForTest({
+      documents,
+      role,
+      canEdit: () => true,
+      dispatchIntent: (ops) => intents.push(ops),
+      notes: { present },
+      notify: (m) => notices.push(m),
+    });
+    const view = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    return { ...view, intents, notices };
+  }
+
+  it("shows the button to a GM only", () => {
+    expect(presentSheet("gm", "observer", async () => {}).queryByTestId("note-present")).not.toBeNull();
+    cleanup();
+    expect(presentSheet("player", "observer", async () => {}).queryByTestId("note-present")).toBeNull();
+  });
+
+  it("presents a shared note without writing a visibility change", async () => {
+    const presented: string[] = [];
+    const { getByTestId, intents } = presentSheet("gm", "observer", async (id) => { presented.push(id); });
+    await fireEvent.click(getByTestId("note-present"));
+    expect(presented).toEqual(["n1"]);
+    expect(intents).toEqual([]);
+  });
+
+  it("shares a private note with one visibility write, then presents it", async () => {
+    const presented: string[] = [];
+    const { getByTestId, intents } = presentSheet("gm", "none", async (id) => { presented.push(id); });
+    await fireEvent.click(getByTestId("note-present"));
+    expect(intents).toEqual([[{ op: "update", doc_id: "n1", changes: [{ path: "/permissions/default", old: "none", new: "observer" }] }]]);
+    expect(presented).toEqual(["n1"]);
+  });
+
+  it("surfaces the server's refusal as a notification", async () => {
+    const { getByTestId, notices } = presentSheet("gm", "observer", async () => { throw new Error("Only the GM can present a note."); });
+    await fireEvent.click(getByTestId("note-present"));
+    await tick();
+    expect(notices).toEqual(["Only the GM can present a note."]);
   });
 });

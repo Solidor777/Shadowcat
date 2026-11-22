@@ -256,6 +256,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/me/ui-state",
             get(routes::get_ui_state).put(routes::put_ui_state),
         )
+        .route("/api/account/password", post(routes::change_own_password))
         .route("/api/login", post(routes::login))
         .route("/api/logout", post(routes::logout))
         .route("/api/setup", post(routes::setup))

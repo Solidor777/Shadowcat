@@ -209,7 +209,7 @@ fn default_ordered() -> bool {
 /// assert_eq!(outcome.pass, None);
 /// assert_eq!(outcome.successes, None); // Total mode never reports successes
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     /// Total-mode fold result; in SuccessCount mode, the reference sum of
     /// kept-die values (see the struct doc), never a fold.

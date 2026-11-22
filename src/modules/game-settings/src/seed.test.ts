@@ -45,7 +45,7 @@ describe("server-seeded config singletons", () => {
       buildLightGradationDoc("w1"),
       buildVisionModesDoc("w1"),
       buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }),
-      buildChatSettingsDoc("w1", { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null }),
+      buildChatSettingsDoc("w1", { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null, blind_visible_to_players: null, blind_visible_to_actor_owner: null }),
     );
     render(GameSettingsPanel, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }),

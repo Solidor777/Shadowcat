@@ -244,7 +244,7 @@ async fn run_fx(
     };
     // One rate decision per VFX play regardless of entry path: the chat front door charges
     // the same bucket at the same budget the raw `PlayVfx` frame does.
-    if !vfx_rate.check(ctx.user_id, now, 30)
+    if !vfx_rate.check(ctx.user_id, now, crate::ws::VFX_RATE_PER_MIN)
         || !validate_bounds(&req)
         || !vfx_permitted(scene, ctx, world_id, repo).await
     {

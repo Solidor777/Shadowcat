@@ -24,4 +24,4 @@ export type Audience = { "kind": "public" } | { "kind": "whisper",
 /**
  * User ids allowed to read (sender implicitly included).
  */
-recipients: Array<string>, } | { "kind": "gm_only" };
+recipients: Array<string>, } | { "kind": "gm_only" } | { "kind": "blind" };
