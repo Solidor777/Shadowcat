@@ -38,6 +38,8 @@ function fakeT(key: string): string {
   const templates: Record<string, string> = {
     "chat.roll.details": "Roll details",
     "chat.roll.dropped": "dropped",
+    "chat.roll.naturalMax": "natural max",
+    "chat.roll.naturalMin": "natural min",
   };
   return templates[key] ?? key;
 }
@@ -160,6 +162,60 @@ describe("RollTooltip", () => {
     expect(tooltips[0].id).not.toBe(tooltips[1].id);
     expect(tooltips[0].id).not.toBe("");
     expect(tooltips[1].id).not.toBe("");
+  });
+
+  it("marks a Numeric die's natural max and min in a bare Total roll, and no other die", async () => {
+    const numeric = { Numeric: { min: 1, max: 20 } };
+    const outcome = testRollOutcome({
+      crit_successes: 0,
+      records: [
+        dieRecord({ natural: 20, value: 20, kind: numeric }),
+        dieRecord({ natural: 1, value: 1, kind: numeric }),
+        dieRecord({ natural: 10, value: 10, kind: numeric }),
+      ],
+    });
+    const { getByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    await fireEvent.focus(getByRole("button", { name: /roll details/i }));
+
+    const rows = Array.from(document.querySelectorAll("tbody tr"));
+    expect(rows.map((r) => r.getAttribute("data-nat-extreme"))).toEqual(["max", "min", null]);
+    expect(rows[0].textContent).toContain("natural max");
+    expect(rows[1].textContent).toContain("natural min");
+  });
+
+  it("never marks a Faces die or a record with no kind, whatever its natural", async () => {
+    const faces = { Faces: { faces: [{ value: 1, symbols: [] }, { value: 20, symbols: [] }] } };
+    const outcome = testRollOutcome({
+      records: [
+        dieRecord({ natural: 20, kind: faces }),
+        dieRecord({ natural: 0, kind: faces }),
+        dieRecord({ natural: 20, kind: null }),
+        dieRecord({ natural: 20 }),
+      ],
+    });
+    const { getByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    await fireEvent.focus(getByRole("button", { name: /roll details/i }));
+    expect(document.querySelectorAll("[data-nat-extreme='min'], [data-nat-extreme='max']")).toHaveLength(0);
+  });
+
+  it("a dropped natural max carries both the dropped and the natural-extreme marks", async () => {
+    const outcome = testRollOutcome({
+      records: [dieRecord({ natural: 6, kept: false, kind: { Numeric: { min: 1, max: 6 } } })],
+    });
+    const { getByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    await fireEvent.focus(getByRole("button", { name: /roll details/i }));
+    const row = document.querySelector("tbody tr");
+    expect(row?.getAttribute("data-dropped")).toBe("true");
+    expect(row?.getAttribute("data-nat-extreme")).toBe("max");
   });
 
   it("renders a recalculated badge when recalcHistory is non-empty", () => {

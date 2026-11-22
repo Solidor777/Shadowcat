@@ -615,6 +615,8 @@ export const en: Messages = {
   "chat.roll.fail": "Failure",
   "chat.roll.details": "Roll details",
   "chat.roll.dropped": "dropped",
+  "chat.roll.naturalMax": "natural max",
+  "chat.roll.naturalMin": "natural min",
   "chat.roll.reroll": "Reroll this die",
   "chat.roll.remove": "Remove this die",
   "chat.roll.replace": "Replace this die's face",

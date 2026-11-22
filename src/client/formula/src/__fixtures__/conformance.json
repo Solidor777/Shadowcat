@@ -539,6 +539,76 @@
       }
     },
     {
+      "name": "identifier before the dice operator is a bare count",
+      "src": "prof d6 + str",
+      "bindings": {
+        "prof": 3,
+        "str": 2
+      },
+      "expect": {
+        "notation": "3 d6 + 2[str]"
+      }
+    },
+    {
+      "name": "bare count carries across spaces and tabs and keeps the operator's case",
+      "src": "prof \t D6",
+      "bindings": {
+        "prof": 4
+      },
+      "expect": {
+        "notation": "4 \t D6"
+      }
+    },
+    {
+      "name": "integer count carries across spaces and tabs to the dice operator",
+      "src": "3 \t d6 + 2 d8",
+      "expect": {
+        "notation": "3 \t d6 + 2 d8"
+      }
+    },
+    {
+      "name": "identifier before a modifier that starts with d stays labeled",
+      "src": "str dl",
+      "bindings": {
+        "str": 3
+      },
+      "expect": {
+        "notation": "3[str] dl"
+      }
+    },
+    {
+      "name": "negative bare count is a type error",
+      "src": "prof d6",
+      "bindings": {
+        "prof": -2
+      },
+      "expect": {
+        "error": "type",
+        "detail": "'prof' = -2: a dice count cannot be negative"
+      }
+    },
+    {
+      "name": "zero bare count is an empty group",
+      "src": "prof d6",
+      "bindings": {
+        "prof": 0
+      },
+      "expect": {
+        "notation": "0 d6"
+      }
+    },
+    {
+      "name": "non-integer bare count is a type error",
+      "src": "prof d6",
+      "bindings": {
+        "prof": 2.5
+      },
+      "expect": {
+        "error": "type",
+        "detail": "'prof' = 2.5: roll templates require integers (use floor/round in the stat formula)"
+      }
+    },
+    {
       "name": "negative substitution is a labeled negation",
       "src": "1d6 + str",
       "bindings": {
@@ -615,12 +685,12 @@
     },
     {
       "name": "dice count synthesized after an identifier claim",
-      "src": "str d6",
+      "src": "str + d6",
       "bindings": {
         "str": 3
       },
       "expect": {
-        "notation": "3[str] 1d6"
+        "notation": "3[str] + 1d6"
       }
     },
     {
