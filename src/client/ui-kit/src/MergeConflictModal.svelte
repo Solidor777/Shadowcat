@@ -78,11 +78,8 @@
 </script>
 
 <div class="modal-scrim" role="presentation">
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={t("templates.conflict.title")}
-       bind:this={modalEl}
-       onclick={(e) => e.stopPropagation()}>
+       bind:this={modalEl}>
     <h2>{t("templates.conflict.title")}</h2>
     {#each groups as g (g.key)}
       {#if g.label !== null}<h3>{g.label}</h3>{/if}

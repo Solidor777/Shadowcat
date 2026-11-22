@@ -21,6 +21,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
       .fn()
       .mockResolvedValue({ id: "u-3", username: "new-player", server_role: "user" }),
     deleteUser: vi.fn().mockResolvedValue(undefined),
+    adminBackup: vi.fn().mockResolvedValue({ db_bytes: 2048 }),
   };
 });
 
@@ -141,5 +142,57 @@ describe("UserManager", () => {
     await fireEvent.click(screen.getByText("settings.users.create"));
 
     expect(await screen.findByText("settings.users.error")).toBeTruthy();
+  });
+
+  describe("Back up now", () => {
+    /** A recording `notifyProgress` seam. */
+    function seam() {
+      const events: string[] = [];
+      const notifyProgress = vi.fn((message: string, progress: { value: number | null }) => {
+        events.push(`push ${message} ${progress.value}`);
+        return { id: "p", update: () => {}, dismiss: () => events.push("dismiss") };
+      });
+      return { events, notifyProgress };
+    }
+
+    it("is not offered to a non-admin", () => {
+      render(UserManager, { context: setAppContextForTest({ serverRole: "user" }) });
+      expect(screen.queryByText("settings.users.backupNow")).toBeNull();
+    });
+
+    it("shows an indeterminate progress notification while the backup runs, then dismisses it and reports the size", async () => {
+      const { adminBackup } = await import("@shadowcat/core");
+      let release: (v: unknown) => void = () => {};
+      vi.mocked(adminBackup).mockImplementationOnce(
+        () => new Promise((resolve) => (release = resolve)) as never,
+      );
+      const { events, notifyProgress } = seam();
+      const notify = vi.fn();
+      render(UserManager, {
+        context: setAppContextForTest({ serverRole: "admin", notifyProgress, notify }),
+      });
+      await screen.findByText("root-admin");
+      await fireEvent.click(screen.getByText("settings.users.backupNow"));
+      await vi.waitFor(() => expect(events).toEqual(["push settings.users.backupRunning null"]));
+      expect((screen.getByText("settings.users.backupNow") as HTMLButtonElement).disabled).toBe(true);
+      release({ db_bytes: 2048 });
+      await vi.waitFor(() => expect(events).toContain("dismiss"));
+      expect(notify).toHaveBeenCalledWith("settings.users.backupDone", "info");
+      expect((screen.getByText("settings.users.backupNow") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("a rejected backup still dismisses the progress notification and reports the failure", async () => {
+      const { adminBackup } = await import("@shadowcat/core");
+      vi.mocked(adminBackup).mockRejectedValueOnce(new Error("disk full"));
+      const { events, notifyProgress } = seam();
+      const notify = vi.fn();
+      render(UserManager, {
+        context: setAppContextForTest({ serverRole: "admin", notifyProgress, notify }),
+      });
+      await screen.findByText("root-admin");
+      await fireEvent.click(screen.getByText("settings.users.backupNow"));
+      await vi.waitFor(() => expect(events).toContain("dismiss"));
+      expect(notify).toHaveBeenCalledWith("settings.users.backupError", "error");
+    });
   });
 });

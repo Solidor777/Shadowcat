@@ -18,10 +18,69 @@ async function until(cond: () => boolean): Promise<void> {
   expect(cond()).toBe(true);
 }
 
+/** A recording `notifyProgress` seam: every handle's updates and dismissals land in `log`. */
+function progressSeam() {
+  const log: string[] = [];
+  const updates: Array<{ message?: string; value: number | null | undefined; max?: number }> = [];
+  const ctx = {
+    t: (key: string, params?: Record<string, string | number>) => `${key}:${params?.name ?? ""}`,
+    notifyProgress: vi.fn((message: string, progress: { value: number | null; max: number }) => {
+      log.push(`push ${message} ${progress.value}/${progress.max}`);
+      return {
+        id: "p",
+        update: (patch: { message?: string; progress?: { value: number | null; max: number } }) => {
+          updates.push({ message: patch.message, value: patch.progress?.value, max: patch.progress?.max });
+        },
+        dismiss: () => log.push("dismiss"),
+      };
+    }),
+  };
+  return { ctx, log, updates };
+}
+
 describe("UploadQueue", () => {
+  it("shows one progress notification per file: pushed at 0, updated per chunk, dismissed on completion", async () => {
+    vi.spyOn(api, "startChunkedUpload").mockImplementation(async (_w, f, opts) => {
+      opts?.onProgress?.(1, 3);
+      opts?.onProgress?.(3, 3);
+      return { id: "a-" + f.name } as never;
+    });
+    const { ctx, log, updates } = progressSeam();
+    const q = new UploadQueue("w1", vi.fn(), ctx);
+    q.enqueue([file("one.png"), file("two.png")], null);
+    await until(() => q.entries.every((e) => e.status === "done"));
+    expect(log).toEqual([
+      "push assetBrowser.uploadProgress:one.png 0/3",
+      "dismiss",
+      "push assetBrowser.uploadProgress:two.png 0/3",
+      "dismiss",
+    ]);
+    expect(updates.filter((u) => u.max === 3).map((u) => u.value)).toEqual([1, 3, 1, 3]);
+  });
+
+  it("dismisses the progress notification when the upload fails or is aborted", async () => {
+    vi.spyOn(api, "startChunkedUpload").mockRejectedValue(new Error("network down"));
+    const { ctx, log } = progressSeam();
+    const q = new UploadQueue("w1", vi.fn(), ctx);
+    q.enqueue([file("x.png")], null);
+    await until(() => q.entries[0].status === "error");
+    expect(log).toEqual(["push assetBrowser.uploadProgress:x.png 0/3", "dismiss"]);
+  });
+
+  it("dismisses the progress notification when only the placement step failed", async () => {
+    vi.spyOn(api, "startChunkedUpload").mockRejectedValue(
+      new ChunkedUploadError("placement failed after upload", 503, { id: "a1" } as never),
+    );
+    const { ctx, log } = progressSeam();
+    const q = new UploadQueue("w1", vi.fn(), ctx);
+    q.enqueue([file("x.png")], null);
+    await until(() => q.entries[0].status === "done");
+    expect(log).toEqual(["push assetBrowser.uploadProgress:x.png 0/3", "dismiss"]);
+  });
+
   it("threads the audio container selection into the upload options", async () => {
     const start = vi.spyOn(api, "startChunkedUpload").mockResolvedValue({ id: "a1" } as never);
-    const q = new UploadQueue("w1", vi.fn());
+    const q = new UploadQueue("w1", vi.fn(), progressSeam().ctx);
     q.enqueue([file("loop.wav")], null, "ogg");
     await until(() => q.entries[0].status === "done");
     expect(start).toHaveBeenCalledWith(
@@ -40,7 +99,7 @@ describe("UploadQueue", () => {
       return { id: "a-" + f.name } as never;
     });
     const done = vi.fn();
-    const q = new UploadQueue("w1", done);
+    const q = new UploadQueue("w1", done, progressSeam().ctx);
     q.enqueue([file("one.png"), file("two.png")], "folder-1");
     await until(() => q.entries.every((e) => e.status === "done"));
     expect(seen).toEqual(["one.png", "two.png"]);
@@ -54,7 +113,7 @@ describe("UploadQueue", () => {
       .spyOn(api, "startChunkedUpload")
       .mockRejectedValueOnce(new Error("network down"))
       .mockResolvedValueOnce({ id: "a1" } as never);
-    const q = new UploadQueue("w1", vi.fn());
+    const q = new UploadQueue("w1", vi.fn(), progressSeam().ctx);
     q.enqueue([file("x.png")], "folder-9");
     await until(() => q.entries[0].status === "error");
     expect(q.entries[0].error).toContain("network down");
@@ -69,7 +128,7 @@ describe("UploadQueue", () => {
       new ChunkedUploadError("placement failed after upload", 503, { id: "a1" } as never),
     );
     const done = vi.fn();
-    const q = new UploadQueue("w1", done);
+    const q = new UploadQueue("w1", done, progressSeam().ctx);
     q.enqueue([file("x.png")], null);
     await until(() => q.entries[0].status === "done");
     expect(q.entries[0].partial).toBeTruthy();
@@ -87,7 +146,7 @@ describe("UploadQueue", () => {
           opts?.signal?.addEventListener("abort", () => rej(new Error("aborted")));
         }),
     );
-    const q = new UploadQueue("w1", vi.fn());
+    const q = new UploadQueue("w1", vi.fn(), progressSeam().ctx);
     q.enqueue([file("active.png"), file("waiting.png")], null);
     await until(() => q.entries[0].status === "uploading");
     // Remove the queued one outright.

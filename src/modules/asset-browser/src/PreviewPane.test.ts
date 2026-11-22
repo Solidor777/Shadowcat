@@ -75,6 +75,60 @@ test("without a retained original there is no download link and reconvert is dis
   ).toBe(true);
 });
 
+/** A recording `notifyProgress` seam for the reconvert tests. */
+function progressSeam() {
+  const events: string[] = [];
+  const notifyProgress = vi.fn((message: string, progress: { value: number | null; max: number }) => {
+    events.push(`push ${message} ${progress.value}`);
+    return { id: "p", update: () => {}, dismiss: () => events.push("dismiss") };
+  });
+  return { events, notifyProgress };
+}
+
+test("reconvert shows an indeterminate progress notification for the awaited call, then dismisses it", async () => {
+  const { events, notifyProgress } = progressSeam();
+  let release: () => void = () => {};
+  vi.spyOn(api, "reconvertAsset").mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        release = () => resolve(asset() as never);
+      }),
+  );
+  render(PreviewPane, {
+    props: { asset: asset(), mutable: true, onChanged: vi.fn() },
+    context: setAppContextForTest({ notifyProgress }),
+  });
+  await fireEvent.click(screen.getByTestId("preview-reconvert"));
+  await waitFor(() => expect(events).toEqual(["push assetBrowser.reconverting null"]));
+  release();
+  await waitFor(() => expect(events).toEqual(["push assetBrowser.reconverting null", "dismiss"]));
+});
+
+test("a rejected reconvert still dismisses the progress notification and reports the error", async () => {
+  const { events, notifyProgress } = progressSeam();
+  const notify = vi.fn();
+  vi.spyOn(api, "reconvertAsset").mockRejectedValue(new Error("boom"));
+  render(PreviewPane, {
+    props: { asset: asset(), mutable: true, onChanged: vi.fn() },
+    context: setAppContextForTest({ notifyProgress, notify }),
+  });
+  await fireEvent.click(screen.getByTestId("preview-reconvert"));
+  await waitFor(() => expect(events).toContain("dismiss"));
+  expect(notify).toHaveBeenCalledTimes(1);
+});
+
+test("a tag edit shows no progress notification", async () => {
+  const { notifyProgress } = progressSeam();
+  vi.spyOn(api, "patchAsset").mockResolvedValue(asset() as never);
+  render(PreviewPane, {
+    props: { asset: asset(), mutable: true, onChanged: vi.fn() },
+    context: setAppContextForTest({ notifyProgress }),
+  });
+  await fireEvent.click(screen.getByTestId("preview-tag-remove-hero"));
+  await waitFor(() => expect(api.patchAsset).toHaveBeenCalled());
+  expect(notifyProgress).not.toHaveBeenCalled();
+});
+
 test("delete asks for confirmation before calling deleteAsset", async () => {
   const del = vi.spyOn(api, "deleteAsset").mockResolvedValue();
   const changed = pane(asset());
