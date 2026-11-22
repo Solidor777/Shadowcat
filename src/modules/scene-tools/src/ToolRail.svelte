@@ -422,6 +422,7 @@
    * @param checked The checkbox's new state.
    * @example
    * ```
+   * declare const eng: RegionEngine;
    * editRegionOcclusion(eng, "sight", true); // fog bank
    * ```
    */
