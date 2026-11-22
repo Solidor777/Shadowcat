@@ -16,6 +16,7 @@ import type { TransformAnchor } from "./TransformAnchor";
  *     anchor: TransformAnchor { x: 0.5, y: 0.6 },
  *     scale: 1.25,
  *     tint: Some("#ffcc88".to_string()),
+ *     facing: Some(270.0),
  * };
  * assert_eq!(transform.scale, 1.25);
  * ```
@@ -33,4 +34,11 @@ scale: number,
 /**
  * Multiply tint, a css `#rrggbb` string, or `None` for none.
  */
-tint?: string, };
+tint?: string, 
+/**
+ * The direction the art itself faces as drawn, in degrees in the `TokenEngine::rotation`
+ * convention (0 faces +x, clockwise on the y-down canvas, so 90 faces down and 270 faces
+ * up), in `[0, 360)`. The renderer turns the art by the token's rotation minus this angle,
+ * so the art points along the token's facing. `None` means the art is drawn facing +x.
+ */
+facing?: number, };
