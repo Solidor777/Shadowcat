@@ -1354,6 +1354,21 @@ describe("WsClient", () => {
     });
     expect(typeof frame.request_id).toBe("string");
     expect(frame.request_id.length).toBeGreaterThan(0);
+    expect(frame).not.toHaveProperty("system");
+  });
+
+  it("sendChatMessage forwards an opaque system payload verbatim when given", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.sendChatMessage({ channel: "ic", content: "hi", system: { card: { hits: [1, 2] } } }).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "send_message")!);
+    expect(frame.system).toEqual({ card: { hits: [1, 2] } });
   });
 
   it("sendChatMessage forwards actor_owner and audience when given", async () => {

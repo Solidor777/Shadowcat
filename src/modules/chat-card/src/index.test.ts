@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { ContributionRegistry } from "@shadowcat/core";
+import { CHAT_CARD_EXTENSION_CONTRACT, ContributionRegistry } from "@shadowcat/core";
 import { chatCard } from "./index";
 
 describe("chat-card module", () => {
-  it("requires the chat.message surface and provides nothing", () => {
+  it("requires the chat.message surface and provides the multi-cardinality chat-card extension contract", () => {
     expect(chatCard.manifest.id).toBe("chat-card");
     expect(chatCard.manifest.requires).toContain("shadowcat.surface:chat.message");
-    expect(chatCard.manifest.provides).toEqual([]);
+    expect(chatCard.manifest.provides).toEqual([{ contract: CHAT_CARD_EXTENSION_CONTRACT, cardinality: "multi" }]);
   });
 
   it("contributes exactly one component to shadowcat.surface:chat.message", () => {

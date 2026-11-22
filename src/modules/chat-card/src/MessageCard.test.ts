@@ -3,14 +3,18 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { SpeakAs, SpeakAsToken, confirmDialog } from "@shadowcat/ui-kit";
 import {
+  CHAT_CARD_EXTENSION_CONTRACT,
+  ContributionRegistry,
   DocumentStore,
   buildActorDoc,
   buildTokenFromActor,
   type ActorEngine,
+  type ChatCardExtensionMeta,
   type WireDocument,
   type WireOperation,
 } from "@shadowcat/core";
 import MessageCard from "./MessageCard.svelte";
+import ExtensionProbe from "./__fixtures__/ExtensionProbe.svelte";
 
 vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
@@ -1124,5 +1128,69 @@ describe("doc_link segments", () => {
       context: setAppContextForTest({ documents: storeWith(doc) }),
     });
     expect(screen.getByText("Ghost Doc").tagName).toBe("SPAN");
+  });
+});
+
+describe("MessageCard — chat-card extensions", () => {
+  /** A message document carrying an opaque `system` payload. */
+  function msgWithSystem(system: Record<string, unknown>): WireDocument {
+    return { ...msgDoc("m1", baseSystem()), system };
+  }
+
+  /** Registers a probe extension; `name` is the probe's rendered identity. */
+  function addProbe(
+    registry: ContributionRegistry,
+    id: string,
+    meta: ChatCardExtensionMeta,
+    module?: string,
+  ): () => void {
+    return registry.contribute(
+      { id, contract: CHAT_CARD_EXTENSION_CONTRACT, component: ExtensionProbe, props: { name: id }, chatCardExtension: meta },
+      { module },
+    );
+  }
+
+  it("renders a matching extension with the opaque system payload and the parsed message body", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: (system) => (system as { tag?: string }).tag === "yes" });
+    const doc = msgWithSystem({ tag: "yes" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.getByTestId("ext-probe").textContent).toBe("a:yes:general");
+  });
+
+  it("does not render an extension whose match returns false", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: () => false });
+    const doc = msgWithSystem({ tag: "yes" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+  });
+
+  it("renders no extension for a message whose system is empty", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "a", { priority: 0, match: (system) => "tag" in (system as object) });
+    const doc = msgWithSystem({});
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+    expect(screen.getByText("hello")).toBeTruthy();
+  });
+
+  it("renders extensions in descending priority, ties by module id", () => {
+    const contributions = new ContributionRegistry();
+    addProbe(contributions, "low", { priority: 1 }, "m-a");
+    addProbe(contributions, "high", { priority: 5 }, "m-z");
+    addProbe(contributions, "tie-b", { priority: 1 }, "m-b");
+    const doc = msgWithSystem({ tag: "t" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.getAllByTestId("ext-probe").map((n) => n.textContent?.split(":")[0])).toEqual(["high", "low", "tie-b"]);
+  });
+
+  it("mounts an extension registered after the card is on screen", async () => {
+    const contributions = new ContributionRegistry();
+    const doc = msgWithSystem({ tag: "t" });
+    render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc), contributions }) });
+    expect(screen.queryByTestId("ext-probe")).toBeNull();
+    addProbe(contributions, "late", { priority: 0 });
+    expect((await screen.findByTestId("ext-probe")).textContent).toBe("late:t:general");
   });
 });

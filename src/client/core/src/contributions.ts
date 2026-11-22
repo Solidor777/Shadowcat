@@ -3,6 +3,7 @@
 // Svelte <Surface> adapter) renders them. Same subscribe/snapshot reactivity as
 // DocumentStore — no framework runtime here; `component` is opaque to core.
 
+import type { ChatMessageEngine } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
 /** One provider or many for a surface contract. `"singleton"` enforcement (a collision demotes
@@ -137,6 +138,29 @@ export interface SettingsSectionMeta {
  * `settingsSection.labelKey` heading. */
 export const SETTINGS_SECTION_CONTRACT = "shadowcat.settings-section";
 
+/** Metadata for the `shadowcat.chat-card-extension` contract family: a component the message
+ * card renders after its own built-in content for every message whose opaque `system` payload
+ * the provider recognizes. `priority` and `match` follow `SheetMeta`'s selection vocabulary. */
+export interface ChatCardExtensionMeta {
+  /** Render order among the extensions matching one message; higher renders first. Ties fall
+   * back to the registering module id, then the contribution id (deterministic across load
+   * order). */
+  priority: number;
+  /** Optional per-message predicate over the message's opaque `system` payload and parsed
+   * `engine` body; a provider whose `match` returns `false` renders nothing for that message.
+   * Absent means the provider renders for every message.
+   * @param system The message document's `system` band, uninterpreted.
+   * @param message The message's parsed `engine` body.
+   * @returns Whether this extension renders for the message. */
+  match?: (system: unknown, message: ChatMessageEngine) => boolean;
+}
+
+/** Contract id modules contribute a chat-card extension under (`shadowcat.chat-card-extension`,
+ * multi). Rendered by the message card after its own built-in content; each extension component
+ * receives the message's opaque `system` payload as `system` and its parsed `engine` body as
+ * `message`. */
+export const CHAT_CARD_EXTENSION_CONTRACT = "shadowcat.chat-card-extension";
+
 /** One piece of UI a module contributes into a named surface contract. */
 export interface Contribution {
   /** An id the contributing module/host is responsible for keeping unique across whatever
@@ -167,6 +191,8 @@ export interface Contribution {
   settingsSection?: SettingsSectionMeta;
   /** Scene-tool metadata, present iff `contract` is `SCENE_TOOL_CONTRACT`. */
   sceneTool?: SceneToolMeta;
+  /** Chat-card extension metadata, present iff `contract` is `CHAT_CARD_EXTENSION_CONTRACT`. */
+  chatCardExtension?: ChatCardExtensionMeta;
   /** How this contribution relates to the host theme: `"host"` (default)
    * consumes the active theme's tokens like every engine surface; `"isolated"`
    * wraps the content in the theme-isolation class, which re-declares every
