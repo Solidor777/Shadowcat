@@ -8,6 +8,7 @@
   import ModuleManager from "./ModuleManager.svelte";
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
+  import TrashManager from "./TrashManager.svelte";
   import ThemeEditor from "./ThemeEditor.svelte";
   import PerformanceEditor from "./PerformanceEditor.svelte";
 
@@ -143,10 +144,11 @@
       <SectionComponent {...(section.props ?? {})} />
     </section>
   {/each}
-  <!-- Each self-gates: InviteManager on the world GM role, UserManager on the
-       server admin tier. Both gates are advisory; the server re-checks. -->
+  <!-- Each self-gates: InviteManager on the world GM role, UserManager and TrashManager on
+       the server admin tier. All gates are advisory; the server re-checks. -->
   <InviteManager />
   <UserManager />
+  <TrashManager />
   <button onclick={leaveWorld}>{t("settings.leaveWorld")}</button>
   <button onclick={doLogout}>{t("settings.logout")}</button>
 </section>
