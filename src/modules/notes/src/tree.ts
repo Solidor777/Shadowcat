@@ -1,4 +1,4 @@
-import type { WireDocument } from "@shadowcat/core";
+import type { SortSibling, WireDocument } from "@shadowcat/core";
 
 /** Shape of a note's `engine.sort` field, needed only for ordering — an `engine` is `unknown`
  * until narrowed, matching the sheet's own read-site convention. */
@@ -31,6 +31,24 @@ const sortKey = (doc: WireDocument): [number, number] => [
   (doc.engine as SortableEngine | null | undefined)?.sort ?? 0,
   doc.created_at,
 ];
+
+/**
+ * One tree level as id + `engine.sort` pairs in display order — the sibling list
+ * `buildReorderOps` reorders. Reads the same `engine.sort` the tree orders by.
+ * @param nodes The nodes at one level, in display order.
+ * @returns Each node's id and current sort key.
+ * @example
+ * ```ts
+ * import { noteSiblings, buildNoteTree } from "./tree";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const notes: WireDocument[];
+ * noteSiblings(buildNoteTree(notes));
+ * ```
+ */
+export function noteSiblings(nodes: NoteTreeNode[]): SortSibling[] {
+  return nodes.map((n) => ({ id: n.doc.id, sort: sortKey(n.doc)[0] }));
+}
 
 /** Comparator ordering two notes by `(engine.sort, created_at)`.
  * @param a The first note.

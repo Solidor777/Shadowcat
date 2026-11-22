@@ -1,37 +1,153 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY, trapFocus } from "@shadowcat/ui-kit";
-  import { deleteAssetFolder, buildMoveOp, buildUpdate, type WireDocument } from "@shadowcat/core";
+  import {
+    deleteAssetFolder,
+    buildMoveOp,
+    buildUpdate,
+    buildReorderOps,
+    createDragController,
+    dropIndex,
+    type DragTarget,
+    type DropResult,
+    type WireDocument,
+  } from "@shadowcat/core";
   import {
     folderChildren,
+    folderSiblings,
     buildFolderDoc,
     appendFolderSortKey,
     isDescendantOrSelf,
     ASSET_FOLDER_DOC_TYPE,
+    ROOT_DROP_ID,
   } from "./folderOps";
 
   let {
     selectedFolder,
     onSelectFolder,
-    onDropAssets,
     onDropFiles,
     mutable = true,
+    assetDropHover = null,
   }: {
     /** The folder filtering the grid, or `null` = all assets. */
     selectedFolder: string | null;
     /** Called when a node (or the all-assets row) is chosen. */
     onSelectFolder: (id: string | null) => void;
-    /** Dragged asset ids dropped onto a folder node. */
-    onDropAssets: (ids: string[], folderId: string) => void;
     /** OS files dropped onto a folder node (upload targets). */
     onDropFiles?: (files: File[], folderId: string) => void;
     /** Whether mutation affordances (create/move/delete) render; pick mode
      * passes `false`. Defaults to mutable. */
     mutable?: boolean;
+    /** The drop resolution of an in-progress asset-tile drag (owned by the grid), used to
+     * highlight the folder row or all-assets row it would land on. */
+    assetDropHover?: DropResult | null;
   } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  /** Each folder row's element by folder id: the drag controllers' geometry lookup. */
+  const rowEls = new Map<string, HTMLElement>();
+  /** The all-assets row's element, a drop target for asset tiles. */
+  let allEl = $state<HTMLElement | null>(null);
+  /** The drop resolution under the pointer during a folder drag, for the drop-indicator styling. */
+  let folderHover = $state<DropResult | null>(null);
+
+  /** `use:` action registering a folder row's element under its folder id.
+   * @param node - The row's element.
+   * @param id - The folder's document id.
+   * @returns A teardown removing the registration.
+   * @example
+   * ```svelte
+   * <div use:trackRow={"folder-id"}></div>
+   * ```
+   */
+  function trackRow(node: HTMLElement, id: string): {
+    /** Removes the registration on unmount. */
+    destroy: () => void;
+  } {
+    rowEls.set(id, node);
+    return { destroy: () => rowEls.delete(id) };
+  }
+
+  /** The drop targets an asset-tile drag lands on: every folder row plus the all-assets row.
+   * The grid passes these to its drag controller (the tree and grid are siblings, so the tree
+   * exposes them through `bind:this`).
+   * @returns The targets, rects read fresh on each call.
+   * @example
+   * ```
+   * // exported; invoked by AssetBrowser through bind:this
+   * declare const tree: { dropTargets(): DragTarget[] };
+   * tree.dropTargets();
+   * ```
+   */
+  export function dropTargets(): DragTarget[] {
+    const targets: DragTarget[] = folders.map((f) => ({
+      id: f.id,
+      rect: () => rowEls.get(f.id)?.getBoundingClientRect() ?? new DOMRect(),
+    }));
+    if (allEl) {
+      const el = allEl;
+      targets.push({ id: ROOT_DROP_ID, rect: () => el.getBoundingClientRect() });
+    }
+    return targets;
+  }
+
+  /** The ONE sibling-reorder dispatch both the pointer drop and Alt+Arrow keys call.
+   * @param parentId - The shared parent (`null` = root).
+   * @param from - The moved folder's index among its siblings.
+   * @param to - Its destination index (post-removal convention).
+   * @example
+   * ```
+   * // private function; invoked from the folder drag's onDrop and onRowKeydown
+   * reorderFolder(null, 0, 1);
+   * ```
+   */
+  function reorderFolder(parentId: string | null, from: number, to: number): void {
+    const ops = buildReorderOps(folderSiblings(folders, parentId, ctx.compare), from, to);
+    if (ops) ctx.dispatchIntent(ops);
+  }
+
+  const folderDrag = createDragController({
+    axis: "vertical",
+    getTargets: () => folders.map((f) => ({ id: f.id, rect: () => rowEls.get(f.id)?.getBoundingClientRect() ?? new DOMRect() })),
+    overIsContainer: () => true,
+    onHover: (result) => (folderHover = result),
+    onDrop: (result) => {
+      const dragged = folders.find((f) => f.id === result.dragged);
+      const over = folders.find((f) => f.id === result.over);
+      if (!dragged || !over) return;
+      if (result.placement === "into") {
+        if (!isDescendantOrSelf(folders, dragged.id, over.id)) moveFolder(dragged.id, over.id);
+        return;
+      }
+      const parentId = dragged.parent_id ?? null;
+      if ((over.parent_id ?? null) !== parentId) return;
+      const ids = folderSiblings(folders, parentId, ctx.compare).map((s) => s.id);
+      const to = dropIndex(ids, dragged.id, over.id, result.placement);
+      if (to !== null) reorderFolder(parentId, ids.indexOf(dragged.id), to);
+    },
+  });
+
+  /** Alt+ArrowUp/Down moves a folder one place among its siblings.
+   * @param f - The folder whose row has focus.
+   * @param ev - The keydown event.
+   * @example
+   * ```
+   * // private function; wired to each folder row's onkeydown
+   * declare const f: WireDocument, ev: KeyboardEvent;
+   * onRowKeydown(f, ev);
+   * ```
+   */
+  function onRowKeydown(f: WireDocument, ev: KeyboardEvent): void {
+    if (!ev.altKey || !mutable || !ctx.canEdit(f, "/engine/sort")) return;
+    const parentId = f.parent_id ?? null;
+    const index = folderSiblings(folders, parentId, ctx.compare).findIndex((s) => s.id === f.id);
+    const to = ev.key === "ArrowUp" ? index - 1 : ev.key === "ArrowDown" ? index + 1 : -1;
+    if (to < 0 || to >= folderSiblings(folders, parentId, ctx.compare).length) return;
+    ev.preventDefault();
+    reorderFolder(parentId, index, to);
+  }
 
   // Reactive bridge (mandatory): the tree re-renders on folder doc changes.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
@@ -150,9 +266,8 @@
     }
   }
 
-  /** Handles a drop on a folder node: dragged assets file into it; a dragged
-   * folder re-parents under it (subtree drops are refused client-side; the
-   * server's cycle walk stays authoritative).
+  /** Handles OS files dropped on a folder node (upload targets). Dragged assets and folders
+   * travel through the pointer drag controllers, not this native drop.
    * @param ev - The drop event.
    * @param folderId - The node dropped onto.
    * @example
@@ -163,26 +278,10 @@
    * ```
    */
   function handleDrop(ev: DragEvent, folderId: string): void {
-    ev.preventDefault();
     const files = Array.from(ev.dataTransfer?.files ?? []);
-    if (files.length > 0) {
-      onDropFiles?.(files, folderId);
-      return;
-    }
-    const assetPayload = ev.dataTransfer?.getData("application/x-shadowcat-assets");
-    if (assetPayload) {
-      try {
-        const ids = JSON.parse(assetPayload) as string[];
-        if (Array.isArray(ids) && ids.length > 0) onDropAssets(ids, folderId);
-      } catch {
-        // Malformed drag payload: ignore.
-      }
-      return;
-    }
-    const draggedFolder = ev.dataTransfer?.getData("application/x-shadowcat-folder");
-    if (draggedFolder && !isDescendantOrSelf(folders, draggedFolder, folderId)) {
-      moveFolder(draggedFolder, folderId);
-    }
+    if (files.length === 0) return;
+    ev.preventDefault();
+    onDropFiles?.(files, folderId);
   }
 </script>
 
@@ -191,21 +290,41 @@
     type="button"
     class="node all"
     class:selected={selectedFolder === null}
+    class:drop-into={assetDropHover?.over === ROOT_DROP_ID}
     data-testid="folder-node-all"
+    bind:this={allEl}
     onclick={() => onSelectFolder(null)}
   >{t("assetBrowser.allAssets")}</button>
 
   {#snippet nodes(parent: string | null, depth: number)}
     {#each folderChildren(folders, parent, ctx.compare) as f (f.id)}
-      <div class="row" style:padding-left="{depth * 0.75}rem">
+      <div
+        class="row"
+        class:drop-before={folderHover?.over === f.id && folderHover.placement === "before"}
+        class:drop-after={folderHover?.over === f.id && folderHover.placement === "after"}
+        class:drop-into={(folderHover?.over === f.id && folderHover.placement === "into") || assetDropHover?.over === f.id}
+        style:padding-left="{depth * 0.75}rem"
+        use:trackRow={f.id}
+        role="presentation"
+        onkeydown={(e) => onRowKeydown(f, e)}
+      >
+        {#if mutable && ctx.canEdit(f, "/engine/sort")}
+          <button
+            type="button"
+            class="mini drag-handle"
+            data-testid={"folder-drag-" + f.id}
+            aria-label={t("assetBrowser.dragFolder")}
+            onpointerdown={(e) => folderDrag.beginDrag(f.id, e)}
+          >⠿</button>
+        {/if}
         <button
           type="button"
           class="node"
           class:selected={selectedFolder === f.id}
           data-testid={"folder-node-" + f.id}
-          draggable="true"
-          ondragstart={(e) => e.dataTransfer?.setData("application/x-shadowcat-folder", f.id)}
-          ondragover={(e) => e.preventDefault()}
+          ondragover={(e) => {
+            if (e.dataTransfer?.types.includes("Files")) e.preventDefault();
+          }}
           ondrop={(e) => handleDrop(e, f.id)}
           onclick={() => onSelectFolder(f.id)}
         >📁 {f.name}</button>
@@ -329,6 +448,20 @@
       background: var(--surface-raised);
       outline: 1px solid var(--accent);
     }
+  }
+  .row.drop-before {
+    box-shadow: 0 -2px 0 var(--accent);
+  }
+  .row.drop-after {
+    box-shadow: 0 2px 0 var(--accent);
+  }
+  .row.drop-into,
+  .node.all.drop-into {
+    outline: 2px solid var(--accent);
+  }
+  .mini.drag-handle {
+    min-width: 2.75rem;
+    user-select: none;
   }
   .mini {
     min-width: 1.75rem;

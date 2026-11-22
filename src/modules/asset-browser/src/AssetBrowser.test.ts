@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/svelte";
+import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import * as api from "@shadowcat/core";
 import AssetBrowser from "./AssetBrowser.svelte";
+import { buildFolderDoc } from "./folderOps";
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -70,6 +71,48 @@ test("renders a thumb tile per queried asset", async () => {
     context: setAppContextForTest(),
   });
   expect(await screen.findByTestId("asset-tile")).toBeTruthy();
+});
+
+test("dragging a tile onto a folder row files it there, and onto the all-assets row moves it to the root", async () => {
+  vi.spyOn(api, "queryAssets").mockResolvedValue({
+    items: [
+      {
+        id: "a1",
+        world_id: "w1",
+        storage_key: "",
+        original_name: "map.png",
+        content_type: "image/webp",
+        byte_size: 1,
+        created_by: null,
+        created_at: 0,
+        version: 1,
+        folder_id: "f1",
+        tags: [],
+        derived_tags: ["image"],
+      },
+    ],
+    next_cursor: null,
+  } as never);
+  const patch = vi.spyOn(api, "patchAsset").mockResolvedValue({} as never);
+  const store = new api.DocumentStore();
+  store.seedDocuments([{ ...buildFolderDoc("w1", "maps", null), id: "f1" }]);
+  render(AssetBrowser, {
+    props: { mode: "manage" },
+    context: setAppContextForTest({ store, documents: store }),
+  });
+  const tile = await screen.findByTestId("asset-tile");
+  const rectAt = (top: number) => () => ({ left: 0, right: 100, top, bottom: top + 40, width: 100, height: 40, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+  const all = screen.getByTestId("folder-node-all");
+  all.getBoundingClientRect = rectAt(0);
+  (screen.getByTestId("folder-node-f1").closest(".row") as HTMLElement).getBoundingClientRect = rectAt(100);
+
+  await fireEvent.pointerDown(tile, { clientX: 500, clientY: 500 });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 50, clientY: 120 }));
+  await waitFor(() => expect(patch).toHaveBeenCalledWith("a1", { folder_id: "f1" }));
+
+  await fireEvent.pointerDown(tile, { clientX: 500, clientY: 500 });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 50, clientY: 20 }));
+  await waitFor(() => expect(patch).toHaveBeenCalledWith("a1", { folder_id: null }));
 });
 
 test("filter changes map 1:1 onto queryAssets params, q vs nameRegex exclusive", async () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildMoveOp, type WireDocument } from "@shadowcat/core";
-  import type { NoteTreeNode } from "./tree";
+  import { buildMoveOp, buildReorderOps, createDragController, dropIndex, type DropResult, type WireDocument } from "@shadowcat/core";
+  import { noteSiblings, type NoteTreeNode } from "./tree";
 
   // Recursive tree rendering (Move-to/Delete/expand-collapse per row); also used, with
   // every node forced to a leaf, to render a flat search-hit list from the panel — the ONE
@@ -9,12 +9,16 @@
   let {
     nodes,
     allNotes,
+    reorderable = false,
   }: {
     /** The nodes to render at this level (their `children` recurse). */
     nodes: NoteTreeNode[];
     /** Every note in the caller's current view — the Move-to target list (every note but the
      * one being moved, plus "root"). */
     allNotes: WireDocument[];
+    /** Whether rows can be reordered among their siblings (drag handle + Alt+Arrow). Off for a
+     * flat search-hit list, whose rows are not siblings. */
+    reorderable?: boolean;
   } = $props();
 
   const ctx = getAppContext();
@@ -22,6 +26,110 @@
 
   let expanded = $state<Set<string>>(new Set());
   let moveOpenFor = $state<string | null>(null);
+
+  /** Each row's element by note id: the sibling-reorder drag's geometry lookup. */
+  const rowEls = new Map<string, HTMLElement>();
+  /** The sibling list the in-progress drag reorders within. */
+  let dragLevel: NoteTreeNode[] = [];
+  /** The drop resolution under the pointer during a drag, for the drop-indicator styling. */
+  let hover = $state<DropResult | null>(null);
+
+  /** `use:` action registering a row element under its note id.
+   * @param node The row's element.
+   * @param id The note's document id.
+   * @returns A teardown removing the registration.
+   * @example
+   * ```svelte
+   * <div use:trackRow={"note-id"}></div>
+   * ```
+   */
+  function trackRow(node: HTMLElement, id: string): {
+    /** Removes the registration on unmount. */
+    destroy: () => void;
+  } {
+    rowEls.set(id, node);
+    return { destroy: () => rowEls.delete(id) };
+  }
+
+  /** The ONE reorder dispatch both the pointer drop and the Alt+Arrow keys call, so the two
+   * input methods can never produce different operations for the same logical move.
+   * @param level The nodes at the dragged note's level, in display order.
+   * @param from The moved note's index.
+   * @param to Its destination index (post-removal convention).
+   * @example
+   * ```
+   * // private function; invoked from the drag controller's onDrop and onRowKeydown
+   * declare const level: NoteTreeNode[];
+   * reorder(level, 0, 1);
+   * ```
+   */
+  function reorder(level: NoteTreeNode[], from: number, to: number): void {
+    const ops = buildReorderOps(noteSiblings(level), from, to);
+    if (ops) ctx.dispatchIntent(ops);
+  }
+
+  const drag = createDragController({
+    axis: "vertical",
+    snapToNearest: true,
+    getTargets: () => dragLevel.map((n) => ({ id: n.doc.id, rect: () => rowEls.get(n.doc.id)?.getBoundingClientRect() ?? new DOMRect() })),
+    onHover: (result) => (hover = result),
+    onDrop: (result) => {
+      if (!result.over || result.placement === "into") return;
+      const ids = dragLevel.map((n) => n.doc.id);
+      const to = dropIndex(ids, result.dragged, result.over, result.placement);
+      if (to !== null) reorder(dragLevel, ids.indexOf(result.dragged), to);
+    },
+  });
+
+  /** Whether a row's drag handle and keyboard reorder are available.
+   * @param doc The note document.
+   * @returns `true` when reordering is on and the viewer may write the note's sort key.
+   * @example
+   * ```
+   * // private function; gates the drag handle in the row markup
+   * declare const doc: WireDocument;
+   * canReorder(doc);
+   * ```
+   */
+  function canReorder(doc: WireDocument): boolean {
+    return reorderable && ctx.canEdit(doc, "/engine/sort");
+  }
+
+  /** Alt+ArrowUp/Down moves the focused row one place among its siblings.
+   * @param level The nodes at the row's level.
+   * @param doc The row's note document.
+   * @param ev The keydown event.
+   * @example
+   * ```
+   * // private function; wired to each row's onkeydown
+   * declare const level: NoteTreeNode[], doc: WireDocument, ev: KeyboardEvent;
+   * onRowKeydown(level, doc, ev);
+   * ```
+   */
+  function onRowKeydown(level: NoteTreeNode[], doc: WireDocument, ev: KeyboardEvent): void {
+    if (!ev.altKey || !canReorder(doc)) return;
+    const index = level.findIndex((n) => n.doc.id === doc.id);
+    const to = ev.key === "ArrowUp" ? index - 1 : ev.key === "ArrowDown" ? index + 1 : -1;
+    if (to < 0 || to >= level.length) return;
+    ev.preventDefault();
+    reorder(level, index, to);
+  }
+
+  /** Starts a pointer drag of a row among its siblings.
+   * @param level The nodes at the row's level.
+   * @param doc The row's note document.
+   * @param ev The `pointerdown` event on the drag handle.
+   * @example
+   * ```
+   * // private function; wired to each drag handle's onpointerdown
+   * declare const level: NoteTreeNode[], doc: WireDocument, ev: PointerEvent;
+   * onDragStart(level, doc, ev);
+   * ```
+   */
+  function onDragStart(level: NoteTreeNode[], doc: WireDocument, ev: PointerEvent): void {
+    dragLevel = level;
+    drag.beginDrag(doc.id, ev);
+  }
 
   /** Toggles a node's children visibility.
    * @param id The node's document id.
@@ -53,9 +161,26 @@
   }
 </script>
 
-{#snippet row(node: NoteTreeNode, depth: number)}
+{#snippet row(node: NoteTreeNode, depth: number, level: NoteTreeNode[])}
   <li data-testid="note-row" data-note-id={node.doc.id} style:padding-left="{depth * 0.75}rem">
-    <div class="row">
+    <div
+      class="row"
+      class:drop-before={hover?.over === node.doc.id && hover.placement === "before"}
+      class:drop-after={hover?.over === node.doc.id && hover.placement === "after"}
+      use:trackRow={node.doc.id}
+      role="presentation"
+      onkeydown={(e) => onRowKeydown(level, node.doc, e)}
+    >
+      {#if canReorder(node.doc)}
+        <button
+          type="button"
+          class="drag-handle"
+          data-testid="note-drag-handle"
+          data-note-id={node.doc.id}
+          aria-label={t("notes.dragHandle")}
+          onpointerdown={(e) => onDragStart(level, node.doc, e)}
+        >⠿</button>
+      {/if}
       {#if node.children.length > 0}
         <button
           type="button"
@@ -107,7 +232,7 @@
     {#if node.children.length > 0 && expanded.has(node.doc.id)}
       <ul>
         {#each node.children as child (child.doc.id)}
-          {@render row(child, depth + 1)}
+          {@render row(child, depth + 1, node.children)}
         {/each}
       </ul>
     {/if}
@@ -116,12 +241,15 @@
 
 <ul class="tree">
   {#each nodes as node (node.doc.id)}
-    {@render row(node, 0)}
+    {@render row(node, 0, nodes)}
   {/each}
 </ul>
 
 <style lang="scss">
   .tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   .row { display: flex; align-items: center; gap: var(--space-1); }
+  .row.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+  .row.drop-after { box-shadow: 0 2px 0 var(--accent); }
+  .drag-handle { min-width: 44px; user-select: none; }
   .row button { min-height: 44px; padding: var(--space-1) var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); color: var(--text-primary); cursor: pointer; }
 </style>

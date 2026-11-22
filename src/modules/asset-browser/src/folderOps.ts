@@ -4,10 +4,14 @@
 // lives in `@shadowcat/core`'s `buildMoveOp` — shared with every other
 // document tree that has a `parent_id` band.
 
-import { appendSortKey, envelope, type WireDocument } from "@shadowcat/core";
+import { appendSortKey, envelope, type SortSibling, type WireDocument } from "@shadowcat/core";
 
 /** The `asset_folder` doc_type string. */
 export const ASSET_FOLDER_DOC_TYPE = "asset_folder";
+
+/** The drop-target id of the "All assets" row: an asset dropped on it leaves its folder. Never
+ * collides with a folder id, which is a UUID. */
+export const ROOT_DROP_ID = "all-assets";
 
 /** The slice of the `asset_folder` engine band read client-side. */
 interface FolderEngineShape {
@@ -59,6 +63,31 @@ export function folderChildren(
   return docs
     .filter((d) => d.doc_type === ASSET_FOLDER_DOC_TYPE && d.parent_id === parentId)
     .sort((a, b) => sortOf(a) - sortOf(b) || nameCompare(a.name ?? "", b.name ?? ""));
+}
+
+/**
+ * The folders directly under `parentId` as id + `sort` pairs in display order — the sibling list
+ * `buildReorderOps` reorders.
+ * @param docs - Candidate documents (non-folders are ignored).
+ * @param parentId - The parent folder id, or `null` for the root.
+ * @param nameCompare - The name tie-break comparator, as `folderChildren`.
+ * @returns The ordered siblings.
+ * @example
+ * ```ts
+ * import { folderSiblings } from "@shadowcat/module-asset-browser";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const docs: WireDocument[];
+ * const siblings = folderSiblings(docs, null);
+ * void siblings;
+ * ```
+ */
+export function folderSiblings(
+  docs: WireDocument[],
+  parentId: string | null,
+  nameCompare?: (a: string, b: string) => number,
+): SortSibling[] {
+  return folderChildren(docs, parentId, nameCompare).map((d) => ({ id: d.id, sort: sortOf(d) }));
 }
 
 /**
