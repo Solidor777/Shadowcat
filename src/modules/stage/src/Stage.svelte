@@ -170,6 +170,7 @@
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
+    let detachReveal: (() => void) | null = null;
     // Aborts all pointer/wheel listeners on teardown (and on any $effect re-run),
     // so a stale listener set can never call into a destroyed engine.
     const controller = new AbortController();
@@ -217,6 +218,10 @@
         // content with no other DOM presence.
         onMeasureDrawn: (label) => { host.dataset.measureLabel = label; },
         // Read-only observability signal: the scene point at the viewport center, as "x,y".
+        // Mirrors the applied transform into `ctx.stageView` so stage overlays stay anchored.
+        onTransformApplied: (t) => ctx.stageView.set(t),
+        // Re-runs every overlay reader of `ctx.stageView.isTokenRevealed` on each applied fog mask.
+        onVisibilityApplied: () => ctx.stageView.noteMaskApplied(),
         onCameraApplied: (c) => { host.dataset.cameraCenter = `${c.x},${c.y}`; },
         onLightingApplied: (frame, sweeping) => {
           // Read-only observability signals: the painted lighting overlay's cell count and
@@ -250,6 +255,7 @@
       e.start();
       // Tools reach this engine via the AppContext scene bridge.
       detachScene = scene.attach(e);
+      detachReveal = ctx.stageView.attachReveal((id, at) => e.isTokenRevealed(id, at));
       engineRef = e;
       if (gmView !== "all") applyGmView(); // survive an $effect re-run with a non-default view
       // Survive an $effect re-run with a non-center snap mode (same window as the gmView
@@ -546,6 +552,7 @@
       disposed = true;
       engineRef = null;
       detachScene?.();
+      detachReveal?.();
       offGrid?.();
       offPing?.();
       offEmote?.();

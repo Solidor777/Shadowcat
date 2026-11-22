@@ -26,6 +26,7 @@ export { SceneSelection } from "./sceneSelection.svelte";
 export { SpeakAs } from "./speakAs.svelte";
 export { SpeakAsToken } from "./speakAsToken.svelte";
 export { SnapModePreference } from "./snapModePreference.svelte";
+export { StageView } from "./stageView.svelte";
 export { ShareRulerPreference, shareRulerStorageKey } from "./shareRulerPreference.svelte";
 export type { ShareRulerStorage } from "./shareRulerPreference.svelte";
 export { sizeClass, isCompactViewport } from "./sizeClass.svelte";
