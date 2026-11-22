@@ -64,3 +64,75 @@ test("shift-click extends a contiguous range from the last anchor", async () => 
   await fireEvent.click(tiles[2], { shiftKey: true });
   expect(cb).toHaveBeenLastCalledWith(["a1", "a2", "a3"]);
 });
+
+/** A drop target occupying the 100x100 square at `left`. */
+function dropTarget(id: string, left: number) {
+  const rect = { left, top: 0, width: 100, height: 100, right: left + 100, bottom: 100, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
+  return { id, rect: () => rect };
+}
+
+/** A grid with two drop targets side by side: "f1" at x 0..100 and "all-assets" at x 200..300. */
+function draggableGrid(selected: string[] = []) {
+  const onDropAssets = vi.fn();
+  const onDragHover = vi.fn();
+  render(AssetGrid, {
+    props: {
+      items: ITEMS,
+      selected,
+      onSelectionChange: vi.fn(),
+      getDropTargets: () => [dropTarget("f1", 0), dropTarget("all-assets", 200)],
+      onDropAssets,
+      onDragHover,
+    },
+    context: setAppContextForTest(),
+  });
+  return { onDropAssets, onDragHover, tiles: screen.getAllByTestId("asset-tile") };
+}
+
+test("dragging an unselected tile onto a target drops just that asset", async () => {
+  const { onDropAssets, tiles } = draggableGrid(["a3"]);
+  await fireEvent.pointerDown(tiles[0], { clientX: 5, clientY: 5 });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 50, clientY: 50 }));
+  expect(onDropAssets).toHaveBeenCalledWith(["a1"], "f1");
+});
+
+test("dragging a selected tile drops the whole selection, onto the all-assets target", async () => {
+  const { onDropAssets, tiles } = draggableGrid(["a2", "a3"]);
+  await fireEvent.pointerDown(tiles[1], { clientX: 5, clientY: 5 });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 250, clientY: 50 }));
+  expect(onDropAssets).toHaveBeenCalledWith(["a2", "a3"], "all-assets");
+});
+
+test("releasing outside every target drops nothing", async () => {
+  const { onDropAssets, tiles } = draggableGrid();
+  await fireEvent.pointerDown(tiles[0], { clientX: 5, clientY: 5 });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 150, clientY: 50 }));
+  expect(onDropAssets).not.toHaveBeenCalled();
+});
+
+test("the live drop resolution is reported while dragging and cleared on release", async () => {
+  const { onDragHover, tiles } = draggableGrid();
+  await fireEvent.pointerDown(tiles[0], { clientX: 5, clientY: 5 });
+  await fireEvent(window, new PointerEvent("pointermove", { clientX: 50, clientY: 50 }));
+  expect(onDragHover).toHaveBeenLastCalledWith({ dragged: "a1", over: "f1", placement: "into" });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 50, clientY: 50 }));
+  expect(onDragHover).toHaveBeenLastCalledWith(null);
+});
+
+test("a touch tap released before the long-press hold never drops", async () => {
+  const { onDropAssets, tiles } = draggableGrid();
+  await fireEvent.pointerDown(tiles[0], { clientX: 5, clientY: 5, pointerType: "touch" });
+  await fireEvent(window, new PointerEvent("pointerup", { clientX: 50, clientY: 50, pointerType: "touch" }));
+  expect(onDropAssets).not.toHaveBeenCalled();
+});
+
+test("without drop targets a tile press starts no drag", async () => {
+  const onDragHover = vi.fn();
+  render(AssetGrid, {
+    props: { items: ITEMS, selected: [], onSelectionChange: vi.fn(), onDragHover },
+    context: setAppContextForTest(),
+  });
+  await fireEvent.pointerDown(screen.getAllByTestId("asset-tile")[0], { clientX: 5, clientY: 5 });
+  await fireEvent(window, new PointerEvent("pointermove", { clientX: 50, clientY: 50 }));
+  expect(onDragHover).not.toHaveBeenCalled();
+});

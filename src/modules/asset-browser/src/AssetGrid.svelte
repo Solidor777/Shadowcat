@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
+  import { createDragController, type DragTarget, type DropResult } from "@shadowcat/core";
   import { computeGridWindow } from "./windowing";
 
   let {
@@ -10,6 +11,9 @@
     onOpen,
     onNearEnd,
     appendOnClick = false,
+    getDropTargets,
+    onDropAssets,
+    onDragHover,
   }: {
     /** The filtered listing, in server sort order. */
     items: Asset[];
@@ -24,9 +28,30 @@
     /** Ordered multi-pick mode: a plain click APPENDS/toggles (preserving
      * pick order, shown as tile badges) instead of replacing the selection. */
     appendOnClick?: boolean;
+    /** The drop targets (folder rows, the all-assets row) a tile drag can land on. Omitted =
+     * tiles are not draggable. */
+    getDropTargets?: () => DragTarget[];
+    /** Called with the dragged asset ids (the selection when the dragged tile is selected, else
+     * just that tile) and the target id the pointer was released over. */
+    onDropAssets?: (ids: string[], targetId: string) => void;
+    /** Reports the live drop resolution while a tile is dragged, `null` when the drag ends. */
+    onDragHover?: (result: DropResult | null) => void;
   } = $props();
 
   const { assets: resolver, t } = getAppContext();
+
+  // Pointer-driven tile drag: touch-capable, unlike the native drag protocol. The controller
+  // is a drop zone (no snapping): a release outside every target drops nothing.
+  const drag = createDragController({
+    axis: "grid",
+    getTargets: () => getDropTargets?.() ?? [],
+    overIsContainer: () => true,
+    onHover: (result) => onDragHover?.(result),
+    onDrop: (result) => {
+      if (!result.over) return;
+      onDropAssets?.(selected.includes(result.dragged) ? selected : [result.dragged], result.over);
+    },
+  });
 
   // Scroll geometry backing the virtualized window — written only from real
   // measurement points (scroll handler, mount), never inferred.
@@ -146,16 +171,13 @@
           data-testid="asset-tile"
           aria-pressed={selected.includes(a.id)}
           title={a.original_name}
-          draggable="true"
-          ondragstart={(e) =>
-            e.dataTransfer?.setData(
-              "application/x-shadowcat-assets",
-              JSON.stringify(selected.includes(a.id) ? selected : [a.id]),
-            )}
+          onpointerdown={(e) => {
+            if (getDropTargets) drag.beginDrag(a.id, e);
+          }}
           onclick={(e) => select(windowed.start + i, e)}
           ondblclick={() => onOpen?.(a.id)}
         >
-          <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" />
+          <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" draggable="false" />
           {#if appendOnClick && selected.includes(a.id)}
             <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
           {/if}
@@ -187,6 +209,8 @@
     border: 1px solid var(--border);
     background: var(--surface-raised);
     cursor: pointer;
+    user-select: none;
+    -webkit-touch-callout: none;
     &.selected {
       outline: 2px solid var(--accent);
       outline-offset: -2px;

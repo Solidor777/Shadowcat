@@ -6,6 +6,8 @@
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
   import FolderTree from "./FolderTree.svelte";
+  import { ROOT_DROP_ID } from "./folderOps";
+  import type { DropResult } from "@shadowcat/core";
   import PreviewPane from "./PreviewPane.svelte";
   import BulkBar from "./BulkBar.svelte";
   import UploadQueue from "./UploadQueue.svelte";
@@ -56,6 +58,10 @@
    * AND `.opus.webm` siblings — the default, since any file may be looped and a WebKit client
    * needs the WebM one). */
   let audioContainers = $state<"ogg" | "webm" | "both">("both");
+  /** The folder tree, bound so the grid's tile drag can read its drop targets. */
+  let tree = $state<ReturnType<typeof FolderTree> | null>(null);
+  /** The drop resolution of an in-progress tile drag, shown on the tree's rows. */
+  let assetDropHover = $state<DropResult | null>(null);
   /** The single selected asset shown in the preview pane, or null. */
   const previewAsset = $derived(
     selected.length === 1 ? (items.find((a) => a.id === selected[0]) ?? null) : null,
@@ -88,17 +94,18 @@
     };
   }
 
-  /** Files dropped assets into `folderId` (single patch or one bulk call),
-   * then refreshes the listing.
+  /** Files dropped assets into the dropped-on folder, or out of any folder when the target is
+   * the all-assets row (single patch or one bulk call), then refreshes the listing.
    * @param ids - The dragged asset ids.
-   * @param folderId - The drop-target folder.
+   * @param targetId - The drop target: a folder id, or `ROOT_DROP_ID` for the world root.
    * @example
    * ```
-   * // private function; wired to FolderTree's onDropAssets below
+   * // private function; wired to AssetGrid's onDropAssets below
    * void fileAssets(["a1"], "folder-1");
    * ```
    */
-  async function fileAssets(ids: string[], folderId: string): Promise<void> {
+  async function fileAssets(ids: string[], targetId: string): Promise<void> {
+    const folderId = targetId === ROOT_DROP_ID ? null : targetId;
     try {
       if (ids.length === 1) await patchAsset(ids[0], { folder_id: folderId });
       else await bulkPatchAssets(world, { ids, folder_id: folderId, add_tags: [], remove_tags: [] });
@@ -203,14 +210,15 @@
   {#if !compact || treeOpen}
     <aside class="tree" data-testid="asset-browser-tree">
       <FolderTree
+        bind:this={tree}
         {selectedFolder}
         {mutable}
+        {assetDropHover}
         onSelectFolder={(id) => {
           selectedFolder = id;
           treeOpen = false;
           void reload();
         }}
-        onDropAssets={(ids, folderId) => void fileAssets(ids, folderId)}
         onDropFiles={mutable ? (files, folderId) => uploads.enqueue(files, folderId) : undefined}
       />
     </aside>
@@ -281,6 +289,9 @@
           if (mode === "pick" && !initialFilters?.multiple) onConfirm?.([id]);
         }}
         onNearEnd={() => void loadMore()}
+        getDropTargets={() => tree?.dropTargets() ?? []}
+        onDropAssets={(ids, targetId) => void fileAssets(ids, targetId)}
+        onDragHover={(result) => (assetDropHover = result)}
       />
     {/if}
     <UploadQueue queue={uploads} />
