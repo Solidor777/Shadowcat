@@ -508,7 +508,8 @@ pub const RESTORE_FAILED_FILE: &str = "restore-failed.json";
 /// let json = serde_json::to_string(&marker).unwrap();
 /// assert_eq!(serde_json::from_str::<RestoreFailed>(&json).unwrap(), marker);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct RestoreFailed {
     /// The requested backup directory name; empty when the pending marker itself was unreadable.
     pub id: String,

@@ -20,7 +20,7 @@ use crate::backup::catalog::{
     list_backups, prune, resolve_backup, restore_pending_path, BackupEntry, BackupRetention,
     RestorePending,
 };
-use crate::backup::{BackupError, BackupKind, BackupManifest};
+use crate::backup::{BackupError, BackupKind, BackupManifest, RestoreFailed, RESTORE_FAILED_FILE};
 use crate::http::error::AppError;
 use crate::http::AppState;
 
@@ -36,6 +36,7 @@ use crate::http::AppState;
 ///     entries: Vec::new(),
 ///     policy: BackupRetention::default(),
 ///     root: "backups".into(),
+///     restore_failed: None,
 /// };
 /// assert_eq!(serde_json::to_value(&listing).unwrap()["root"], "backups");
 /// ```
@@ -48,6 +49,9 @@ pub struct BackupListing {
     pub policy: BackupRetention,
     /// The directory the backups live in, so the admin sees where the files are.
     pub root: String,
+    /// Why the last staged restore was not applied at startup; `None` when no failure marker
+    /// exists (it is removed by the next successful restore).
+    pub restore_failed: Option<RestoreFailed>,
 }
 
 /// `POST /api/admin/backups/prune` response.
@@ -301,15 +305,22 @@ pub async fn list(
     _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<BackupListing>, AppError> {
-    let (_, root) = backup_paths(&state)?;
+    let (db_path, root) = backup_paths(&state)?;
     let listing_root = root.clone();
     let entries = tokio::task::spawn_blocking(move || list_backups(&listing_root))
         .await
         .map_err(|_| AppError::Internal)?;
+    // The marker is written by `apply_pending_restore` beside the database file. An absent or
+    // unparsable marker reads as no failure: the list must still render.
+    let restore_failed = tokio::fs::read(db_path.with_file_name(RESTORE_FAILED_FILE))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RestoreFailed>(&bytes).ok());
     Ok(Json(BackupListing {
         entries,
         policy: BackupRetention::from_config(&state.config),
         root: root.to_string_lossy().into_owned(),
+        restore_failed,
     }))
 }
 
@@ -359,6 +370,57 @@ pub async fn delete_backup(
     state
         .trash
         .discard(&dir)
+        .await
+        .map_err(|e| backup_error(e.into()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/admin/backups/restore-failed`: moves the failed-restore marker beside the database
+/// into the trash, so `list` reports `restore_failed: null` afterwards. A missing marker is `Ok`
+/// (`Trash::discard` treats an absent path as success), so the route is idempotent. The static
+/// path segment takes precedence over the `{id}` route of `delete_backup`.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::backups::dismiss_restore_failed;
+/// use shadowcat::http::AppState;
+///
+/// // `no_run`: moves a marker file into the trash.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let outcome = dismiss_restore_failed(admin, State(state)).await;
+/// assert!(outcome.is_err());
+/// # }
+/// ```
+pub async fn dismiss_restore_failed(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<StatusCode, AppError> {
+    let (db_path, _) = backup_paths(&state)?;
+    state
+        .trash
+        .discard(&db_path.with_file_name(RESTORE_FAILED_FILE))
         .await
         .map_err(|e| backup_error(e.into()))?;
     Ok(StatusCode::NO_CONTENT)

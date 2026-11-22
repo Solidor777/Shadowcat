@@ -41,20 +41,27 @@
 
   /** Runs one mutation with the shared busy/error/refresh handling.
    * @param op - The REST call to run.
+   * @param progressMessage - When given, an indeterminate progress notification with this text
+   * stays up for the awaited call (a single request with no incremental signal), and is dismissed
+   * however the call settles.
    * @example
    * ```
    * // private function; wraps every mutation handler below
    * void run(async () => {});
    * ```
    */
-  async function run(op: () => Promise<unknown>): Promise<void> {
+  async function run(op: () => Promise<unknown>, progressMessage?: string): Promise<void> {
     busy = true;
+    const toast = progressMessage
+      ? ctx.notifyProgress(progressMessage, { value: null, max: 0 })
+      : null;
     try {
       await op();
       onChanged();
     } catch (e) {
       ctx.notify(t("assetBrowser.error", { message: String(e) }));
     } finally {
+      toast?.dismiss();
       busy = false;
     }
   }
@@ -228,7 +235,11 @@
         type="button"
         data-testid="preview-reconvert"
         disabled={!asset.original_retained || busy}
-        onclick={() => void run(() => reconvertAsset(asset.id))}
+        onclick={() =>
+          void run(
+            () => reconvertAsset(asset.id),
+            t("assetBrowser.reconverting", { name: asset.original_name }),
+          )}
       >{t("assetBrowser.reconvert")}</button>
       {#if asset.content_type.startsWith("image/")}
         <button

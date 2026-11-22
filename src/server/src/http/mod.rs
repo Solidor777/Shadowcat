@@ -235,6 +235,10 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/admin/backup", post(backups::admin_backup))
         .route("/api/admin/backups", get(backups::list))
         .route("/api/admin/backups/prune", post(backups::prune_now))
+        .route(
+            "/api/admin/backups/restore-failed",
+            delete(backups::dismiss_restore_failed),
+        )
         .route("/api/admin/backups/{id}", delete(backups::delete_backup))
         .route(
             "/api/admin/backups/{id}/restore",
