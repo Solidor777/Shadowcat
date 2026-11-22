@@ -916,7 +916,9 @@ impl Access {
             Visibility::All => true,
             Visibility::GmOnly => self.see_gm_only,
             Visibility::OwnerOrGm => self.see_gm_only || self.is_owner,
-            Visibility::Recipients(ids) => self.user_id.is_some_and(|u| ids.contains(&u)),
+            Visibility::Recipients { recipients } => {
+                self.user_id.is_some_and(|u| recipients.contains(&u))
+            }
         }
     }
 }
@@ -1234,7 +1236,7 @@ impl std::error::Error for RedactionError {}
 fn has_recipients_tier<'a>(tiers: impl IntoIterator<Item = &'a Visibility>) -> bool {
     tiers
         .into_iter()
-        .any(|v| matches!(v, Visibility::Recipients(_)))
+        .any(|v| matches!(v, Visibility::Recipients { .. }))
 }
 
 /// `has_recipients_tier` over `doc`'s own overrides and, recursively, every

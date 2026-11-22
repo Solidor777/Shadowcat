@@ -468,7 +468,9 @@ async fn search_never_matches_recipients_tiered_text_for_anyone() {
     d.scope = Scope::World { world_id: w.id };
     d.permissions.property_overrides.insert(
         "/system/whisper".into(),
-        Visibility::Recipients(vec![alice]),
+        Visibility::Recipients {
+            recipients: vec![alice],
+        },
     );
     r.apply_intent(
         &gm_ctx,

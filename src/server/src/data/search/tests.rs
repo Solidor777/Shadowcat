@@ -167,9 +167,12 @@ fn name_gm_only_hides_from_public_index_but_gm_index_retains_it() {
 fn recipients_tiered_text_is_absent_from_both_index_partitions() {
     let alice = crate::test_ids::test_uuid(0xA1);
     let mut d = doc("actor", serde_json::json!({ "note": "MOCK_WHISPER_TEXT" }));
-    d.permissions
-        .property_overrides
-        .insert("/system/note".into(), Visibility::Recipients(vec![alice]));
+    d.permissions.property_overrides.insert(
+        "/system/note".into(),
+        Visibility::Recipients {
+            recipients: vec![alice],
+        },
+    );
 
     let public = index_content_public(&d);
     assert!(

@@ -16,6 +16,7 @@
     "MergePullStatus.__type.conflicts",
     "DocLinkTarget.__type.kind",
     "DrawRule.__type.kind",
+    "NotePageKind.__type.kind",
     "Operation.__type.op",
     "PushInstanceStatus.__type.conflicts",
     "ResourceBinding.__type.kind",
