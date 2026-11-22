@@ -263,6 +263,29 @@ pub enum FogPooling {
     Shared,
 }
 
+/// When a player may rotate their own token (`scene::rotation_gate::rotation_refusal` decides;
+/// a GM is never subject to it). `Free` lets a player turn a token at any time; `OwnTurn` lets
+/// them turn it only while the token holds the turn in its scene's active combat, or when no
+/// combat applies to it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FacingTurnRule;
+///
+/// assert_eq!(FacingTurnRule::default(), FacingTurnRule::Free);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum FacingTurnRule {
+    /// A player turns their token at any time.
+    #[default]
+    Free,
+    /// A player turns their token only on its own combat turn.
+    OwnTurn,
+}
+
 /// Per-scene overrides for vision behaviour; absent fields fall back to world
 /// defaults. `null` is a valid wire value (the UI writes null to clear an
 /// override); resolvers use `??`, so `null`/absent are semantically
@@ -283,6 +306,7 @@ pub enum FogPooling {
 ///     fog_pooling: None,
 ///     auto_rotate_tokens: None,
 ///     facing_vision: None,
+///     facing_turn_rule: None,
 /// };
 /// assert_eq!(overrides.los_restriction, Some(true));
 /// ```
@@ -316,6 +340,10 @@ pub struct SceneVisionOverrides {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub facing_vision: Option<bool>,
+    /// Facing turn-rule override (see `WorldSceneDefaults.facing_turn_rule`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub facing_turn_rule: Option<FacingTurnRule>,
 }
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
@@ -498,6 +526,10 @@ pub struct WorldSceneDefaults {
     /// ignored and sight is unchanged.
     #[serde(default)]
     pub facing_vision: bool,
+    /// When a player may rotate their own token (see `FacingTurnRule`). `Free` by default: an
+    /// existing world sees no behaviour change until it opts in.
+    #[serde(default)]
+    pub facing_turn_rule: FacingTurnRule,
 }
 
 /// A scene's ambient playlist override: when this scene becomes the world's active scene
@@ -764,6 +796,7 @@ impl Default for WorldSceneDefaults {
             fog_pooling: FogPooling::Individual,
             auto_rotate_tokens: false,
             facing_vision: false,
+            facing_turn_rule: FacingTurnRule::Free,
         }
     }
 }

@@ -303,6 +303,7 @@ export const DEFAULT_WORLD_SETTINGS: {
     fogPooling: "individual",
     autoRotateTokens: false,
     facingVision: false,
+    facingTurnRule: "free",
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },

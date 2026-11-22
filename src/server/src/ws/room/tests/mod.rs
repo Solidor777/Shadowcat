@@ -3569,6 +3569,7 @@ mod movement_budget;
 mod mover_light;
 mod presence;
 mod region_triggers;
+mod rotation_gate;
 
 // ---------- Room::disable_faulting_validator_locked ----------
 

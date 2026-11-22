@@ -12,8 +12,8 @@ use ts_rs::TS;
 
 use super::combat::CombatDefaults;
 use super::scene::{
-    DiagonalRule, EasingMode, EnvironmentLight, FogPooling, LightMode, MovementModel,
-    MovementRestriction,
+    DiagonalRule, EasingMode, EnvironmentLight, FacingTurnRule, FogPooling, LightMode,
+    MovementModel, MovementRestriction,
 };
 
 /// `Option`-lifted twin of `WorldSceneDefaults`; a field added there without
@@ -68,6 +68,9 @@ pub struct SceneDefaultsOverlay {
     /// Overrides `WorldSceneDefaults.facing_vision`.
     #[ts(optional = nullable)]
     pub facing_vision: Option<bool>,
+    /// Overrides `WorldSceneDefaults.facing_turn_rule`.
+    #[ts(optional = nullable)]
+    pub facing_turn_rule: Option<FacingTurnRule>,
 }
 
 /// `Option`-lifted twin of `Pathfinding`.

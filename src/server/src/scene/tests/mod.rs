@@ -333,4 +333,5 @@ mod facing_vision;
 mod pathfind_and_vision;
 mod region_occluders;
 mod resolution_and_lighting;
+mod rotation_gate;
 mod system_defaults_layer;

@@ -21,6 +21,7 @@ pub(crate) mod movement_tags;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
+pub mod rotation_gate;
 pub(crate) mod senses;
 mod visibility_compute;
 pub mod vision;
@@ -189,6 +190,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     fog_pooling: FogPooling::Individual,
 ///     auto_rotate_tokens: false,
 ///     facing_vision: false,
+///     facing_turn_rule: shadowcat::data::engine::FacingTurnRule::Free,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -238,6 +240,9 @@ pub struct ResolvedScene {
     /// (`gather_vision_sources_in_scene` reads it). Part of `ResolvedScene`, so toggling it misses
     /// the visibility cache (`VisibilityInputsSnapshot::settings`).
     pub facing_vision: bool,
+    /// When a player may rotate their own token (`Room::publish` refuses a non-GM rotation write
+    /// through `rotation_gate::rotation_refusal`).
+    pub facing_turn_rule: eng::FacingTurnRule,
 }
 
 impl ResolvedScene {
@@ -1922,6 +1927,10 @@ impl SceneEcs {
             .and_then(|s| s.facing_vision)
             .or(sd_scene.and_then(|s| s.facing_vision))
             .unwrap_or(d.facing_vision);
+        let d_turn_rule = ws_scene
+            .and_then(|s| s.facing_turn_rule)
+            .or(sd_scene.and_then(|s| s.facing_turn_rule))
+            .unwrap_or(d.facing_turn_rule);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1956,6 +1965,9 @@ impl SceneEcs {
         let facing_vision = vision_ov
             .and_then(|v| v.facing_vision)
             .unwrap_or(d_facing_vision);
+        let facing_turn_rule = vision_ov
+            .and_then(|v| v.facing_turn_rule)
+            .unwrap_or(d_turn_rule);
 
         // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -1983,6 +1995,7 @@ impl SceneEcs {
             fog_pooling,
             auto_rotate_tokens,
             facing_vision,
+            facing_turn_rule,
         }
     }
 

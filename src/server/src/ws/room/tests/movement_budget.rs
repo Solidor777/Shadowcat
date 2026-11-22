@@ -21,13 +21,13 @@ async fn next_event(
 /// (Event-kind, never tied to a token) combatant exists for the turn-ownership tests; a
 /// GM-owned token/combatant pair in the SAME combat exercises the GM bypass; and a token NOT
 /// bound to any combatant exercises the free-movement case.
-struct BudgetHandle {
+pub(super) struct BudgetHandle {
     inner: MovementHandle,
     combat_id: Uuid,
-    combatant_id: Uuid,
+    pub(super) combatant_id: Uuid,
     /// The world's `resource-registry` singleton (defines the `movement` binding).
     registry_id: Uuid,
-    other_combatant: Uuid,
+    pub(super) other_combatant: Uuid,
     /// Three king-steps from `start` — one further than `inner.adj2`.
     adj3: (f64, f64),
     /// A path whose total cost exceeds any budget these tests configure, so a Warn/None
@@ -35,7 +35,7 @@ struct BudgetHandle {
     long_path: Vec<(f64, f64)>,
     gm_token: Uuid,
     long_path_gm: Vec<(f64, f64)>,
-    free_token: Uuid,
+    pub(super) free_token: Uuid,
     free_start: (f64, f64),
     free_adj: (f64, f64),
 }
@@ -50,7 +50,7 @@ impl std::ops::Deref for BudgetHandle {
 impl BudgetHandle {
     /// Advances the combat's turn to `combatant`. OCC pre-image is the harness's own opening
     /// turn (`combatant_id`) — callers only ever set the turn once per test.
-    async fn set_turn(&self, combatant: Uuid) {
+    pub(super) async fn set_turn(&self, combatant: Uuid) {
         self.room
             .publish(
                 &self.repo,
@@ -154,7 +154,7 @@ impl BudgetHandle {
     }
 
     /// The combatant reads as unreadable to the player by `permissions.default` alone.
-    async fn hide_player_combatant(&self) {
+    pub(super) async fn hide_player_combatant(&self) {
         self.set_player_combatant_access(crate::data::document::DocRole::None, None)
             .await;
     }
@@ -218,7 +218,7 @@ impl BudgetHandle {
 /// `{resource: "movement", interpretation, enforcement}`; the scene's `grid.distance` is set to
 /// `{perCell: pc, unit: "ft"}` when `per_cell` is `Some`, left absent otherwise. The player's
 /// token is bound to a combatant with `{current: 10.0, max: 30.0}` and holds the opening turn.
-async fn budget_scene(
+pub(super) async fn budget_scene(
     enforcement: &str,
     interpretation: &str,
     per_cell: Option<f64>,

@@ -1201,6 +1201,7 @@ fn engine_literal_defaults_match_client_default() {
             "observerVision": false,
             "autoRotateTokens": false,
             "facingVision": false,
+            "facingTurnRule": "free",
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
