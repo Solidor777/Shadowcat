@@ -10,8 +10,10 @@ use std::io::Write;
 use std::time::Duration;
 
 use shadowcat::http::conn_serve::{ConnLimits, EGRESS_CHUNK_BYTES};
+use tokio::time::Instant;
 
 use crate::egress::{get_path, paced_read, EgressServer, Paced};
+use crate::observed::WriteStats;
 
 /// Writes one record line to standard output and appends it to the file named by the runner's
 /// `GITHUB_STEP_SUMMARY` when that is set. A failure to append is reported on standard error and
@@ -61,6 +63,37 @@ pub fn record_cut_overshoot(what: &str, observed: Duration, derived: Duration) {
         derived.as_secs_f64() * 1e3,
     ));
     assert_cut_overshoot_within_ceiling(what, observed, derived);
+}
+
+/// Records how long after the connection unit's derived bound a cut landed, measured from the
+/// last instant the server's socket accepted `floor` bytes of progress.
+///
+/// The unit's window runs from that last progress, so it is the reference the derived bound
+/// (`window` plus one `tick`) holds from. The producer going quiet is not: a socket whose peer has
+/// stopped reading can still accept a later lump after the producer has been flat for a while,
+/// and the window restarts at each. The overshoot is recorded and capped like
+/// [`record_cut_overshoot`].
+///
+/// # Panics
+///
+/// Panics when the socket never accepted `floor` bytes, or under
+/// [`assert_cut_overshoot_within_ceiling`].
+pub fn record_cut_after_progress(
+    what: &str,
+    closed_at: Instant,
+    writes: &WriteStats,
+    floor: usize,
+    window: Duration,
+    tick: Duration,
+) {
+    let progress_at = writes
+        .last_progress_at(floor as u64)
+        .unwrap_or_else(|| panic!("{what}: the socket never accepted {floor} B"));
+    record_cut_overshoot(
+        what,
+        closed_at.saturating_duration_since(progress_at),
+        window + tick,
+    );
 }
 
 /// Asserts `observed` is at most `derived + CUT_OVERSHOOT_MAX`. Separate from

@@ -21,9 +21,9 @@ use h2::Reason;
 use shadowcat::http::conn_serve::{egress_tick, ConnLimits, StallCuts, EGRESS_TICKS_PER_WINDOW};
 use shadowcat_test_support::egress::{
     first_close, get_path, paced_read, ping_frame, raw_h2_request, read_unreleased, send_scripted,
-    wait_until_flat, BodyEnd, EgressServer, PacedEnd, RawPeer,
+    BodyEnd, EgressServer, PacedEnd, RawPeer,
 };
-use shadowcat_test_support::measure::record_cut_overshoot;
+use shadowcat_test_support::measure::{record_cut_after_progress, record_cut_overshoot};
 use tokio::time::Instant;
 
 /// The no-progress window the tests run at.
@@ -38,12 +38,6 @@ fn tick() -> Duration {
 /// three eighths of the window, so this is the one dial for them: 0.9 s at 2.4 s, under the 1 s
 /// ceiling a timing assertion's margin carries.
 const PARTIAL_TAIL_WINDOW: Duration = Duration::from_millis(2400);
-
-/// How often the producer's progress is sampled.
-const POLL: Duration = Duration::from_millis(50);
-
-/// How long the producer must stay quiet before it counts as parked.
-const SETTLE: Duration = Duration::from_millis(400);
 
 /// A server whose response bound is [`WINDOW`] and whose drain ends quickly.
 async fn serve() -> EgressServer {
@@ -312,7 +306,6 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
         .into_body();
     // From here the peer reads nothing: its kernel buffer fills and the server's writer parks.
     reading.store(false, std::sync::atomic::Ordering::SeqCst);
-    let quiet = wait_until_flat(&server.produced, POLL, SETTLE, Duration::from_secs(30)).await;
 
     let closed_at = first_close(&server.closed, Duration::from_secs(20))
         .await
@@ -322,10 +315,13 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
         "cut {:?} after the start, before the {WINDOW:?} window",
         closed_at.duration_since(started)
     );
-    record_cut_overshoot(
-        "h2 connection cut after the producer went quiet",
-        closed_at.duration_since(quiet),
-        WINDOW + tick(),
+    record_cut_after_progress(
+        "h2 connection cut after the socket last accepted progress",
+        closed_at,
+        &server.writes,
+        floor() as usize,
+        WINDOW,
+        tick(),
     );
 
     drop(client);
@@ -366,7 +362,6 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
-    let quiet = wait_until_flat(&server.produced, POLL, SETTLE, Duration::from_secs(30)).await;
 
     let closed_at = first_close(&server.closed, Duration::from_secs(20))
         .await
@@ -382,10 +377,13 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
         "cut {:?} after the start, before the {WINDOW:?} window",
         closed_at.duration_since(started)
     );
-    record_cut_overshoot(
-        "h2 connection cut under a ping flood after the producer went quiet",
-        closed_at.duration_since(quiet),
-        WINDOW + tick(),
+    record_cut_after_progress(
+        "h2 connection cut under a ping flood after the socket last accepted progress",
+        closed_at,
+        &server.writes,
+        floor() as usize,
+        WINDOW,
+        tick(),
     );
     flood.abort();
     let drain = server.finish().await;

@@ -32,6 +32,33 @@ pub struct WriteStats {
     pub accepted: AtomicU64,
     /// Write polls that returned `Pending`: the writer parked.
     pub parks: AtomicU64,
+    /// Each write the socket accepted: the instant and the bytes, in order.
+    grants: Mutex<Vec<(Instant, u64)>>,
+}
+
+impl WriteStats {
+    /// Counts one accepted write of `bytes` at `at`: the total and the grant
+    /// [`WriteStats::last_progress_at`] reads.
+    pub fn note_accepted(&self, at: Instant, bytes: u64) {
+        self.accepted.fetch_add(bytes, Ordering::Relaxed);
+        if let Ok(mut grants) = self.grants.lock() {
+            grants.push((at, bytes));
+        }
+    }
+
+    /// The instant the socket last accepted progress at `floor` bytes: walking back from the newest
+    /// write, the grant at which the bytes accepted since reach `floor`. Everything accepted after
+    /// it totals under `floor`, so the connection unit's window (fewer than `floor` bytes accepted
+    /// while the writer is parked) starts no later than this instant. `None` when the socket never
+    /// accepted `floor` bytes.
+    pub fn last_progress_at(&self, floor: u64) -> Option<Instant> {
+        let grants = self.grants.lock().ok()?;
+        let mut since = 0u64;
+        grants.iter().rev().find_map(|(at, bytes)| {
+            since += bytes;
+            (since >= floor).then_some(*at)
+        })
+    }
 }
 
 /// A TCP stream that logs the instant it is dropped and reports whether it speaks HTTP/2.
@@ -54,7 +81,7 @@ impl ObservedStream {
                 self.stats.parks.fetch_add(1, Ordering::Relaxed);
             }
             Poll::Ready(Ok(n)) => {
-                self.stats.accepted.fetch_add(*n as u64, Ordering::Relaxed);
+                self.stats.note_accepted(Instant::now(), *n as u64);
             }
             Poll::Ready(Err(_)) => {}
         }
