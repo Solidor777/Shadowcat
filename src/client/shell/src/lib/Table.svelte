@@ -7,7 +7,7 @@
   import { untrack } from "svelte";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, resetSessionState } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, getChatHistory, pushChatHistory, resetSessionState } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   // `PanelHost` binds the real implementation into this bridge at its own
@@ -187,6 +187,8 @@
       setPanelLayout: (blob) => setPanelLayout(session.world!, blob),
       getChatRead: () => getChatRead(session.world!),
       setChatRead: (blob) => setChatRead(session.world!, blob),
+      getChatHistory: () => getChatHistory(session.world!),
+      pushChatHistory: (text) => pushChatHistory(session.world!, text),
     },
     panels,
     dice3d: session.dice3d,

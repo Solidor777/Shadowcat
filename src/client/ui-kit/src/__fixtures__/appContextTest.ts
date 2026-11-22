@@ -115,6 +115,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setPanelLayout: () => {},
       getChatRead: () => null,
       setChatRead: () => {},
+      getChatHistory: () => [],
+      pushChatHistory: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
     dice3d: over.dice3d ?? new Dice3DBridge(),

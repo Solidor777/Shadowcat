@@ -444,6 +444,12 @@ export interface AppContext {
     /** Persist the chat read-marker blob.
      * @param blob - The chat module's read-marker blob to persist. */
     setChatRead(blob: unknown): void;
+    /** The chat composer's sent-text history for this world, oldest first.
+     * @returns The persisted entries; empty if none were saved. */
+    getChatHistory(): string[];
+    /** Record one sent composer text, persisted per world and bounded in count and size.
+     * @param text - The raw typed text that was sent. */
+    pushChatHistory(text: string): void;
   };
   /** Imperative panel-host seam (open/close/focus/toggle by panel id) plus a
    * live read-only view (`minimized`/`metaMap`/`restore`) for surfaces that

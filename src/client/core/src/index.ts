@@ -39,6 +39,7 @@ export type {
   KeybindingRegistration,
   KeydownPayload,
 } from "./keybindings";
+export { CHAT_HISTORY_LIMIT, CHAT_HISTORY_BYTE_BUDGET, pushChatHistory, parseChatHistory } from "./chat-history";
 export { ServiceRegistry } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";

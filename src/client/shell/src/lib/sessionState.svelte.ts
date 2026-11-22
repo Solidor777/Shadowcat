@@ -1,4 +1,4 @@
-import { consoleLogger, type KeybindingOverrides } from "@shadowcat/core";
+import { consoleLogger, parseChatHistory, pushChatHistory as pushBoundedChatHistory, type KeybindingOverrides } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
 import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
@@ -27,8 +27,8 @@ let persistQueued: Promise<void> | null = null;
 /** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, `"theme"`, or
  * `"keybindings"`). */
 type GlobalField = keyof UiState["global"];
-/** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
- * `"chatRead"`). */
+/** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"`, `"chatRead"`,
+ * `"chatHistory"` or `"viewedLevel"`). */
 type WorldKey = keyof UiState["worlds"][string];
 
 /** Leaf-key dirty tracking: persist() sends ONLY the individual fields/keys
@@ -200,6 +200,9 @@ function copyWorldKey(
       return;
     case "chatRead":
       slice.chatRead = w.chatRead;
+      return;
+    case "chatHistory":
+      slice.chatHistory = w.chatHistory;
       return;
     case "viewedLevel":
       slice.viewedLevel = w.viewedLevel;
@@ -650,6 +653,35 @@ export function setChatRead(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.chatRead = blob;
   markWorldDirty(world, "chatRead");
+  schedulePersist();
+}
+
+/** Reads a world's persisted composer sent-text history.
+ * @param world - World id.
+ * @returns The stored entries, oldest first; empty when the world has none.
+ * @example
+ * ```
+ * const history = getChatHistory("w1");
+ * ```
+ */
+export function getChatHistory(world: string): string[] {
+  return parseChatHistory(state.worlds[world]?.chatHistory);
+}
+
+/** Appends one sent text to a world's composer history (bounded by `pushChatHistory` in
+ * `@shadowcat/core`), marks it dirty, and schedules a persist. Creates the world's entry if
+ * absent.
+ * @param world - World id.
+ * @param text - The raw typed text that was sent.
+ * @example
+ * ```
+ * pushChatHistory("w1", "/roll 1d20");
+ * ```
+ */
+export function pushChatHistory(world: string, text: string): void {
+  const w = (state.worlds[world] ??= {});
+  w.chatHistory = pushBoundedChatHistory(getChatHistory(world), text);
+  markWorldDirty(world, "chatHistory");
   schedulePersist();
 }
 

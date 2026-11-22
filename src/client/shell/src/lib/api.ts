@@ -217,6 +217,10 @@ export interface UiState {
       /** Opaque blob owned by the chat module's per-channel last-read-marker
        * tracking (unread tab badge) — the shell only stores it. */
       chatRead?: unknown;
+      /** The composer's recalled sent-text history, oldest first (`pushChatHistory` in
+       * `@shadowcat/core` bounds it by entry count and serialized size). Per account, never
+       * transmitted to other users. */
+      chatHistory?: string[];
       /** GM's last-chosen level id per scene, keyed by scene id. Absent scene key = follow the
        * default (first/lowest level); never set for a player, who instead follows their primary
        * token's level. */
