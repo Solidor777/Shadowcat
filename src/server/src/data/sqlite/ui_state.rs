@@ -6,6 +6,12 @@
 
 use super::*;
 
+/// The top-level `ui_state` keys whose value is a map of per-id slices (`worlds.<worldId>`,
+/// `modules.<moduleId>`). `merge_ui_state` merges each id's slice one level deep; the generic
+/// top-level rule would replace every named id's whole slice and drop its sibling keys.
+/// `http::routes::put_ui_state` reads the same list for its object-shape check.
+pub(crate) const PER_ID_NAMESPACES: [&str; 2] = ["worlds", "modules"];
+
 /// One-level merge of a single key into `map`: when both the existing
 /// `map[key]` and the incoming `value` are JSON objects, merges `value`'s
 /// entries into the existing object (each of THOSE entries replaces
@@ -72,10 +78,11 @@ impl SqliteRepository {
     }
 
     /// Merge a partial UI-state patch into the user's stored blob, one level
-    /// at the individual leaf key (`global.<field>` / `worlds.<id>.<key>`) —
-    /// **the single server-side statement of this rule.** For each top-level
-    /// patch key `K`: if `K == "worlds"` (an object; route-validated), then
-    /// for each `(id, slice)` in it — when BOTH the stored `worlds.<id>` and
+    /// at the individual leaf key (`global.<field>` / `worlds.<id>.<key>` /
+    /// `modules.<id>.<key>`) — **the single server-side statement of this rule.** For each
+    /// top-level patch key `K`: if `K` is in `PER_ID_NAMESPACES` (`worlds` or `modules`; an
+    /// object; route-validated), then for each `(id, slice)` in it — when BOTH the stored
+    /// `K.<id>` and
     /// `slice` are objects, merge one level (each slice key, e.g.
     /// `panelLayout`/`chatRead`, replaces wholesale — a leaf blob is opaque
     /// and NEVER deep-merged); otherwise insert `slice` wholesale. For any
@@ -144,18 +151,18 @@ impl SqliteRepository {
             .as_object_mut()
             .ok_or_else(|| DataError::OpFailed("stored ui_state is not an object".into()))?;
         for (key, value) in patch_obj {
-            if key == "worlds" {
-                let worlds_patch = value.as_object().ok_or_else(|| {
-                    DataError::OpFailed("ui_state patch `worlds` must be an object".into())
+            if PER_ID_NAMESPACES.contains(&key.as_str()) {
+                let ns_patch = value.as_object().ok_or_else(|| {
+                    DataError::OpFailed(format!("ui_state patch `{key}` must be an object"))
                 })?;
-                let worlds = stored_obj
-                    .entry("worlds")
+                let ns = stored_obj
+                    .entry(key.as_str())
                     .or_insert_with(|| serde_json::json!({}));
-                let worlds_obj = worlds.as_object_mut().ok_or_else(|| {
-                    DataError::OpFailed("stored ui_state `worlds` is not an object".into())
+                let ns_obj = ns.as_object_mut().ok_or_else(|| {
+                    DataError::OpFailed(format!("stored ui_state `{key}` is not an object"))
                 })?;
-                for (id, slice) in worlds_patch {
-                    merge_one_level(worlds_obj, id, slice);
+                for (id, slice) in ns_patch {
+                    merge_one_level(ns_obj, id, slice);
                 }
             } else {
                 merge_one_level(stored_obj, key, value);

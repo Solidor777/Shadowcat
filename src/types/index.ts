@@ -166,6 +166,7 @@ export type { Condition } from "./generated/engine/Condition";
 export type { ConditionFx } from "./generated/engine/ConditionFx";
 export type { ConditionRegistryEngine } from "./generated/engine/ConditionRegistryEngine";
 export type { ChatSettingsEngine } from "./generated/engine/ChatSettingsEngine";
+export type { ModuleSettingsEngine } from "./generated/engine/ModuleSettingsEngine";
 export type { DiceSettingsEngine } from "./generated/engine/DiceSettingsEngine";
 export type { DiceModeSetting } from "./generated/engine/DiceModeSetting";
 export type { DiceDirectionSetting } from "./generated/engine/DiceDirectionSetting";

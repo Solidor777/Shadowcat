@@ -81,6 +81,7 @@ import {
   type ModuleLoadFailure,
   type ModuleStatusEntry,
   type RulerNotice,
+  UserModuleSettings,
 } from "@shadowcat/core";
 import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
@@ -88,7 +89,7 @@ import type { HooksEmitApi } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
-import { getKeybindings, getViewedLevel, setKeybindings, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
+import { getKeybindings, getSessionState, getViewedLevel, setKeybindings, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
 import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
@@ -886,6 +887,8 @@ export class WorldSession {
       logger: this.#logger,
       contributions: this.contributions,
       i18n,
+      dispatchIntent: (ops) => this.dispatchIntent(ops),
+      userSettings: new UserModuleSettings(getSessionState().modules),
     });
   }
 

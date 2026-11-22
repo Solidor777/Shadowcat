@@ -25,7 +25,13 @@ test("listWorlds returns the world array", async () => {
 test("getUiState normalizes an empty server blob to defaults", async () => {
   mockFetch(200, {});
   const s = await api.getUiState();
-  expect(s).toEqual({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  expect(s).toEqual({ global: { locale: "en", lastWorld: null }, worlds: {}, modules: {} });
+});
+
+test("getUiState passes a stored modules namespace through", async () => {
+  mockFetch(200, { modules: { m1: { volume: 3 } } });
+  const s = await api.getUiState();
+  expect(s.modules).toEqual({ m1: { volume: 3 } });
 });
 
 test("getUiState passes through a stored blob", async () => {

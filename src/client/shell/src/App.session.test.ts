@@ -122,7 +122,7 @@ async function bootToEntry(getTlsStatus: () => Promise<TlsStatus>) {
   vi.stubGlobal("WebSocket", WelcomingSocket as unknown);
   vi.spyOn(api, "getTlsStatus").mockImplementation(getTlsStatus);
   vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
-  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ modules: {}, global: { locale: "en", lastWorld: null }, worlds: {} });
   vi.spyOn(api, "putUiState").mockResolvedValue();
   vi.spyOn(api, "getWorldSnapshot").mockRejectedValue(new Error("no snapshot in this test"));
   vi.spyOn(api, "listWorlds").mockResolvedValue([]);

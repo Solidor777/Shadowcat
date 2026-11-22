@@ -18,9 +18,9 @@ fn seed_docs(now: i64) -> Vec<Document> {
 }
 
 #[test]
-fn empty_world_yields_eleven_creates_with_seed_bodies() {
+fn empty_world_yields_twelve_creates_with_seed_bodies() {
     let docs = seed_docs(5);
-    assert_eq!(docs.len(), 11);
+    assert_eq!(docs.len(), 12);
     for doc in &docs {
         assert_eq!(doc.scope, Scope::World { world_id: world() });
         assert_eq!(doc.owner, None);
@@ -89,6 +89,17 @@ fn empty_world_yields_eleven_creates_with_seed_bodies() {
         body(AUDIO_STATE_DOC_TYPE),
         serde_json::to_value(AudioStateEngine::default()).unwrap()
     );
+}
+
+#[test]
+fn missing_config_ops_seeds_module_settings_with_an_empty_engine_and_system_band() {
+    let docs = seed_docs(1);
+    let doc = docs
+        .iter()
+        .find(|d| d.doc_type == MODULE_SETTINGS_DOC_TYPE)
+        .expect("the seed pass creates the module-settings singleton");
+    assert_eq!(doc.engine, Some(serde_json::json!({})));
+    assert_eq!(doc.system, serde_json::json!({}));
 }
 
 #[test]

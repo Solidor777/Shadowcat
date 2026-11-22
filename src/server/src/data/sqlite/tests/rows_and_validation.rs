@@ -1282,6 +1282,79 @@ async fn ui_state_of(repo: &SqliteRepository, user: Uuid) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn merge_ui_state_modules_preserves_sibling_keys_across_successive_patches() {
+    let repo = repo().await;
+    let user = repo
+        .create_user("u", Some("hash"), ServerRole::User, 0)
+        .await
+        .unwrap();
+    let cap = 64 * 1024;
+
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "other-module": { "keep": true } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "foo": 1 } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "bar": 2 } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(
+        v["modules"]["my-module"],
+        serde_json::json!({ "foo": 1, "bar": 2 })
+    );
+    // A sibling namespace written earlier is untouched by later patches to another module.
+    assert_eq!(
+        v["modules"]["other-module"],
+        serde_json::json!({ "keep": true })
+    );
+
+    // `null` at a leaf removes that key; `null` at the module id removes the whole slice.
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": { "foo": null } } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(v["modules"]["my-module"], serde_json::json!({ "bar": 2 }));
+    repo.merge_ui_state(
+        user,
+        &serde_json::json!({ "modules": { "my-module": null } }),
+        cap,
+    )
+    .await
+    .unwrap();
+    let v = ui_state_of(&repo, user).await;
+    assert_eq!(v["modules"].get("my-module"), None);
+    assert_eq!(
+        v["modules"]["other-module"],
+        serde_json::json!({ "keep": true })
+    );
+
+    // A non-object `modules` patch is rejected at the store, as `worlds` is.
+    assert!(matches!(
+        repo.merge_ui_state(user, &serde_json::json!({ "modules": [1] }), cap)
+            .await,
+        Err(DataError::OpFailed(_))
+    ));
+}
+
+#[tokio::test]
 async fn ui_state_merges_per_top_level_key_and_per_world() {
     let repo = repo().await;
     let user = repo

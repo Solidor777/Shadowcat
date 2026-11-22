@@ -20,9 +20,7 @@ use crate::data::document::{
 };
 use crate::data::engine::{
     CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBATANT_GROUP_DOC_TYPE,
-    COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
-    WORLD_SETTINGS_DOC_TYPE,
+    COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -45,20 +43,10 @@ use crate::data::DataError;
 /// chokepoint — a stray second singleton doc would otherwise resolve
 /// nondeterministically-but-safely via lowest-UUID ordering (see
 /// `chat::settings::resolve_content_policy`'s doc comment); this closes that
-/// gap at construction time rather than leaving it to read-side tolerance.
-const SINGLETON_DOC_TYPES: &[&str] = &[
-    WORLD_SETTINGS_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE,
-    CONDITION_REGISTRY_DOC_TYPE,
-    RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE,
-    AUDIO_STATE_DOC_TYPE,
-    crate::chat::CHAT_SETTINGS_DOC_TYPE,
-    crate::chat::DICE_SETTINGS_DOC_TYPE,
-    crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
-    crate::data::engine::LIGHT_GRADATION_DOC_TYPE,
-    crate::data::engine::VISION_MODES_DOC_TYPE,
-];
+/// gap at construction time rather than leaving it to read-side tolerance. The set IS
+/// `world_seed::CONFIG_SINGLETON_DOC_TYPES`, never a second list: the seed pass and this gate
+/// agree on which doc_types are singletons by construction.
+const SINGLETON_DOC_TYPES: &[&str] = &crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES;
 
 /// Auth-facing projection of a user row.
 ///
@@ -3123,6 +3111,8 @@ mod notes;
 mod tables;
 mod ui_state;
 mod worlds;
+
+pub(crate) use ui_state::PER_ID_NAMESPACES;
 
 #[cfg(test)]
 mod tests;
