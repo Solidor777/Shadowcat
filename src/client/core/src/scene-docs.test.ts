@@ -275,7 +275,7 @@ it("buildSceneDoc's combat chain is unset by default and persists an authored ov
 });
 
 test("buildTokenDoc parents to the scene and preserves the token engine body", () => {
-  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false };
+  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
   const doc = buildTokenDoc("w1", "scene-1", eng);
   expect(doc.doc_type).toBe("token");
   expect(doc.parent_id).toBe("scene-1");

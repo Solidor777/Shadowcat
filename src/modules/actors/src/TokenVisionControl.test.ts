@@ -37,7 +37,7 @@ function linkedSetup(overrides?: TokenEngine["overrides"]) {
 describe("TokenVisionControl", () => {
   it("renders nothing for a raw token, an instanced token, or when canEdit refuses", () => {
     const raw = buildTokenDoc("w1", "scene1", {
-      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
     }, "tok-raw");
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents: storeWith(raw), dispatchIntent: vi.fn(), canEdit: () => true }),
@@ -76,7 +76,7 @@ describe("TokenVisionControl", () => {
           {
             path: "/engine/overrides",
             old: null, // the RAW stored overrides object (absent on a fresh linked token)
-            new: { name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null },
           },
         ],
       },
@@ -84,7 +84,7 @@ describe("TokenVisionControl", () => {
   });
 
   it("a stored empty override list reads as custom (wholesale 'no senses', not inherit)", () => {
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: [], light: null, movement: null , aura: null, sound: null, vfx: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: [], light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent: vi.fn(), canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -95,7 +95,7 @@ describe("TokenVisionControl", () => {
   it("the list editor commits whole-payload override writes with the raw stored old", async () => {
     const dispatchIntent = vi.fn();
     const prior: VisionAssignment[] = [{ mode: "darkvision", range: 4 }];
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -109,8 +109,8 @@ describe("TokenVisionControl", () => {
         changes: [
           {
             path: "/engine/overrides",
-            old: { name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null },
-            new: { name: null, visual: null, size: null, shape: null, vision: [{ mode: "darkvision", range: 9 }], light: null, movement: null , aura: null, sound: null, vfx: null },
+            old: { name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: [{ mode: "darkvision", range: 9 }], light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null },
           },
         ],
       },
@@ -119,7 +119,7 @@ describe("TokenVisionControl", () => {
 
   it("switching back to inherit clears the override (vision: null)", async () => {
     const dispatchIntent = vi.fn();
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null, disposition: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },

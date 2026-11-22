@@ -247,7 +247,7 @@ test("a token the server has stated no extent for keeps its document's own autho
 test("raw token keeps its own size + defaults to square", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok1");
+  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   const spec = backend.tokens.get("tok1")!;
@@ -507,7 +507,7 @@ function storeWithAuraToken(aura: { color: string; opacity: number; radius: numb
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   if (override !== undefined) {
-    (token.engine as { overrides?: unknown }).overrides = { name: null, visual: null, size: null, shape: null, vision: null, aura: override, sound: null, vfx: null };
+    (token.engine as { overrides?: unknown }).overrides = { name: null, visual: null, size: null, shape: null, vision: null, aura: override, sound: null, vfx: null, disposition: null };
   }
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   return { store, backend };
@@ -742,8 +742,8 @@ test("a viewedLevel function scopes reconcile() via levelOf over each token's ow
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1").reconcile();
   expect(backend.tokens.has("tok-ground")).toBe(true);
@@ -758,8 +758,8 @@ test("ghostOtherLevels: () => true renders an other-level token with the ghost T
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   const view = new TokenView(
     store, new AssetResolver(), backend, () => "s1", () => "l1",
@@ -782,8 +782,8 @@ test("ghostOtherLevels: () => false (default) excludes the other-level token ent
     { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
     "s1",
   );
-  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false }, "tok-ground");
-  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false }, "tok-upper");
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15, lock_rotation: false, identity_hidden: false }, "tok-upper");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
   const view = new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1");
   view.reconcile();
@@ -801,7 +801,7 @@ test("resolvedLevelOf prefers the server-resolved FootprintLookup.level over the
   );
   // Locally, this token's stored elevation (0) resolves to "l1" — but the server's resolved
   // footprints entry states "l2". The server value must win.
-  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false }, "tok1");
+  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: tok }]));
   const footprints: FootprintLookup = {
     token: () => null,

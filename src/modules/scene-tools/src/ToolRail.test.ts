@@ -174,7 +174,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -229,7 +229,7 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: 50, y: 50, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
         }, "tok1"),
       },
     ],
@@ -313,7 +313,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -509,7 +509,7 @@ test("a player who owns the single selected token sees and can use the speak-as-
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "u-self",
@@ -538,7 +538,7 @@ function ownedTokenStore(): DocumentStore {
   const tok = (id: string, scene: string, x: number, y: number, owner: string) => ({
     ...buildTokenDoc(
       "w1", scene,
-      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       id,
     ),
     owner,
@@ -590,7 +590,7 @@ test("a non-owner player does not see the speak-as-token button", () => {
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "someone-else",
@@ -613,7 +613,7 @@ test("no button renders when more than one token is selected, even for a GM", ()
   const documents = new DocumentStore();
   const sceneDoc = buildSceneDoc("w1", {}, "S1");
   documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
-  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false };
+  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
   const tok1 = buildTokenDoc("w1", sceneDoc.id, engine, "tok1");
   const tok2 = buildTokenDoc("w1", sceneDoc.id, engine, "tok2");
   documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: tok1 }, { op: "create" as const, doc: tok2 }] });

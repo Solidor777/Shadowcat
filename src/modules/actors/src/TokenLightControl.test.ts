@@ -39,7 +39,7 @@ describe("TokenLightControl", () => {
   it("renders nothing for a raw token, an instanced token, or a non-GM", () => {
     // A genuinely raw token (no actor link, no embedded copy).
     const raw = buildTokenDoc("w1", "scene1", {
-      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
     }, "tok-raw");
     render(TokenLightControl, {
       context: setAppContextForTest({ documents: storeWith(raw), dispatchIntent: vi.fn(), role: "gm" }),
@@ -80,7 +80,7 @@ describe("TokenLightControl", () => {
           {
             path: "/engine/overrides",
             old: null, // the RAW stored overrides object (absent on a fresh linked token)
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...torch, enabled: false }, movement: null, aura: null, sound: null, vfx: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...torch, enabled: false }, movement: null, aura: null, sound: null, vfx: null, disposition: null },
           },
         ],
       },
@@ -90,7 +90,7 @@ describe("TokenLightControl", () => {
   it("custom mode opens the field editor, which commits whole-payload override writes with the raw stored old", async () => {
     const dispatchIntent = vi.fn();
     const prior: LightEmission = { ...DEFAULT_LIGHT_EMISSION, enabled: true };
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null, aura: null, sound: null, vfx: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null, aura: null, sound: null, vfx: null, disposition: null });
     render(TokenLightControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -104,8 +104,8 @@ describe("TokenLightControl", () => {
         changes: [
           {
             path: "/engine/overrides",
-            old: { name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null, aura: null, sound: null, vfx: null },
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...prior, dimRadius: 9 }, movement: null, aura: null, sound: null, vfx: null },
+            old: { name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null, aura: null, sound: null, vfx: null, disposition: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...prior, dimRadius: 9 }, movement: null, aura: null, sound: null, vfx: null, disposition: null },
           },
         ],
       },
@@ -115,7 +115,7 @@ describe("TokenLightControl", () => {
   it("switching back to inherit clears the override (light: null)", async () => {
     const dispatchIntent = vi.fn();
     const suppressed: LightEmission = { ...torch, enabled: false };
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: suppressed, movement: null, aura: null, sound: null, vfx: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: suppressed, movement: null, aura: null, sound: null, vfx: null, disposition: null });
     render(TokenLightControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
