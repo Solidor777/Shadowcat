@@ -82,7 +82,10 @@ export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
  * here, so such a cut fails a leg. WebKit reports its element's cancel as `Load request cancelled`
  * (measured on the Playwright WebKit build on Linux). A cut of an HTTP/2 stream reads as `net::ERR_ABORTED` in
  * Chromium, which this list accepts, and raises no failure at all in Firefox: this list cannot
- * observe an HTTP/2 cut. */
+ * observe an HTTP/2 cut. The server's own `warn` line (`connection cut: ...` or `response stream
+ * cut: ...`) does, on both protocols and in every engine: the Playwright configuration pipes the
+ * windowed servers' standard output (`WINDOWED_SERVER_STDOUT`), so the line appears in the test
+ * output under the `[WebServer]` prefix. */
 export const SELF_CANCELLED: readonly string[] = [
   "net::ERR_ABORTED",
   "NS_BINDING_ABORTED",

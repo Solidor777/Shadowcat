@@ -58,6 +58,15 @@ const EGRESS_WINDOW_ENV = String(MEDIA_RANGE_EGRESS_WINDOW_SECS);
  * cut. */
 const LONG_AUDIO_PORT = 32003;
 
+/** How the servers that run the short egress window route their standard output. The server logs
+ * its egress cut as a `warn` line (`connection cut: ...` or `response stream cut: ...`) on
+ * standard output, and Playwright drops a web server's standard output unless it is piped, so
+ * without this the line never reaches the test output. It is the one record of a cut that every
+ * engine and both protocols share: on HTTP/2 the browser's own failure text cannot show a cut
+ * (`SELF_CANCELLED` in `e2e/long-audio-support`). The suite logs at `warn`, so a cut-free run pipes
+ * almost nothing. */
+const WINDOWED_SERVER_STDOUT = "pipe" as const;
+
 /** The machine's real non-loopback IPv4 address. The HTTPS specs browse to it rather than to
  * loopback or a resolver-rule alias, because browsers treat loopback as potentially trustworthy
  * and would hide the plain-HTTP behaviour (no secure context, cookie scoping) these specs assert;
@@ -315,6 +324,7 @@ function longAudioServer(ip: string) {
     url: `http://${ip}:${LONG_AUDIO_PORT}/health`,
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
+    stdout: WINDOWED_SERVER_STDOUT,
     env: {
       ...SERVER_ENV,
       SHADOWCAT_BIND: `0.0.0.0:${LONG_AUDIO_PORT}`,
@@ -430,6 +440,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${MEDIA_RANGE_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
+      stdout: WINDOWED_SERVER_STDOUT,
       env: {
         ...SERVER_ENV,
         SHADOWCAT_BIND: `127.0.0.1:${MEDIA_RANGE_PORT}`,

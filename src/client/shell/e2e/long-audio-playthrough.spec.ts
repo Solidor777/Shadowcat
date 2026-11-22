@@ -34,8 +34,10 @@ import {
 // h2 it cannot see a cut. Chromium reports a cut stream as `net::ERR_ABORTED`, which the whitelist
 // accepts as the element's own cancel, and Firefox raises no failure at all. An h2 cut is caught
 // only through the other checks: the element's `errorCode` and `errorEvents`, the position-code
-// readings, the natural end and the server's stopped entry. The slice bound and the failed-request
-// check run after every slot, not only at the end.
+// readings, the natural end and the server's stopped entry, and through the server's own `warn`
+// line (`connection cut: ...` or `response stream cut: ...`), which the Playwright configuration
+// pipes into the test output. The slice bound and the failed-request check run after every slot,
+// not only at the end.
 
 /** The fixture track played in full: the one whose served sizes were measured. */
 const TRACK = "ambient-bed" as const;
