@@ -104,6 +104,7 @@ fn post_transition_snapshot(snap: &CombatSnapshot, ops: &[Operation]) -> CombatS
         history: None,
         registry: None,
         other_active: Vec::new(),
+        groups: Vec::new(),
         chain: (None, None, None),
     }
 }

@@ -266,6 +266,7 @@ fn walk_any_host(
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -336,6 +337,7 @@ fn walk_any_host(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -483,6 +485,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -554,6 +557,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///

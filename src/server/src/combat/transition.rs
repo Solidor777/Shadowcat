@@ -437,6 +437,7 @@ impl Working {
             history: None,
             registry: self.registry.clone(),
             other_active: Vec::new(),
+            groups: Vec::new(),
             chain: (None, None, None),
         }
     }
@@ -1071,6 +1072,7 @@ fn settle_turn(
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1137,6 +1139,7 @@ fn settle_turn(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1319,6 +1322,7 @@ fn advance_impl(
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let event_doc = Document {
@@ -1385,6 +1389,7 @@ fn advance_impl(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1492,6 +1497,7 @@ pub(crate) fn advance_with_step_count(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1601,6 +1607,7 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1741,6 +1748,7 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1818,6 +1826,7 @@ pub fn end(
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -1884,6 +1893,7 @@ pub fn end(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -1922,6 +1932,132 @@ pub fn roll(
     channel: &str,
     now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
+    roll_with_groups(snap, results, &[], world, author, channel, now)
+}
+
+/// `roll` plus group rolls: each `group_results` entry names a
+/// `combatant-group` document and ONE `RollPost`, which is stamped as the
+/// initiative of EVERY member of that group (one dice result, never N rolls
+/// forced equal) and posted as ONE chat message for the whole group, not one
+/// per member. `results` entries behave exactly as in `roll`. A group the
+/// snapshot does not hold, or one with no members, is `NotFound`.
+///
+/// INVARIANT: across `results` and every group's members, each combatant id
+/// appears at most once; the wire-dispatch layer (`build_ops`) enforces it, as
+/// it does for `roll`. The group's message is `Audience::GmOnly` when any
+/// member is hidden (a public message would disclose the hidden member's
+/// initiative), and carries no actor owner.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::{roll_with_groups, RollPost};
+/// use shadowcat::combat::{CombatSnapshot, Combatant, CombatantGroup};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind,
+///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, TurnControl,
+/// };
+/// use shadowcat::dice::{evaluate, parse, roll_dice, NoiseRng, ParseContext};
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let group_id = Uuid::new_v4();
+/// let doc = |id: Uuid, doc_type: &str, engine: serde_json::Value| Document {
+///     id,
+///     scope: Scope::World { world_id },
+///     doc_type: doc_type.to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(engine),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let member = |id: Uuid| {
+///     let engine = CombatantEngine {
+///         kind: CombatantKind::Event { lifespan: None, message: None },
+///         initiative: None,
+///         tiebreak: 0.0,
+///         defeated: false,
+///         group: Some(group_id),
+///         resources: Default::default(),
+///     };
+///     Combatant {
+///         doc: doc(id, "combatant", serde_json::to_value(&engine).unwrap()),
+///         engine,
+///     }
+/// };
+/// let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![a, b],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let mut combat = doc(combat_id, "combat", serde_json::to_value(&combat_engine).unwrap());
+/// combat.parent_id = None;
+/// let group_engine = CombatantGroupEngine { name: "Rats".to_string(), color: None };
+/// let snapshot = CombatSnapshot {
+///     combat,
+///     engine: combat_engine,
+///     combatants: vec![member(a), member(b)],
+///     groups: vec![CombatantGroup {
+///         doc: doc(group_id, "combatant-group", serde_json::to_value(&group_engine).unwrap()),
+///         engine: group_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raw = roll_dice(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raw);
+/// let post = RollPost { formula: "1d20".to_string(), outcome, spec, raw };
+///
+/// let ops = roll_with_groups(&snapshot, &[], &[(group_id, post)], world_id, Uuid::new_v4(), "combat", 0)
+///     .unwrap();
+/// let creates = ops.iter().filter(|op| matches!(op, Operation::Create { .. })).count();
+/// let member_updates = ops
+///     .iter()
+///     .filter(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == a || *doc_id == b))
+///     .count();
+/// assert_eq!(creates, 1);
+/// assert_eq!(member_updates, 2);
+/// ```
+pub fn roll_with_groups(
+    snap: &CombatSnapshot,
+    results: &[(Uuid, RollPost)],
+    group_results: &[(Uuid, RollPost)],
+    world: Uuid,
+    author: Uuid,
+    channel: &str,
+    now: i64,
+) -> Result<Vec<Operation>, CombatError> {
     // INVARIANT: `results` must carry at most one entry per `combatant_id` —
     // a duplicate would build two `FieldChange`s against the same combatant
     // from the SAME unmutated `snap` pre-image, so the second write's OCC
@@ -1929,6 +2065,69 @@ pub fn roll(
     // caller (the wire-dispatch layer) is responsible for this; nothing here
     // re-derives or dedupes it.
     let mut ops = Vec::new();
+    // Every (combatant, total) this call stamps, solo and group members alike,
+    // for the re-sort below.
+    let mut stamped: Vec<(Uuid, f64)> = results
+        .iter()
+        .map(|(id, post)| (*id, post.outcome.total as f64))
+        .collect();
+    for (group_id, post) in group_results {
+        let group = snap
+            .groups
+            .iter()
+            .find(|g| g.doc.id == *group_id)
+            .ok_or(CombatError::NotFound)?;
+        let members: Vec<&Combatant> = snap
+            .combatants
+            .iter()
+            .filter(|c| c.engine.group == Some(*group_id))
+            .collect();
+        if members.is_empty() {
+            return Err(CombatError::NotFound);
+        }
+        for c in &members {
+            let change = set_engine(
+                &c.doc,
+                "/engine/initiative",
+                json!(post.outcome.total as f64),
+            )?;
+            ops.push(Operation::Update {
+                doc_id: c.doc.id,
+                changes: vec![change],
+            });
+            stamped.push((c.doc.id, post.outcome.total as f64));
+        }
+        let msg = build_message_doc(
+            world,
+            author,
+            MessageDraft {
+                channel: channel.to_string(),
+                actor_owner: None,
+                audience: if members.iter().any(|c| is_hidden(c)) {
+                    Audience::GmOnly
+                } else {
+                    Audience::Public
+                },
+                kind: MessageKind::Roll,
+                content: vec![
+                    Segment::Text {
+                        text: group.engine.name.clone(),
+                    },
+                    Segment::RollEmbed {
+                        formula: post.formula.clone(),
+                        outcome: post.outcome.clone(),
+                        roll_id: Uuid::new_v4(),
+                        spec: Some(Box::new(post.spec.clone())),
+                        raw: Some(Box::new(post.raw.clone())),
+                        recalc_history: None,
+                    },
+                ],
+                source: None,
+            },
+            now,
+        );
+        ops.push(Operation::Create { doc: msg });
+    }
     for (id, post) in results {
         let c = snap
             .combatants
@@ -1993,8 +2192,8 @@ pub fn roll(
         .iter()
         .map(|c| {
             let mut engine = c.engine.clone();
-            if let Some((_, post)) = results.iter().find(|(id, _)| *id == c.doc.id) {
-                engine.initiative = Some(post.outcome.total as f64);
+            if let Some((_, total)) = stamped.iter().find(|(id, _)| *id == c.doc.id) {
+                engine.initiative = Some(*total);
             }
             Combatant {
                 doc: c.doc.clone(),
@@ -2049,6 +2248,7 @@ pub fn roll(
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     // No stored entry for "hp" yet: an absent entry reads as full.
 ///     resources: BTreeMap::new(),
 /// };
@@ -2130,6 +2330,7 @@ pub fn roll(
 ///     history: None,
 ///     registry: Some(registry),
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -2223,6 +2424,7 @@ pub fn resource(
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
 ///         defeated: false,
+///         group: None,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {
@@ -2291,6 +2493,7 @@ pub fn resource(
 ///     history: None,
 ///     registry: None,
 ///     other_active: Vec::new(),
+///     groups: Vec::new(),
 ///     chain: (None, None, None),
 /// };
 ///
@@ -2374,6 +2577,7 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 ///         initiative: Some(initiative),
 ///         tiebreak: 0.0,
 ///         defeated: false,
+///         group: None,
 ///         resources: Default::default(),
 ///     };
 ///     let doc = Document {
@@ -2407,22 +2611,69 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 pub fn rebuild_order(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
     let mut ids = reconcile_membership(combatants, existing);
     let lookup = |id: &Uuid| combatants.iter().find(|c| c.doc.id == *id);
+
+    // A group's members share ONE sort slot: the group's initiative is its
+    // members' highest, its tiebreak likewise, and a full tie between two
+    // slots resolves by the slot's first-appearing member's position in the
+    // reconciled list. Every member of a group therefore carries an identical
+    // sort key apart from the stable sort's own tie order, which keeps them
+    // contiguous even when a member's own initiative has drifted from its
+    // siblings'. An ungrouped combatant is its own slot, so its key is its own
+    // initiative/tiebreak/position and ordering for combats without groups is
+    // the plain stable initiative-then-tiebreak sort.
+    let mut slots: HashMap<Uuid, GroupSlot> = HashMap::new();
+    for (pos, id) in ids.iter().enumerate() {
+        let Some(group) = lookup(id).and_then(|c| c.engine.group) else {
+            continue;
+        };
+        let c = lookup(id).expect("id came from the combatants list");
+        let slot = slots.entry(group).or_insert(GroupSlot {
+            initiative: None,
+            tiebreak: c.engine.tiebreak,
+            first_pos: pos,
+        });
+        slot.initiative = match (slot.initiative, c.engine.initiative) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        slot.tiebreak = slot.tiebreak.max(c.engine.tiebreak);
+    }
+    let positions: HashMap<Uuid, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let key = |c: &Combatant| match c.engine.group.and_then(|g| slots.get(&g)) {
+        Some(slot) => (slot.initiative, slot.tiebreak, slot.first_pos),
+        None => (
+            c.engine.initiative,
+            c.engine.tiebreak,
+            positions.get(&c.doc.id).copied().unwrap_or(usize::MAX),
+        ),
+    };
     ids.sort_by(|x, y| {
         let (Some(cx), Some(cy)) = (lookup(x), lookup(y)) else {
             return std::cmp::Ordering::Equal;
         };
-        let init_cmp = match (cx.engine.initiative, cy.engine.initiative) {
+        let (ix, tx, px) = key(cx);
+        let (iy, ty, py) = key(cy);
+        let init_cmp = match (ix, iy) {
             (Some(vx), Some(vy)) => vy.partial_cmp(&vx).unwrap_or(std::cmp::Ordering::Equal),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         };
-        init_cmp.then_with(|| {
-            cy.engine
-                .tiebreak
-                .partial_cmp(&cx.engine.tiebreak)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        init_cmp
+            .then_with(|| ty.partial_cmp(&tx).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| px.cmp(&py))
     });
     ids
+}
+
+/// The sort key a combatant group contributes to `rebuild_order`, derived from
+/// its members: the highest member initiative, the highest member tiebreak,
+/// and the reconciled-list position of its first member.
+struct GroupSlot {
+    /// Highest member initiative, `None` while no member has rolled.
+    initiative: Option<f64>,
+    /// Highest member tiebreak.
+    tiebreak: f64,
+    /// Position of the group's first member in the reconciled id list.
+    first_pos: usize,
 }

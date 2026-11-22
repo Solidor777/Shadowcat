@@ -164,7 +164,7 @@
   }
 </script>
 
-<div class="row" class:turn={isTurn} class:defeated={engine.defeated} class:compact aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
+<div class="row" class:turn={isTurn} class:defeated={engine.defeated} class:compact class:grouped={row.group !== null} style:--group-color={row.group?.color ?? undefined} title={row.group?.name} aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
   {#if can.edit}
     <button type="button" class="drag-handle" aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
   {/if}
@@ -243,6 +243,10 @@
     }
     .drag-handle {
       min-width: 44px;
+    }
+
+    &.grouped {
+      border-inline-end: 4px solid var(--group-color, var(--text));
     }
 
     &.turn {

@@ -51,6 +51,7 @@ fn combatant_actor_kind_needs_a_token_or_an_actor() {
         initiative: None,
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: Default::default(),
     };
     assert!(none.validate().is_err());
@@ -74,6 +75,7 @@ fn combatant_numbers_must_be_finite() {
         initiative: Some(f64::NAN),
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: Default::default(),
     };
     assert!(c.validate().is_err());
@@ -249,6 +251,7 @@ fn combat_history_validates_every_captured_band() {
         initiative,
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: Default::default(),
     };
     assert!(

@@ -161,7 +161,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const playerCombatantEngine: CombatantEngine = {
     kind: { type: "actor", token_id: playerTokenId, actor_id: null },
     initiative: 10,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: { movement: { current: 30 } },
   };
   const playerCombatantDoc = buildCombatantDoc(world, combatId, playerCombatantEngine, { owner: player, id: playerCombatantId });
@@ -169,7 +169,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const gmCombatantEngine: CombatantEngine = {
     kind: { type: "event", lifespan: null, message: null },
     initiative: 5,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   const gmCombatantDoc = buildCombatantDoc(world, combatId, gmCombatantEngine, { id: gmCombatantId, name: "lair" });
@@ -177,7 +177,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   const hiddenCombatantEngine: CombatantEngine = {
     kind: { type: "event", lifespan: null, message: null },
     initiative: 1,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   const hiddenCombatantDoc = buildCombatantDoc(world, combatId, hiddenCombatantEngine, { id: hiddenCombatantId, hidden: true, name: "secret" });

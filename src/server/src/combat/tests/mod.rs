@@ -77,6 +77,7 @@ pub(super) fn actor_combatant(
         initiative: None,
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: BTreeMap::from([(
             "movement".to_string(),
             CombatantResource { current: movement },
@@ -111,6 +112,7 @@ pub(super) fn event_combatant(
         initiative: Some(30.0),
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: BTreeMap::new(),
     };
     Combatant {
@@ -207,6 +209,7 @@ pub(super) fn snapshot(
         history: None,
         registry: Some(registry_with_movement(Formula::Number(30.0))),
         other_active: vec![],
+        groups: Vec::new(),
         chain: (None, None, None),
     }
 }

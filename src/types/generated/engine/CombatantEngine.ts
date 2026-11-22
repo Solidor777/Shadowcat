@@ -22,6 +22,7 @@ import type { CombatantResource } from "./CombatantResource";
  *     initiative: Some(14.0),
  *     tiebreak: 0.0,
  *     defeated: false,
+ *     group: None,
  *     resources: BTreeMap::new(),
  * };
  * assert_eq!(engine.initiative, Some(14.0));
@@ -50,4 +51,11 @@ resources: { [key in string]: CombatantResource },
  * its document, resources and effects stay alive so it can return.
  * Independent of the combatant's hidden state.
  */
-defeated: boolean, };
+defeated: boolean, 
+/**
+ * The `combatant-group` document (a child of the same combat) whose
+ * members share one initiative slot, or `None` for an ungrouped
+ * combatant. A reference to an absent group is not refused: it
+ * contributes nothing, like a dangling `token_id`.
+ */
+group: string | null, };

@@ -493,6 +493,7 @@ pub struct CombatantResource {
 ///     initiative: Some(14.0),
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: BTreeMap::new(),
 /// };
 /// assert_eq!(engine.initiative, Some(14.0));
@@ -515,6 +516,12 @@ pub struct CombatantEngine {
     /// Independent of the combatant's hidden state.
     #[serde(default)]
     pub defeated: bool,
+    /// The `combatant-group` document (a child of the same combat) whose
+    /// members share one initiative slot, or `None` for an ungrouped
+    /// combatant. A reference to an absent group is not refused: it
+    /// contributes nothing, like a dangling `token_id`.
+    #[serde(default)]
+    pub group: Option<Uuid>,
 }
 
 impl CombatantEngine {
@@ -539,6 +546,46 @@ impl CombatantEngine {
             if !r.current.is_finite() {
                 return Err(format!("resource {key} must be finite"));
             }
+        }
+        Ok(())
+    }
+}
+
+/// The engine body of a `combatant-group` document: a named set of combatants
+/// that share one initiative slot. Always a child (`parent_id`) of a `combat`;
+/// a member names the group through `CombatantEngine::group`. The group holds
+/// no member list and no initiative of its own: `transition::rebuild_order`
+/// derives the shared slot from the members.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::CombatantGroupEngine;
+///
+/// let group = CombatantGroupEngine {
+///     name: "Rat swarm".to_string(),
+///     color: Some("#3fb950".to_string()),
+/// };
+/// assert_eq!(group.name, "Rat swarm");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct CombatantGroupEngine {
+    /// Display name; non-empty.
+    pub name: String,
+    /// Accent color as css `#rrggbb`, or `None` for no accent.
+    pub color: Option<String>,
+}
+
+impl CombatantGroupEngine {
+    /// A non-empty name and, when present, a css `#rrggbb` color.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("group name must not be empty".into());
+        }
+        if let Some(color) = &self.color {
+            crate::data::engine::geometry::validate_hex_color(color)?;
         }
         Ok(())
     }
@@ -1028,6 +1075,7 @@ pub struct EffectSnapshot {
 ///         initiative: None,
 ///         tiebreak: 0.0,
 ///         defeated: false,
+///         group: None,
 ///         resources: BTreeMap::new(),
 ///     },
 ///     system: serde_json::json!({}),

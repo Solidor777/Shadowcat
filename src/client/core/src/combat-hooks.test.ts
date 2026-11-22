@@ -37,7 +37,7 @@ function actorCombatant(id: string, combatId = "combat-1"): WireDocument {
   const engine: CombatantEngine = {
     kind: { type: "actor", token_id: null, actor_id: null },
     initiative: 10,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   return buildCombatantDoc(WORLD, combatId, engine, { id });
@@ -53,7 +53,7 @@ function eventCombatant(id: string, lifespan: number | null, combatId = "combat-
   const engine: CombatantEngine = {
     kind: { type: "event", lifespan, message: null },
     initiative: 0,
-    tiebreak: 0, defeated: false,
+    tiebreak: 0, defeated: false, group: null,
     resources: {},
   };
   return buildCombatantDoc(WORLD, combatId, engine, { id, name: "event" });

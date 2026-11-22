@@ -91,7 +91,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player", selfId: "player-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "own-combatant", owner: "player-1" }) }],
@@ -110,7 +110,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player", selfId: "player-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "someone-elses-combatant", owner: "player-2" }) }],
@@ -129,7 +129,7 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
       props: { badge },
       context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "gm", selfId: "gm-1", notify }),
     });
-    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+    const combatantEngine: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     store.applyCommand({
       seq: 1, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildCombatantDoc("w1", "combat-1", combatantEngine, { id: "gm-owned", owner: "gm-1" }) }],
@@ -159,8 +159,8 @@ describe("CombatTrackerPanel reorder wiring", () => {
   function twoCombatantCombat(): { store: DocumentStore; combatId: string } {
     const store = new DocumentStore();
     const c = combatOn("scene-1", { id: "c1", active: true });
-    const engineA: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
-    const engineB: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
+    const engineA: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
+    const engineB: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} };
     const a = buildCombatantDoc("w1", "c1", engineA, { id: "a", name: "a" });
     const b = buildCombatantDoc("w1", "c1", engineB, { id: "b", name: "b" });
     (c.engine as { order: string[] }).order = ["a", "b"];
@@ -189,7 +189,7 @@ describe("CombatTrackerPanel reorder wiring", () => {
   it("a two-step pointer drag (from 0 to 2 of three rows) discriminates argument order — moveInOrder(order, 0, 2) differs from moveInOrder(order, 2, 0)", async () => {
     const store = new DocumentStore();
     const c = combatOn("scene-1", { id: "c1", active: true });
-    const mk = (id: string) => buildCombatantDoc("w1", "c1", { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} } as CombatantEngine, { id, name: id });
+    const mk = (id: string) => buildCombatantDoc("w1", "c1", { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, group: null, resources: {} } as CombatantEngine, { id, name: id });
     (c.engine as { order: string[] }).order = ["a", "b", "c"];
     store.applyCommand({ seq: 1, world_id: "w1", author: "x", ts: 0, ops: [{ op: "create", doc: c }, { op: "create", doc: mk("a") }, { op: "create", doc: mk("b") }, { op: "create", doc: mk("c") }] });
     const combat = fakeCombatApi(store, { role: "gm" });
