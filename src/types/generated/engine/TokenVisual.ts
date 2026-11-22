@@ -4,6 +4,7 @@ import type { GeneratedBackground } from "./GeneratedBackground";
 import type { GeneratedBorder } from "./GeneratedBorder";
 import type { GeneratedCrop } from "./GeneratedCrop";
 import type { RenderVisual } from "./RenderVisual";
+import type { TokenArtFilter } from "./TokenArtFilter";
 import type { VisualTransform } from "./VisualTransform";
 
 /**
@@ -80,4 +81,14 @@ border: GeneratedBorder | null,
 /**
  * Fill drawn behind the cropped art, or `None` for none.
  */
-background: GeneratedBackground | null, };
+background: GeneratedBackground | null, } | { "kind": "randomVariant", 
+/**
+ * Candidate pool, scoped to the token's world and to image assets at draw time.
+ */
+filter: TokenArtFilter, 
+/**
+ * Used verbatim when `filter` matches no asset, so a token is never left with no visual.
+ * `TokenVisual::validate` refuses a `RandomVariant` here: `Box<TokenVisual>` does not
+ * exclude the recursive case at the type level the way `Box<RenderVisual>` does.
+ */
+fallback: TokenVisual, };

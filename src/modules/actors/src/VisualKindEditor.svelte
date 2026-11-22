@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
-  import { type TokenVisual, type RenderVisual, type VisualTransform, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
+  import { getAppContext, TagChips } from "@shadowcat/ui-kit";
+  import { queryAssets, type TokenVisual, type RenderVisual, type VisualTransform, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
+  // The random-variant kind nests this same editor for its fallback visual (self-import).
+  import VisualKindEditor from "./VisualKindEditor.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -9,7 +11,11 @@
     conditionOptions,
     onBuild,
     initial,
+    allowRandomVariant = true,
   }: {
+    /** Whether the "Random variant" kind is offered. The nested fallback editor turns it off:
+     * a pool's fallback can never itself be a pool (`TokenVisual::validate` refuses it). */
+    allowRandomVariant?: boolean;
     /** `[id, Condition]` pairs from the world's condition registry, populating the face-map
      * editor's condition dropdown. */
     conditionOptions: [string, Condition][];
@@ -366,11 +372,49 @@
     return animSourceComplete(g.anim) && Number.isFinite(g.anim.fps) && g.anim.fps > 0;
   }
 
+  /** Editor-local state for the `"randomVariant"` kind: the pool's filter plus the nested
+   * fallback editor's latest built visual. */
+  type RandomVariantState = {
+    /** The `asset_folder` document id the pool is restricted to (its subtree), or `null` for the
+     * whole world. */
+    folder: string | null;
+    /** Tags every pool member must carry. */
+    tags: string[];
+  };
+  /**
+   * Fresh `RandomVariantState` (whole world, no tags). Every call returns a distinct object.
+   * @returns A new default `RandomVariantState`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * newRandomVariantState(); // { folder: null, tags: [] }
+   * ```
+   */
+  function newRandomVariantState(): RandomVariantState {
+    return { folder: null, tags: [] };
+  }
+
   // Every state below seeds from the `initial` prop ONCE at mount — the editor owns its state
   // afterward (a host switching edit targets remounts via `{#key}` instead), so capturing the
   // initial prop value is the intended semantics, per the prop's own doc.
   // svelte-ignore state_referenced_locally
-  let visualKind = $state<"image" | "faces" | "animated" | "generated">(initial?.kind ?? "image");
+  let visualKind = $state<"image" | "faces" | "animated" | "generated" | "randomVariant">(initial?.kind ?? "image");
+  // svelte-ignore state_referenced_locally
+  let rv = $state<RandomVariantState>(initial?.kind === "randomVariant" ? { folder: initial.filter.folder ?? null, tags: [...initial.filter.tags] } : newRandomVariantState());
+  /** The nested fallback editor's latest built visual (`null` while incomplete). `$state.raw`:
+   * the value is a finished object this editor never mutates, and deep-proxying it would leak a
+   * reactive Proxy into the built document (see `animSourceToSource`). */
+  let rvFallback = $state.raw<TokenVisual | null>(null);
+  /** The fallback editor's seed, read once at mount from a `"randomVariant"` `initial`. */
+  // svelte-ignore state_referenced_locally
+  const rvFallbackInitial = initial?.kind === "randomVariant" ? initial.fallback : undefined;
+  /** The deterministic preview of the pool: the first image the filter matches (the same asset
+   * `queryAssets` lists first, never a live random pick), `null` while none matches or loading. */
+  let rvPreviewAsset = $state<string | null>(null);
+  /** Monotonic marker: a slower earlier preview query must not overwrite a newer one. */
+  let rvPreviewGeneration = 0;
+  /** The `asset_folder` documents offered by the pool's folder select, in document order. */
+  const folderDocs = $derived(ctx.documents.query("asset_folder"));
   // svelte-ignore state_referenced_locally
   let topAnim = $state<AnimSourceState>(initial?.kind === "animated" ? animSourceStateFrom(initial.source, initial.fps, initial.loop) : newAnimSourceState());
   // svelte-ignore state_referenced_locally
@@ -451,6 +495,10 @@
         background: gen.backgroundOn ? { color: gen.backgroundColor } : null,
       };
     }
+    if (visualKind === "randomVariant") {
+      if (!rvFallback) return null;
+      return { kind: "randomVariant", filter: { ...(rv.folder ? { folder: rv.folder } : {}), tags: [...rv.tags] }, fallback: rvFallback };
+    }
     if (faceRows.length === 0 || !defaultFace || faceRows.some((f) => !f.name)) return null;
     const names = faceRows.map((f) => f.name);
     const uniqueNames = new Set(names);
@@ -487,6 +535,9 @@
     faceMapRows = [];
     assetId = null;
     gen = newGeneratedState();
+    rv = newRandomVariantState();
+    rvFallback = null;
+    rvPreviewAsset = null;
   }
 
   /**
@@ -510,6 +561,22 @@
   $effect(() => {
     onBuild(buildVisual());
   });
+
+  // The pool's live preview: re-queries on every filter change while the kind is selected and
+  // shows the first match. The query reads `rv` synchronously (the effect's dependencies) before
+  // awaiting; `rvPreviewGeneration` drops a stale response.
+  $effect(() => {
+    if (visualKind !== "randomVariant") return;
+    const query = { folder: rv.folder ?? undefined, recursive: rv.folder ? true : undefined, tags: rv.tags.length > 0 ? [...rv.tags] : undefined, kind: "image" as const, sort: "created" as const, limit: 1 };
+    const generation = ++rvPreviewGeneration;
+    void queryAssets(ctx.world, query)
+      .then((page) => {
+        if (generation === rvPreviewGeneration) rvPreviewAsset = page.items[0]?.id ?? null;
+      })
+      .catch(() => {
+        if (generation === rvPreviewGeneration) rvPreviewAsset = null;
+      });
+  });
 </script>
 
 <label>{t("actors.visualKind")}
@@ -518,6 +585,9 @@
     <option value="faces">{t("actors.visualKindFaces")}</option>
     <option value="animated">{t("actors.visualKindAnimated")}</option>
     <option value="generated">{t("actors.visualKindGenerated")}</option>
+    {#if allowRandomVariant}
+      <option value="randomVariant">{t("actors.visualKindRandomVariant")}</option>
+    {/if}
   </select>
 </label>
 
@@ -647,6 +717,43 @@
         <input type="color" aria-label={t("actors.genBackgroundColor")} value={gen.backgroundColor} onchange={(e) => (gen.backgroundColor = e.currentTarget.value)} oninput={(e) => (gen.backgroundColor = e.currentTarget.value)} />
       </label>
     {/if}
+  </div>
+{:else if visualKind === "randomVariant"}
+  <div class="random-variant-editor">
+    <p class="hint">{t("actors.randomVariantHint")}</p>
+    <label>{t("actors.randomVariantFolder")}
+      <select
+        data-testid="random-variant-folder"
+        aria-label={t("actors.randomVariantFolder")}
+        value={rv.folder ?? ""}
+        onchange={(e) => (rv.folder = e.currentTarget.value === "" ? null : e.currentTarget.value)}
+      >
+        <option value="">{t("actors.randomVariantAnyFolder")}</option>
+        {#each folderDocs as f (f.id)}<option value={f.id}>{f.name ?? f.id}</option>{/each}
+      </select>
+    </label>
+    <div class="pool-tags">
+      <span>{t("actors.randomVariantTags")}</span>
+      <TagChips
+        tags={rv.tags}
+        onChange={(next) => (rv.tags = next)}
+        placeholder={t("actors.randomVariantTagPlaceholder")}
+        removeLabel={(tag) => t("actors.randomVariantRemoveTag", { tag })}
+        testIdPrefix="random-variant-tag"
+      />
+    </div>
+    <div class="preview">
+      <span>{t("actors.randomVariantPreview")}</span>
+      {#if rvPreviewAsset}
+        <img data-testid="random-variant-preview" class="current" src={ctx.assets.url(rvPreviewAsset)} alt="" />
+      {:else if rvFallback?.kind === "image"}
+        <img data-testid="random-variant-preview-fallback" class="current" src={ctx.assets.url(rvFallback.asset)} alt="" />
+      {/if}
+    </div>
+    <fieldset class="fallback">
+      <legend>{t("actors.randomVariantFallback")}</legend>
+      <VisualKindEditor {conditionOptions} initial={rvFallbackInitial} allowRandomVariant={false} onBuild={(v) => (rvFallback = v)} />
+    </fieldset>
   </div>
 {:else}
   <div class="faces-editor">

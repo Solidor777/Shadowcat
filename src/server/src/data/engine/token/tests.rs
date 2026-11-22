@@ -272,3 +272,47 @@ fn emission_serde_names_match_the_client_contract() {
     .unwrap();
     assert_eq!(v.get("anchor").unwrap(), "above");
 }
+
+fn pool_with(fallback: TokenVisual) -> TokenVisual {
+    TokenVisual::RandomVariant {
+        filter: TokenArtFilter::default(),
+        fallback: Box::new(fallback),
+    }
+}
+
+fn plain_image() -> TokenVisual {
+    TokenVisual::Image {
+        asset: Uuid::nil().to_string(),
+        transform: None,
+    }
+}
+
+#[test]
+fn a_random_variant_with_a_concrete_fallback_validates() {
+    assert!(pool_with(plain_image()).validate().is_ok());
+}
+
+#[test]
+fn a_random_variant_whose_fallback_is_a_pool_is_rejected() {
+    let nested = pool_with(pool_with(plain_image()));
+    assert!(nested.validate().is_err());
+}
+
+#[test]
+fn a_random_variant_validates_its_fallback() {
+    let bad = pool_with(TokenVisual::Image {
+        asset: "not-a-uuid".to_string(),
+        transform: None,
+    });
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn a_random_variant_wire_shape_is_camel_case_tagged() {
+    let json = serde_json::to_value(pool_with(plain_image())).unwrap();
+    assert_eq!(json["kind"], "randomVariant");
+    assert_eq!(json["filter"]["tags"], serde_json::json!([]));
+    assert_eq!(json["fallback"]["kind"], "image");
+    let back: TokenVisual = serde_json::from_value(json).unwrap();
+    assert_eq!(back, pool_with(plain_image()));
+}

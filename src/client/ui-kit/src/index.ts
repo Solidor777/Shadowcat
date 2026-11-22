@@ -47,6 +47,7 @@ export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
 export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
+export { default as TagChips } from "./TagChips.svelte";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
