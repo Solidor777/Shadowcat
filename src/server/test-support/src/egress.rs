@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
@@ -636,11 +636,70 @@ pub async fn send_scripted(
     client.sender.send_request(req, !open_request).unwrap()
 }
 
+/// The instants at which a stream of events a control relies on (PINGs sent, PING
+/// acknowledgements received) happened.
+///
+/// A control that floods PINGs asserts the flood was live across the whole interval in which the
+/// cut could have been postponed, not that it reached a count: how many PINGs a 10 ms loop sends in
+/// a window depends on how late the scheduler runs its timer, and the count falls with machine
+/// load while the property the control needs does not. A cut is postponed by an acknowledgement
+/// only if the next one arrives before the window ends, so what the control needs is that no gap
+/// between events, from the start of the interval to its end, comes near the window.
+#[derive(Debug, Default)]
+pub struct EventTimes(Mutex<Vec<Instant>>);
+
+impl EventTimes {
+    /// Records an event now.
+    pub fn note(&self) {
+        self.note_at(Instant::now());
+    }
+
+    /// Records an event at `at`.
+    pub fn note_at(&self, at: Instant) {
+        self.0.lock().unwrap().push(at);
+    }
+
+    /// How many events were recorded.
+    pub fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// The widest gap between consecutive events inside `from..=to`, counting the stretch from
+    /// `from` to the first event and from the last event to `to`. With no event inside the
+    /// interval the gap is the whole interval.
+    pub fn widest_gap(&self, from: Instant, to: Instant) -> Duration {
+        let times = self.0.lock().unwrap();
+        let mut previous = from;
+        let mut widest = Duration::ZERO;
+        for &at in times.iter().filter(|&&at| at >= from && at <= to) {
+            widest = widest.max(at.duration_since(previous));
+            previous = at;
+        }
+        widest.max(to.saturating_duration_since(previous))
+    }
+
+    /// Asserts no gap between events inside `from..=to` reaches `bound`.
+    ///
+    /// # Panics
+    ///
+    /// Panics, naming `what` and the events recorded, when a gap reaches `bound`.
+    pub fn assert_no_gap_reaches(&self, from: Instant, to: Instant, bound: Duration, what: &str) {
+        let widest = self.widest_gap(from, to);
+        assert!(
+            widest < bound,
+            "{what}: {} ms without an event inside a {} ms interval ({} events in all), too long for the control to mean anything",
+            widest.as_millis(),
+            to.saturating_duration_since(from).as_millis(),
+            self.count()
+        );
+    }
+}
+
 /// What a raw HTTP/2 peer's reader has seen of the server's output.
 #[derive(Debug, Default)]
 pub struct RawSeen {
-    /// PING acknowledgements received.
-    pub pongs: std::sync::atomic::AtomicU64,
+    /// The instants of the PING acknowledgements received.
+    pub pongs: EventTimes,
     /// DATA payload bytes received.
     pub data: std::sync::atomic::AtomicU64,
     /// Set when the server closed the connection.
@@ -685,7 +744,7 @@ impl RawPeer {
                 }
                 let mut left = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
                 if head[3] == 0x6 && head[4] & 1 == 1 {
-                    counts.pongs.fetch_add(1, Ordering::SeqCst);
+                    counts.pongs.note();
                 }
                 if head[3] == 0x0 {
                     counts.data.fetch_add(left as u64, Ordering::SeqCst);
@@ -705,26 +764,20 @@ impl RawPeer {
     }
 
     /// Sends a PING about every `every` until the connection fails, returning the task and the
-    /// count of PINGs sent.
+    /// instants at which PINGs were sent.
     pub fn flood_pings(
         mut self,
         every: Duration,
-    ) -> (
-        JoinHandle<()>,
-        Arc<std::sync::atomic::AtomicU64>,
-        Arc<RawSeen>,
-    ) {
-        use std::sync::atomic::Ordering;
-
+    ) -> (JoinHandle<()>, Arc<EventTimes>, Arc<RawSeen>) {
         use tokio::io::AsyncWriteExt;
 
-        let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let counter = sent.clone();
+        let sent = Arc::new(EventTimes::default());
+        let times = sent.clone();
         let seen = self.seen.clone();
         let task = tokio::spawn(async move {
             let ping = ping_frame();
             while self.write.write_all(&ping).await.is_ok() {
-                counter.fetch_add(1, Ordering::SeqCst);
+                times.note();
                 tokio::time::sleep(every).await;
             }
         });
