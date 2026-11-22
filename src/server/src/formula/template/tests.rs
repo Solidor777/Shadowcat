@@ -128,6 +128,19 @@ fn an_identifier_before_the_dice_operator_substitutes_as_a_bare_count() {
 }
 
 #[test]
+fn an_integer_count_carries_across_blanks_to_the_dice_operator() {
+    assert_eq!(
+        resolve_notation_template("3 d6 + 2\t d8", &constant(Ok(0.0))),
+        Ok("3 d6 + 2\t d8".to_string())
+    );
+    // A non-blank claim between the integer and the operator ends the carry.
+    assert_eq!(
+        resolve_notation_template("3 + d6", &constant(Ok(0.0))),
+        Ok("3 + 1d6".to_string())
+    );
+}
+
+#[test]
 fn an_identifier_not_before_the_dice_operator_stays_labeled() {
     // A modifier keyword that merely starts with `d` is not the operator.
     assert_eq!(

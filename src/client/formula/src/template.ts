@@ -545,23 +545,19 @@ export function resolveNotationTemplate(
   let out = "";
   let i = 0;
   // The scan's only carried state: whether the immediately preceding claim was an integer run.
-  let prevWasInt = false;
-  // Whether a bare-count identifier still waits for its dice operator across the spaces and
-  // tabs the dice lexer skips.
-  let barePending = false;
+  let countPrecedes = false;
 
   while (i < src.length) {
     const claim = claimAt(src, i);
     if (!("kind" in claim)) return claim;
     const bareCount =
       claim.kind === "identifier" && diceOperatorFollows(src, i + claim.text.length);
-    const emitted = emitClaim(claim, prevWasInt || barePending, bareCount, resolve);
+    const emitted = emitClaim(claim, countPrecedes, bareCount, resolve);
     if (typeof emitted !== "string") return emitted;
     out += emitted;
     i += claim.text.length;
-    prevWasInt = claim.kind === "integer";
     const isBlank = claim.kind === "literal" && (claim.text === " " || claim.text === "\t");
-    barePending = bareCount || (barePending && isBlank);
+    countPrecedes = claim.kind === "integer" || bareCount || (countPrecedes && isBlank);
   }
 
   return { notation: out };

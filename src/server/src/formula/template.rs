@@ -448,11 +448,10 @@ pub fn resolve_notation_template(src: &str, resolve: &dyn Resolve) -> Result<Str
     };
     let mut out = String::with_capacity(src.len());
     let mut i = 0usize;
-    // The scan's carried state: whether the immediately preceding claim was an
-    // integer run, and whether a bare-count identifier still waits for its dice
-    // operator across the spaces and tabs the dice lexer skips.
-    let mut prev_was_int = false;
-    let mut bare_pending = false;
+    // The scan's carried state: whether an integer run or a bare-count
+    // identifier is still waiting for its dice operator, across the spaces and
+    // tabs the dice lexer skips.
+    let mut count_precedes = false;
     while i < chars.len() {
         let claim = claim_at(&chars, i)?;
         let bare_count =
@@ -460,16 +459,16 @@ pub fn resolve_notation_template(src: &str, resolve: &dyn Resolve) -> Result<Str
         emit_claim(
             &chars,
             &claim,
-            prev_was_int || bare_pending,
+            count_precedes,
             bare_count,
             resolve,
             &mut out,
         )?;
         i = claim.end;
-        prev_was_int = claim.kind == ClaimKind::Integer;
         let is_blank =
             claim.kind == ClaimKind::Literal && matches!(chars[claim.start].0, ' ' | '\t');
-        bare_pending = bare_count || (bare_pending && is_blank);
+        count_precedes =
+            claim.kind == ClaimKind::Integer || bare_count || (count_precedes && is_blank);
     }
     Ok(out)
 }

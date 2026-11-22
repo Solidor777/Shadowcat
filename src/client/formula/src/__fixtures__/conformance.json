@@ -560,6 +560,13 @@
       }
     },
     {
+      "name": "integer count carries across spaces and tabs to the dice operator",
+      "src": "3 \t d6 + 2 d8",
+      "expect": {
+        "notation": "3 \t d6 + 2 d8"
+      }
+    },
+    {
       "name": "identifier before a modifier that starts with d stays labeled",
       "src": "str dl",
       "bindings": {
