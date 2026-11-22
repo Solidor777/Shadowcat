@@ -313,7 +313,7 @@ test("draw_table: a DrawRule::Formula table matches the row whose range contains
 
   expect(seg).toBeDefined();
   expect(seg?.row).not.toBeNull();
-  const total = seg?.outcome.total ?? null;
+  const total = seg?.outcome?.total ?? null;
   expect(total).not.toBeNull();
   const ranges = [
     { lo: 2, hi: 6 },

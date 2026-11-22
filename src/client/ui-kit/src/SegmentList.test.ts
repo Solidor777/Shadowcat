@@ -530,3 +530,38 @@ describe("SegmentList — secret", () => {
     expect(container.querySelector("[data-testid=secret-segment]")).toBeNull();
   });
 });
+
+describe("SegmentList — blind rolls the server withheld", () => {
+  it("draws a roll_embed with no outcome as a 'rolled blind' card, with no tooltip and no digits", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "text", text: "Perception: " }, { kind: "roll_embed", roll_id: "r1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")?.textContent).toBe("chat.blind.rolled");
+    expect(container.querySelector(".roll-chip, [role=tooltip]")).toBeNull();
+    expect(container.textContent).not.toMatch(/\d/);
+  });
+
+  it("draws a table_draw with no outcome as the same card and no row", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "d1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")).not.toBeNull();
+    expect(container.querySelector(".table-draw-no-row")).toBeNull();
+    expect(container.querySelector(".table-draw-row-label")).toBeNull();
+  });
+
+  it("draws no blind card for a roll that carries its outcome", () => {
+    const outcome = {
+      total: 7, records: [], successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
+      crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0, symbol_counts: {}, labeled_consts: [],
+    } satisfies RollOutcome;
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "roll_embed", formula: "1d8", outcome, roll_id: "r1" }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=blind-roll-card]")).toBeNull();
+    expect(container.textContent).toContain("7");
+  });
+});

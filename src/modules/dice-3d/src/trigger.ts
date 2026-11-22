@@ -63,13 +63,16 @@ function rollsIn(doc: WireDocument): RollPlay[] {
   const engine = parseMessageEngine(doc);
   if (!engine) return [];
   const out: RollPlay[] = [];
+  // A roll with no outcome is a blind roll the server withheld from this reader: there is
+  // nothing to tumble, and it is not marked seen, so it plays if the outcome later arrives.
   const visitDraw = (draw: TableDrawSegment): void => {
+    if (draw.outcome === undefined) return;
     out.push({ rollId: draw.roll_id, recalcCount: 0, outcome: draw.outcome });
     for (const nested of draw.row?.nested ?? []) visitDraw(nested);
   };
   for (const seg of engine.content) {
     if (!isKnownSegment(seg)) continue;
-    if (seg.kind === "roll_embed" && seg.roll_id) {
+    if (seg.kind === "roll_embed" && seg.roll_id && seg.outcome !== undefined) {
       out.push({ rollId: seg.roll_id, recalcCount: seg.recalc_history?.length ?? 0, outcome: seg.outcome });
     } else if (seg.kind === "table_draw") {
       visitDraw(seg);

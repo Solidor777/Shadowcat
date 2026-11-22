@@ -100,6 +100,12 @@ export type WireAudience =
       /** Only whoever currently holds the GM role (plus the sender) may read — resolved
        * dynamically, not a frozen roster at send time. */
       kind: "gm_only";
+    }
+  | {
+      /** Every member holds the message, but each roll in it carries its formula and result
+       * only for the GM; any other reader (the roller included) gets the roll with both
+       * keys absent. */
+      kind: "blind";
     };
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -107,6 +113,7 @@ export const audienceSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public") }),
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
+  z.object({ kind: z.literal("blind") }),
 ]);
 /** Validator for a `WireAudience`. */
 export const AudienceSchema: z.ZodType<WireAudience> = audienceSchemaImpl;

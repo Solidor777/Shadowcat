@@ -106,6 +106,38 @@ impl ChatContentPolicy {
         self.emails.unwrap_or(false)
     }
 
+    /// Players other than the roller see that a blind roll happened (absent = false,
+    /// fail-closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// assert!(!ChatContentPolicy::default().blind_visible_to_players());
+    /// let policy = ChatContentPolicy { blind_visible_to_players: Some(true), ..Default::default() };
+    /// assert!(policy.blind_visible_to_players());
+    /// ```
+    pub fn blind_visible_to_players(&self) -> bool {
+        self.blind_visible_to_players.unwrap_or(false)
+    }
+
+    /// The owner of the actor a GM's blind roll is attributed to sees that it happened
+    /// (absent = false, fail-closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// assert!(!ChatContentPolicy::default().blind_visible_to_actor_owner());
+    /// let policy = ChatContentPolicy { blind_visible_to_actor_owner: Some(true), ..Default::default() };
+    /// assert!(policy.blind_visible_to_actor_owner());
+    /// ```
+    pub fn blind_visible_to_actor_owner(&self) -> bool {
+        self.blind_visible_to_actor_owner.unwrap_or(false)
+    }
+
     /// Resolved link-preview enablement: previews require
     /// `hyperlinks` to be on (a preview with no rendered link is
     /// meaningless), and within that, `link_previews` defaults ON when
@@ -171,6 +203,8 @@ pub const NOTE_CONTENT_POLICY: ChatContentPolicy = ChatSettingsEngine {
     hyperlinks: Some(true),
     emails: Some(false),
     link_previews: Some(false),
+    blind_visible_to_players: None,
+    blind_visible_to_actor_owner: None,
 };
 
 /// Doc_type for the single per-world dice-settings config `Document`.

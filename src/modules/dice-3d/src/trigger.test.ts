@@ -93,6 +93,27 @@ describe("seedFromSnapshot + scanForPlays", () => {
     expect(plays[0].recalcCount).toBe(1);
   });
 
+  it("a blind roll withheld from this reader never plays, and plays once the outcome arrives", () => {
+    const blindDoc = (content: unknown[], audience: unknown): WireDocument => {
+      const doc = messageDoc("m1", content);
+      return { ...doc, engine: { ...(doc.engine as object), audience } };
+    };
+    const store = storeWith();
+    const state = createTriggerState();
+    seedFromSnapshot(state, store);
+    store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [
+      { op: "create", doc: blindDoc([
+        { kind: "roll_embed", roll_id: "r1" },
+        { kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "d1" },
+      ], { kind: "blind" }) },
+    ] });
+    expect(scanForPlays(state, store)).toEqual([]);
+    store.applyCommand({ seq: 3, world_id: "w1", author: "a", ts: 0, ops: [
+      { op: "create", doc: { ...rollEmbedDoc("m2", "r2", 0) } },
+    ] });
+    expect(scanForPlays(state, store).map((p) => p.rollId)).toEqual(["r2"]);
+  });
+
   it("a non-message, non-roll document contributes nothing", () => {
     const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }));
     const state = createTriggerState();

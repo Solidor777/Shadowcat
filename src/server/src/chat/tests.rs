@@ -185,7 +185,7 @@ fn roll_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_onl
         },
     ];
 
-    let overrides = roll_property_overrides(&content);
+    let overrides = roll_property_overrides(&content, &Audience::Public);
     assert_eq!(
         overrides.get("/engine/content/1/spec"),
         Some(&Visibility::GmOnly)
@@ -209,7 +209,7 @@ fn roll_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_onl
 #[test]
 fn roll_property_overrides_is_empty_for_non_roll_content() {
     let content = vec![Segment::Text { text: "hi".into() }];
-    assert!(roll_property_overrides(&content).is_empty());
+    assert!(roll_property_overrides(&content, &Audience::Public).is_empty());
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn roll_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
         recalc_history: None,
         flavor: None,
     }];
-    assert!(roll_property_overrides(&content).is_empty());
+    assert!(roll_property_overrides(&content, &Audience::Public).is_empty());
 }
 
 /// Builds a minimal `RollOutcome`/`RollSpec`/`RawRoll` triple for a fixed
@@ -306,7 +306,7 @@ fn table_draw_spec_and_raw_are_gm_only_at_every_depth() {
     let top = fixture_table_draw(12, crate::test_ids::test_uuid(3), vec![inner_a, inner_b]);
     let content = vec![Segment::TableDraw(top)];
 
-    let overrides = roll_property_overrides(&content);
+    let overrides = roll_property_overrides(&content, &Audience::Public);
     assert_eq!(
         overrides.len(),
         6,
@@ -333,7 +333,7 @@ fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() 
     let inner_b = fixture_table_draw(21, crate::test_ids::test_uuid(12), vec![]);
     let top = fixture_table_draw(22, crate::test_ids::test_uuid(13), vec![inner_a, inner_b]);
     let content = vec![Segment::TableDraw(top)];
-    let overrides = roll_property_overrides(&content);
+    let overrides = roll_property_overrides(&content, &Audience::Public);
     assert_eq!(overrides.len(), 6);
 
     let permissions = PermissionSet {

@@ -40,4 +40,16 @@ emails: boolean | null,
  * `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
  * an explicit GM override.
  */
-link_previews: boolean | null, };
+link_previews: boolean | null, 
+/**
+ * Whether players who are not party to a blind roll still see that it happened (a card
+ * saying a blind roll was made, never its formula or result). Absent means `false`: the
+ * message is invisible to every player except its roller; the GM always sees it.
+ */
+blind_visible_to_players: boolean | null, 
+/**
+ * Whether the owner of the actor a GM's blind roll is attributed to sees that the roll
+ * happened. Absent means `false`. Independent of `blind_visible_to_players`: either one
+ * being on admits the actor's owner.
+ */
+blind_visible_to_actor_owner: boolean | null, };
