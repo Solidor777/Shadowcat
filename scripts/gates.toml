@@ -547,3 +547,59 @@ job = "e2e-long-audio-playthrough-h2"
 command = "pnpm --filter @shadowcat/shell exec playwright test --project=long-audio-playthrough-https-chromium"
 tier = "ci-only"
 reason = "The full 20-minute real-time play-through of one track over HTTPS (h2): twenty minutes of wall clock by construction, against a server of its own with a short egress window on a fixed port, so it stays in CI outside the local tiers, in its own job so it runs in parallel with the h1 play-through."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "pnpm install --frozen-lockfile"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps webkit"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "pnpm --filter @shadowcat/shell e2e:build"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "cat > /tmp/probe.mjs <<'EOF' import { createRequire } from \"node:module\"; import os from \"node:os\"; const require = createRequire(`${process.cwd()}/package.json`); const { webkit } = require(\"@playwright/test\"); const ip = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === \"IPv4\" && !i.internal)?.address; const url = `https://${ip}:32001/`; async function once(browser) { const context = await browser.newContext({ ignoreHTTPSErrors: false }); const page = await context.newPage(); const events = []; const t0 = Date.now(); const stamp = (s) => events.push(`${Date.now() - t0}ms ${s}`); page.on(\"framenavigated\", (f) => stamp(`framenavigated ${f.url()}`)); page.on(\"framedetached\", (f) => stamp(`framedetached ${f.url()}`)); page.on(\"requestfailed\", (r) => stamp(`requestfailed ${r.url()} ${r.failure()?.errorText}`)); page.on(\"response\", (r) => stamp(`response ${r.status()} ${r.url()}`)); page.on(\"close\", () => stamp(\"page close\")); page.on(\"crash\", () => stamp(\"page crash\")); page.on(\"console\", (m) => stamp(`console ${m.text()}`)); let message = \"\"; try { await page.goto(url); } catch (e) { message = String(e); } const first = message.split(String.fromCharCode(10))[0]; stamp(`goto settled: ${first || \"(no error)\"}`); await context.close(); return { first, events }; } function report(label, results) { const tally = new Map(); for (const r of results) { const k = r.first || \"(no error)\"; const e = tally.get(k) ?? { n: 0, sample: r }; e.n += 1; tally.set(k, e); } console.log(`PROBE ${label}: ${results.length} runs, ${tally.size} distinct wording(s)`); for (const [k, v] of tally) { console.log(`PROBE ${label} x${v.n}: ${k}`); for (const ev of v.sample.events) console.log(`PROBE ${label} ${ev}`); } } const shared = await webkit.launch(); const sharedResults = []; for (let i = 0; i < 150; i++) sharedResults.push(await once(shared)); await shared.close(); report(\"shared-browser\", sharedResults); const coldResults = []; for (let i = 0; i < 40; i++) { const b = await webkit.launch(); coldResults.push(await once(b)); await b.close(); } report(\"cold-browser\", coldResults); EOF export SHADOWCAT_ADMIN_USER=ops SHADOWCAT_ADMIN_PASSWORD=pw-boot SHADOWCAT_SETUP_TOKEN=off SHADOWCAT_DB=sqlite::memory: SHADOWCAT_LOG=warn SHADOWCAT_BIND=0.0.0.0:32001 ./target/debug/shadowcat > /tmp/probe-server.log 2>&1 & for i in $(seq 1 60); do curl -sf \"http://127.0.0.1:32001/health\" && break; sleep 1; done cd src/client/shell node /tmp/probe.mjs pkill -f target/debug/shadowcat || true"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/pw-isolated.json pnpm --filter @shadowcat/shell exec playwright test --project=https-webkit --grep \"refuses the self-signed\" --repeat-each=120 --reporter=json"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "for i in 1 2 3 4 5 6; do PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/pw-full-$i.json pnpm --filter @shadowcat/shell exec playwright test --project=https-webkit --grep-invert \"Continue to site\" --reporter=json || true done"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
+
+[[gate]]
+workflow = "probe-webkit-trust.yml"
+job = "probe"
+command = "cat > /tmp/sum.mjs <<'EOF' import fs from \"node:fs\"; for (const file of process.argv.slice(2)) { if (!fs.existsSync(file)) { console.log(`PROBE-PW ${file}: missing`); continue; } const report = JSON.parse(fs.readFileSync(file, \"utf8\")); const tally = new Map(); const walk = (suite) => { for (const spec of suite.specs ?? []) { if (!spec.file.includes(\"https-trust\")) continue; for (const t of spec.tests) for (const r of t.results) { const ann = (t.annotations ?? []).find((a) => a.type === \"untrusted-cert-error\"); const k = `${r.status} | ${ann?.description ?? \"\"}`; tally.set(k, (tally.get(k) ?? 0) + 1); } } for (const s of suite.suites ?? []) walk(s); }; for (const s of report.suites ?? []) walk(s); console.log(`PROBE-PW ${file}: ${[...tally].map(([k, n]) => `x${n} ${k}`).join(\" ;; \")}`); } EOF node /tmp/sum.mjs /tmp/pw-isolated.json /tmp/pw-full-1.json /tmp/pw-full-2.json /tmp/pw-full-3.json /tmp/pw-full-4.json /tmp/pw-full-5.json /tmp/pw-full-6.json"
+tier = "ci-only"
+reason = "Temporary measurement probe; runs only on its CI branch."
