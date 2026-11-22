@@ -734,6 +734,21 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
   }
 });
 
+describe("parseServerMsg — paused refusals", () => {
+  it("carries the paused reason on reject, move_error and combat_error frames", () => {
+    const frames = [
+      { type: "reject", intent_id: "i", reason: "paused", detail: null },
+      { type: "move_error", request_id: "r", message: "x", reason: "paused" },
+      { type: "combat_error", request_id: "r", message: "x", reason: "paused" },
+    ];
+    for (const frame of frames) {
+      const m = parseServerMsg(JSON.stringify(frame));
+      expect(m?.type).toBe(frame.type);
+      expect(m && "reason" in m ? m.reason : undefined).toBe("paused");
+    }
+  });
+});
+
 describe("parseServerMsg — merge frames with realistic payloads", () => {
   // A full `MergeConflict` entry: camelCase `parentKind`, `base` ABSENT (not null) —
   // the snapshot never held a value at the conflict path.

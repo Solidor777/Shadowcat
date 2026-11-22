@@ -539,3 +539,128 @@ async fn a_playlist_from_another_world_is_refused_as_unknown() {
     ));
     assert!(audio_state(&repo, world).await.playing.is_empty());
 }
+
+/// Starts a one-track playlist, then has the GM write `/engine/session` from `old` to `new`.
+async fn play_then_set_session(old: serde_json::Value, new: serde_json::Value) -> SessionAudio {
+    let (repo, world, ctx) = repo_with_world().await;
+    let room = seeded_room(&repo, world, &ctx).await;
+    let playlist = playlist_doc(world);
+    let playlist_id = playlist.id;
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Create { doc: playlist }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let op = AudioOp::Play {
+        playlist: Some(playlist_id),
+        asset: None,
+        track_index: None,
+        channel: None,
+        gain: None,
+        loop_: None,
+    };
+    handle_transport(&repo, &ctx, &room, op, 1_000)
+        .await
+        .unwrap();
+    let settings = repo
+        .query_documents(world, WORLD_SETTINGS_DOC_TYPE)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("the seed pass created the world-settings singleton");
+    room.publish(
+        &repo,
+        &ctx,
+        vec![Operation::Update {
+            doc_id: settings.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/engine/session".into(),
+                old,
+                new,
+            }],
+        }],
+        2_000,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    SessionAudio {
+        repo,
+        world,
+        room,
+        ctx,
+        settings: settings.id,
+    }
+}
+
+/// What `play_then_set_session` leaves behind for a follow-up write and read.
+struct SessionAudio {
+    /// The repository holding the world.
+    repo: SqliteRepository,
+    /// The world id.
+    world: Uuid,
+    /// The world's open room.
+    room: std::sync::Arc<Room>,
+    /// The GM context that wrote every document.
+    ctx: PermissionContext,
+    /// The world-settings document id.
+    settings: Uuid,
+}
+
+#[tokio::test]
+async fn a_session_pause_with_the_audio_switch_on_pauses_every_track() {
+    let s = play_then_set_session(
+        serde_json::json!(null),
+        serde_json::json!({ "paused": true, "pauseAudio": true }),
+    )
+    .await;
+    let state = audio_state(&s.repo, s.world).await;
+    assert_eq!(state.playing.len(), 1);
+    assert_eq!(state.playing[0].paused_at, Some(2_000.0));
+}
+
+#[tokio::test]
+async fn resuming_the_session_resumes_the_tracks_it_paused() {
+    let paused = serde_json::json!({ "paused": true, "pauseAudio": true });
+    let s = play_then_set_session(serde_json::json!(null), paused.clone()).await;
+    let started = audio_state(&s.repo, s.world).await.playing[0].started_at;
+    s.room
+        .publish(
+            &s.repo,
+            &s.ctx,
+            vec![Operation::Update {
+                doc_id: s.settings,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/session".into(),
+                    old: paused,
+                    new: serde_json::json!({ "paused": false, "pauseAudio": true }),
+                }],
+            }],
+            5_000,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let track = audio_state(&s.repo, s.world).await.playing.remove(0);
+    assert_eq!(track.paused_at, None);
+    assert_eq!(track.started_at, started + 3_000.0);
+}
+
+#[tokio::test]
+async fn a_session_pause_leaves_audio_playing_by_default() {
+    let s = play_then_set_session(
+        serde_json::json!(null),
+        serde_json::json!({ "paused": true }),
+    )
+    .await;
+    let state = audio_state(&s.repo, s.world).await;
+    assert_eq!(state.playing.len(), 1);
+    assert_eq!(state.playing[0].paused_at, None);
+}

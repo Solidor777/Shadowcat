@@ -18,6 +18,7 @@ pub(crate) mod move_clip;
 pub mod protocol;
 pub mod room;
 pub(crate) mod ruler;
+pub(crate) mod session_pause;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;

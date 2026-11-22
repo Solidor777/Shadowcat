@@ -1225,8 +1225,32 @@ fn engine_literal_defaults_match_client_default() {
             "activeScene": null,
             "combat": null,
             "audio": null,
+            "session": null,
         })
     );
+}
+
+#[test]
+fn the_session_state_defaults_to_running_and_bounds_its_message() {
+    let running = SessionState::default();
+    assert!(!running.paused && !running.pause_audio && running.message.is_none());
+    assert!(running.validate().is_ok());
+
+    let at_limit = SessionState {
+        message: Some("x".repeat(MAX_SESSION_MESSAGE_CHARS)),
+        ..Default::default()
+    };
+    assert!(at_limit.validate().is_ok());
+    for bad in [
+        "x".repeat(MAX_SESSION_MESSAGE_CHARS + 1),
+        "a\u{7}b".to_string(),
+    ] {
+        let s = SessionState {
+            message: Some(bad),
+            ..Default::default()
+        };
+        assert!(s.validate().is_err());
+    }
 }
 
 #[test]

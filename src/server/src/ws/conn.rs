@@ -662,7 +662,23 @@ async fn handle_socket(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                         match frame {
-                            Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                            Message::Text(t) => match {
+                                let parsed = serde_json::from_str::<ClientMsg>(t.as_str());
+                                // A paused session refuses a non-GM's move request and combat
+                                // intents here, before any handler resolves them, so one rule
+                                // (`session_pause::blocks_msg`) decides for all nine.
+                                if let Ok(m) = &parsed {
+                                    if let Some(f) =
+                                        crate::ws::session_pause::msg_refusal(&room, &ctx, m).await
+                                    {
+                                        if etx.send(Egress::Frame(f)).await.is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
+                                parsed
+                            } {
                                 Ok(ClientMsg::Intent { intent_id, ops }) => {
                                     // Structural admission chokepoint for `MAX_INTENT_DOCS`:
                                     // `WS_MAX_MESSAGE_BYTES` derives the frame-size cap FROM
@@ -701,6 +717,20 @@ async fn handle_socket(
                                                 detail: None,
                                             })))
                                             .await;
+                                        continue;
+                                    }
+                                    // A paused session refuses a non-GM's token position write or
+                                    // combat-document write with `RejectReason::Paused`.
+                                    if let Some(f) = crate::ws::session_pause::intent_refusal(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        intent_id,
+                                        &ops,
+                                    )
+                                    .await
+                                    {
+                                        let _ = etx.send(Egress::Frame(f)).await;
                                         continue;
                                     }
                                     // Success is confirmed by the broadcast echo of the
@@ -1881,6 +1911,7 @@ async fn handle_move_request(
         Err(_) => Some(ServerMsg::MoveError {
             request_id,
             message: "move rejected".into(),
+            reason: None,
         }),
     }
 }

@@ -350,7 +350,12 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "chat_error", 
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the move; `None` for every
+ * other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "chat_error", 
 /**
  * The refused chat op's correlation token.
  */
@@ -366,7 +371,12 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "combat_result", 
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the intent; `None` for
+ * every other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "combat_result", 
 /**
  * The confirmed combat intent's correlation token.
  */
