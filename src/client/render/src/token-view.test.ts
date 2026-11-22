@@ -2,6 +2,7 @@ import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
+import type { TokenNodeSpec } from "./types";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
@@ -360,6 +361,73 @@ test("renders a generated visual with animated art and no authored frame fields"
     border: undefined,
     background: undefined,
   });
+});
+
+/** Reconcile one linked token whose actor carries `visual`, and return the node the backend received. */
+function specFor(visual: TokenVisual): { spec: TokenNodeSpec | undefined; assets: AssetResolver } {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Framed",
+    { displayName: "Framed", visual, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  return { spec: backend.tokens.get("tok1"), assets };
+}
+
+test("resolves a transform's anchor, scale and packed tint on an image visual", () => {
+  const { spec, assets } = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.25, y: 0.75 }, scale: 1.5, tint: "#ff8800" } });
+  expect(spec!.visual).toEqual({
+    kind: "image",
+    url: assets.url("p1"),
+    transform: { anchorX: 0.25, anchorY: 0.75, scale: 1.5, tint: 0xff8800 },
+  });
+});
+
+test("resolves a transform with no tint on an animated visual, leaving tint absent", () => {
+  const { spec, assets } = specFor({ kind: "animated", source: { type: "frames", frames: ["f1"] }, fps: 4, loop: true, transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } });
+  expect(spec!.visual).toEqual({
+    kind: "animated",
+    source: { type: "frames", urls: [assets.url("f1")] },
+    fps: 4,
+    loop: true,
+    transform: { anchorX: 0.5, anchorY: 0.5, scale: 2 },
+  });
+  expect("tint" in (spec!.visual as { transform: object }).transform).toBe(false);
+});
+
+test("a visual with no transform resolves with no transform key", () => {
+  const { spec } = specFor({ kind: "image", asset: "p1" });
+  expect("transform" in spec!.visual).toBe(false);
+});
+
+test("a generated visual's own frame ignores a transform, which only its nested art carries", () => {
+  const { spec, assets } = specFor({
+    kind: "generated",
+    art: { kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1.2, tint: "#102030" } },
+    crop: "circle",
+    border: { color: "#ff8800", width: 0.06 },
+    background: null,
+  });
+  expect(spec!.visual).toEqual({
+    kind: "generated",
+    art: { kind: "image", url: assets.url("p1"), transform: { anchorX: 0.5, anchorY: 0.5, scale: 1.2, tint: 0x102030 } },
+    crop: "circle",
+    border: { color: 0xff8800, width: 0.06 },
+    background: undefined,
+  });
+  expect("transform" in spec!.visual).toBe(false);
+});
+
+test("a token whose visual carries a malformed transform is skipped, not drawn", () => {
+  const bad = { kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 0 } } as TokenVisual;
+  const { spec } = specFor(bad);
+  expect(spec).toBeUndefined();
 });
 
 test("renders a generated face selected from a faces visual", () => {

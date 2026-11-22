@@ -886,6 +886,110 @@ fn token_visual_animated_round_trips() {
     assert_eq!(serde_json::to_value(&v).unwrap(), src);
 }
 
+const TRANSFORM_ASSET: &str = "11111111-1111-1111-1111-111111111111";
+
+/// An image visual whose `transform` is the given JSON, deserialized through serde.
+fn image_with_transform(transform: serde_json::Value) -> TokenVisual {
+    serde_json::from_value(
+        json!({ "kind": "image", "asset": TRANSFORM_ASSET, "transform": transform }),
+    )
+    .unwrap()
+}
+
+#[test]
+fn image_visual_with_no_transform_round_trips() {
+    let src = json!({ "kind": "image", "asset": TRANSFORM_ASSET });
+    let v: TokenVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(
+        v,
+        TokenVisual::Image {
+            transform: None,
+            ..
+        }
+    ));
+    // An absent transform stays absent on the wire (no `transform: null` key).
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+    assert!(v.validate().is_ok());
+}
+
+#[test]
+fn image_and_animated_visual_with_transform_round_trip() {
+    let transform = json!({ "anchor": { "x": 0.5, "y": 0.75 }, "scale": 1.5, "tint": "#ffcc88" });
+    let image = json!({ "kind": "image", "asset": TRANSFORM_ASSET, "transform": transform });
+    let v: TokenVisual = serde_json::from_value(image.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&v).unwrap(), image);
+    assert!(v.validate().is_ok());
+
+    let animated = json!({
+        "kind": "animated",
+        "source": { "type": "frames", "frames": [TRANSFORM_ASSET] },
+        "fps": 8.0,
+        "loop": true,
+        "transform": transform,
+    });
+    let a: RenderVisual = serde_json::from_value(animated.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&a).unwrap(), animated);
+    assert!(a.validate().is_ok());
+}
+
+#[test]
+fn visual_transform_tint_is_optional_and_anchor_is_not_clamped() {
+    let v = image_with_transform(json!({ "anchor": { "x": -0.5, "y": 2.0 }, "scale": 3.0 }));
+    assert!(v.validate().is_ok());
+}
+
+#[test]
+fn visual_transform_validate_rejects_non_positive_scale() {
+    for scale in [0.0, -1.0] {
+        let v = image_with_transform(json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": scale }));
+        assert!(v.validate().is_err(), "scale {scale} must be refused");
+    }
+}
+
+#[test]
+fn visual_transform_validate_rejects_bad_tint_hex() {
+    for tint in ["ffcc88", "#ffcc8", "#gg0000", ""] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "tint": tint }),
+        );
+        assert!(v.validate().is_err(), "tint {tint:?} must be refused");
+    }
+}
+
+#[test]
+fn visual_transform_validate_rejects_non_finite_values() {
+    // JSON cannot carry NaN or infinity, so the check is exercised on the typed struct.
+    let transform = |x: f64, scale: f64| VisualTransform {
+        anchor: TransformAnchor { x, y: 0.5 },
+        scale,
+        tint: None,
+    };
+    assert!(transform(f64::NAN, 1.0).validate().is_err());
+    assert!(transform(f64::INFINITY, 1.0).validate().is_err());
+    assert!(transform(0.5, f64::NAN).validate().is_err());
+    assert!(transform(0.5, f64::INFINITY).validate().is_err());
+    assert!(transform(0.5, 1.0).validate().is_ok());
+}
+
+#[test]
+fn visual_transform_rejects_unknown_fields() {
+    let bad = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "skew": 1.0 } });
+    assert!(serde_json::from_value::<TokenVisual>(bad).is_err());
+}
+
+#[test]
+fn generated_visual_transform_validates_through_its_art() {
+    let bad: RenderVisual = serde_json::from_value(json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": TRANSFORM_ASSET,
+            "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 0.0 } },
+        "crop": "circle",
+    }))
+    .unwrap();
+    assert!(bad.validate().is_err());
+}
+
 #[test]
 fn token_visual_faces_round_trips() {
     let mut faces = BTreeMap::new();
@@ -893,6 +997,7 @@ fn token_visual_faces_round_trips() {
         "default".to_string(),
         RenderVisual::Image {
             asset: "a.png".into(),
+            transform: None,
         },
     );
     let v = TokenVisual::Faces {

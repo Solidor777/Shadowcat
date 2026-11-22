@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { type TokenVisual, type RenderVisual, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
+  import { type TokenVisual, type RenderVisual, type VisualTransform, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -104,6 +104,82 @@
     return (anim.sourceType === "frames" && anim.frames.length > 0) || (anim.sourceType === "sheet" && !!anim.sheetAsset);
   }
 
+  /** Editor-local state for one art slot's `VisualTransform`. It belongs to the SLOT (the
+   * top-level visual, a face row, or the generated art), not to the slot's image-or-animated
+   * kind, so switching kind keeps the framing. */
+  type TransformState = {
+    /** Horizontal anchor fraction; `0.5` is centered. Not clamped, matching the server. */
+    anchorX: number;
+    /** Vertical anchor fraction; `0.5` is centered. Not clamped, matching the server. */
+    anchorY: number;
+    /** Art size multiplier against the token's box; must be finite and positive to build. */
+    scale: number;
+    /** Multiply tint as a css `#rrggbb` string, or `null` for none. */
+    tint: string | null;
+  };
+  /**
+   * Fresh `TransformState` at the default framing (centered, unscaled, untinted). Every call
+   * returns a distinct object — the same no-aliasing rule as `newAnimSourceState`.
+   * @returns A new default `TransformState`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * newTransformState(); // { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null }
+   * ```
+   */
+  function newTransformState(): TransformState {
+    return { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null };
+  }
+  /**
+   * The inverse projection of `buildTransform`: unfolds a wire `VisualTransform` into editor
+   * state, for `initial`-driven initialization. An absent transform unfolds as the default.
+   * @param t The wire transform to unfold, or absent.
+   * @returns A fresh `TransformState` projecting back onto `t` via `buildTransform`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * transformStateFrom({ anchor: { x: 0.5, y: 0.75 }, scale: 1.5, tint: "#ff8800" });
+   * ```
+   */
+  function transformStateFrom(t: VisualTransform | null | undefined): TransformState {
+    return t ? { anchorX: t.anchor.x, anchorY: t.anchor.y, scale: t.scale, tint: t.tint ?? null } : newTransformState();
+  }
+  /**
+   * Whether a transform state builds into a `VisualTransform` the server and `resolveTokenVisual`
+   * accept: finite anchors and a finite positive scale (a cleared number input reads as `0`/`NaN`
+   * and blocks the build rather than emitting a visual the renderer would reject).
+   * @param s The transform editor state to check.
+   * @returns `true` iff `s` is acceptable.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * transformComplete({ anchorX: 0.5, anchorY: 0.5, scale: 0, tint: null }); // false
+   * ```
+   */
+  function transformComplete(s: TransformState): boolean {
+    return Number.isFinite(s.anchorX) && Number.isFinite(s.anchorY) && Number.isFinite(s.scale) && s.scale > 0;
+  }
+  /**
+   * Projects a transform state into the object spread into an image/animated visual literal:
+   * `{ transform }` when the framing differs from the default, otherwise `{}` — so a default
+   * framing emits NO `transform` key and builds a visual identical to one authored without the
+   * disclosure.
+   * @param s The transform editor state to project.
+   * @returns `{ transform: VisualTransform }` or an empty object.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * buildTransform({ anchorX: 0.5, anchorY: 0.5, scale: 2, tint: null }); // { transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } }
+   * ```
+   */
+  function buildTransform(s: TransformState): {
+    /** The authored framing; absent for the default. */
+    transform?: VisualTransform;
+  } {
+    if (s.anchorX === 0.5 && s.anchorY === 0.5 && s.scale === 1 && s.tint === null) return {};
+    return { transform: { anchor: { x: s.anchorX, y: s.anchorY }, scale: s.scale, ...(s.tint === null ? {} : { tint: s.tint }) } };
+  }
+
   /** Editor-local state for one row of a `"faces"`-kind visual's face map. */
   type FaceRowState = {
     /** The face name this row is keyed under in the built `faces` map. */
@@ -114,6 +190,8 @@
     asset: string | null;
     /** The row's own animated-source editor state (`kind: "animated"` only). */
     anim: AnimSourceState;
+    /** The row's art framing, applied to whichever kind the row builds. */
+    transform: TransformState;
   };
   /**
    * Projects one face-row's editor state into the `FaceVisual` stored under its name in the
@@ -132,7 +210,9 @@
    * ```
    */
   function faceRowToVisual(f: FaceRowState): FaceVisual {
-    return f.kind === "image" ? { kind: "image", asset: f.asset ?? "" } : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop };
+    return f.kind === "image"
+      ? { kind: "image", asset: f.asset ?? "", ...buildTransform(f.transform) }
+      : { kind: "animated", source: animSourceToSource(f.anim), fps: f.anim.fps, loop: f.anim.loop, ...buildTransform(f.transform) };
   }
   /**
    * Whether a face row has enough data to be included in a save — an `"image"` row needs a
@@ -148,7 +228,7 @@
    * ```
    */
   function faceRowComplete(f: FaceRowState): boolean {
-    return f.kind === "image" ? !!f.asset : animSourceComplete(f.anim);
+    return transformComplete(f.transform) && (f.kind === "image" ? !!f.asset : animSourceComplete(f.anim));
   }
 
   /**
@@ -189,9 +269,9 @@
    */
   function faceRowStatesFrom(faces: Record<string, FaceVisual>): FaceRowState[] {
     return Object.entries(faces).map(([name, v]): FaceRowState => {
-      if (v.kind === "image") return { name, kind: "image", asset: v.asset, anim: newAnimSourceState() };
-      if (v.kind === "animated") return { name, kind: "animated", asset: null, anim: animSourceStateFrom(v.source, v.fps, v.loop) };
-      return { name, kind: "image", asset: null, anim: newAnimSourceState() };
+      if (v.kind === "image") return { name, kind: "image", asset: v.asset, anim: newAnimSourceState(), transform: transformStateFrom(v.transform) };
+      if (v.kind === "animated") return { name, kind: "animated", asset: null, anim: animSourceStateFrom(v.source, v.fps, v.loop), transform: transformStateFrom(v.transform) };
+      return { name, kind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState() };
     });
   }
 
@@ -204,6 +284,8 @@
     asset: string | null;
     /** The art's own animated-source editor state (`artKind: "animated"` only). */
     anim: AnimSourceState;
+    /** The art's own framing (anchor/scale/tint), applied before the crop. */
+    transform: TransformState;
     /** The shape the art is cropped to. */
     crop: GeneratedCrop;
     /** Whether a decorative border ring is emitted (`buildVisual` reads the color/width only
@@ -230,7 +312,7 @@
    * ```
    */
   function newGeneratedState(): GeneratedState {
-    return { artKind: "image", asset: null, anim: newAnimSourceState(), crop: "circle", borderOn: false, borderColor: "#ff8800", borderWidth: 0.06, backgroundOn: false, backgroundColor: "#102030" };
+    return { artKind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState(), crop: "circle", borderOn: false, borderColor: "#ff8800", borderWidth: 0.06, backgroundOn: false, backgroundColor: "#102030" };
   }
   /**
    * Unfolds a `"generated"`-kind `initial` visual into its `GeneratedState`, for `initial`-driven
@@ -251,6 +333,7 @@
       artKind: v.art.kind === "animated" ? "animated" : "image",
       asset: v.art.kind === "image" ? v.art.asset : null,
       anim: v.art.kind === "animated" ? animSourceStateFrom(v.art.source, v.art.fps, v.art.loop) : newAnimSourceState(),
+      transform: v.art.kind === "generated" ? newTransformState() : transformStateFrom(v.art.transform),
       crop: v.crop,
       borderOn: v.border !== null,
       borderColor: v.border?.color ?? "#ff8800",
@@ -273,6 +356,7 @@
    * ```
    */
   function generatedArtComplete(g: GeneratedState): boolean {
+    if (!transformComplete(g.transform)) return false;
     if (g.artKind === "image") return !!g.asset;
     return animSourceComplete(g.anim) && Number.isFinite(g.anim.fps) && g.anim.fps > 0;
   }
@@ -284,6 +368,8 @@
   let visualKind = $state<"image" | "faces" | "animated" | "generated">(initial?.kind ?? "image");
   // svelte-ignore state_referenced_locally
   let topAnim = $state<AnimSourceState>(initial?.kind === "animated" ? animSourceStateFrom(initial.source, initial.fps, initial.loop) : newAnimSourceState());
+  // svelte-ignore state_referenced_locally
+  let topTransform = $state<TransformState>(initial?.kind === "image" || initial?.kind === "animated" ? transformStateFrom(initial.transform) : newTransformState());
   // svelte-ignore state_referenced_locally
   let faceRows = $state<FaceRowState[]>(initial?.kind === "faces" ? faceRowStatesFrom(initial.faces) : []);
   // svelte-ignore state_referenced_locally
@@ -340,18 +426,18 @@
    * ```
    */
   function buildVisual(): TokenVisual | null {
-    if (visualKind === "image") return assetId ? { kind: "image", asset: assetId } : null;
+    if (visualKind === "image") return assetId && transformComplete(topTransform) ? { kind: "image", asset: assetId, ...buildTransform(topTransform) } : null;
     if (visualKind === "animated") {
-      if (!animSourceComplete(topAnim)) return null;
-      return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop };
+      if (!animSourceComplete(topAnim) || !transformComplete(topTransform)) return null;
+      return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop, ...buildTransform(topTransform) };
     }
     if (visualKind === "generated") {
       if (!generatedArtComplete(gen)) return null;
       if (gen.borderOn && (!Number.isFinite(gen.borderWidth) || gen.borderWidth <= 0)) return null;
       const art: RenderVisual =
         gen.artKind === "image"
-          ? { kind: "image", asset: gen.asset ?? "" }
-          : { kind: "animated", source: animSourceToSource(gen.anim), fps: gen.anim.fps, loop: gen.anim.loop };
+          ? { kind: "image", asset: gen.asset ?? "", ...buildTransform(gen.transform) }
+          : { kind: "animated", source: animSourceToSource(gen.anim), fps: gen.anim.fps, loop: gen.anim.loop, ...buildTransform(gen.transform) };
       return {
         kind: "generated",
         art,
@@ -390,6 +476,7 @@
   function resetVisualEditor(): void {
     visualKind = "image";
     topAnim = newAnimSourceState();
+    topTransform = newTransformState();
     faceRows = [];
     defaultFace = "";
     faceMapRows = [];
@@ -478,10 +565,33 @@
   <label><input type="checkbox" bind:checked={anim.loop} /> {t("actors.animLoop")}</label>
 {/snippet}
 
+{#snippet transformEditor(s: TransformState)}
+  <details class="transform-editor">
+    <summary>{t("actors.transformAdvanced")}</summary>
+    <!-- value + onchange/oninput (not bind:value): same fireEvent.change test-sync reason as the animated source's numeric inputs above. -->
+    <!-- step="any": the authored values are arbitrary fractions, and a step mismatch would make the host form refuse to submit. -->
+    <label>{t("actors.transformAnchorX")}
+      <input type="number" step="any" aria-label={t("actors.transformAnchorX")} value={s.anchorX} onchange={(e) => (s.anchorX = Number(e.currentTarget.value))} oninput={(e) => (s.anchorX = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformAnchorY")}
+      <input type="number" step="any" aria-label={t("actors.transformAnchorY")} value={s.anchorY} onchange={(e) => (s.anchorY = Number(e.currentTarget.value))} oninput={(e) => (s.anchorY = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformScale")}
+      <input type="number" min="0.01" step="any" aria-label={t("actors.transformScale")} value={s.scale} onchange={(e) => (s.scale = Number(e.currentTarget.value))} oninput={(e) => (s.scale = Number(e.currentTarget.value))} />
+    </label>
+    <label>{t("actors.transformTint")}
+      <input type="color" aria-label={t("actors.transformTint")} value={s.tint ?? "#ffffff"} onchange={(e) => (s.tint = e.currentTarget.value)} oninput={(e) => (s.tint = e.currentTarget.value)} />
+    </label>
+    <button type="button" disabled={s.tint === null} onclick={() => (s.tint = null)}>{t("actors.transformClearTint")}</button>
+  </details>
+{/snippet}
+
 {#if visualKind === "image"}
   {@render assetPicker(assetId, (id: string) => (assetId = id))}
+  {@render transformEditor(topTransform)}
 {:else if visualKind === "animated"}
   {@render animatedEditor(topAnim)}
+  {@render transformEditor(topTransform)}
 {:else if visualKind === "generated"}
   <div class="generated-editor">
     <!-- The art sub-editor is the face-row pattern one level down: an image-or-animated kind
@@ -497,6 +607,7 @@
     {:else}
       {@render animatedEditor(gen.anim)}
     {/if}
+    {@render transformEditor(gen.transform)}
     <label>{t("actors.genCrop")}
       <select bind:value={gen.crop} aria-label={t("actors.genCrop")}>
         <option value="circle">{t("actors.shapeCircle")}</option>
@@ -534,10 +645,11 @@
         {:else}
           {@render animatedEditor(f.anim)}
         {/if}
+        {@render transformEditor(f.transform)}
         <button type="button" onclick={() => (faceRows = faceRows.filter((_, j) => j !== i))}>{t("actors.faceRemove")}</button>
       </div>
     {/each}
-    <button type="button" onclick={() => (faceRows = [...faceRows, { name: "", kind: "image", asset: null, anim: newAnimSourceState() }])}>{t("actors.faceAdd")}</button>
+    <button type="button" onclick={() => (faceRows = [...faceRows, { name: "", kind: "image", asset: null, anim: newAnimSourceState(), transform: newTransformState() }])}>{t("actors.faceAdd")}</button>
     <label>{t("actors.faceDefault")}
       <select bind:value={defaultFace} aria-label={t("actors.faceDefault")}>
         <option value="">—</option>
