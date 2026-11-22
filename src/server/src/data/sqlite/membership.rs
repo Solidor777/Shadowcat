@@ -866,6 +866,52 @@ impl SqliteRepository {
         .transpose()
     }
 
+    /// The author of the most recent live whisper in `world` that lists `user` among its
+    /// recipients and was written by someone else, or `None`.
+    ///
+    /// Reads the stored message documents: `doc_type = 'message'`, `engine.audience.kind =
+    /// 'whisper'`, `engine.audience.recipients` containing `user` (unpacked with
+    /// `json_each`), `owner_id <> user`, and no `engine.deleted_at` tombstone. Ordered by
+    /// `created_at` then `seq`, newest first. Served by `idx_documents_world_type`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.last_whisper_to(uuid::Uuid::nil(), uuid::Uuid::nil()).await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn last_whisper_to(
+        &self,
+        world: Uuid,
+        user: Uuid,
+    ) -> Result<Option<Uuid>, DataError> {
+        let row = sqlx::query(
+            "SELECT d.owner_id FROM documents d \
+             WHERE d.world_id = ?1 AND d.doc_type = 'message' \
+               AND d.owner_id IS NOT NULL AND d.owner_id <> ?2 \
+               AND json_extract(d.json, '$.engine.audience.kind') = 'whisper' \
+               AND json_extract(d.json, '$.engine.deleted_at') IS NULL \
+               AND EXISTS (SELECT 1 FROM json_each(d.json, '$.engine.audience.recipients') r \
+                           WHERE r.value = ?2) \
+             ORDER BY d.created_at DESC, d.seq DESC LIMIT 1",
+        )
+        .bind(world.to_string())
+        .bind(user.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            Uuid::parse_str(r.get::<String, _>("owner_id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))
+        })
+        .transpose()
+    }
+
     // --- World invites ---
 
     /// Insert an invite for `world`, bounded by `max_active` live invites

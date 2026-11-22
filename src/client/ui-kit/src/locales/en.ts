@@ -620,6 +620,7 @@ export const en: Messages = {
   "chat.deleteConfirm": "Delete this message?",
   "chat.rollPending": "🎲 {formula}",
   "chat.systemBadge": "System",
+  "chat.kind.ooc": "OOC",
   "chat.roll.formula": "Formula",
   "chat.roll.successes": { one: "{n} success", other: "{n} successes" },
   "chat.roll.pass": "Success",

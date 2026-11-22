@@ -499,6 +499,26 @@ pub trait Repository: Send + Sync {
         username: &str,
     ) -> Result<Option<Uuid>, DataError>;
 
+    /// The author of the most recent live whisper in `world` that lists `user` among its
+    /// recipients and was written by someone else, or `None`. Resolves a `/reply` target
+    /// server-side. Recency is `created_at`, ties broken by the document's `seq`; a
+    /// soft-deleted message and a whisper the user wrote themselves are skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.last_whisper_to(uuid::Uuid::nil(), uuid::Uuid::nil()).await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn last_whisper_to(&self, world: Uuid, user: Uuid) -> Result<Option<Uuid>, DataError>;
+
     /// The first asset in `world` whose `original_name` case-insensitively equals `name`, or
     /// `None`. Ties (two assets sharing a name) resolve to the earliest-created — an
     /// under-specified but stable pick; asset names are not enforced unique.

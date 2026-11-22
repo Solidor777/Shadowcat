@@ -325,7 +325,7 @@
 </script>
 
 {#if sys}
-  <article class="card" class:emote={sys.kind === "emote"} class:system={sys.kind === "system"}>
+  <article class="card" class:emote={sys.kind === "emote"} class:ooc={sys.kind === "ooc"} class:system={sys.kind === "system"}>
     <header class="header">
       <span class="author">{authorName}</span>
       {#if actorName}
@@ -350,6 +350,9 @@
       {/if}
       {#if sys.kind === "system"}
         <span class="chip system-badge">{t("chat.systemBadge")}</span>
+      {/if}
+      {#if sys.kind === "ooc"}
+        <span class="chip ooc-badge">{t("chat.kind.ooc")}</span>
       {/if}
     </header>
 
@@ -532,6 +535,10 @@
   // Single hook for emote styling — anchored on .card (the class:emote binding), not a
   // second class on the inner <p>, so there is one source of truth for "this is an emote".
   .card.emote .body p {
+    font-style: italic;
+  }
+  // Out-of-character text reads italic like an emote; the header's OOC chip names the kind.
+  .card.ooc .body p {
     font-style: italic;
   }
   .roll-pending {
