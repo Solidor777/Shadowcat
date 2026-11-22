@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -515,6 +515,27 @@ export class ToolController {
     this.editingEntity = null; // an edit selection never survives a tool switch
     this.active = this.active === id ? null : id;
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Turns a template into a region: dispatches ONE batch (create the region, delete the
+   * template) and opens the new region in the rail's region editor so the GM can add behavior
+   * and triggers. A template whose shape has no region equivalent (a zero-width line) is
+   * refused and nothing is dispatched. The server re-checks create and delete permission.
+   * @param template The `template` document to convert.
+   * @returns `null` when the batch was dispatched, else the refusal reason.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * declare const template: WireDocument;
+   * controller.convertTemplateToRegion(template); // null once dispatched
+   * ```
+   */
+  convertTemplateToRegion(template: WireDocument): TemplateRegionRefusal | null {
+    const batch = buildRegionFromTemplate(this.ctx.world, template);
+    if (!batch.ok) return batch.reason;
+    this.ctx.dispatchIntent(batch.ops);
+    this.editingEntity = { kind: "region", id: batch.region.id };
+    return null;
   }
 
   /** Begin capturing one stage click as `regionTriggers[row]`'s teleport target x/y. Switches

@@ -1226,6 +1226,87 @@ test("the template editor's delete dispatches the full pre-image and closes the 
   expect(screen.queryByTestId("template-editor")).toBeNull();
 });
 
+/** `editorStore()` plus a zero-width line template at (2000,2000) facing +x, length 100. */
+function editorStoreWithBareLine(): DocumentStore {
+  const docs = editorStore();
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "template", {
+          shape: { kind: "line", x: 2000, y: 2000, size: 100, direction: 0 },
+          color: "#3388ff", elevation: null,
+        }, "template-line"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the template editor's make-region action dispatches one create-region + delete-template batch and opens the region editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const documents = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        documents.applyCommand({ seq: 10, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("template-editor");
+  await fireEvent.click(screen.getByTestId("template-make-region"));
+
+  expect(dispatched).toHaveLength(1);
+  const [create, del] = dispatched[0];
+  expect(dispatched[0]).toHaveLength(2);
+  expect(create.op).toBe("create");
+  expect(del.op).toBe("delete");
+  if (create.op === "create") {
+    expect(create.doc.doc_type).toBe("region");
+    expect(create.doc.parent_id).toBe("s1");
+    expect((create.doc.engine as { shape: unknown }).shape).toEqual({ kind: "circle", points: [1600, 1600, 50] });
+  }
+  if (del.op === "delete") expect(del.doc.id).toBe("template-1");
+  expect(await screen.findByTestId("region-editor")).toBeTruthy();
+  expect(screen.queryByTestId("template-editor")).toBeNull();
+});
+
+test("a zero-width line template shows a disabled make-region button with its reason", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStoreWithBareLine(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 2050, y: 2000 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("template-editor");
+  const button = screen.getByTestId("template-make-region") as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  expect(screen.getByTestId("template-make-region-reason").textContent).toBe("tools.templateMakeRegionZeroWidth");
+  await fireEvent.click(button);
+  expect(dispatched).toHaveLength(0);
+});
+
+test("the make-region action is absent when the caller cannot create regions or cannot delete the template", async () => {
+  for (const denied of [{ canCreate: () => false }, { canDelete: () => false }]) {
+    const { scene, tools } = captureScene();
+    const view = render(ToolRail, {
+      context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), ...denied }),
+    });
+    await fireEvent.click(screen.getByTestId("tool-select"));
+    tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+    await screen.findByTestId("template-editor");
+    expect(screen.queryByTestId("template-make-region")).toBeNull();
+    view.unmount();
+  }
+});
+
 test("the rail renders one button per SCENE_TOOL_CONTRACT contribution and clicking it activates the contributed tool", async () => {
   const { scene, tools } = captureScene();
   const contributions = new ContributionRegistry();
