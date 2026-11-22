@@ -489,6 +489,7 @@ async fn graceful_shutdown_releases_the_port_with_a_live_tls_connection() {
             .await
             .unwrap(),
     );
+    let trash = Arc::new(shadowcat::trash::Trash::from_config(&config));
     let state = shadowcat::http::AppState {
         repo,
         config,
@@ -502,6 +503,7 @@ async fn graceful_shutdown_releases_the_port_with_a_live_tls_connection() {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls,
+        trash,
     };
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(async move {

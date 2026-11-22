@@ -56,6 +56,7 @@ pub use scheme::into_service;
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
 /// # }
@@ -92,6 +93,8 @@ pub struct AppState {
     pub file_permits: Arc<assets::permits::StreamedFilePermits>,
     /// The TLS subsystem: status published by `/api/config` and the admin route.
     pub tls: Arc<crate::tls::TlsRuntime>,
+    /// The trash every production file removal goes through (`trash::Trash`).
+    pub trash: Arc<crate::trash::Trash>,
 }
 
 impl AppState {
@@ -157,6 +160,7 @@ impl AppState {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let app = router(state).await;
 /// // `no_run`: binding a real listener needs a live socket.
@@ -452,6 +456,7 @@ pub(crate) fn session_wait(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 /// // A `shutdown_fut` that resolves immediately, for illustration only.
@@ -513,6 +518,7 @@ where
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 /// let limits = ConnLimits { max_live_per_peer: 8, ..ConnLimits::default() };

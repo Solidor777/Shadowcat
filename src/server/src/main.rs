@@ -116,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let trash = Arc::new(shadowcat::trash::Trash::from_config(&config));
     let state = AppState {
         repo: Arc::new(repo),
         config: Arc::new(config.clone()),
@@ -129,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        trash: trash.clone(),
     };
 
     shadowcat::auth::session::spawn_housekeeping_sweep(&state.repo);
@@ -136,6 +138,9 @@ async fn main() -> anyhow::Result<()> {
         state.uploads.clone(),
         state.upload_rate.clone(),
     );
+    // The first pass runs at once, so entries that expired while the server was down are removed
+    // at startup; a `disabled` trash has nothing to sweep and starts no task.
+    shadowcat::trash::spawn_retention_sweep(trash);
 
     // Both connection caps are fitted to one descriptor budget, derived from the soft limit as it
     // is AFTER the raise attempt, which asks for exactly `descriptors_needed` (`fd_budget`).

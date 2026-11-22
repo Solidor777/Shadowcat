@@ -118,6 +118,7 @@ impl std::io::Write for ChannelWriter {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
 /// let response = export_world(State(state), admin, Path(world.id)).await.unwrap();
@@ -376,6 +377,7 @@ async fn stream_bundle_upload(
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 /// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let admin_id = uuid::Uuid::new_v4();
 /// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
