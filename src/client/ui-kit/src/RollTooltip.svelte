@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import type { RollOutcome, RecalcHistoryEntry } from "@shadowcat/core";
+  import { natExtreme } from "./roll-display";
 
   let {
     outcome,
@@ -97,9 +98,15 @@
       <table>
         <tbody>
           {#each outcome.records as r, i (i)}
-            <tr data-dropped={!r.kept}>
+            {@const extreme = natExtreme(r)}
+            <tr data-dropped={!r.kept} data-nat-extreme={extreme}>
               <td class="value">{r.value}</td>
               {#if r.label}<td class="label">{r.label}</td>{/if}
+              {#if extreme}
+                <td class="nat-tag">
+                  {t(extreme === "max" ? "chat.roll.naturalMax" : "chat.roll.naturalMin")}
+                </td>
+              {/if}
               {#if !r.kept}<td class="dropped-tag">{t("chat.roll.dropped")}</td>{/if}
             </tr>
           {/each}
@@ -182,6 +189,18 @@
   tr[data-dropped="true"] {
     opacity: 0.5;
     text-decoration: line-through;
+  }
+  // The left border and the text tag together mark a natural extreme, so the cue is not colour
+  // alone; both compose with the dropped strike-through because they key off a separate attribute.
+  tr[data-nat-extreme="max"] td:first-child {
+    border-left: 3px solid var(--success);
+  }
+  tr[data-nat-extreme="min"] td:first-child {
+    border-left: 3px solid var(--danger);
+  }
+  .nat-tag {
+    font-size: 0.85em;
+    opacity: 0.8;
   }
   .dropped-tag {
     font-size: 0.85em;
