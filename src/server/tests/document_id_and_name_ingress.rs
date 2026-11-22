@@ -47,11 +47,7 @@ async fn send_create_and_recv_frame(id: Uuid, name: &str) -> (serde_json::Value,
     ))
     .await
     .unwrap();
-    let Ok(Some(Ok(m))) = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
-    else {
-        panic!("no frame received");
-    };
-    let frame: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+    let frame = common::next_non_presence_frame(&mut ws).await;
     (frame, h)
 }
 

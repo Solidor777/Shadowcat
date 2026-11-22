@@ -634,6 +634,27 @@ where
     }
 }
 
+/// Read the next frame that is not a `presence` frame (5s budget per frame), returning it.
+///
+/// A connecting socket receives its own `presence` frame, which can arrive before or after the
+/// reply to the first request, so a test reading "the reply" skips it.
+pub async fn next_non_presence_frame<S>(ws: &mut S) -> serde_json::Value
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            panic!("no frame received");
+        };
+        let v: serde_json::Value = serde_json::from_str(m.to_text().unwrap()).unwrap();
+        if v["type"] != "presence" {
+            return v;
+        }
+    }
+}
+
 /// Read until the next `event` frame.
 pub async fn drain_until_event<S>(ws: &mut S) -> serde_json::Value
 where
