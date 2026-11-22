@@ -51,8 +51,10 @@ export type {
   ContractProvide,
   ContractDeclaration,
 } from "./manifest";
-export { ModuleRegistry } from "./modules";
+export { ModuleRegistry, checkSatisfiability } from "./modules";
 export type {
+  CatalogEntry,
+  SatisfiabilityIssue,
   Module,
   ModuleActivationOutcome,
   ModuleActivationResult,

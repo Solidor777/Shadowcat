@@ -69,6 +69,10 @@ export const en: Messages = {
   "settings.modules.incompatible": "Incompatible with this server: requires Shadowcat {required}.",
   "settings.modules.incompatibleNoRange":
     "Incompatible with this server: the module declares no Shadowcat engine range.",
+  "settings.modules.conflict": "{id} conflicts with {target}; both cannot be enabled.",
+  "settings.modules.dependencyUnmet":
+    "{id} depends on {target}, which is not enabled or is not a compatible version.",
+  "settings.modules.contractUnmet": "{id} requires {target}, which no enabled module provides.",
   "settings.invites.title": "World invites",
   "settings.invites.role": "World role",
   "settings.invites.mint": "Create invite",

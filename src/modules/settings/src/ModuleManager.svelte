@@ -4,16 +4,55 @@
     listInstalledModules,
     getEnabledModules,
     setEnabledModules,
+    checkSatisfiability,
     type InstalledModuleInfo,
+    type ModuleManifest,
+    type SatisfiabilityIssue,
   } from "@shadowcat/core";
 
-  const { world, t, reconcileInstalledModules, moduleStatus } = getAppContext();
+  const { world, t, reconcileInstalledModules, moduleStatus, activeModuleManifests } =
+    getAppContext();
 
   let installed = $state<InstalledModuleInfo[]>([]);
   let enabled = $state<Map<string, boolean>>(new Map());
   let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+
+  /** Problems with the currently checked set, recomputed on every toggle and after every load.
+   * Advisory: the server re-checks `conflicts` on save and stays the authority. */
+  const issues = $derived<SatisfiabilityIssue[]>(
+    checkSatisfiability(
+      [...enabled.keys()],
+      installed.map((info) => ({ id: info.id, manifest: info.manifest as unknown as ModuleManifest })),
+      activeModuleManifests(),
+    ),
+  );
+
+  /**
+   * The inline message for one satisfiability issue, naming both modules where there are two.
+   * @param issue The problem to describe.
+   * @returns The translated message.
+   * @example
+   * ```
+   * // private function; not part of the public API — used for the issue list below
+   * declare const issue: SatisfiabilityIssue;
+   * issueMessage(issue);
+   * ```
+   */
+  function issueMessage(issue: SatisfiabilityIssue): string {
+    const label = (id: string): string => {
+      const info = installed.find((i) => i.id === id);
+      return info ? displayName(info) : id;
+    };
+    const key =
+      issue.kind === "conflict"
+        ? "settings.modules.conflict"
+        : issue.kind === "dependency-unmet"
+          ? "settings.modules.dependencyUnmet"
+          : "settings.modules.contractUnmet";
+    return t(key, { id: label(issue.moduleId), target: label(issue.target) });
+  }
 
   /**
    * Display-only label: the manifest's author-declared `id`, falling back to
@@ -267,7 +306,10 @@
         </li>
       {/each}
     </ul>
-    <button onclick={save} disabled={saving}>{t("settings.modules.save")}</button>
+    {#each issues as issue (`${issue.kind}:${issue.moduleId}:${issue.target}`)}
+      <p class="error" data-testid="module-satisfiability-issue">{issueMessage(issue)}</p>
+    {/each}
+    <button onclick={save} disabled={saving || issues.length > 0}>{t("settings.modules.save")}</button>
   {/if}
   {#if error}
     <p class="error">{t("settings.modules.error", { message: error })}</p>

@@ -202,4 +202,73 @@ describe("ModuleManager", () => {
     await screen.findByLabelText("example-system");
     expect(screen.queryByTestId("module-incompatible")).toBeNull();
   });
+
+  describe("pre-save satisfiability", () => {
+    /** Two installed modules where `mod-a` declares a conflict with `mod-b`. */
+    async function installConflictingPair(): Promise<void> {
+      const { listInstalledModules } = await import("@shadowcat/core");
+      vi.mocked(listInstalledModules).mockResolvedValueOnce([
+        { id: "mod-a", manifest: { id: "mod-a", version: "1.0.0", dependencies: {}, conflicts: ["mod-b"] }, entry_url: "/modules/mod-a/index.js", has_validators: false, validator_load_error: null, engine_compat_ok: true },
+        { id: "mod-b", manifest: { id: "mod-b", version: "1.0.0", dependencies: {} }, entry_url: "/modules/mod-b/index.js", has_validators: false, validator_load_error: null, engine_compat_ok: true },
+      ]);
+    }
+    /** A translator that exposes its parameters so a test can read the ids a message names. */
+    const tParams = (k: string, p?: Record<string, unknown>): string => `${k} ${JSON.stringify(p ?? {})}`;
+
+    it("disables Save and names both modules while a conflicting pair is checked, and re-enables it on uncheck", async () => {
+      await installConflictingPair();
+      render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm", t: tParams }) });
+      const a = await screen.findByLabelText("mod-a");
+      const b = await screen.findByLabelText("mod-b");
+      const save = (): HTMLButtonElement => screen.getByText(/settings\.modules\.save/) as HTMLButtonElement;
+
+      await fireEvent.click(a);
+      expect(save().disabled).toBe(false);
+      expect(screen.queryAllByTestId("module-satisfiability-issue")).toHaveLength(0);
+
+      await fireEvent.click(b);
+      expect(save().disabled).toBe(true);
+      const line = screen.getByTestId("module-satisfiability-issue").textContent ?? "";
+      expect(line).toContain("settings.modules.conflict");
+      expect(line).toContain("mod-a");
+      expect(line).toContain("mod-b");
+
+      await fireEvent.click(b);
+      expect(save().disabled).toBe(false);
+      expect(screen.queryAllByTestId("module-satisfiability-issue")).toHaveLength(0);
+    });
+
+    it("reports a dependency on a module that is not checked, and accepts one a running module satisfies", async () => {
+      const { listInstalledModules } = await import("@shadowcat/core");
+      const entry = {
+        id: "needy",
+        manifest: { id: "needy", version: "1.0.0", dependencies: { "core-ui": "^1.0.0" } },
+        entry_url: "/modules/needy/index.js",
+        has_validators: false,
+        validator_load_error: null,
+        engine_compat_ok: true,
+      };
+      vi.mocked(listInstalledModules).mockResolvedValueOnce([entry]);
+      render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm", t: tParams }) });
+      await fireEvent.click(await screen.findByLabelText("needy"));
+      expect(screen.getByTestId("module-satisfiability-issue").textContent).toContain("settings.modules.dependencyUnmet");
+    });
+
+    it("accepts a dependency a running first-party module satisfies", async () => {
+      const { listInstalledModules } = await import("@shadowcat/core");
+      vi.mocked(listInstalledModules).mockResolvedValueOnce([
+        { id: "needy", manifest: { id: "needy", version: "1.0.0", dependencies: { "core-ui": "^1.0.0" } }, entry_url: "/modules/needy/index.js", has_validators: false, validator_load_error: null, engine_compat_ok: true },
+      ]);
+      render(ModuleManager, {
+        context: setAppContextForTest({
+          world: "w1",
+          role: "gm",
+          activeModuleManifests: () => [{ id: "core-ui", version: "1.2.0", dependencies: {} }],
+        }),
+      });
+      await fireEvent.click(await screen.findByLabelText("needy"));
+      expect(screen.queryAllByTestId("module-satisfiability-issue")).toHaveLength(0);
+      expect((screen.getByText("settings.modules.save") as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
 });

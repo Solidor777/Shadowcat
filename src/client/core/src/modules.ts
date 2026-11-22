@@ -213,6 +213,105 @@ export interface ModuleInfo {
   active: boolean;
 }
 
+/** One problem `checkSatisfiability` found in a candidate enabled set. */
+export interface SatisfiabilityIssue {
+  /** `"dependency-unmet"`: a `dependencies` entry names a module absent from the set or outside
+   * its semver range. `"contract-unmet"`: a `requires` contract has no provider in the set (or
+   * none within the required version range). `"conflict"`: the module's `conflicts` names
+   * another module in the set. */
+  kind: "dependency-unmet" | "contract-unmet" | "conflict";
+  /** The install-folder id of the candidate module the problem belongs to. */
+  moduleId: string;
+  /** The unmet dependency id, the unmet contract id, or the conflicting module's folder id. */
+  target: string;
+}
+
+/** One installed module as `checkSatisfiability` sees it. */
+export interface CatalogEntry {
+  /** The install-folder id, the key of the world's enabled set. */
+  id: string;
+  /** The module's parsed manifest. */
+  manifest: ModuleManifest;
+}
+
+/**
+ * The declared id of a catalog entry's manifest, falling back to its folder id.
+ * @param folderId The entry's install-folder id.
+ * @param manifest The entry's manifest.
+ * @returns The manifest's `id` when it is a string, else `folderId`.
+ * @example
+ * ```
+ * // module-private helper of `checkSatisfiability`
+ * declaredId("folder", { id: "declared", version: "1.0.0", dependencies: {} });
+ * ```
+ */
+function declaredId(folderId: string, manifest: ModuleManifest): string {
+  return typeof manifest.id === "string" ? manifest.id : folderId;
+}
+
+/**
+ * Previews whether enabling `candidateIds` together would be satisfiable: every candidate's
+ * `dependencies` entry resolves (presence and semver range, matched on manifest ids like
+ * `ModuleRegistry.activate`), every `requires` contract has a provider, and no candidate's
+ * `conflicts` names another candidate (matched on install-folder ids, the key the server's
+ * enable set and its conflict check use). Collects every problem rather than stopping at the
+ * first, so the result has the same shape as the server's batch rejection. Advisory: the server
+ * stays the authority and re-checks `conflicts` on save.
+ * @param candidateIds Install-folder ids the GM has checked.
+ * @param modules The full installed catalog keyed on install-folder id; a candidate absent from
+ *   it contributes nothing.
+ * @param running Manifests of modules already active outside the catalog, such as first-party
+ *   modules. They satisfy dependencies and contracts unconditionally; one whose id matches a
+ *   catalog entry is ignored, because the candidate set decides that module.
+ * @returns Every problem found; empty when the set is satisfiable.
+ * @example
+ * ```ts
+ * import { checkSatisfiability, type ModuleManifest } from "@shadowcat/core";
+ *
+ * declare const catalog: { id: string; manifest: ModuleManifest }[];
+ * const issues = checkSatisfiability(["mod-a", "mod-b"], catalog);
+ * ```
+ */
+export function checkSatisfiability(
+  candidateIds: string[],
+  modules: CatalogEntry[],
+  running: ModuleManifest[] = [],
+): SatisfiabilityIssue[] {
+  const chosen = new Set(candidateIds);
+  const candidates = modules.filter((m) => chosen.has(m.id));
+  const catalogIds = new Set(modules.flatMap((m) => [m.id, declaredId(m.id, m.manifest)]));
+  const available: CatalogEntry[] = [
+    ...candidates.map((m) => ({ id: declaredId(m.id, m.manifest), manifest: m.manifest })),
+    ...running
+      .filter((m) => !catalogIds.has(m.id))
+      .map((m) => ({ id: m.id, manifest: m })),
+  ];
+  const issues: SatisfiabilityIssue[] = [];
+  for (const c of candidates) {
+    for (const [depId, range] of Object.entries(c.manifest.dependencies ?? {})) {
+      const dep = available.find((m) => m.id === depId);
+      if (!dep || !satisfies(dep.manifest.version, range)) {
+        issues.push({ kind: "dependency-unmet", moduleId: c.id, target: depId });
+      }
+    }
+    for (const req of normalizeRequires(c.manifest.requires)) {
+      const providers = available.filter((m) =>
+        (m.manifest.provides ?? []).some((p) => p.contract === req.contract),
+      );
+      const met = req.version
+        ? providers.some((m) => satisfies(m.manifest.version, req.version!))
+        : providers.length > 0;
+      if (!met) issues.push({ kind: "contract-unmet", moduleId: c.id, target: req.contract });
+    }
+    for (const named of c.manifest.conflicts ?? []) {
+      if (named !== c.id && chosen.has(named)) {
+        issues.push({ kind: "conflict", moduleId: c.id, target: named });
+      }
+    }
+  }
+  return issues;
+}
+
 /** The host-provided singletons a `ModuleRegistry` is constructed over. Not exported. */
 interface Deps {
   /** The shared hook bus every module's `hooks` wrapper delegates to. */
@@ -327,6 +426,22 @@ export class ModuleRegistry {
       version: r.module.manifest.version,
       active: r.active,
     }));
+  }
+
+  /** The manifests of every currently active module, in registration order. The pre-save
+   * satisfiability preview (`checkSatisfiability`) reads this as the modules already running
+   * outside the candidate set, such as first-party modules.
+   * @returns One manifest per active module.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * const manifests = registry.activeManifests();
+   * ```
+   */
+  activeManifests(): ModuleManifest[] {
+    return [...this.records.values()].filter((r) => r.active).map((r) => r.module.manifest);
   }
 
   /** Every active module's declared capability requirements, concatenated. Has
