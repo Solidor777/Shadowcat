@@ -250,8 +250,16 @@ export { createDragController, dropIndex, DEFAULT_LONG_PRESS_MS } from "./dnd";
 export type { DragTarget, DropPlacement, DropResult, DragControllerOptions, DragController } from "./dnd";
 export { buildUpdate } from "./update-op";
 export type { FieldEdit } from "./update-op";
-export { TABLE_DOC_TYPE, buildTableDoc } from "./table-docs";
-export type { TableEngine, DrawRule, TableRow, RowRange, TableEntry, BuildTableDocOptions } from "./table-docs";
+export { TABLE_DOC_TYPE, TABLE_FOLDER_DOC_TYPE, buildTableDoc, buildTableFolderDoc } from "./table-docs";
+export type {
+  TableEngine,
+  DrawRule,
+  TableRow,
+  RowRange,
+  TableEntry,
+  BuildTableDocOptions,
+  BuildTableFolderDocOptions,
+} from "./table-docs";
 export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody, parseNotePageKind, appendNoteSortKey } from "./note-docs";
 export type { NoteEngine, NotePageKind, BuildNoteDocOptions } from "./note-docs";
 export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc, resolveNextTrackAsset } from "./playlist-docs";
