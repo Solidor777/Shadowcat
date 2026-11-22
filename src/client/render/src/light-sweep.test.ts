@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { Grid } from "./grid";
 import { bandAlpha, MAX_DARK_ALPHA, TINT_ALPHA } from "./lighting";
-import { blendLightCells, lightSampleCellKeys, lightSampleCells, MAX_LIGHT_SWEEP_CELLS } from "./light-sweep";
+import { blendLightCells, coneAdmits, lightSampleCellKeys, lightSampleCells, MAX_LIGHT_SWEEP_CELLS } from "./light-sweep";
 import type { MoveLightSample, Polygon } from "./types";
 
 const grid = new Grid({ kind: "square", size: 100 });
@@ -12,6 +13,43 @@ const LOS_ALL: Polygon[] = [{ points: [-1000, -1000, 1000, -1000, 1000, 1000, -1
 function torch(over: Partial<MoveLightSample> = {}): MoveLightSample {
   return { tMs: 0, pos: [50, 50], bright: 100, dim: 250, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: OPEN, ...over };
 }
+
+/** One row of the cross-language cone fixture the server's `cone_admits` test also reads. */
+interface ConeCase {
+  /** Case description. */
+  name: string;
+  /** Light position. */
+  pos: [number, number];
+  /** Arc bisector, degrees. */
+  rotation: number;
+  /** Arc width in degrees, or `null` for a radial light. */
+  angle: number | null;
+  /** The probed point. */
+  point: [number, number];
+  /** Whether the point is inside the arc. */
+  lit: boolean;
+}
+
+describe("coneAdmits", () => {
+  const cases = JSON.parse(
+    readFileSync(new URL("../../core/src/__fixtures__/light-cone.json", import.meta.url), "utf8"),
+  ) as ConeCase[];
+
+  test("the shared fixture is not vacuous", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(coneAdmits(c.pos, c.angle ?? undefined, c.rotation, c.point[0], c.point[1])).toBe(c.lit);
+    });
+  }
+
+  test("a non-finite angle or rotation admits nothing", () => {
+    expect(coneAdmits([0, 0], NaN, 0, 10, 0)).toBe(false);
+    expect(coneAdmits([0, 0], 90, Infinity, 10, 0)).toBe(false);
+  });
+});
 
 describe("lightSampleCells", () => {
   test("lights the cells within the dim disc: bright band inside `bright`, dim band beyond, tinted with the light color", () => {
@@ -53,6 +91,25 @@ describe("lightSampleCells", () => {
     // A disc spanning more than MAX_LIGHT_SWEEP_CELLS candidate cells contributes nothing.
     const huge = torch({ dim: 100 * Math.sqrt(MAX_LIGHT_SWEEP_CELLS) });
     expect(lightSampleCells(huge, grid, LOS_ALL, 3)).toEqual([]);
+  });
+
+  test("a cone sample lights only the cells inside its arc", () => {
+    const cone = torch({ pos: [50, 50], angle: 90, rotation: 0 });
+    const cells = lightSampleCells(cone, grid, LOS_ALL, 3);
+    // Cell centers east of the light (+x) are inside the 90 degree arc, west of it are not.
+    expect(cells.some((c) => c.i === 2 && c.j === 0)).toBe(true);
+    expect(cells.some((c) => c.i === -2 && c.j === 0)).toBe(false);
+    expect(cells.some((c) => c.i === 0 && c.j === 0)).toBe(true);
+    // Rotating the arc to 180 degrees (-x) swaps which side is lit.
+    const west = lightSampleCells(torch({ pos: [50, 50], angle: 90, rotation: 180 }), grid, LOS_ALL, 3);
+    expect(west.some((c) => c.i === -2 && c.j === 0)).toBe(true);
+    expect(west.some((c) => c.i === 2 && c.j === 0)).toBe(false);
+  });
+
+  test("a sample with no angle lights the full disc, as before", () => {
+    const cells = lightSampleCells(torch(), grid, LOS_ALL, 3);
+    expect(cells.some((c) => c.i === -2 && c.j === 0)).toBe(true);
+    expect(cells.some((c) => c.i === 2 && c.j === 0)).toBe(true);
   });
 
   test("enumerates hex cells through the same axial bounding box", () => {
