@@ -1,6 +1,9 @@
 import { PANEL_CONTRACT, SETTINGS_SECTION_CONTRACT, type Module } from "@shadowcat/core";
 import Settings from "./Settings.svelte";
 
+export { registerSetting, type SettingField, type SettingSelectOption, type RegisterSettingOptions } from "./registerSetting";
+export { default as SettingRow } from "./SettingRow.svelte";
+
 /** Settings panel (role, locale switcher, leave-world, logout). Requires the
  * panel-manager's contract; contributes Settings at order 6 (after
  * game-settings' 5) so chat's order 0 stays the sole default docked panel,
