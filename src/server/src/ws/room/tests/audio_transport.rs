@@ -654,6 +654,95 @@ async fn resuming_the_session_resumes_the_tracks_it_paused() {
 }
 
 #[tokio::test]
+async fn resuming_the_session_leaves_a_track_paused_by_hand_paused() {
+    let s = play_then_set_session(
+        serde_json::json!(null),
+        serde_json::json!({ "paused": false, "pauseAudio": true }),
+    )
+    .await;
+    let playlist_track = audio_state(&s.repo, s.world).await.playing[0].id;
+    handle_transport(
+        &s.repo,
+        &s.ctx,
+        &s.room,
+        AudioOp::Play {
+            playlist: None,
+            asset: Some("22222222-2222-2222-2222-222222222222".into()),
+            track_index: None,
+            channel: None,
+            gain: None,
+            loop_: None,
+        },
+        2_100,
+    )
+    .await
+    .unwrap();
+    let by_hand = audio_state(&s.repo, s.world)
+        .await
+        .playing
+        .iter()
+        .find(|t| t.id != playlist_track)
+        .expect("the direct play added a second track")
+        .id;
+    handle_transport(
+        &s.repo,
+        &s.ctx,
+        &s.room,
+        AudioOp::Pause { id: by_hand },
+        2_500,
+    )
+    .await
+    .unwrap();
+
+    let running = serde_json::json!({ "paused": false, "pauseAudio": true });
+    let paused = serde_json::json!({ "paused": true, "pauseAudio": true });
+    for (old, new, now) in [
+        (running, paused.clone(), 3_000),
+        (
+            paused.clone(),
+            serde_json::json!({ "paused": false, "pauseAudio": true }),
+            6_000,
+        ),
+    ] {
+        s.room
+            .publish(
+                &s.repo,
+                &s.ctx,
+                vec![Operation::Update {
+                    doc_id: s.settings,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/session".into(),
+                        old,
+                        new,
+                    }],
+                }],
+                now,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
+    let state = audio_state(&s.repo, s.world).await;
+    let hand = state.playing.iter().find(|t| t.id == by_hand).unwrap();
+    let other = state
+        .playing
+        .iter()
+        .find(|t| t.id == playlist_track)
+        .unwrap();
+    assert_eq!(
+        hand.paused_at,
+        Some(2_500.0),
+        "the hand-paused track stays paused"
+    );
+    assert_eq!(
+        other.paused_at, None,
+        "the session-paused track plays again"
+    );
+}
+
+#[tokio::test]
 async fn a_session_pause_leaves_audio_playing_by_default() {
     let s = play_then_set_session(
         serde_json::json!(null),

@@ -283,7 +283,8 @@ pub(crate) async fn on_active_scene(
 
 /// Server rule: when the session pause flips, pause or resume the world's playing audio. A pause
 /// (`before.paused` false, `after.paused` true) pauses every track when `after.pause_audio` is
-/// set; a resume (true to false) resumes every track when `before.pause_audio` was set, so a
+/// set, marking each track it paused `session_paused`; a resume (true to false) resumes only the
+/// `session_paused` tracks when `before.pause_audio` was set, so a hand-paused track stays paused and a
 /// world whose GM left audio alone is never touched on either edge. Called from
 /// `Room::publish` with `publish_guard` held, and best-effort like `on_active_scene`: the pause
 /// write itself has committed already, so a failed audio commit never undoes it.

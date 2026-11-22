@@ -2594,6 +2594,7 @@ describe("WorldSession.audio", () => {
           loop: false,
           startedAt: 0,
           pausedAt: null,
+          sessionPaused: false,
         }],
         shuffleSeed: 0,
       },

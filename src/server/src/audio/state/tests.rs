@@ -67,6 +67,7 @@ fn play_over_cap_is_rejected() {
             loop_: false,
             started_at: 0.0,
             paused_at: None,
+            session_paused: false,
         });
     }
     let op = AudioOp::Play {
@@ -131,6 +132,7 @@ fn pause_then_resume_shifts_started_at_by_paused_duration() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let paused = apply(&state, &AudioOp::Pause { id }, 1_000.0, &|_| None).unwrap();
     assert_eq!(paused.playing[0].paused_at, Some(1_000.0));
@@ -170,6 +172,7 @@ fn stop_all_clears_every_entry() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let next = apply(&state, &AudioOp::StopAll, 0.0, &|_| None).unwrap();
     assert!(next.playing.is_empty());
@@ -189,6 +192,7 @@ fn seek_rewrites_started_at_from_position() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let next = apply(
         &state,
@@ -219,6 +223,7 @@ fn next_sequential_advances_then_stops_at_end() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let lookup = |q: uuid::Uuid| (q == pid).then(|| pl.clone());
     let advanced = apply(&state, &AudioOp::Next { id }, 1.0, &lookup).unwrap();
@@ -252,6 +257,7 @@ fn next_loop_all_wraps_to_the_first_track() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let lookup = |q: uuid::Uuid| (q == pid).then(|| pl.clone());
     let next = apply(&state, &AudioOp::Next { id }, 1.0, &lookup).unwrap();
@@ -272,6 +278,7 @@ fn next_direct_entry_with_no_playlist_just_stops() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let next = apply(&state, &AudioOp::Next { id }, 1.0, &|_| None).unwrap();
     assert!(next.playing.is_empty());
@@ -314,6 +321,7 @@ fn set_gain_updates_in_place() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let next = apply(&state, &AudioOp::SetGain { id, gain: 0.3 }, 0.0, &|_| None).unwrap();
     assert_eq!(next.playing[0].gain, 0.3);
@@ -333,6 +341,7 @@ fn set_gain_nonfinite_is_rejected() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     assert_eq!(
         apply(
@@ -383,6 +392,7 @@ fn loop_all_prev_from_zero_wraps_to_the_last_track() {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     });
     let next = apply(&state, &AudioOp::Prev { id }, 1.0, &|q| {
         (q == pid).then(|| pl.clone())
@@ -502,6 +512,7 @@ fn filler_entry(i: usize) -> PlayingTrack {
         loop_: false,
         started_at: 0.0,
         paused_at: None,
+        session_paused: false,
     }
 }
 

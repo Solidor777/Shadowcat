@@ -143,6 +143,7 @@ export function entry(id: string, over: Partial<PlayingTrack> = {}): PlayingTrac
     loop: false,
     startedAt: 0,
     pausedAt: null,
+    sessionPaused: false,
     ...over,
   };
 }
