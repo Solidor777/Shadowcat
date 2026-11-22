@@ -335,6 +335,7 @@ fn move_request_round_trip() {
     let err = ServerMsg::MoveError {
         request_id: Uuid::from_u128(1),
         message: "token is moving".into(),
+        reason: None,
     };
     assert!(serde_json::to_string(&err).unwrap().contains("move_error"));
 }
@@ -674,8 +675,10 @@ fn combat_intents_round_trip_snake_case_tags() {
     let e = ServerMsg::CombatError {
         request_id: Uuid::nil(),
         message: "combat rejected".into(),
+        reason: Some(RejectReason::Paused),
     };
     assert_eq!(serde_json::to_value(&e).unwrap()["type"], "combat_error");
+    assert_eq!(serde_json::to_value(&e).unwrap()["reason"], "paused");
 
     let r = ServerMsg::CombatResult {
         request_id: Uuid::nil(),

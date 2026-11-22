@@ -405,5 +405,49 @@ pub fn apply(
     Ok(next)
 }
 
+/// `state` with every playing track paused at `now`, the session pause's audio half. A track that
+/// is already paused keeps its original `paused_at`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::pause_all;
+/// use shadowcat::data::engine::AudioStateEngine;
+///
+/// let state = AudioStateEngine::default();
+/// assert!(pause_all(&state, 10.0).playing.is_empty());
+/// ```
+pub fn pause_all(state: &AudioStateEngine, now: f64) -> AudioStateEngine {
+    let mut next = state.clone();
+    for t in &mut next.playing {
+        t.paused_at.get_or_insert(now);
+    }
+    next
+}
+
+/// `state` with every paused track resumed at `now`, each track's `started_at` shifted forward by
+/// the time it was paused (the `AudioOp::Resume` rule), so every position continues where it
+/// stopped. A track the GM paused by hand before the session pause resumes too: the track carries
+/// no record of who paused it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::resume_all;
+/// use shadowcat::data::engine::AudioStateEngine;
+///
+/// let state = AudioStateEngine::default();
+/// assert!(resume_all(&state, 10.0).playing.is_empty());
+/// ```
+pub fn resume_all(state: &AudioStateEngine, now: f64) -> AudioStateEngine {
+    let mut next = state.clone();
+    for t in &mut next.playing {
+        if let Some(paused_at) = t.paused_at.take() {
+            t.started_at += now - paused_at;
+        }
+    }
+    next
+}
+
 #[cfg(test)]
 mod tests;

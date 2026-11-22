@@ -13,4 +13,4 @@
  * assert_eq!(json, serde_json::json!("conflict"));
  * ```
  */
-export type RejectReason = "forbidden" | "conflict" | "invalid";
+export type RejectReason = "forbidden" | "conflict" | "invalid" | "paused";

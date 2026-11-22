@@ -784,6 +784,9 @@ pub enum RejectReason {
     /// Anything else: structurally invalid payload, an absent target, or an
     /// internal failure — not retryable without changing the request.
     Invalid,
+    /// The session is paused and the refused request is a token move or a combat control, which
+    /// a non-GM member may not make until the GM resumes.
+    Paused,
 }
 
 /// Why a `Pathfind` failed. Carried beside the player-presentable text on `PathError` so a
@@ -1501,6 +1504,10 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Player-presentable failure text.
         message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the move; `None` for every
+        /// other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// A `SendMessage`/`EditMessage`/`DeleteMessage` was rejected. One shared
     /// variant covers all three chat ops: they share a single error enum
@@ -1524,6 +1531,10 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Player-presentable failure text.
         message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the intent; `None` for
+        /// every other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// A combat intent was accepted and committed as the sequenced `Event` at `seq`. Addressed to
     /// the originating connection only; never broadcast. The broadcast `Event` remains the state

@@ -128,6 +128,7 @@ export type { EasingMode } from "./generated/engine/EasingMode";
 export type { WorldSettingsEngine } from "./generated/engine/WorldSettingsEngine";
 export type { Occlusion } from "./generated/engine/Occlusion";
 export type { AudioOverlay } from "./generated/engine/AudioOverlay";
+export type { SessionState } from "./generated/engine/SessionState";
 export type { WorldSceneDefaults } from "./generated/engine/WorldSceneDefaults";
 export type { Pathfinding } from "./generated/engine/Pathfinding";
 export type { AnimationSettings } from "./generated/engine/AnimationSettings";
