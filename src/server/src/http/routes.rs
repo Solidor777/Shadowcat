@@ -316,7 +316,7 @@ pub async fn get_ui_state(
 /// Merge a partial UI-state patch into the caller's stored state; the merge
 /// rule itself is stated once, on `SqliteRepository::merge_ui_state`,
 /// including its `null`-removes-key/entry semantics. This route validates
-/// the wire shape (`body` and any `worlds` value must be JSON objects), then
+/// the wire shape (`body` and any `worlds` or `modules` value must be JSON objects), then
 /// runs two DISTINCT size checks that catch two DISTINCT cases — neither is
 /// a duplicate of the other: this route's own pre-check rejects a patch
 /// whose OWN serialized size already exceeds the cap before the pool is
@@ -374,11 +374,11 @@ pub async fn put_ui_state(
             "ui_state must be a JSON object".into(),
         ));
     }
-    if let Some(worlds) = body.get("worlds") {
-        if !worlds.is_object() {
-            return Err(AppError::Unprocessable(
-                "ui_state `worlds` must be a JSON object".into(),
-            ));
+    for key in crate::data::sqlite::PER_ID_NAMESPACES {
+        if body.get(key).is_some_and(|ns| !ns.is_object()) {
+            return Err(AppError::Unprocessable(format!(
+                "ui_state `{key}` must be a JSON object"
+            )));
         }
     }
     let patch_bytes = serde_json::to_vec(&body)

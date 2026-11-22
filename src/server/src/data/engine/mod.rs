@@ -44,7 +44,7 @@ pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE}
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
     ConditionRegistryEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction,
-    FactionRegistryEngine, FactionStance,
+    FactionRegistryEngine, FactionStance, ModuleSettingsEngine,
 };
 pub use scene::{
     AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
@@ -75,6 +75,9 @@ pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
 /// Doc_type for the world's singleton channel registry config document.
 pub const CHANNEL_REGISTRY_DOC_TYPE: &str = "channel-registry";
+/// Doc_type for the world's singleton module-settings config document: one opaque `system`-band
+/// value per module id.
+pub const MODULE_SETTINGS_DOC_TYPE: &str = "module-settings";
 /// Maximum length of a chat channel id, in characters — the one declaration,
 /// shared by the message ingest check (`chat::handle_send_message`) and
 /// `ChannelRegistryEngine::validate` (a longer key could never be posted to).
@@ -142,6 +145,7 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "note",
     "playlist",
     "audio-state",
+    "module-settings",
 ];
 
 /// Every `/engine/<key>` path a `doc_type`'s `normalize_engine` arm can
@@ -466,6 +470,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("playlist: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "module-settings" => round_trip::<ModuleSettingsEngine>(v, "module-settings"),
         "audio-state" => {
             let typed: AudioStateEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("audio-state: {e}")))?;
@@ -643,9 +648,8 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
             .unwrap_or_default(),
         "scene" | "wall" | "region" | "light" | "drawing" | "template" | "world-settings"
         | "chat-settings" | "dice-settings" | "combat" | "combatant" | "effect"
-        | "system-defaults" | "asset_folder" | "table_folder" | "playlist" | "audio-state" => {
-            String::new()
-        }
+        | "system-defaults" | "asset_folder" | "table_folder" | "playlist" | "audio-state"
+        | "module-settings" => String::new(),
         _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
     })
 }

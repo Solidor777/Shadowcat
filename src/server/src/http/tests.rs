@@ -260,6 +260,27 @@ async fn ui_state_get_put_round_trip_and_validation() {
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 
+    // A non-object `modules` value is rejected.
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": [1] }))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A `modules` patch merges inside one module's slice over the wire.
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": { "m1": { "foo": 1 } } }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    u.put("/api/me/ui-state")
+        .json(&serde_json::json!({ "modules": { "m1": { "bar": 2 } } }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+    assert_eq!(
+        got["modules"]["m1"],
+        serde_json::json!({ "foo": 1, "bar": 2 })
+    );
+
     // An over-cap body is rejected.
     let big = "x".repeat(70 * 1024);
     u.put("/api/me/ui-state")

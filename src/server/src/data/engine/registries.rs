@@ -404,6 +404,25 @@ impl ConditionRegistryEngine {
     }
 }
 
+/// The engine body of the world's singleton `module-settings` document. The band is intentionally
+/// empty: every module's world-scoped settings live in the document's opaque `system` band, keyed
+/// by module id at the top level, so the server never interprets them.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::ModuleSettingsEngine;
+///
+/// let engine: ModuleSettingsEngine = serde_json::from_value(serde_json::json!({})).unwrap();
+/// assert_eq!(engine, ModuleSettingsEngine {});
+/// // deny_unknown_fields: a smuggled key is rejected, fail-closed.
+/// assert!(serde_json::from_value::<ModuleSettingsEngine>(serde_json::json!({ "x": 1 })).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ModuleSettingsEngine {}
+
 /// GM-configured chat content policy (exported to the client as `ChatSettingsEngine`).
 /// Every field optional/absent-safe; a partial body is a valid engine band.
 ///
