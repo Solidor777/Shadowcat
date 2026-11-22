@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import {
+    getAppContext,
+    ContextMenu,
+    createContextMenuTrigger,
+    type ContextMenuItem,
+    type ContextMenuRequest,
+    type ContextMenuTrigger,
+  } from "@shadowcat/ui-kit";
   import { buildMoveOp, buildReorderOps, createDragController, dropIndex, type DropResult, type WireDocument } from "@shadowcat/core";
   import { noteSiblings, type NoteTreeNode } from "./tree";
 
@@ -145,6 +152,76 @@
     expanded = next;
   }
 
+  /** Opens a note's sheet; the open button and the context menu's Open item both call this.
+   * @param doc The note to open.
+   * @example
+   * ```
+   * // private function; wired to the open button and the context menu
+   * declare const doc: WireDocument;
+   * openNote(doc);
+   * ```
+   */
+  function openNote(doc: WireDocument): void {
+    ctx.openDocument({ docId: doc.id });
+  }
+
+  /** Toggles a note's Move-to picker; the move button and the context menu's Move item both call this.
+   * @param doc The note to move.
+   * @example
+   * ```
+   * // private function; wired to the move button and the context menu
+   * declare const doc: WireDocument;
+   * toggleMove(doc);
+   * ```
+   */
+  function toggleMove(doc: WireDocument): void {
+    moveOpenFor = moveOpenFor === doc.id ? null : doc.id;
+  }
+
+  /** Deletes a note; the delete button and the context menu's Delete item both call this.
+   * @param doc The note to delete.
+   * @example
+   * ```
+   * // private function; wired to the delete button and the context menu
+   * declare const doc: WireDocument;
+   * deleteNote(doc);
+   * ```
+   */
+  function deleteNote(doc: WireDocument): void {
+    ctx.dispatchIntent([{ op: "delete", doc }]);
+  }
+
+  /** The open context menu's position and items, or null when none is open. */
+  let contextMenu = $state<ContextMenuRequest | null>(null);
+  /** The note whose row the current gesture started on, read by the shared trigger's `getItems`. */
+  let gestureDoc: WireDocument | null = null;
+
+  /** The context-menu items for a note: the actions the row's buttons expose, under the same
+   * gates (`canDelete` for Delete, the GM role for Move to).
+   * @param doc The note the menu opens for.
+   * @returns Open, then Move to and Delete when permitted.
+   * @example
+   * ```
+   * // private function; read by the row's context-menu trigger
+   * declare const doc: WireDocument;
+   * contextItems(doc);
+   * ```
+   */
+  function contextItems(doc: WireDocument): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [{ id: "open", labelKey: "notes.open", action: () => openNote(doc) }];
+    if (ctx.role === "gm") items.push({ id: "move", labelKey: "notes.moveTo", action: () => toggleMove(doc) });
+    if (ctx.canDelete(doc)) items.push({ id: "delete", labelKey: "notes.delete", action: () => deleteNote(doc) });
+    return items;
+  }
+
+  /** The one trigger every row shares; an in-progress row drag suppresses the menu. The row
+   * records its note in `gestureDoc` before forwarding a gesture that can open the menu. */
+  const trigger: ContextMenuTrigger = createContextMenuTrigger({
+    getItems: () => (gestureDoc ? contextItems(gestureDoc) : []),
+    onOpen: (request) => (contextMenu = request),
+    canOpen: () => drag.dragging === null,
+  });
+
   /** Dispatches the Move-to op for `doc`, with the stored parent as the OCC pre-image.
    * @param doc The note being moved.
    * @param target The new parent, or `null` for root.
@@ -170,6 +247,17 @@
       use:trackRow={node.doc.id}
       role="presentation"
       onkeydown={(e) => onRowKeydown(level, node.doc, e)}
+      oncontextmenu={(e) => {
+        gestureDoc = node.doc;
+        trigger.oncontextmenu(e);
+      }}
+      onpointerdown={(e) => {
+        gestureDoc = node.doc;
+        trigger.onpointerdown(e);
+      }}
+      onpointerup={trigger.onpointerup}
+      onpointercancel={trigger.onpointercancel}
+      onpointermove={trigger.onpointermove}
     >
       {#if canReorder(node.doc)}
         <button
@@ -194,14 +282,14 @@
         type="button"
         data-testid="note-open"
         data-note-id={node.doc.id}
-        onclick={() => ctx.openDocument({ docId: node.doc.id })}
+        onclick={() => openNote(node.doc)}
       >{node.doc.name ?? t("sheetNote.untitled")}</button>
       {#if ctx.canDelete(node.doc)}
         <button
           type="button"
           data-testid="note-delete"
           data-note-id={node.doc.id}
-          onclick={() => ctx.dispatchIntent([{ op: "delete", doc: node.doc }])}
+          onclick={() => deleteNote(node.doc)}
         >{t("notes.delete")}</button>
       {/if}
       {#if ctx.role === "gm"}
@@ -209,7 +297,7 @@
           type="button"
           data-testid="note-move"
           data-note-id={node.doc.id}
-          onclick={() => (moveOpenFor = moveOpenFor === node.doc.id ? null : node.doc.id)}
+          onclick={() => toggleMove(node.doc)}
         >{t("notes.moveTo")}</button>
       {/if}
     </div>
@@ -244,6 +332,10 @@
     {@render row(node, 0, nodes)}
   {/each}
 </ul>
+
+{#if contextMenu}
+  <ContextMenu items={contextMenu.items} x={contextMenu.x} y={contextMenu.y} onClose={() => (contextMenu = null)} />
+{/if}
 
 <style lang="scss">
   .tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }

@@ -7,7 +7,6 @@ import FolderTree from "./FolderTree.svelte";
 import { buildFolderDoc } from "./folderOps";
 
 beforeEach(() => vi.restoreAllMocks());
-
 function seededStore() {
   const store = new DocumentStore();
   const a = { ...buildFolderDoc("w1", "alpha", null), id: "fa" };
@@ -209,6 +208,55 @@ test("creating a folder dispatches a Create with the asset_folder envelope", asy
   expect(ops[0].op).toBe("create");
   expect(ops[0].doc.doc_type).toBe("asset_folder");
   expect(ops[0].doc.name).toBe("maps");
+});
+
+test("right-clicking a folder row opens a menu with Rename, Move and Delete", async () => {
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx() });
+  await fireEvent.contextMenu(await screen.findByTestId("folder-node-fb"));
+  expect(screen.getByTestId("context-menu-item-rename")).toBeTruthy();
+  expect(screen.getByTestId("context-menu-item-move")).toBeTruthy();
+  expect(screen.getByTestId("context-menu-item-delete")).toBeTruthy();
+});
+
+test("the menu's Move item opens the same picker the move button opens, and its choice dispatches the same Move op", async () => {
+  const dispatchIntent = vi.fn();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx({ dispatchIntent }) });
+  await fireEvent.contextMenu(await screen.findByTestId("folder-node-fb"));
+  await fireEvent.click(screen.getByTestId("context-menu-item-move"));
+  expect(screen.queryByTestId("context-menu")).toBeNull();
+  await fireEvent.click(await screen.findByTestId("folder-move-target-root"));
+  expect(dispatchIntent).toHaveBeenCalledWith([
+    { op: "move", doc_id: "fb", parent_id: null, old_parent_id: "fa" },
+  ]);
+});
+
+test("the menu's Rename item opens the same inline rename the rename button opens", async () => {
+  const dispatchIntent = vi.fn();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx({ dispatchIntent }) });
+  await fireEvent.contextMenu(await screen.findByTestId("folder-node-fb"));
+  await fireEvent.click(screen.getByTestId("context-menu-item-rename"));
+  const input = screen.getByTestId("folder-rename-input-fb") as HTMLInputElement;
+  expect(input.value).toBe("beta");
+  await fireEvent.input(input, { target: { value: "bravo" } });
+  await fireEvent.keyDown(input, { key: "Enter" });
+  expect(dispatchIntent).toHaveBeenCalledWith([
+    { op: "update", doc_id: "fb", changes: [{ path: "/name", old: "beta", new: "bravo" }] },
+  ]);
+});
+
+test("the menu's Delete item opens the same delete dialog the delete button opens", async () => {
+  const del = vi.spyOn(api, "deleteAssetFolder").mockResolvedValue();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx() });
+  await fireEvent.contextMenu(await screen.findByTestId("folder-node-fb"));
+  await fireEvent.click(screen.getByTestId("context-menu-item-delete"));
+  await fireEvent.click(screen.getByTestId("folder-delete-purge"));
+  await waitFor(() => expect(del).toHaveBeenCalledWith("fb", "delete"));
+});
+
+test("a read-only tree opens no menu", async () => {
+  render(FolderTree, { props: { ...PROPS, mutable: false }, context: treeCtx() });
+  await fireEvent.contextMenu(await screen.findByTestId("folder-node-fb"));
+  expect(screen.queryByTestId("context-menu")).toBeNull();
 });
 
 test("inline rename dispatches an Update on /name with the stored pre-image", async () => {
