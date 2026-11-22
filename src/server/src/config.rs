@@ -106,6 +106,12 @@ pub struct Cli {
     /// In-server backup output root override (default: sibling `backups/`).
     #[arg(long)]
     pub backups_dir: Option<String>,
+    /// Keep at least this many of the newest in-app backups (`Config.backup_keep_last`).
+    #[arg(long)]
+    pub backup_keep_last: Option<u32>,
+    /// Keep in-app backups newer than this many days (`Config.backup_keep_days`).
+    #[arg(long)]
+    pub backup_keep_days: Option<u32>,
     /// Trash retention override: a positive number of days, `never` or `disabled`.
     #[arg(long)]
     pub trash_retention: Option<String>,
@@ -286,6 +292,13 @@ pub struct Config {
     /// In-server backup output root (`POST /api/admin/backup`). `None` → sibling
     /// `backups/` dir beside the db file.
     pub backups_dir: Option<String>,
+    /// Retention: keep the newest N in-app backups. `None` = no count limit. With
+    /// `backup_keep_days` also set, a backup survives when EITHER limit keeps it (union), and
+    /// the newest backup is never pruned (`backup::catalog::plan_prune`).
+    pub backup_keep_last: Option<u32>,
+    /// Retention: keep in-app backups younger than N days. `None` = no age limit. Both limits
+    /// `None` keeps every backup.
+    pub backup_keep_days: Option<u32>,
     /// How long a discarded file survives in the trash: a positive number of days (default 30),
     /// `"never"` (no automatic sweep) or `"disabled"` (every removal is immediate and
     /// unrecoverable). Zero is a boot error, not a spelling of `"disabled"`.
@@ -417,6 +430,8 @@ impl Default for Config {
             modules_dir: None,
             log_dir: None,
             backups_dir: None,
+            backup_keep_last: None,
+            backup_keep_days: None,
             trash_retention: crate::trash::TrashRetention::default(),
             trash_dir: None,
             upload_max_bytes: 25 * 1024 * 1024,
@@ -708,6 +723,12 @@ impl Config {
         }
         if let Some(v) = cli.backups_dir {
             cfg.backups_dir = Some(v);
+        }
+        if let Some(v) = cli.backup_keep_last {
+            cfg.backup_keep_last = Some(v);
+        }
+        if let Some(v) = cli.backup_keep_days {
+            cfg.backup_keep_days = Some(v);
         }
         if let Some(v) = cli.trash_retention {
             cfg.trash_retention = v.parse().map_err(|e: crate::trash::TrashRetentionError| {

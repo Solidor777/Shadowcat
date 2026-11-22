@@ -92,6 +92,8 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `modules_dir` | `modules/` beside the db | Installed community modules |
 | `log_dir` | `logs/` beside the db | Rolling daily log-file output root (retains 14 files; stdout logging is unaffected) |
 | `backups_dir` | `backups/` beside the db | In-app backup output root |
+| `backup_keep_last` | *(unset: keep all)* | After each in-app backup, keep at least this many of the newest backups |
+| `backup_keep_days` | *(unset: keep all)* | After each in-app backup, keep backups newer than this many days. With both limits set, a backup is removed only when it fails both. The newest backup is never removed |
 | `upload_max_bytes` | 25 MiB | Upload size cap (players) |
 | `upload_rate_per_min` | 20 | Uploads per minute (players) |
 | `upload_max_bytes_gm` / `upload_rate_per_min_gm` | 2× player values | GM upload caps |
@@ -363,6 +365,30 @@ prints one summary line — output directory, asset file count, database bytes,
 and the Shadowcat version that wrote it (useful when restoring later). A running
 server also writes backups into `backups_dir` through the admin-only
 `POST /api/admin/backup` endpoint.
+
+### Managing in-app backups
+
+The admin-only routes under `/api/admin/backups` list the backups in `backups_dir`
+(newest first), delete one (it moves to the server trash), apply the retention
+limits now (`backup_keep_last`, `backup_keep_days`), and restore one.
+
+### Restoring from the list needs a manual start
+
+A running server cannot swap its own database file, so restoring from the list
+works in two steps:
+
+1. The restore request first writes a safety backup of the current state (kind
+   `pre-restore`, so a bad restore can itself be undone from the list), then
+   writes `restore-pending.json` beside the database file and **stops the
+   server**. The server does not restart itself.
+2. **Start the server again** (a service manager or container restarts it on its
+   own; run by hand, you start it). Before the database opens, the start applies
+   the backup over the database and assets and removes the marker.
+
+If the restore cannot be applied (the backup is missing or damaged), the start
+leaves the database as it was, writes `restore-failed.json` beside it with the
+reason, and serves the existing data. The pending marker is removed either way,
+so the next start does not retry.
 
 ## Serving to your table
 

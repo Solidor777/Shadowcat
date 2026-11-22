@@ -1087,6 +1087,21 @@ fn egress_window_layers_cli_over_env_over_default() {
 }
 
 #[test]
+fn backup_retention_defaults_to_unlimited_and_takes_cli_values() {
+    let _guard = config_env_test_lock();
+    let cfg = Config::load(Cli::default()).unwrap();
+    assert_eq!((cfg.backup_keep_last, cfg.backup_keep_days), (None, None));
+    let cli = Cli {
+        backup_keep_last: Some(4),
+        backup_keep_days: Some(30),
+        ..Cli::default()
+    };
+    let cfg = Config::load(cli).unwrap();
+    assert_eq!(cfg.backup_keep_last, Some(4));
+    assert_eq!(cfg.backup_keep_days, Some(30));
+}
+
+#[test]
 fn egress_window_accepts_exactly_one_to_thirty_six_hundred_seconds() {
     for ok in [EGRESS_WINDOW_SECS_MIN, EGRESS_WINDOW_SECS_MAX] {
         let cfg = load_with_egress_env(Some(&ok.to_string()), Cli::default()).unwrap();
