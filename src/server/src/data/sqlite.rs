@@ -791,6 +791,17 @@ const SMR_PERMISSION_PATHS: [&str; 4] = [
     "/permissions/property_overrides",
 ];
 
+/// The readership subset of `SMR_PERMISSION_PATHS`: the three paths that move who
+/// can read a message. `authorize_update_change` admits them under
+/// `WriteOrigin::ServerMessageRevision` only when the intent's author holds the GM
+/// world role, so the GM-only rule of `chat::handle_revise_audience` also holds at
+/// the data layer for any caller that reaches `apply_intent` with that origin.
+const SMR_READERSHIP_PATHS: [&str; 3] = [
+    "/permissions/default",
+    "/permissions/gm_role",
+    "/permissions/users",
+];
+
 /// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
 /// (`declared_caps_for_path`), and the carried-light GM gate
@@ -838,10 +849,13 @@ fn authorize_update_change(
             // `handle_recalc_roll` needs `/permissions/property_overrides` to register
             // a freshly-appended recalc entry's gm_only override pointer, and
             // `handle_revise_audience` needs the other three to move a message's
-            // readership. This exact-path admission widens nothing for any other
+            // readership; those three (`SMR_READERSHIP_PATHS`) are admitted only for
+            // a GM author. This exact-path admission widens nothing for any other
             // doc_type/origin/path.
-            let is_recalc_override_write =
-                is_server_message_revision && SMR_PERMISSION_PATHS.contains(&ch.path.as_str());
+            let path = ch.path.as_str();
+            let is_recalc_override_write = is_server_message_revision
+                && SMR_PERMISSION_PATHS.contains(&path)
+                && (!SMR_READERSHIP_PATHS.contains(&path) || ctx.world_role == WorldRole::Gm);
             if !is_recalc_override_write {
                 tracing::debug!(
                     user = %ctx.user_id, path = %ch.path, capability = need,

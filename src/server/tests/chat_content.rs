@@ -1320,10 +1320,10 @@ async fn client_intent_update_to_message_still_forbidden() {
 }
 
 /// The `ServerMessageRevision` exemption grants only READ + WRITE_FIELDS, not
-/// `all: true` — a hypothetical future `ServerMessageRevision`-origin write
-/// targeting `/permissions` (neither `handle_edit_message` nor
-/// `handle_delete_message` ever construct such an op) must still be rejected,
-/// proving the narrowed `Access` doesn't grant `EDIT_PERMISSIONS` by accident.
+/// `all: true`, and admits a readership path (`/permissions/default`) only for a
+/// GM author. A non-GM author's `ServerMessageRevision`-origin write to it is
+/// rejected, proving neither the narrowed `Access` nor the readership admission
+/// grants `EDIT_PERMISSIONS` to a player.
 #[tokio::test]
 async fn server_message_revision_does_not_grant_permissions_write() {
     let f = fixture().await;
