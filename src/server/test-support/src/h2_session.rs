@@ -40,6 +40,7 @@ pub async fn seeded_state() -> (AppState, uuid::Uuid) {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls: shadowcat::tls::TlsRuntime::disabled(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
         trash: Arc::new(shadowcat::trash::Trash::new(
             std::env::temp_dir(),
             shadowcat::trash::TrashRetention::Disabled,

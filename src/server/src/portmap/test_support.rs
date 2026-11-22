@@ -94,6 +94,103 @@ pub async fn spawn_ssdp(replies: Vec<Vec<u8>>) -> SocketAddr {
     addr
 }
 
+/// One datagram a [`FakeUdp`] sends back.
+pub struct Reply {
+    /// The datagram bytes.
+    pub bytes: Vec<u8>,
+    /// Send from a second socket instead of the listening one, imitating a different host.
+    pub spoofed: bool,
+}
+
+impl Reply {
+    /// A reply from the gateway's own socket.
+    pub fn genuine(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            spoofed: false,
+        }
+    }
+}
+
+/// A running fake NAT-PMP/PCP gateway and the datagrams it has seen.
+pub struct FakeUdp {
+    /// Address the gateway listens on.
+    pub addr: SocketAddr,
+    /// Every datagram received, in order.
+    pub requests: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+/// Starts a fake UDP gateway. `handler` maps each request to the replies to send.
+pub async fn spawn_udp(handler: impl Fn(&[u8]) -> Vec<Reply> + Send + Sync + 'static) -> FakeUdp {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let other = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        while let Ok((n, source)) = socket.recv_from(&mut buf).await {
+            let request = buf[..n].to_vec();
+            seen.lock().unwrap().push(request.clone());
+            for reply in handler(&request) {
+                let sender = if reply.spoofed { &other } else { &socket };
+                let _ = sender.send_to(&reply.bytes, source).await;
+            }
+        }
+    });
+    FakeUdp { addr, requests }
+}
+
+/// A NAT-PMP external-address reply.
+pub fn natpmp_address_reply(epoch: u32, address: [u8; 4]) -> Vec<u8> {
+    let mut out = vec![0, 128, 0, 0];
+    out.extend_from_slice(&epoch.to_be_bytes());
+    out.extend_from_slice(&address);
+    out
+}
+
+/// A NAT-PMP TCP mapping reply (also the answer to a delete, with lifetime 0).
+pub fn natpmp_map_reply(epoch: u32, internal: u16, external: u16, lifetime: u32) -> Vec<u8> {
+    let mut out = vec![0, 130, 0, 0];
+    out.extend_from_slice(&epoch.to_be_bytes());
+    out.extend_from_slice(&internal.to_be_bytes());
+    out.extend_from_slice(&external.to_be_bytes());
+    out.extend_from_slice(&lifetime.to_be_bytes());
+    out
+}
+
+/// A NAT-PMP reply carrying `result` for the opcode of `request` (a refusal).
+pub fn natpmp_refusal(request: &[u8], result: u16) -> Vec<u8> {
+    let mut out = vec![0, request[1] + 128];
+    out.extend_from_slice(&result.to_be_bytes());
+    out.extend_from_slice(&[0; 4]);
+    out
+}
+
+/// A PCP MAP reply built from `request`: same nonce and internal port, with the given grant.
+pub fn pcp_map_reply(
+    request: &[u8],
+    result: u8,
+    lifetime: u32,
+    epoch: u32,
+    external: u16,
+    address: std::net::Ipv4Addr,
+) -> Vec<u8> {
+    let mut out = request.to_vec();
+    out[1] = 0x81;
+    out[3] = result;
+    out[4..8].copy_from_slice(&lifetime.to_be_bytes());
+    out[8..12].copy_from_slice(&epoch.to_be_bytes());
+    out[42..44].copy_from_slice(&external.to_be_bytes());
+    out[44..60].copy_from_slice(&address.to_ipv6_mapped().octets());
+    out
+}
+
+/// Counts loopback as a LAN so the fakes pass the UPnP trust check.
+pub fn accept_loopback(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+}
+
 /// An SSDP reply datagram for an IGD at `location`.
 pub fn ssdp_reply(location: &str) -> Vec<u8> {
     format!(
