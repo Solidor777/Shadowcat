@@ -63,6 +63,8 @@
       .map((e) => e.contribution);
   });
 
+  // The author's account colour accent, from the same roster read as `ctx.members`.
+  const authorColour = $derived(sys ? (ctx.memberProfiles.get(sys.user_owner)?.colour ?? null) : null);
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
 
   // Actor attribution: wraps the ActorOwnerRef in the same read-through every other
@@ -376,7 +378,7 @@
 {#if sys}
   <article class="card" class:emote={sys.kind === "emote"} class:ooc={sys.kind === "ooc"} class:system={sys.kind === "system"}>
     <header class="header">
-      <span class="author">{authorName}</span>
+      <span class="author" style:color={authorColour ?? undefined}>{authorName}</span>
       {#if actorName}
         {#if actorOpenRef}
           <button type="button" class="actor-name link" onclick={() => ctx.openDocument(actorOpenRef)} aria-label={t("chat.openActor", { name: actorName })}>({actorName})</button>

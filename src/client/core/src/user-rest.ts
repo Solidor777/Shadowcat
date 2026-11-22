@@ -48,6 +48,12 @@ export interface WorldMember {
   username: string;
   /** The member's role within this world (distinct from `ServerUser.server_role`). */
   role: WorldRole;
+  /** The member's colour accent as `#rrggbb`, or `null`/absent when unset. */
+  colour?: string | null;
+  /** The member's pronouns display text, or `null`/absent when unset. */
+  pronouns?: string | null;
+  /** Whether the member has an avatar; the bytes are fetched from `avatarUrl`, never inline. */
+  has_avatar?: boolean;
 }
 
 /** A world's roster, straight from the server. Distinct from `AppContext`'s
@@ -73,6 +79,82 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
   });
   if (!res.ok) throw new Error(await restError(res, "list members failed"));
   return (await res.json()) as WorldMember[];
+}
+
+/** The URL of a world member's avatar image, or `null` when the member has none. The route is
+ * scoped under the world so the roster's own membership boundary applies
+ * (`http::routes::get_member_avatar`).
+ * @param world The world id.
+ * @param user The member's account id.
+ * @param hasAvatar The roster's `has_avatar` flag for that member.
+ * @returns The avatar URL, or `null` when `hasAvatar` is false.
+ * @example
+ * ```ts
+ * import { avatarUrl } from "@shadowcat/core";
+ *
+ * const url = avatarUrl("00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002", true);
+ * ```
+ */
+export function avatarUrl(world: string, user: string, hasAvatar: boolean | undefined): string | null {
+  if (!hasAvatar) return null;
+  return `/api/worlds/${encodeURIComponent(world)}/members/${encodeURIComponent(user)}/avatar`;
+}
+
+/** The values `updateProfile` stores. */
+export interface ProfileUpdate {
+  /** Colour accent as `#rrggbb`, or `null` to clear it. */
+  colour: string | null;
+  /** Pronouns text (at most 32 printable characters), or `null` to clear it. */
+  pronouns: string | null;
+}
+
+/** Replace the signed-in account's own colour accent and pronouns. Both are replaced together;
+ * `null` clears one. The server validates the colour (`#rrggbb`) and the pronouns (at most 32
+ * printable characters) and answers 422 with a client-actionable message.
+ * @param profile The new colour and pronouns; its fields are described on `ProfileUpdate`.
+ * @example
+ * ```ts
+ * import { updateProfile } from "@shadowcat/core";
+ *
+ * await updateProfile({ colour: "#336699", pronouns: "they/them" });
+ * ```
+ */
+export async function updateProfile(profile: ProfileUpdate): Promise<void> {
+  const res = await fetch("/api/account/profile", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ colour: profile.colour, pronouns: profile.pronouns }),
+  });
+  if (!res.ok) throw new Error(await restError(res, "update profile failed"));
+}
+
+/** Set the signed-in account's own avatar from an image file. The body is the raw file bytes;
+ * the server sniffs the real type (PNG, JPEG or WebP), caps the size at 128 KiB and decodes
+ * under a bound, answering 413 or 422 with a client-actionable message.
+ * @param file The image to upload.
+ * @example
+ * ```ts
+ * import { uploadAvatar } from "@shadowcat/core";
+ *
+ * await uploadAvatar(new File([new Uint8Array(8)], "me.png", { type: "image/png" }));
+ * ```
+ */
+export async function uploadAvatar(file: Blob): Promise<void> {
+  const res = await fetch("/api/account/avatar", { method: "PUT", body: file });
+  if (!res.ok) throw new Error(await restError(res, "upload avatar failed"));
+}
+
+/** Clear the signed-in account's own avatar. Clearing an absent avatar also succeeds.
+ * @example
+ * ```ts
+ * import { deleteAvatar } from "@shadowcat/core";
+ *
+ * await deleteAvatar();
+ * ```
+ */
+export async function deleteAvatar(): Promise<void> {
+  const res = await fetch("/api/account/avatar", { method: "DELETE" });
+  if (!res.ok) throw new Error(await restError(res, "delete avatar failed"));
 }
 
 /** Fields for `createUser`. */
