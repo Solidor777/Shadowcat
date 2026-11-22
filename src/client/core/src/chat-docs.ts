@@ -370,10 +370,11 @@ export const DocLinkTargetSchema: z.ZodType<DocLinkTarget> = docLinkTargetSchema
  * asset endpoint), never a raw external URL. `oembed` is a provider-native embed from an
  * allowlisted host, structured fields only — the provider's own `html` is never sent to
  * the client. `doc_link` is a free-form, author-inserted link to a document or placed
- * token; `label` is the display text captured at authoring time, fixed at that value —
- * a renderer MUST NOT re-resolve a live name lookup for it, and any visibility check a
- * renderer performs against `target` must be a fail-closed presence check (e.g. against
- * `ctx.documents`), never a live existence assumption. */
+ * token; an explicit `label` is the display text captured at authoring time, fixed at that
+ * value — a renderer MUST NOT re-resolve a live name lookup for it. A `doc_link` without a
+ * `label` takes its text from the target's current name, resolved at render. Any visibility
+ * check a renderer performs against `target` must be a fail-closed presence check (e.g.
+ * against `ctx.documents`), never a live existence assumption. */
 export type ChatSegment =
   | {
       /** Literal text; rendered as a DOM text node by the client (never innerHTML),
@@ -397,6 +398,9 @@ export type ChatSegment =
       formula: string;
       /** Optional display label (plain data, never markup). */
       label?: string | null;
+      /** Optional caption the click sends as the flavor of the roll it makes (plain data,
+       * never markup). Absent for a button stored without one. */
+      flavor?: string | null;
     }
   | {
       /** A server-fetched, SSRF-guarded preview of a link in the message. */
@@ -435,16 +439,17 @@ export type ChatSegment =
       thumbnail_asset_id?: string | null;
     }
   | {
-      /** A free-form, author-inserted link to a document or placed token. `label` is the
-       * display text captured at authoring time, fixed at that value — a renderer MUST NOT
-       * re-resolve a live name lookup for it, and any visibility check against `target` must
+      /** A free-form, author-inserted link to a document or placed token. An explicit `label`
+       * is the display text captured at authoring time, fixed at that value — a renderer MUST
+       * NOT re-resolve a live name lookup for it. A link without one takes its text from the
+       * target's current name, resolved at render. Any visibility check against `target` must
        * be a fail-closed presence check (e.g. against `ctx.documents`), never a live
        * existence assumption. */
       kind: "doc_link";
       /** What the link points at. */
       target: DocLinkTarget;
-      /** Display text captured at authoring time. */
-      label: string;
+      /** Display text captured at authoring time; absent/`null` when the author gave none. */
+      label?: string | null;
     }
   | {
       /** An image: a `[[asset:<uuid>|alt]]` span the author placed, or a
@@ -488,6 +493,9 @@ export type RollEmbedSegment = {
   /** Present iff this roll has been recalculated at least once; visible to
    * every recipient (unlike `spec`/`raw`). */
   recalc_history?: RecalcHistoryEntry[] | null;
+  /** Author-written caption for the roll (plain text, never markup); visible to every
+   * recipient. Absent/`null` for a roll sent without one. */
+  flavor?: string | null;
 };
 
 /** One executed table draw, recursive through any nested draws it fanned
@@ -564,6 +572,7 @@ export const rollEmbedSegmentSchemaImpl = z.object({
   spec: z.unknown().optional(),
   raw: WireRawRollSchema.nullish(),
   recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
+  flavor: z.string().nullish(),
 });
 /** Validator for a `RollEmbedSegment`. Input type is widened to `unknown` because the
  * `outcome: RollOutcomeSchema` field inherits `RollOutcomeSchema`'s own widened input. */
@@ -578,7 +587,12 @@ const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   rollEmbedSegmentSchemaImpl,
-  z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
+  z.object({
+    kind: z.literal("roll_button"),
+    formula: z.string(),
+    label: z.string().nullish(),
+    flavor: z.string().nullish(),
+  }),
   z.object({
     kind: z.literal("link_preview"),
     url: z.string(),
@@ -594,7 +608,7 @@ const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
     author_name: z.string().nullish(),
     thumbnail_asset_id: z.string().nullish(),
   }),
-  z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string() }),
+  z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string().nullish() }),
   z.object({ kind: z.literal("image"), asset_id: z.string(), alt: z.string() }),
 ]);
 export const chatSegmentSchemaImpl = z.union([

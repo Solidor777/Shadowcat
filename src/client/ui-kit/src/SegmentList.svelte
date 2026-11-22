@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "./appContext";
   import SegmentList from "./SegmentList.svelte";
   import type { ChatSegment, UnknownSegment, DocLinkTarget, WireActorOwnerRef } from "@shadowcat/core";
@@ -20,6 +21,10 @@
 
   const ctx = getAppContext();
   const t = ctx.t;
+  // `ctx.documents` is a plain store, not a rune. Reading `subscribeDocuments()` before a lookup
+  // makes the enclosing template expression re-run whenever the store emits, so a `doc_link`'s
+  // openability and its live-resolved text follow renames and late-arriving documents.
+  const subscribeDocuments = createSubscriber((update) => ctx.documents.subscribe(update));
 
   /** Resolves a `doc_link` segment's target to an openable `SheetRef` when the referenced
    * document/token is present in the per-recipient OPTIMISTIC store: presence implies READ
@@ -48,12 +53,37 @@
         tokenId: string;
       }
     | null {
+    subscribeDocuments();
     if (target.kind === "doc") {
       return ctx.documents.get(target.doc_id)
         ? { docId: target.doc_id, embeddedPath: target.embedded_path ?? undefined }
         : null;
     }
     return ctx.documents.get(target.token_id) ? { tokenId: target.token_id } : null;
+  }
+
+  /** The display text of a `doc_link`. An explicit authored `label` always wins and is never
+   * re-resolved. Without one, the target's CURRENT name is read from the per-recipient optimistic
+   * store, the same presence check `docLinkOpenRef` uses (a target this recipient cannot READ is
+   * absent from the store, and a redacted name is `null`), so a rename updates every message that
+   * links to it. A target that is absent, or whose name is withheld or empty, shows a placeholder.
+   * @param target The `doc_link` segment's target.
+   * @param label The segment's authored label, if any.
+   * @returns The text the link renders.
+   * @example
+   * ```
+   * declare const target: DocLinkTarget;
+   * docLinkText(target, "The Villain"); // "The Villain"
+   * docLinkText(target, null); // the target's current name, or a placeholder
+   * ```
+   */
+  function docLinkText(target: DocLinkTarget, label: string | null | undefined): string {
+    if (label) return label;
+    subscribeDocuments();
+    const id = target.kind === "doc" ? target.doc_id : target.token_id;
+    const name = ctx.documents.get(id)?.name;
+    if (name) return name;
+    return t(target.kind === "doc" ? "chat.docLink.unknownDocument" : "chat.docLink.unknownToken");
   }
 
   /** Host caption for a `link_preview` card. Never throws on a malformed `url` — a preview is
@@ -137,7 +167,7 @@
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
-   * sendRollButton({ kind: "roll_button", formula: "1d20", label: null });
+   * sendRollButton({ kind: "roll_button", formula: "1d20", label: null, flavor: "Attack" });
    * ```
    */
   function sendRollButton(s: RollButtonSegment): void {
@@ -149,8 +179,11 @@
         : undefined;
     // The same precedence the composer applies (pending one-shot beats the sticky selection);
     // a server refusal (e.g. an unresolvable reference) is player-presentable, so surface it.
+    // A flavored button re-sends its flavor through the same `|` convention a typed
+    // `/roll <formula> | <flavor>` uses.
+    const content = s.flavor ? `/roll ${s.formula} | ${s.flavor}` : `/roll ${s.formula}`;
     void Promise.resolve(
-      ctx.chat.send(actorOwner ? { channel, content: `/roll ${s.formula}`, actorOwner } : { channel, content: `/roll ${s.formula}` }),
+      ctx.chat.send(actorOwner ? { channel, content, actorOwner } : { channel, content }),
     ).catch((e: unknown) => {
       ctx.notify(e instanceof Error ? e.message : String(e), "error");
     });
@@ -172,11 +205,14 @@
     attacker-chosen resource through this component. -->
     <span class="seg-html">{@html s.sanitized_html}</span>
   {:else if s.kind === "roll_embed"}
+    <!-- `flavor` is author-written plain text: an escaped text node, never {@html}. -->
+    {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}
     <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
   {:else if s.kind === "roll_button"}
     <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
       {s.label ?? s.formula}
     </button>
+    {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}
   {:else if s.kind === "link_preview"}
     <!-- Server-fetched preview (SSRF-guarded). The client NEVER fetches
     `s.url` or any remote resource itself — title/description/url render as escaped
@@ -209,10 +245,11 @@
     </a>
   {:else if s.kind === "doc_link"}
     {@const ref = docLinkOpenRef(s.target)}
+    {@const text = docLinkText(s.target, s.label)}
     {#if ref}
-      <button type="button" class="doc-link" onclick={() => ctx.openDocument(ref)}>{s.label}</button>
+      <button type="button" class="doc-link" onclick={() => ctx.openDocument(ref)}>{text}</button>
     {:else}
-      <span class="seg-text">{s.label}</span>
+      <span class="seg-text">{text}</span>
     {/if}
     {#if docLinkIsTable(s.target)}
       {@const tableId = s.target.kind === "doc" ? s.target.doc_id : ""}
@@ -264,6 +301,12 @@
     // Preserves author-typed newlines in a plain-text segment; without this a multi-line
     // message collapses to one visual line despite the \n surviving in the DOM text node.
     white-space: pre-wrap;
+  }
+  .roll-flavor {
+    // Caption beside the roll; plain escaped text, dimmed so the roll result stays primary.
+    opacity: 0.75;
+    font-style: italic;
+    margin-inline: var(--space-1);
   }
   .roll-btn {
     // Touch floor: matches the message card's `.actions` control sizing.
