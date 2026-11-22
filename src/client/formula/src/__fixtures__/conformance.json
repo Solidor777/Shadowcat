@@ -586,6 +586,20 @@
       }
     },
     {
+      "name": "clamp modifiers survive unclaimed by the resolver",
+      "src": "4d6mn2mx5",
+      "expect": {
+        "notation": "4d6mn2mx5"
+      }
+    },
+    {
+      "name": "parity success modifiers survive unclaimed by the resolver",
+      "src": "5d6cse + 5d6cso",
+      "expect": {
+        "notation": "5d6cse + 5d6cso"
+      }
+    },
+    {
       "name": "keyword membership probe is case-insensitive but emission keeps case",
       "src": "2D6",
       "expect": {

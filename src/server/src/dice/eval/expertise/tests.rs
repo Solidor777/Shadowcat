@@ -46,6 +46,18 @@ fn cfg(cs: Option<CritSuccess>, cf: Option<CritFail>) -> SuccessConfig {
 }
 
 #[test]
+fn die_values_scores_the_moved_face_by_parity() {
+    use crate::dice::spec::Parity;
+    let c = SuccessConfig {
+        success: SuccessRule::Parity(Parity::Even),
+        ..cfg(None, None)
+    };
+    // value 3 (odd): a point moves it to 4 (even), a second to 5 (odd again).
+    let v = die_values(Direction::HighWins, &c, 3, 1, 6, 2);
+    assert_eq!(v, vec![(0, 0), (1, 0), (0, 0)]);
+}
+
+#[test]
 fn die_values_zero_point_scores_current_face() {
     // value 4, target >=5: not a success at k=0; +1 gets to 5 (success).
     let c = cfg(None, None);

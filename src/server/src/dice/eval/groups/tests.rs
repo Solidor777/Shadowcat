@@ -717,3 +717,174 @@ fn penetrate_extra_die_carries_the_group_kind() {
     assert_eq!(recs.len(), 2);
     assert_eq!(recs[1].kind, Some(DieKind::Numeric { min: 1, max: 6 }));
 }
+
+/// Resolves `modifiers` over the given d6 naturals with a rng that must not be drawn from.
+fn resolve_d6(
+    naturals: &[i32],
+    modifiers: Vec<GroupModifier>,
+) -> Vec<crate::dice::outcome::DieRecord> {
+    let dice: Vec<RawDie> = naturals
+        .iter()
+        .enumerate()
+        .map(|(i, n)| d6(i as u32, *n))
+        .collect();
+    let mut raws = RawRoll {
+        dice: dice.clone(),
+        records: vec![],
+        next_id: dice.len() as u32,
+        group_spans: vec![],
+    };
+    let mut rng = ScriptedRng::new(vec![]);
+    resolve_group(&group(modifiers), 0, &dice, &mut rng, &mut raws)
+}
+
+#[test]
+fn clamp_floor_raises_value_and_preserves_natural() {
+    let recs = resolve_d6(
+        &[1, 4],
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: None,
+        }],
+    );
+    assert_eq!((recs[0].natural, recs[0].value), (1, 2));
+    assert_eq!((recs[1].natural, recs[1].value), (4, 4));
+}
+
+#[test]
+fn clamp_ceiling_lowers_value_and_preserves_natural() {
+    let recs = resolve_d6(
+        &[6, 3],
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: Some(5),
+        }],
+    );
+    assert_eq!((recs[0].natural, recs[0].value), (6, 5));
+    assert_eq!((recs[1].natural, recs[1].value), (3, 3));
+}
+
+#[test]
+fn clamp_bounds_both_ends() {
+    let recs = resolve_d6(
+        &[1, 3, 6],
+        vec![GroupModifier::Clamp {
+            min: Some(2),
+            max: Some(5),
+        }],
+    );
+    let values: Vec<i32> = recs.iter().map(|r| r.value).collect();
+    assert_eq!(values, vec![2, 3, 5]);
+}
+
+#[test]
+fn clamp_ceiling_caps_a_compound_total_without_touching_the_chain() {
+    // Compound explode on a natural 6 adds the extra draw (2) into the die: value 8. The clamp
+    // runs after it in modifier order, so only the stored value drops to the ceiling.
+    let naturals = vec![d6(0, 6)];
+    let mut raws = RawRoll {
+        dice: naturals.clone(),
+        records: vec![],
+        next_id: 1,
+        group_spans: vec![],
+    };
+    let g = DiceGroup {
+        label: None,
+        count: 1,
+        kind: DieKind::Numeric { min: 1, max: 6 },
+        modifiers: vec![
+            GroupModifier::Explode {
+                kind: ExplodeKind::Compound,
+                comp: Comparator::Gte,
+                target: 6,
+            },
+            GroupModifier::Clamp {
+                min: None,
+                max: Some(5),
+            },
+        ],
+    };
+    let mut rng = ScriptedRng::new(vec![face_x(2)]);
+    let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+    assert_eq!(recs.len(), 1);
+    assert!(recs[0].exploded, "the explosion still happened");
+    assert_eq!(recs[0].natural, 6);
+    assert_eq!(recs[0].value, 5);
+}
+
+#[test]
+fn clamp_leaves_dropped_dice_untouched() {
+    let recs = resolve_d6(
+        &[1, 6],
+        vec![
+            GroupModifier::KeepHighest(1),
+            GroupModifier::Clamp {
+                min: Some(3),
+                max: None,
+            },
+        ],
+    );
+    assert!(!recs[0].kept);
+    assert_eq!(recs[0].value, 1, "a dropped die keeps its unclamped value");
+    assert_eq!(recs[1].value, 6);
+}
+
+#[test]
+fn clamp_with_no_bounds_is_a_no_op() {
+    let recs = resolve_d6(
+        &[1, 6],
+        vec![GroupModifier::Clamp {
+            min: None,
+            max: None,
+        }],
+    );
+    let values: Vec<i32> = recs.iter().map(|r| r.value).collect();
+    assert_eq!(values, vec![1, 6]);
+}
+
+#[test]
+fn clamp_with_floor_above_ceiling_does_not_panic_and_the_ceiling_wins() {
+    let recs = resolve_d6(
+        &[1, 6],
+        vec![GroupModifier::Clamp {
+            min: Some(5),
+            max: Some(2),
+        }],
+    );
+    let values: Vec<i32> = recs.iter().map(|r| r.value).collect();
+    assert_eq!(values, vec![2, 2]);
+}
+
+#[test]
+fn clamp_is_a_no_op_on_an_unordered_faces_group() {
+    use crate::dice::spec::Face;
+    let faces = vec![Face {
+        value: None,
+        symbols: vec!["blank".into()],
+    }];
+    let naturals = vec![RawDie {
+        id: 0,
+        kind: DieKind::Faces {
+            faces: faces.clone(),
+        },
+        natural: 0,
+    }];
+    let mut raws = RawRoll {
+        dice: naturals.clone(),
+        records: vec![],
+        next_id: 1,
+        group_spans: vec![],
+    };
+    let g = DiceGroup {
+        count: 1,
+        kind: DieKind::Faces { faces },
+        modifiers: vec![GroupModifier::Clamp {
+            min: Some(3),
+            max: None,
+        }],
+        label: None,
+    };
+    let mut rng = NoiseRng::from_seed(1);
+    let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+    assert_eq!(recs[0].value, 0, "an unordered die has no value to clamp");
+}

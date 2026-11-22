@@ -53,6 +53,9 @@ fn die_values(
             let f = adjust(direction, value, min, max, k);
             let base_success = match &cfg.success {
                 SuccessRule::Numeric { comp, target } => comp.test(f, *target),
+                // Parity reads the moved face's value, so expertise points can flip a die's
+                // parity exactly as they flip a numeric comparison.
+                SuccessRule::Parity(parity) => parity.test(f),
                 // die_values only ever runs over Numeric dice (expertise excludes
                 // Faces dice entirely); moving a Numeric face never changes symbols,
                 // so a HasSymbol rule can never fire here — exists only for exhaustiveness.

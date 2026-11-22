@@ -28,10 +28,13 @@ fn spying<'a>(
 }
 
 #[test]
-fn notation_keywords_are_the_declared_fifteen() {
+fn notation_keywords_are_the_declared_nineteen() {
     assert_eq!(
         NOTATION_KEYWORDS,
-        ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf"]
+        [
+            "d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf",
+            "mn", "mx", "cse", "cso"
+        ]
     );
 }
 

@@ -744,6 +744,22 @@ fn pooled_net_is_independent_of_die_order() {
 }
 
 #[test]
+fn parity_rule_counts_even_and_odd_successes_including_negative_values() {
+    use crate::dice::spec::Parity;
+    let spec = pool(4);
+    let values = [4, 3, 6, -3];
+    let count = |parity| {
+        let cfg = SuccessConfig {
+            success: SuccessRule::Parity(parity),
+            ..cfg_of(&spec).clone()
+        };
+        evaluate_success(&spec, &cfg, &raws_with_values(&values)).successes
+    };
+    assert_eq!(count(Parity::Even), Some(2), "4 and 6");
+    assert_eq!(count(Parity::Odd), Some(2), "3 and -3");
+}
+
+#[test]
 fn expertise_decides_on_the_exact_pooled_net() {
     let spec = pool(4);
     let cfg = extreme_crit_cfg(1);

@@ -191,6 +191,46 @@ impl Comparator {
     }
 }
 
+/// Which parity of a die's derived value counts as a success (`SuccessRule::Parity`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::Parity;
+/// assert!(Parity::Even.test(4));
+/// assert!(!Parity::Even.test(3));
+/// assert!(Parity::Odd.test(3));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Parity {
+    /// The value is even.
+    Even,
+    /// The value is odd.
+    Odd,
+}
+
+impl Parity {
+    /// Whether `value` has this parity. Uses `rem_euclid`, which always returns a result in
+    /// `0..2`; the `%` operator keeps the dividend's sign (`-3 % 2 == -1`), so a negative odd
+    /// value would match neither `== 0` nor `== 1` and be scored as no parity at all.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::Parity;
+    /// assert!(Parity::Odd.test(-3));
+    /// assert!(Parity::Even.test(-4));
+    /// assert!(Parity::Even.test(0));
+    /// ```
+    pub fn test(self, value: i32) -> bool {
+        let remainder = value.rem_euclid(2);
+        match self {
+            Parity::Even => remainder == 0,
+            Parity::Odd => remainder == 1,
+        }
+    }
+}
+
 /// How an explode trigger spawns/merges extra rolls.
 ///
 /// # Examples
@@ -248,6 +288,17 @@ pub enum GroupModifier {
         target: i32,
         /// Re-roll at most once per die (`ro`) instead of repeatedly (`r`).
         once: bool,
+    },
+    /// Clamp every kept die's derived `value` (never its `natural`) into `min..=max`. Either
+    /// bound may be absent; a floor and a ceiling are one joint constraint, so notation folds
+    /// `mn<N>` and `mx<N>` into a single modifier. Both bounds `None` is a no-op, and when
+    /// `min > max` the ceiling wins (`chat::rolls` refuses that pair from untrusted notation
+    /// with `RollError::InvalidClamp`).
+    Clamp {
+        /// Lowest value a die may keep, when set.
+        min: Option<i32>,
+        /// Highest value a die may keep, when set.
+        max: Option<i32>,
     },
 }
 
@@ -469,6 +520,8 @@ pub enum SuccessRule {
     },
     /// A die succeeds when any kept face carries this symbol.
     HasSymbol(Symbol),
+    /// A die succeeds when its derived value has this parity.
+    Parity(Parity),
 }
 
 impl Default for SuccessRule {

@@ -211,6 +211,7 @@ pub fn score_die_net(
     let base_success = match &cfg.success {
         SuccessRule::Numeric { comp, target } => comp.test(value, *target),
         SuccessRule::HasSymbol(s) => symbols.contains(s),
+        SuccessRule::Parity(parity) => parity.test(value),
     };
     DieScore {
         base_success,

@@ -31,7 +31,7 @@ use crate::data::document::Document;
 use crate::dice::notation::{self, ParseContext, ParseError};
 use crate::dice::outcome::RollOutcome;
 use crate::dice::rng::NoiseRng;
-use crate::dice::spec::{DiceGroup, DieKind, Expr, Mode, RollSpec};
+use crate::dice::spec::{DiceGroup, DieKind, Expr, GroupModifier, Mode, RollSpec};
 use crate::dice::{eval, roll};
 use crate::formula::resolver::{NoHostResolver, SystemLeafResolver};
 
@@ -321,6 +321,13 @@ pub enum RollError {
     /// -- a table needs a single Total value to range-match against, not a
     /// success count.
     TableNeedsTotal,
+    /// A dice group's `mn<N>` floor is above its `mx<N>` ceiling, so no value satisfies both.
+    InvalidClamp {
+        /// The group's floor.
+        min: i32,
+        /// The group's ceiling.
+        max: i32,
+    },
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -383,6 +390,10 @@ impl std::fmt::Display for RollError {
                     "a table's formula must resolve to a single total, not a success count"
                 )
             }
+            RollError::InvalidClamp { min, max } => write!(
+                f,
+                "that die's floor (mn{min}) is above its ceiling (mx{max})"
+            ),
         }
     }
 }
@@ -441,6 +452,20 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
             let faces = (*max as i64) - (*min as i64) + 1;
             if faces > MAX_DIE_SIDES {
                 return Err(RollError::SidesTooLarge(faces));
+            }
+        }
+        for modifier in &group.modifiers {
+            if let GroupModifier::Clamp {
+                min: Some(min),
+                max: Some(max),
+            } = modifier
+            {
+                if min > max {
+                    return Err(RollError::InvalidClamp {
+                        min: *min,
+                        max: *max,
+                    });
+                }
             }
         }
     }
