@@ -13,6 +13,7 @@ fn base() -> TokenEngine {
         face: None,
         elevation: None,
         lock_rotation: false,
+        identity_hidden: false,
     }
 }
 
@@ -234,6 +235,7 @@ fn token_validate_covers_override_emissions() {
         }),
         sound: None,
         vfx: None,
+        disposition: None,
     });
     assert!(
         t.validate().is_err(),
@@ -250,6 +252,7 @@ fn token_validate_covers_override_emissions() {
         aura: Some(aura()),
         sound: Some(sound()),
         vfx: Some(vfx()),
+        disposition: Some(FactionStance::Hostile),
     });
     assert!(t.validate().is_ok());
 }

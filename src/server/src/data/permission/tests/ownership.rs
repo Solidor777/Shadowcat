@@ -930,6 +930,96 @@ fn redaction_target_admits_base_content_at_any_embedded_depth() {
 }
 
 #[test]
+fn redaction_target_classifies_a_pointer_inside_an_embedded_child_by_its_residual() {
+    for (pointer, expected) in [
+        ("/embedded/actor/0/name", RedactionTarget::Band),
+        ("/embedded/actor/0/engine", RedactionTarget::Band),
+        ("/embedded/actor/2/engine/faction", RedactionTarget::Within),
+        ("/embedded/actor/0/system/hp", RedactionTarget::Within),
+        ("/embedded/a/0/embedded/b/1/name", RedactionTarget::Band),
+        ("/embedded/a/0/base/system/hp", RedactionTarget::Within),
+    ] {
+        assert_eq!(redaction_target(pointer), Some(expected), "{pointer}");
+    }
+}
+
+#[test]
+fn redaction_target_refuses_an_embedded_pointer_that_is_not_a_content_path_in_a_child() {
+    for pointer in [
+        // The whole map, a whole collection, a whole child.
+        "/embedded",
+        "/embedded/actor",
+        "/embedded/actor/0",
+        "/embedded/actor/0/",
+        // A hop missing its collection or with a non-numeric index.
+        "/embedded//0/name",
+        "/embedded/actor/x/name",
+        "/embedded/actor/-1/name",
+        // A structural envelope field of the child, or a leaf band with an interior.
+        "/embedded/actor/0/id",
+        "/embedded/actor/0/permissions/default",
+        "/embedded/actor/0/embedded",
+        "/embedded/actor/0/embedded/b",
+        "/embedded/actor/0/embedded/b/1",
+        "/embedded/actor/0/name/first",
+        "/embedded/actor/0/base/embedded",
+    ] {
+        assert_eq!(redaction_target(pointer), None, "{pointer:?}");
+    }
+}
+
+#[test]
+fn redact_pointers_nulls_an_embedded_band_and_strips_an_embedded_key() {
+    let mut whole = serde_json::json!({
+        "name": "T",
+        "embedded": { "actor": [ { "name": "N", "engine": { "faction": "F", "shape": "square" } } ] }
+    });
+    redact_pointers(
+        &mut whole,
+        &[
+            "/embedded/actor/0/name".to_string(),
+            "/embedded/actor/0/engine/faction".to_string(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(whole["name"], "T");
+    assert!(whole["embedded"]["actor"][0]["name"].is_null());
+    assert!(whole["embedded"]["actor"][0]["engine"]
+        .get("faction")
+        .is_none());
+    assert_eq!(whole["embedded"]["actor"][0]["engine"]["shape"], "square");
+    // A pointer into a child that does not exist removes nothing and creates nothing.
+    let before = whole.clone();
+    redact_pointers(&mut whole, &["/embedded/actor/5/name".to_string()]).unwrap();
+    assert_eq!(whole, before);
+    // An unclassifiable embedded pointer still fails closed.
+    assert!(redact_pointers(&mut whole, &["/embedded/actor/0".to_string()]).is_err());
+}
+
+#[test]
+fn validate_property_overrides_refuses_a_malformed_embedded_pointer() {
+    for bad in [
+        "/embedded/actor/0",
+        "/embedded/actor",
+        "/embedded/actor/0/id",
+    ] {
+        let d = doc(
+            perms_with(&[(bad, Visibility::GmOnly)]),
+            serde_json::json!({}),
+        );
+        assert!(
+            crate::data::validation::validate_property_overrides(&d).is_err(),
+            "{bad}"
+        );
+    }
+    let ok = doc(
+        perms_with(&[("/embedded/actor/0/name", Visibility::GmOnly)]),
+        serde_json::json!({}),
+    );
+    assert!(crate::data::validation::validate_property_overrides(&ok).is_ok());
+}
+
+#[test]
 fn validate_property_overrides_refuses_a_structural_base_pointer() {
     // The write-side chokepoint (`redaction_target`, called by
     // `validation::validate_property_overrides`) is where this must be refused: a GM with

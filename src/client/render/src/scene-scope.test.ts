@@ -4,7 +4,7 @@ import { sceneScopedDocs } from "./scene-scope";
 
 function store(): DocumentStore {
   const s = new DocumentStore();
-  const mk = (id: string, scene: string) => buildTokenDoc("w1", scene, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, id);
+  const mk = (id: string, scene: string) => buildTokenDoc("w1", scene, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, id);
   s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
     { op: "create", doc: mk("t-a", "sA") },
     { op: "create", doc: mk("t-b", "sB") },
@@ -40,7 +40,7 @@ describe("sceneScopedDocs level scoping", () => {
       buildTokenDoc(
         "w1",
         "sA",
-        { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation, lock_rotation: false },
+        { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation, lock_rotation: false, identity_hidden: false },
         id,
       );
     const mkWall = (id: string, elevation: { bottom: number | null; top: number | null } | null) =>
