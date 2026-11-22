@@ -153,6 +153,53 @@ async fn move_asset_files_removes_stale_sheet_siblings_absent_at_the_staged_stem
     assert!(final_path.exists());
 }
 
+/// `discard_asset_files` moves the canonical file and every `sibling_paths` derivative into the
+/// trash, reports the canonical first, and leaves nothing behind. Replacing the move with an
+/// outright removal leaves the trash empty; dropping the sibling loop leaves the derivatives on
+/// disk and out of the trash; reordering reports a sibling before the canonical.
+#[tokio::test]
+async fn discard_asset_files_trashes_the_canonical_and_every_sibling() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir.path().join("asset-id");
+    std::fs::write(&canonical, b"canonical").unwrap();
+    let siblings = crate::data::asset::process::sibling_paths(&canonical);
+    for sibling in &siblings {
+        std::fs::write(sibling, b"derivative").unwrap();
+    }
+    let trash = crate::trash::Trash::new(
+        dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+
+    let results = discard_asset_files(&trash, &canonical).await;
+
+    assert_eq!(results.len(), 1 + siblings.len());
+    assert_eq!(results[0].0, canonical);
+    assert!(results.iter().all(|(_, outcome)| outcome.is_ok()));
+    let mut expected: Vec<String> = std::iter::once(&canonical)
+        .chain(siblings.iter())
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    expected.sort();
+    let mut trashed: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    trashed.sort();
+    assert_eq!(trashed, expected);
+    assert!(!canonical.exists());
+    assert!(siblings.iter().all(|p| !p.exists()));
+}
+
 /// A trash that removes outright: these tests never inspect trashed files.
 fn test_trash() -> crate::trash::Trash {
     crate::trash::Trash::new(

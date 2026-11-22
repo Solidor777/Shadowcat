@@ -2825,6 +2825,91 @@ async fn orphan_fog_row_is_classified_apart_from_the_pool_and_skipped_and_counte
     );
 }
 
+/// A failed asset-file finalize trashes both the files already renamed to their final names and
+/// the staged files still waiting. Replacing either discard with an outright removal leaves its
+/// entry out of the trash; dropping the first leaves the finalized file in the asset directory;
+/// dropping the second leaves the staged file there.
+#[tokio::test]
+async fn import_world_trashes_finalized_and_staged_files_when_a_rename_fails() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-rename-fail", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src
+        .create_world_owned("W-rename-fail", gm, 0)
+        .await
+        .unwrap();
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let first_id = crate::test_ids::test_uuid(701);
+    let missing_id = crate::test_ids::test_uuid(702);
+    let last_id = crate::test_ids::test_uuid(703);
+    let first_staged = dir.path().join(format!("{first_id}.a.import-tmp"));
+    let missing_staged = dir.path().join(format!("{missing_id}.b.import-tmp"));
+    let last_staged = dir.path().join(format!("{last_id}.c.import-tmp"));
+    std::fs::write(&first_staged, b"first").unwrap();
+    std::fs::write(&last_staged, b"last").unwrap();
+
+    let import_data = crate::data::world_bundle::WorldImportData {
+        manifest: export_data.manifest.clone(),
+        documents: export_data.documents.clone(),
+        events: export_data.events.clone(),
+        members: export_data.members.clone(),
+        invites: export_data.invites.clone(),
+        assets: export_data.assets.clone(),
+        fog: export_data.fog.clone(),
+        settings: export_data.settings.clone(),
+        // The middle file does not exist, so its rename fails after the first one succeeded.
+        staged_assets: vec![
+            (first_id, first_staged),
+            (missing_id, missing_staged),
+            (last_id, last_staged.clone()),
+        ],
+        staged_siblings: vec![],
+    };
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = crate::trash::Trash::new(
+        trash_dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+    let target = repo().await;
+    let err = target.import_world(import_data, &trash).await.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("failed to finalize imported asset file"),
+        "unexpected error: {err}"
+    );
+
+    let mut names: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    let mut expected = vec![
+        first_id.to_string(),
+        last_staged
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    expected.sort();
+    assert_eq!(names, expected);
+    assert!(!dir.path().join(first_id.to_string()).exists());
+    assert!(!last_staged.exists());
+}
+
 /// A trash that removes outright: these tests never inspect trashed files.
 fn test_trash() -> crate::trash::Trash {
     crate::trash::Trash::new(

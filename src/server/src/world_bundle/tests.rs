@@ -317,6 +317,106 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
     );
 }
 
+/// A rejected bundle's already staged canonical and sibling files land in the trash. Replacing the
+/// discards with outright removals leaves the trash empty; dropping the canonical loop leaves the
+/// canonical's staged file in the asset directory; dropping the sibling loop leaves the sibling's.
+#[test]
+fn read_bundle_trashes_the_staged_files_of_a_rejected_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let world = crate::test_ids::test_uuid(89);
+    let asset_id = crate::test_ids::test_uuid(889);
+
+    let mut row_counts = std::collections::BTreeMap::new();
+    for table in [
+        "documents",
+        "world_events",
+        "world_members",
+        "world_invites",
+        "explored_fog",
+        "settings",
+    ] {
+        row_counts.insert(table.to_string(), 0);
+    }
+    row_counts.insert("assets".to_string(), 1);
+    let manifest = crate::data::world_bundle::BundleManifest {
+        schema_version: BUNDLE_SCHEMA_VERSION,
+        world_id: world,
+        world_name: "Rejected".to_string(),
+        world_seq: 0,
+        world_created_at: 0,
+        world_updated_at: 0,
+        exported_at_unix_ms: 0,
+        row_counts,
+    };
+
+    let mut builder = tar::Builder::new(Vec::new());
+    append_bytes(
+        &mut builder,
+        "manifest.json",
+        &serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    for table in [
+        "documents",
+        "world_events",
+        "world_members",
+        "world_invites",
+        "assets",
+        "explored_fog",
+        "settings",
+    ] {
+        append_bytes(&mut builder, &format!("rows/{table}.jsonl"), b"").unwrap();
+    }
+    // A canonical and a sibling are staged before the repeated canonical rejects the bundle.
+    append_bytes(&mut builder, &format!("assets/{asset_id}"), b"FIRST").unwrap();
+    append_bytes(
+        &mut builder,
+        &format!("assets/{asset_id}.thumb.webp"),
+        b"THUMB",
+    )
+    .unwrap();
+    append_bytes(&mut builder, &format!("assets/{asset_id}"), b"SECOND").unwrap();
+    let tar_path = tmp.path().join("rejected.tar");
+    std::fs::write(&tar_path, builder.into_inner().unwrap()).unwrap();
+
+    let import_tmp = tempfile::tempdir().unwrap();
+    let trash_dir = tempfile::tempdir().unwrap();
+    let trash = crate::trash::Trash::new(
+        trash_dir.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    );
+    let err = read_bundle(&tar_path, import_tmp.path(), &trash).unwrap_err();
+    assert!(matches!(err, WorldBundleError::Malformed(_)), "{err:?}");
+
+    let world_asset_dir = import_tmp.path().join(world.to_string());
+    assert_eq!(std::fs::read_dir(&world_asset_dir).unwrap().count(), 0);
+    let mut trashed: Vec<String> = trash
+        .list()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            e.manifest
+                .original_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    trashed.sort();
+    assert_eq!(trashed.len(), 2, "{trashed:?}");
+    assert!(
+        trashed
+            .iter()
+            .any(|n| n.starts_with(&format!("{asset_id}.")) && !n.contains(".thumb.webp")),
+        "the canonical's staged file is trashed: {trashed:?}"
+    );
+    assert!(
+        trashed.iter().any(|n| n.contains(".thumb.webp.")),
+        "the sibling's staged file is trashed: {trashed:?}"
+    );
+}
+
 #[test]
 fn a_pre_pipeline_asset_row_deserializes_with_defaults() {
     // The row shape a bundle written before the pipeline carries: no folder,
