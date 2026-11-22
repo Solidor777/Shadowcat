@@ -11,4 +11,4 @@
  * assert_ne!(PlaylistMode::Sequential, PlaylistMode::Shuffle);
  * ```
  */
-export type PlaylistMode = "sequential" | "shuffle" | "loop_all" | "single";
+export type PlaylistMode = "sequential" | "shuffle" | "loop_all" | "single" | "simultaneous" | "soundboard";

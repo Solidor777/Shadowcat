@@ -97,3 +97,30 @@ fn audio_state_engine_default_is_empty_and_valid() {
     assert!(state.playing.is_empty());
     assert!(state.validate().is_ok());
 }
+
+#[test]
+fn simultaneous_playlist_rejects_more_tracks_than_can_play_at_once() {
+    let make = |n: usize, mode: PlaylistMode| PlaylistEngine {
+        tracks: (0..n)
+            .map(|i| PlaylistTrack {
+                asset: test_asset(i),
+                name: None,
+                gain: 1.0,
+                loop_: false,
+            })
+            .collect(),
+        mode,
+        channel: AudioChannel::Music,
+        fade_ms: 0,
+    };
+    assert!(make(MAX_PLAYING_TRACKS, PlaylistMode::Simultaneous)
+        .validate()
+        .is_ok());
+    assert!(make(MAX_PLAYING_TRACKS + 1, PlaylistMode::Simultaneous)
+        .validate()
+        .is_err());
+    // The bound belongs to Simultaneous alone: a Soundboard playlist may be longer.
+    assert!(make(MAX_PLAYING_TRACKS + 1, PlaylistMode::Soundboard)
+        .validate()
+        .is_ok());
+}

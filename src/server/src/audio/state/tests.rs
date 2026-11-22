@@ -477,3 +477,126 @@ fn sequential_fresh_play_does_not_reseed() {
     .unwrap();
     assert_eq!(next.shuffle_seed, 99);
 }
+
+/// A `Play` op naming `playlist` with every override absent and the given `track_index`.
+fn play_playlist(playlist: uuid::Uuid, track_index: Option<u32>) -> AudioOp {
+    AudioOp::Play {
+        playlist: Some(playlist),
+        asset: None,
+        track_index,
+        channel: None,
+        gain: None,
+        loop_: None,
+    }
+}
+
+/// A direct-play entry occupying one `playing` slot.
+fn filler_entry(i: usize) -> PlayingTrack {
+    PlayingTrack {
+        id: uuid::Uuid::new_v4(),
+        playlist: None,
+        track_index: 0,
+        asset: format!("filler{i}"),
+        channel: AudioChannel::Sfx,
+        gain: 1.0,
+        loop_: false,
+        started_at: 0.0,
+        paused_at: None,
+    }
+}
+
+#[test]
+fn simultaneous_play_starts_every_track_in_sync() {
+    let pl = playlist(PlaylistMode::Simultaneous, 4);
+    let pid = uuid::Uuid::new_v4();
+    let next = apply(
+        &AudioStateEngine::default(),
+        &play_playlist(pid, None),
+        50.0,
+        &|id| (id == pid).then(|| pl.clone()),
+    )
+    .unwrap();
+    assert_eq!(next.playing.len(), 4);
+    for (i, entry) in next.playing.iter().enumerate() {
+        assert_eq!(entry.track_index, i as u32);
+        assert_eq!(entry.asset, format!("a{i}"));
+        assert_eq!(entry.started_at, 50.0);
+        assert_eq!(entry.playlist, Some(pid));
+    }
+    let mut ids: Vec<_> = next.playing.iter().map(|e| e.id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 4, "every layer carries its own id");
+}
+
+#[test]
+fn simultaneous_play_over_cap_is_refused_whole() {
+    let pl = playlist(PlaylistMode::Simultaneous, 4);
+    let pid = uuid::Uuid::new_v4();
+    let mut state = AudioStateEngine::default();
+    for i in 0..MAX_PLAYING_TRACKS - 2 {
+        state.playing.push(filler_entry(i));
+    }
+    // Two free slots, four layers: refused with no partial result (`apply` returns Err, not a
+    // truncated state).
+    let err = apply(&state, &play_playlist(pid, None), 0.0, &|id| {
+        (id == pid).then(|| pl.clone())
+    })
+    .unwrap_err();
+    assert_eq!(err, AudioError::Cap);
+}
+
+#[test]
+fn simultaneous_play_naming_one_track_is_rejected() {
+    let pl = playlist(PlaylistMode::Simultaneous, 3);
+    let pid = uuid::Uuid::new_v4();
+    let err = apply(
+        &AudioStateEngine::default(),
+        &play_playlist(pid, Some(1)),
+        0.0,
+        &|id| (id == pid).then(|| pl.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(err, AudioError::NotSingleTrack);
+}
+
+#[test]
+fn simultaneous_next_stops_only_that_layer() {
+    let pl = playlist(PlaylistMode::Simultaneous, 3);
+    let pid = uuid::Uuid::new_v4();
+    let lookup = |id: uuid::Uuid| (id == pid).then(|| pl.clone());
+    let state = apply(
+        &AudioStateEngine::default(),
+        &play_playlist(pid, None),
+        0.0,
+        &lookup,
+    )
+    .unwrap();
+    let target = state.playing[1].id;
+    let next = apply(&state, &AudioOp::Next { id: target }, 5.0, &lookup).unwrap();
+    assert_eq!(next.playing.len(), 2);
+    assert!(next.playing.iter().all(|e| e.id != target));
+}
+
+#[test]
+fn soundboard_trigger_plays_the_named_track_and_track_ended_removes_it() {
+    let pl = playlist(PlaylistMode::Soundboard, 3);
+    let pid = uuid::Uuid::new_v4();
+    let lookup = |id: uuid::Uuid| (id == pid).then(|| pl.clone());
+    let state = apply(
+        &AudioStateEngine::default(),
+        &play_playlist(pid, Some(2)),
+        0.0,
+        &lookup,
+    )
+    .unwrap();
+    assert_eq!(state.playing.len(), 1);
+    assert_eq!(state.playing[0].asset, "a2");
+    assert_eq!(state.playing[0].playlist, Some(pid));
+    let id = state.playing[0].id;
+    let ended = apply(&state, &AudioOp::TrackEnded { id }, 9.0, &lookup).unwrap();
+    assert!(
+        ended.playing.is_empty(),
+        "a soundboard track is removed, not advanced"
+    );
+}
