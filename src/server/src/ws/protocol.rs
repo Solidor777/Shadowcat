@@ -340,6 +340,17 @@ pub enum ClientMsg {
         #[serde(default)]
         audience: Audience,
     },
+    /// GM-only: tell every connected member's client to open a shared note. Authors no document
+    /// and is never sequenced or logged; the server relays `ServerMsg::PresentNote` out-of-band.
+    /// A refusal (not a GM, unknown note, note not shared with players, rate limit) is a
+    /// correlated `ChatError` to the sender only, the same asymmetric reply protocol as
+    /// `SendMessage`. See `notes::handle_present_note`.
+    PresentNote {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The `note` document to present.
+        note_id: Uuid,
+    },
     /// Activate a combat: pauses any other active combat on its scene in the same command;
     /// a combat with `turn == None` initializes (round 1, first turn), one with a turn resumes.
     /// A rejection replies `CombatError`, correlated by `request_id`; success is confirmed by
@@ -1637,6 +1648,15 @@ pub enum ServerMsg {
         elevation: Option<f64>,
         /// Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
         id: Uuid,
+    },
+    /// A relayed "the GM is presenting this note" focus signal. Out-of-band (no seq, never
+    /// buffered, resynced or logged), mirroring `Vfx`; carries no note content, so a recipient
+    /// who cannot read the note fails closed when its client tries to open the sheet.
+    PresentNote {
+        /// The `note` document being presented.
+        note_id: Uuid,
+        /// The GM who presented it (server-stamped).
+        presented_by: Uuid,
     },
 }
 

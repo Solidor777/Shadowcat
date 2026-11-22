@@ -511,6 +511,15 @@ export interface AppContext {
      * @returns A function that removes this listener. */
     onVfx(cb: (msg: VfxNotice) => void): () => void;
   };
+  /** Note presentation seam: a GM asks the server to open a shared note on every client, and
+   * every client subscribes to the resulting signal. */
+  notes: {
+    /** GM-only: ask the server to present a shared note to every connected client. The server
+     * refuses a non-GM, an unknown note, and a note not shared with players.
+     * @param noteId The `note` document to present.
+     * @returns Resolves once accepted; rejects with the server's reason otherwise. */
+    present(noteId: string): Promise<void>;
+  };
   /** Emit surface onto the shared `HookBus` for statically-declared (`CoreHooks`) hook names —
    * a component-facing counterpart to `ModuleContext.hooks`, which a module's `register` uses
    * for LISTENING (`ctx.hooks.on`). A Svelte component has no `ModuleContext` of its own, so

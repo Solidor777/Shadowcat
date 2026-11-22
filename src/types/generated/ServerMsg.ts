@@ -514,4 +514,12 @@ elevation: number | null,
 /**
  * Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
  */
-id: string, };
+id: string, } | { "type": "present_note", 
+/**
+ * The `note` document being presented.
+ */
+note_id: string, 
+/**
+ * The GM who presented it (server-stamped).
+ */
+presented_by: string, };

@@ -23,6 +23,7 @@ pub mod health;
 pub mod http;
 pub mod merge;
 pub mod modules;
+pub mod notes;
 pub mod portmap;
 pub mod sandbox;
 pub mod scene;

@@ -96,6 +96,11 @@ impl PingRateLimiter {
 /// nothing failing to report it.
 pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
 
+/// The per-user, per-trailing-60s budget spent against `WsState::vfx_rate` by every front door
+/// that plays or presents a one-shot to the room: the raw `ClientMsg::PlayVfx` arm, `/fx`, and
+/// `notes::handle_present_note`. Declared once so the three cannot drift against the shared bucket.
+pub(crate) const VFX_RATE_PER_MIN: usize = 30;
+
 /// The per-user, per-trailing-60s budget the `ClientMsg::AudioTransport` handler spends
 /// against, from its OWN bucket (`WsState::audio_rate` — a transport flood must not starve
 /// chat/pings/emotes or vice versa). Declared once, beside the limiter it governs, for the
