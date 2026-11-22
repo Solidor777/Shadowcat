@@ -7,6 +7,7 @@ import {
   assertTrafficContract,
   contextStates,
   createWorld,
+  elementEventLogs,
   elementState,
   expectedCode,
   installAudioProbes,
@@ -131,6 +132,34 @@ interface Sample {
   settledAfterMs: number | null;
 }
 
+/** One marker read with the element's and the server entry's state at that instant. */
+interface ReadTrace {
+  /** Which part of the leg. */
+  phase: string;
+  /** The slot read. */
+  slot: number;
+  /** Wall-clock time of the read, in epoch milliseconds. */
+  atEpochMs: number;
+  /** The server position, in seconds, computed from the snapshot entry. */
+  position: number;
+  /** The decoded code. */
+  code: number | null;
+  /** The peak magnitude, in decibels. */
+  db: number | null;
+  /** The element's `currentTime`, or `null` when no element streams the asset. */
+  currentTime: number | null;
+  /** Whether the element is paused, or `null` when no element streams the asset. */
+  paused: boolean | null;
+  /** The element's `readyState`, or `null`. */
+  readyState: number | null;
+  /** The element's `networkState`, or `null`. */
+  networkState: number | null;
+  /** `pausedAt` of the entry snapshot the position is computed from. */
+  snapshotPausedAt: number | null;
+  /** `pausedAt` of the entry as the server held it at the read, or `"entry gone"`. */
+  livePausedAt: number | null | "entry gone";
+}
+
 /** The `duration` a metadata-only `<audio>` element reports for `url`, or `null` when the engine
  * cannot play the type.
  * @param page - The page to evaluate in.
@@ -207,6 +236,7 @@ for (const leg of [...CHROMIUM_LEGS]) {
 
     const allowance = ENGINE_ALLOWANCES[`${browserName}:${process.platform}`] ?? null;
     const samples: Sample[] = [];
+    const reads: ReadTrace[] = [];
     let log = recordAssetTraffic(page, track.assetId);
     const network = await recordNetworkFacts(page, track.assetId);
     try {
@@ -217,6 +247,34 @@ for (const leg of [...CHROMIUM_LEGS]) {
 
       const firstEntry = await currentEntry(page, world.id);
       const hasWebAudio = (await contextStates(page)).length > 0;
+
+      /** Appends one `ReadTrace` for a marker read: the element's state, the entry as the server
+       * holds it now (a fresh snapshot, so a pause recorded after the leg began shows) and the
+       * snapshot entry the position is computed from. */
+      const recordRead = async (
+        phase: string,
+        slot: number,
+        entry: PlayingEntry,
+        position: number,
+        reading: { code: number | null; db: number | null },
+      ): Promise<void> => {
+        const element = await elementState(page, track.assetId);
+        const live = (await playingEntries(page.request, world.id)).find((e) => e.id === entry.id);
+        reads.push({
+          phase,
+          slot,
+          atEpochMs: Date.now(),
+          position,
+          code: reading.code,
+          db: reading.db,
+          currentTime: element?.currentTime ?? null,
+          paused: element?.paused ?? null,
+          readyState: element?.readyState ?? null,
+          networkState: element?.networkState ?? null,
+          snapshotPausedAt: entry.pausedAt,
+          livePausedAt: live === undefined ? "entry gone" : live.pausedAt,
+        });
+      };
 
       /** Reads the position code once the server position reaches the middle of `slot`. After a seek
        * the output carries the old position until the element's new data arrives, so such a read
@@ -229,10 +287,12 @@ for (const leg of [...CHROMIUM_LEGS]) {
         const begun = Date.now();
         let position = serverPositionSecs(entry);
         let reading = hasWebAudio ? await readMarker(page) : { hz: null, db: null, code: null };
+        await recordRead(phase, slot, entry, position, reading);
         while (hasWebAudio && settle && reading.code !== expectedCode(leg.track, position) && Date.now() - begun < SEEK_SETTLE_MS) {
           await page.waitForTimeout(100);
           position = serverPositionSecs(entry);
           reading = await readMarker(page);
+          await recordRead(phase, slot, entry, position, reading);
         }
         const element = await elementState(page, track.assetId);
         expect(element, "an element streams the asset").not.toBeNull();
@@ -338,7 +398,12 @@ for (const leg of [...CHROMIUM_LEGS]) {
       if (network !== null) expect(network.protocols()).toEqual([testInfo.project.name.includes("-https-") ? "h2" : "http/1.1"]);
     } finally {
       testInfo.attach("samples", { body: JSON.stringify(samples, null, 1), contentType: "application/json" });
-      testInfo.attach("traffic", { body: JSON.stringify({ events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
+      testInfo.attach("reads", { body: JSON.stringify(reads), contentType: "application/json" });
+      testInfo.attach("element-events", {
+        body: JSON.stringify(await elementEventLogs(page, track.assetId).catch((error: unknown) => String(error))),
+        contentType: "application/json",
+      });
+      testInfo.attach("traffic", { body: JSON.stringify({ startedAtEpochMs: log.startedAtEpochMs, events: log.events, raw: network?.rawExchanges() ?? [] }), contentType: "application/json" });
     }
   });
 }

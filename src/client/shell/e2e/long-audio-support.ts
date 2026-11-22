@@ -26,7 +26,48 @@ interface TrackManifest {
   sequence: number[];
 }
 
-/** An `<audio>` element the page created, with the count of its `ended` and `error` events. */
+/** The media events an element's log records: the ones that separate a stall (`waiting`,
+ * `stalled`, `suspend`), an unrequested stop (`pause`), the natural end (`ended`), a seek
+ * (`seeking`, `seeked`), a failure (`error`) and the start of output (`play`, `playing`). */
+export const LOGGED_MEDIA_EVENTS = [
+  "waiting",
+  "stalled",
+  "suspend",
+  "pause",
+  "ended",
+  "seeking",
+  "seeked",
+  "error",
+  "play",
+  "playing",
+] as const;
+
+/** One media event an element fired, with the element's state at that instant. */
+export interface ElementEvent {
+  /** The event name (one of `LOGGED_MEDIA_EVENTS`). */
+  type: string;
+  /** Wall-clock time of the event, in epoch milliseconds (the host and the page share the clock). */
+  atEpochMs: number;
+  /** The element's `currentTime` in seconds. */
+  currentTime: number;
+  /** The element's `readyState`. */
+  readyState: number;
+  /** The element's `networkState`. */
+  networkState: number;
+  /** Whether the element was paused. */
+  paused: boolean;
+}
+
+/** The serialisable argument `installAudioProbes` passes into the page's init script. */
+interface ProbeArgs {
+  /** Whether `canPlayType` hides Ogg. */
+  hide: boolean;
+  /** The media event names each element logs. */
+  logged: readonly string[];
+}
+
+/** An `<audio>` element the page created, with the count of its `ended` and `error` events and
+ * the log of every media event in `LOGGED_MEDIA_EVENTS`. */
 interface TrackedElement {
   /** The element. */
   el: HTMLAudioElement;
@@ -34,6 +75,8 @@ interface TrackedElement {
   ended: number;
   /** `error` events seen. */
   errors: number;
+  /** Every logged media event, in firing order. */
+  events: ElementEvent[];
 }
 
 /** The observers `installAudioProbes` installs on the page's `window`. */
@@ -110,7 +153,7 @@ export type Variant = "opus" | "opus-webm";
  * ```
  */
 export async function installAudioProbes(context: BrowserContext, hideOgg: boolean): Promise<void> {
-  await context.addInitScript((hide: boolean) => {
+  await context.addInitScript(({ hide, logged }: ProbeArgs) => {
     const w = window as unknown as Record<string, unknown>;
     const elements: TrackedElement[] = [];
     const contexts: BaseAudioContext[] = [];
@@ -122,13 +165,26 @@ export async function installAudioProbes(context: BrowserContext, hideOgg: boole
     document.createElement = ((tag: string, options?: ElementCreationOptions) => {
       const el = create(tag, options);
       if (String(tag).toLowerCase() === "audio") {
-        const entry = { el: el as HTMLAudioElement, ended: 0, errors: 0 };
+        const audio = el as HTMLAudioElement;
+        const entry: TrackedElement = { el: audio, ended: 0, errors: 0, events: [] };
         el.addEventListener("ended", () => {
           entry.ended += 1;
         });
         el.addEventListener("error", () => {
           entry.errors += 1;
         });
+        for (const type of logged) {
+          el.addEventListener(type, () => {
+            entry.events.push({
+              type,
+              atEpochMs: Date.now(),
+              currentTime: audio.currentTime,
+              readyState: audio.readyState,
+              networkState: audio.networkState,
+              paused: audio.paused,
+            });
+          });
+        }
         elements.push(entry);
       }
       return el;
@@ -163,7 +219,7 @@ export async function installAudioProbes(context: BrowserContext, hideOgg: boole
       }
       return connect.apply(this, args);
     } as typeof AudioNode.prototype.connect;
-  }, hideOgg);
+  }, { hide: hideOgg, logged: LOGGED_MEDIA_EVENTS });
 }
 
 /** What the page's analyser read at one instant. */
@@ -219,6 +275,10 @@ export interface ElementState {
   ended: number;
   /** The element's `src` path and query. */
   src: string;
+  /** The element's `readyState`. */
+  readyState: number;
+  /** The element's `networkState`. */
+  networkState: number;
 }
 
 /** The `<audio>` element playing `assetId`, as the page sees it: the one that is not paused, the
@@ -251,7 +311,27 @@ export async function elementState(page: Page, assetId: string): Promise<Element
       errorEvents: mine.reduce((sum, e) => sum + e.errors, 0),
       ended: mine.reduce((sum, e) => sum + e.ended, 0),
       src: url.pathname + url.search,
+      readyState: chosen.el.readyState,
+      networkState: chosen.el.networkState,
     };
+  }, assetId);
+}
+
+/** The media event log of every element that streamed `assetId`, one list per element in creation
+ * order (the preload element and each playing element are separate lists).
+ * @param page - The page to read.
+ * @param assetId - The asset id.
+ * @returns The event lists.
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * const logs = await elementEventLogs(page, "00000000-0000-0000-0000-000000000001");
+ * ```
+ */
+export async function elementEventLogs(page: Page, assetId: string): Promise<ElementEvent[][]> {
+  return page.evaluate((id: string) => {
+    const all = (window as unknown as PageProbes).__scElements;
+    return all.filter((e) => e.el.src.includes(`/api/assets/${id}`)).map((e) => e.events);
   }, assetId);
 }
 
@@ -363,6 +443,9 @@ export interface TrafficEvent {
 export interface TrafficLog {
   /** The recorded events, in arrival order. */
   events: TrafficEvent[];
+  /** Wall-clock time recording began, in epoch milliseconds: add `TrafficEvent.atMs` to place an
+   * event on the same clock as `ElementEvent.atEpochMs`. */
+  startedAtEpochMs: number;
 }
 
 /** Records every request, response and failure for `/api/assets/{assetId}` on `page`.
@@ -377,7 +460,7 @@ export interface TrafficLog {
  */
 export function recordAssetTraffic(page: Page, assetId: string): TrafficLog {
   const started = Date.now();
-  const log: TrafficLog = { events: [] };
+  const log: TrafficLog = { events: [], startedAtEpochMs: started };
   const mine = (url: string): URL | null => {
     const parsed = new URL(url);
     return parsed.pathname === `/api/assets/${assetId}` ? parsed : null;
