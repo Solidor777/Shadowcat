@@ -1,4 +1,4 @@
-import type { VfxAnchor } from "@shadowcat/core";
+import type { RenderHint, VfxAnchor } from "@shadowcat/core";
 import type { EmoteKind } from "./emote-view";
 
 /** A point in scene coordinates. */
@@ -468,7 +468,7 @@ export interface LightingInput {
     min: number;
   }[];
   /** `renderHints` lookup table; `LitCell.hint` indexes into this. */
-  hints: string[];
+  hints: RenderHint[];
   /** Active scene's visible cells. */
   cells: LitCell[];
 }

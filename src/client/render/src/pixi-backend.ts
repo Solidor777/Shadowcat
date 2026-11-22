@@ -1885,7 +1885,8 @@ export class PixiBackend implements DisplayBackend {
    * and performs no grid-kind math of its own): a black darkening fill (`c.alpha`, skipped when
    * `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and — when
    * `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
-   * desaturation for a darkvision-only cell. Empty `darkness` and `cells` clear the overlay
+   * desaturation for a darkvision-only cell. A cell's `colorWash` adds one more tinted fill and
+   * its `outline` a stroke-only polygon over the same corners. Empty `darkness` and `cells` clear the overlay
    * entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
    * geometry, nothing to fill), as is a darkness polygon with fewer than 3 vertices.
    * @param frame The resolved per-cell lighting to paint.
@@ -1924,6 +1925,10 @@ export class PixiBackend implements DisplayBackend {
       // buys a fill that needs no filter, mask, or extra render target.
       // TODO: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
       if (c.desaturate) this.lightingGraphics.poly(poly).fill({ color: 0x808080, alpha: 0.18 });
+      // A treatment composes on top of the band darkening: a wash is one more tinted fill, an
+      // outline a stroke-only polygon. Only cells whose hint names them draw anything extra.
+      if (c.colorWash) this.lightingGraphics.poly(poly).fill({ color: c.colorWash.color, alpha: c.colorWash.opacity });
+      if (c.outline) this.lightingGraphics.poly(poly).stroke({ color: c.outline.color, width: 2 });
     }
   }
 

@@ -110,6 +110,61 @@ export interface SceneToolMeta {
   onSceneClick(x: number, y: number): void;
 }
 
+/** The paint a vision treatment resolves a cell to: a declarative, closed shape the render layer
+ * paints with the same two techniques the built-in `colorWash` and `outline` render hints use,
+ * so a registered treatment needs no rendering mechanism of its own and `@shadowcat/core` stays
+ * free of any renderer dependency. */
+export type VisionTreatmentPaint =
+  | {
+      /** No paint: the cell shows only its band darkening and tint. */
+      shape: "none";
+    }
+  | {
+      /** A tinted fill over the cell polygon. */
+      shape: "fill";
+      /** Packed `0xRRGGBB` fill color. */
+      color: number;
+      /** Fill opacity in `[0, 1]`. */
+      opacity: number;
+    }
+  | {
+      /** A stroke-only outline of the cell polygon. */
+      shape: "outline";
+      /** Packed `0xRRGGBB` stroke color. */
+      color: number;
+    };
+
+/** Metadata for a `VISION_TREATMENT_CONTRACT` contribution: the resolver for one `Custom` render
+ * hint treatment name. The render layer receives only the cell's already-decided corner
+ * geometry, so a treatment cannot be handed anything the fog and lit-mask gates have not already
+ * cleared for the recipient. */
+export interface VisionTreatmentMeta {
+  /** The treatment name a `Custom` render hint's `treatment` field selects. */
+  kind: string;
+  /** Resolve a cell's paint.
+   * @param params The `Custom` hint's opaque `params` payload, uninterpreted by the engine.
+   * @param cell The cell's scene-coordinate corner polygon.
+   * @returns The paint for the cell. */
+  resolve(params: unknown, cell: VisionTreatmentCell): VisionTreatmentPaint;
+}
+
+/** The only cell data a vision treatment receives: geometry the fog and lit-mask gates have
+ * already decided is visible to the recipient. */
+export interface VisionTreatmentCell {
+  /** The cell's corners in scene coordinates. */
+  corners: {
+    /** Scene x-coordinate. */
+    x: number;
+    /** Scene y-coordinate. */
+    y: number;
+  }[];
+}
+
+/** Contract id modules contribute a vision treatment under (`shadowcat.vision-treatment`,
+ * multi). Each contribution carries a `visionTreatment` and `component: null`; the render layer
+ * looks a `Custom` render hint's `treatment` up by `VisionTreatmentMeta.kind`. */
+export const VISION_TREATMENT_CONTRACT = "shadowcat.vision-treatment";
+
 /** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family.
  * `priority` selects among competing providers (higher wins; the always-registered
  * generic fallback registers at `-Infinity`). `match` is an optional per-document
@@ -195,6 +250,8 @@ export interface Contribution {
   settingsSection?: SettingsSectionMeta;
   /** Scene-tool metadata, present iff `contract` is `SCENE_TOOL_CONTRACT`. */
   sceneTool?: SceneToolMeta;
+  /** Vision-treatment metadata, present iff `contract` is `VISION_TREATMENT_CONTRACT`. */
+  visionTreatment?: VisionTreatmentMeta;
   /** Chat-card extension metadata, present iff `contract` is `CHAT_CARD_EXTENSION_CONTRACT`. */
   chatCardExtension?: ChatCardExtensionMeta;
   /** How this contribution relates to the host theme: `"host"` (default)

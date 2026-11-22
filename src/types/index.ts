@@ -143,6 +143,7 @@ export type { GradationBand } from "./generated/engine/GradationBand";
 export type { LightGradationEngine } from "./generated/engine/LightGradationEngine";
 export type { VisionMode } from "./generated/engine/VisionMode";
 export type { Perception } from "./generated/engine/Perception";
+export type { RenderHint } from "./generated/engine/RenderHint";
 export type { VisionModesEngine } from "./generated/engine/VisionModesEngine";
 export type { WallEngine } from "./generated/engine/WallEngine";
 export type { DoorState } from "./generated/engine/DoorState";

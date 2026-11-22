@@ -4,6 +4,8 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { i18n } from "@shadowcat/ui-kit";
 import {
   DocumentStore,
+  ContributionRegistry,
+  VISION_TREATMENT_CONTRACT,
   buildLightGradationDoc,
   buildVisionModesDoc,
   type LightGradationEngine,
@@ -126,19 +128,90 @@ describe("vision-mode editor", () => {
     ]);
   });
 
-  it("a render-hint edit writes the string, and emptying it writes null", async () => {
+  it("a render-hint kind switch writes a tagged hint object with that kind's defaults, and none writes null", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildVisionModesDoc("w1", undefined, "vm1")]);
 
-    await fireEvent.change(screen.getByLabelText("Render hint for vision mode normal"), { target: { value: "sepia" } });
+    await fireEvent.change(screen.getByLabelText("Render hint for vision mode normal"), { target: { value: "colorWash" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
-      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: null, new: "sepia" }] },
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: null, new: { kind: "colorWash", color: "#808080", opacity: 0.25 } }] },
+    ]);
+
+    await fireEvent.change(screen.getByLabelText("Render hint for vision mode normal"), { target: { value: "outline" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: null, new: { kind: "outline", color: "#ffffff" } }] },
     ]);
 
     await fireEvent.change(screen.getByLabelText("Render hint for vision mode darkvision"), { target: { value: "" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
-      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/renderHint", old: "desaturate", new: null }] },
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/renderHint", old: { kind: "desaturate" }, new: null }] },
     ]);
+  });
+
+  it("the seeded darkvision hint shows as desaturate and no hint shows as none", () => {
+    renderPanel(vi.fn(), [buildVisionModesDoc("w1", undefined, "vm1")]);
+    expect((screen.getByLabelText("Render hint for vision mode darkvision") as HTMLSelectElement).value).toBe("desaturate");
+    expect((screen.getByLabelText("Render hint for vision mode normal") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("color wash colour and opacity edits replace the whole hint, keeping the other field", async () => {
+    const dispatchIntent = vi.fn();
+    const wash = { kind: "colorWash", color: "#00aa00", opacity: 0.25 };
+    const modes = { normal: { ...seededModes().normal, renderHint: wash } };
+    renderPanel(dispatchIntent, [buildVisionModesDoc("w1", { modes } as VisionModesEngine, "vm1")]);
+
+    await fireEvent.change(screen.getByLabelText("Render hint color for vision mode normal"), { target: { value: "#112233" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: wash, new: { ...wash, color: "#112233" } }] },
+    ]);
+
+    await fireEvent.change(screen.getByLabelText("Render hint opacity for vision mode normal"), { target: { value: "0.5" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: wash, new: { ...wash, opacity: 0.5 } }] },
+    ]);
+  });
+
+  it("the custom option appears only with a registered treatment, defaults to it, and edits treatment and params", async () => {
+    const dispatchIntent = vi.fn();
+    const contributions = new ContributionRegistry();
+    contributions.contribute(
+      { id: "m:bs", contract: VISION_TREATMENT_CONTRACT, component: null, visionTreatment: { kind: "blood-sense", resolve: () => ({ shape: "none" }) } },
+      { module: "m" },
+    );
+    const custom = { kind: "custom", treatment: "blood-sense", params: { a: 1 } };
+    const modes = { ...seededModes(), normal: { ...seededModes().normal, renderHint: custom } };
+    render(GameSettingsPanel, {
+      context: setAppContextForTest({
+        role: "gm", world: "w1", dispatchIntent, t, contributions,
+        documents: storeWith(buildVisionModesDoc("w1", { modes } as VisionModesEngine, "vm1")),
+      }),
+    });
+
+    await fireEvent.change(screen.getByLabelText("Render hint parameters for vision mode normal"), { target: { value: '{"a":2}' } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: custom, new: { ...custom, params: { a: 2 } } }] },
+    ]);
+
+    await fireEvent.change(screen.getByLabelText("Render hint treatment for vision mode normal"), { target: { value: "other" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: custom, new: { ...custom, treatment: "other" } }] },
+    ]);
+
+    dispatchIntent.mockClear();
+    await fireEvent.change(screen.getByLabelText("Render hint parameters for vision mode normal"), { target: { value: "{nope" } });
+    expect(dispatchIntent).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("not valid JSON");
+
+    await fireEvent.change(screen.getByLabelText("Render hint for vision mode darkvision"), { target: { value: "custom" } });
+    expect(dispatchIntent).toHaveBeenLastCalledWith([
+      { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/renderHint", old: { kind: "desaturate" }, new: { kind: "custom", treatment: "blood-sense", params: null } }] },
+    ]);
+  });
+
+  it("without a registered treatment the render-hint select offers no custom option", () => {
+    renderPanel(vi.fn(), [buildVisionModesDoc("w1", undefined, "vm1")]);
+    const select = screen.getByLabelText("Render hint for vision mode normal") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["", "desaturate", "colorWash", "outline"]);
   });
 
   it("add creates a custom-N mode with a full descriptor literal (old: null); a second add picks the next free N", async () => {
