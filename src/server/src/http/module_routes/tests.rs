@@ -878,3 +878,93 @@ async fn enabled_modules_reports_a_conflict_together_with_other_failures() {
         "both failure kinds must be reported: {message}"
     );
 }
+
+/// A GM session on a world, plus a subscription to the world's live room. The room is opened up
+/// front so frames the route broadcasts are observable.
+async fn gm_with_room_subscription(
+    dir: &std::path::Path,
+) -> (
+    axum_test::TestServer,
+    String,
+    tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) {
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        modules_dir: Some(dir.to_string_lossy().to_string()),
+        ..crate::config::Config::default()
+    });
+    let hash = crate::auth::password::hash_password("pw").unwrap();
+    state
+        .repo
+        .create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0)
+        .await
+        .unwrap();
+    let gm = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state.clone()).await)
+        .unwrap();
+    gm.post("/api/login")
+        .json(&serde_json::json!({"username":"gm","password":"pw"}))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let world: serde_json::Value = gm
+        .post("/api/worlds")
+        .json(&serde_json::json!({"name":"W"}))
+        .await
+        .json();
+    let world_id = world["id"].as_str().unwrap().to_string();
+    let room = state
+        .ws
+        .rooms
+        .get_or_create(state.repo.as_ref(), world_id.parse().unwrap())
+        .await
+        .unwrap()
+        .expect("the world exists");
+    let (rx, _) = room.subscribe();
+    (gm, world_id, rx)
+}
+
+/// Counts the `ModulesChanged` frames already waiting on `rx`.
+fn pending_modules_changed(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> usize {
+    let mut count = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let crate::ws::room::RoomEvent::Other(msg) = event {
+            if matches!(msg.as_ref(), crate::ws::protocol::ServerMsg::ModulesChanged) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// A successful enable-set change broadcasts exactly one `ModulesChanged` into the world's room;
+/// a rejected batch broadcasts none.
+#[tokio::test]
+async fn enabled_modules_broadcasts_modules_changed_only_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", "");
+    let (gm, world_id, mut rx) = gm_with_room_subscription(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    gm.put(&url)
+        .json(&serde_json::json!([{"id":"not-installed","validators_enabled":false}]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        pending_modules_changed(&mut rx),
+        0,
+        "a rejected batch must not broadcast"
+    );
+
+    gm.put(&url)
+        .json(&serde_json::json!([{"id":"mod-a","validators_enabled":false}]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(
+        pending_modules_changed(&mut rx),
+        1,
+        "a saved change broadcasts once"
+    );
+}

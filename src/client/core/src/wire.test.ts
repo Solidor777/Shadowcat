@@ -667,6 +667,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
     ruler: { type: "ruler", from: "u", scene: "s", points: [[1, 2]], active: true, origin: "o" },
     explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
+    modules_changed: { type: "modules_changed" },
     scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",

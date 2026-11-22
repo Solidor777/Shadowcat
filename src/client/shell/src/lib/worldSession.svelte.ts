@@ -1652,6 +1652,12 @@ export class WorldSession {
           if (msg.origin === this.#ws?.rulerOrigin) return;
           for (const cb of this.#rulerListeners) cb(msg);
         },
+        // Every connection, the saving GM's own included, re-runs the same reconcile the save
+        // path calls directly; `reconcileInstalledModules`'s diff against the loaded set makes
+        // the repeat a no-op.
+        onModulesChanged: () => {
+          void this.reconcileInstalledModules();
+        },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {
@@ -2113,7 +2119,8 @@ export class WorldSession {
    * touched — this is deliberately scoped to external/community modules only, mirroring the
    * `ModuleManager.svelte` GM UI's own scope. Per-entry contained: one module's load/unload
    * failure is logged and does not abort the others. A no-op if called before `#onWelcome` has
-   * ever run (`world`/`#serverVersion` unset).
+   * ever run (`world`/`#serverVersion` unset). Safe to repeat: a second pass over an unchanged
+   * enabled set finds nothing to diff.
    * @returns Resolves once every diffed module has been attempted; never rejects.
    * @example
    * ```

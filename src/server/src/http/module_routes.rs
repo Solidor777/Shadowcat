@@ -489,6 +489,9 @@ pub async fn set_world_enabled_modules(
             {
                 tracing::warn!(world = %world, error = %e, "system-defaults refresh failed after enable-set change");
             }
+            // Fires whether or not the refresh succeeded: the enabled set itself changed, so
+            // every connected client must reconcile its loaded modules against it.
+            room.broadcast_aux(crate::ws::protocol::ServerMsg::ModulesChanged);
         }
         Ok(None) => {}
         Err(e) => {

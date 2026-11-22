@@ -1924,6 +1924,63 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1); // no duplicate
 });
 
+test("a modules_changed frame reconciles the session against the freshly fetched enabled set", async () => {
+  const core = await import("@shadowcat/core");
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ]);
+  push({ type: "modules_changed" });
+
+  await vi.waitFor(() =>
+    expect(session.contributions.contributionsFor(MARKER_CONTRACT).map((c) => c.id)).toEqual([
+      "ext-module-a-marker",
+    ]),
+  );
+});
+
+test("two overlapping reconcileInstalledModules calls load a newly-enabled module exactly once", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+  const installed = [
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ];
+  const before = await registerCallsOf(FIXTURE_A_URL);
+  for (let i = 0; i < 2; i++) {
+    vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+    vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
+  }
+
+  // The saving GM's post-save call and the modules_changed broadcast's call start together.
+  await Promise.all([session.reconcileInstalledModules(), session.reconcileInstalledModules()]);
+
+  expect(await registerCallsOf(FIXTURE_A_URL)).toBe(before + 1);
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
+  // A second concurrent load of the same module would report a load failure for it.
+  expect(session.moduleStatus.has("ext-a-folder")).toBe(false);
+});
+
 test("reconcileInstalledModules leaves a module present in BOTH the old and new enabled set untouched", async () => {
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
