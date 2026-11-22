@@ -84,6 +84,11 @@ describe("parseMessageEngine", () => {
     expect(eng!.source).toBe("/me waves");
     expect(eng!.edited_at).toBe(5);
   });
+  test("parses an out-of-character message kind", () => {
+    const eng = parseMessageEngine(msgDoc({ ...base, kind: "ooc" }));
+    expect(eng).not.toBeNull();
+    expect(eng!.kind).toBe("ooc");
+  });
   test("unknown segment kinds survive parse and are filtered by isKnownSegment", () => {
     const eng = parseMessageEngine(msgDoc({ ...base, content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
     expect(eng).not.toBeNull();

@@ -86,6 +86,7 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.rollPending": "🎲 {formula}",
     "chat.whisperTo": "to {names}",
     "chat.systemBadge": "System",
+    "chat.kind.ooc": "OOC",
     "chat.roll.pass": "Success",
     "chat.roll.fail": "Failure",
     "chat.openActor": "Open {name}'s sheet",
@@ -833,6 +834,28 @@ describe("MessageCard — roll button", () => {
     });
     const btn = container.querySelector(".roll-btn");
     expect(btn?.textContent?.trim()).toBe("1d20+5");
+  });
+});
+
+describe("MessageCard — out-of-character messages", () => {
+  it("renders an ooc message italic with the OOC badge and its own text", () => {
+    const doc = msgDoc("m1", baseSystem({ kind: "ooc", content: [{ kind: "text", text: "brb" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
+    });
+    expect(container.querySelector(".card.ooc")).not.toBeNull();
+    expect(container.querySelector(".chip.ooc-badge")?.textContent).toBe("OOC");
+    expect(container.querySelector(".card.ooc .body p")?.textContent?.trim()).toBe("brb");
+  });
+
+  it("shows no OOC badge on a normal message", () => {
+    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "hi" }] }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural }),
+    });
+    expect(container.querySelector(".chip.ooc-badge")).toBeNull();
   });
 });
 

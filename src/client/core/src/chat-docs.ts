@@ -27,7 +27,7 @@ export const MAX_MESSAGE_CHARS = 4096;
 
 /** Validates a message's `kind` tag. `"system"` is reserved for server-authored
  * notices — no client-reachable parse path can ever produce it. */
-export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
+export const MessageKindSchema = z.enum(["normal", "emote", "roll", "ooc", "system"]);
 /** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
@@ -681,7 +681,7 @@ export type ChatMessageEngine = {
   /** Actor attribution, if the sender spoke as an actor (world-pinned and
    * ownership-checked at send). */
   actor_owner?: WireActorOwnerRef | null;
-  /** Message subtype (normal/emote/roll/system). */
+  /** Message subtype (normal/emote/roll/ooc/system). */
   kind: MessageKind;
   /** Readership beyond world-readable; drives the doc's `PermissionSet`. */
   audience: WireAudience;
