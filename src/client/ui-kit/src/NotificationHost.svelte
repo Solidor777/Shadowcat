@@ -34,23 +34,22 @@
 
 <div class="sc-notify-host" aria-live="polite">
   {#each items as n (n.id)}
-    <!-- Pointer-only convenience: a click anywhere on the row dismisses it (a larger touch
-         target than the dismiss button). The dismiss button stays the keyboard and screen-reader
-         path. A progress row ignores the click so an accidental tap cannot hide a running
-         operation. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="sc-notify sc-notify-{n.level}"
-      class:sc-notify-dismissable={!n.progress}
-      role="status"
-      onclick={() => {
-        if (!n.progress) notifications.dismiss(n.id);
-      }}
-    >
-      <div class="sc-notify-body">
-        <span class="sc-notify-message">{n.message}</span>
-        {#if n.progress}
+    <div class="sc-notify sc-notify-{n.level}" role="status">
+      {#if !n.progress}
+        <!-- The message area is a real button that fills the row, so the body is a large
+             pointer and touch target and is reachable by keyboard. A progress row has no such
+             button: an accidental tap cannot hide a running operation. -->
+        <button
+          type="button"
+          class="sc-notify-body sc-notify-body-button"
+          aria-label={t("notifications.dismissMessage", { message: n.message })}
+          onclick={() => notifications.dismiss(n.id)}
+        >
+          <span class="sc-notify-message">{n.message}</span>
+        </button>
+      {:else}
+        <div class="sc-notify-body">
+          <span class="sc-notify-message">{n.message}</span>
           <div
             class="sc-notify-progress"
             class:sc-notify-progress-indeterminate={n.progress.value === null}
@@ -68,16 +67,13 @@
               ></div>
             {/if}
           </div>
-        {/if}
-      </div>
+        </div>
+      {/if}
       {#if n.action}
         <button
           type="button"
           class="sc-notify-action"
-          onclick={(event) => {
-            // The row's click handler also dismisses; stopping propagation keeps this click
-            // from dismissing twice.
-            event.stopPropagation();
+          onclick={() => {
             // The action IS the user's response to this notification — run it
             // and dismiss together, so an already-acted-on notice can't be
             // clicked twice.
@@ -92,10 +88,7 @@
         type="button"
         class="sc-notify-dismiss"
         aria-label={t("notifications.dismiss")}
-        onclick={(event) => {
-          event.stopPropagation();
-          notifications.dismiss(n.id);
-        }}
+        onclick={() => notifications.dismiss(n.id)}
       >
         ✕
       </button>
@@ -134,14 +127,32 @@
   .sc-notify-error {
     border-left-color: var(--danger);
   }
-  .sc-notify-dismissable {
-    cursor: pointer;
-  }
   .sc-notify-body {
     flex: 1;
     display: grid;
     gap: var(--space-1);
     min-width: 0;
+  }
+  // The message button fills the row's free width; it is restyled to read as plain text.
+  .sc-notify-body-button {
+    align-items: center;
+    min-height: 44px; /* touch target (mobile invariant) */
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    &:hover {
+      background: var(--surface-base);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
   }
   .sc-notify-message {
     font-size: 0.9rem;

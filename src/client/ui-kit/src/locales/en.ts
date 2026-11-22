@@ -712,6 +712,7 @@ export const en: Messages = {
   "chat.table.noRow": "No matching row",
   "chat.table.nested": "Nested draw",
   "notifications.dismiss": "Dismiss",
+  "notifications.dismissMessage": "{message} (activate to dismiss)",
   "notifications.progress.working": "Working",
   "panels.minimize": "Minimize",
   "panels.restore": "Restore",
