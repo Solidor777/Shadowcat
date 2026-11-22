@@ -3,10 +3,13 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import { createDragController, type DragTarget, type DropResult } from "@shadowcat/core";
   import { computeGridWindow } from "./windowing";
+  import { applySelectionGesture } from "./selectionGesture";
 
   let {
     items,
     selected,
+    favorites = [],
+    onToggleFavorite,
     onSelectionChange,
     onOpen,
     onNearEnd,
@@ -19,6 +22,10 @@
     items: Asset[];
     /** Selected asset ids (owned by the browser). */
     selected: string[];
+    /** The account's favorite asset ids, drawn as a filled star on their tiles. */
+    favorites?: string[];
+    /** Called with an asset id when its star is pressed. Omitted = no star is drawn. */
+    onToggleFavorite?: (id: string) => void;
     /** Called with the full next selection on any selection gesture. */
     onSelectionChange: (ids: string[]) => void;
     /** Double-click / keyboard activation of one tile. */
@@ -116,21 +123,16 @@
    * ```
    */
   function select(idx: number, ev: MouseEvent): void {
-    const id = items[idx].id;
-    if (ev.shiftKey && anchor !== null) {
-      const [lo, hi] = anchor <= idx ? [anchor, idx] : [idx, anchor];
-      onSelectionChange(items.slice(lo, hi + 1).map((a) => a.id));
-      return;
-    }
-    if (ev.ctrlKey || ev.metaKey || appendOnClick) {
-      anchor = idx;
-      onSelectionChange(
-        selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id],
-      );
-      return;
-    }
-    anchor = idx;
-    onSelectionChange([id]);
+    const next = applySelectionGesture(
+      items.map((a) => a.id),
+      idx,
+      ev,
+      anchor,
+      selected,
+      appendOnClick,
+    );
+    anchor = next.anchor;
+    onSelectionChange(next.selection);
   }
 
   /** Scroll handler: refreshes geometry and fires load-more near the end.
@@ -164,24 +166,37 @@
     <div style:height="{topSpacer}px"></div>
     <div class="grid">
       {#each windowedItems as a, i (a.id)}
-        <button
-          type="button"
-          class="tile"
-          class:selected={selected.includes(a.id)}
-          data-testid="asset-tile"
-          aria-pressed={selected.includes(a.id)}
-          title={a.original_name}
-          onpointerdown={(e) => {
-            if (getDropTargets) drag.beginDrag(a.id, e);
-          }}
-          onclick={(e) => select(windowed.start + i, e)}
-          ondblclick={() => onOpen?.(a.id)}
-        >
-          <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" draggable="false" />
-          {#if appendOnClick && selected.includes(a.id)}
-            <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
+        <div class="cell">
+          <button
+            type="button"
+            class="tile"
+            class:selected={selected.includes(a.id)}
+            data-testid="asset-tile"
+            aria-pressed={selected.includes(a.id)}
+            title={a.original_name}
+            onpointerdown={(e) => {
+              if (getDropTargets) drag.beginDrag(a.id, e);
+            }}
+            onclick={(e) => select(windowed.start + i, e)}
+            ondblclick={() => onOpen?.(a.id)}
+          >
+            <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" draggable="false" />
+            {#if appendOnClick && selected.includes(a.id)}
+              <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
+            {/if}
+          </button>
+          {#if onToggleFavorite}
+            <button
+              type="button"
+              class="star"
+              class:on={favorites.includes(a.id)}
+              data-testid="asset-favorite"
+              aria-pressed={favorites.includes(a.id)}
+              aria-label={favorites.includes(a.id) ? t("assetBrowser.unfavorite") : t("assetBrowser.favorite")}
+              onclick={() => onToggleFavorite(a.id)}
+            >{favorites.includes(a.id) ? "★" : "☆"}</button>
           {/if}
-        </button>
+        </div>
       {/each}
     </div>
     <div style:height="{bottomSpacer}px"></div>
@@ -199,6 +214,26 @@
     grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
     gap: 0.25rem;
     padding: 0.25rem;
+  }
+  .cell {
+    position: relative;
+    display: grid;
+  }
+  .star {
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    &.on {
+      color: var(--accent);
+    }
   }
   .tile {
     position: relative;

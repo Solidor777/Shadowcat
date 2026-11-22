@@ -5,6 +5,8 @@
   import FilterBar from "./FilterBar.svelte";
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
+  import AssetList from "./AssetList.svelte";
+  import { getFavorites, toggleFavorite, getViewMode, setViewMode, type ViewMode } from "./favorites";
   import FolderTree from "./FolderTree.svelte";
   import { ROOT_DROP_ID } from "./folderOps";
   import type { DropResult } from "@shadowcat/core";
@@ -42,8 +44,19 @@
     tags: initialFilters?.tags ?? [],
     kind: initialFilters?.kind,
     sort: "created",
+    favoritesOnly: false,
   });
   let items = $state<Asset[]>([]);
+  /** The account's favorite asset ids. */
+  let favorites = $state<string[]>([]);
+  /** The account's layout choice; both layouts share the selection and bulk state below. */
+  let viewMode = $state<ViewMode>("grid");
+  /** The listing shown by the grid or list: `items`, narrowed to the favorites when that filter
+   * is on. */
+  const ListingView = $derived(viewMode === "list" ? AssetList : AssetGrid);
+  const displayed = $derived(
+    filter.favoritesOnly ? items.filter((a) => favorites.includes(a.id)) : items,
+  );
   let nextCursor = $state<string | null>(null);
   let selected = $state<string[]>([]);
   let error = $state<string | null>(null);
@@ -196,6 +209,60 @@
     }, 250);
   }
 
+  /** Flips one asset's favorite state and adopts the stored list.
+   * @param id - The asset id whose star was pressed.
+   * @returns Resolves once the stored list is adopted (or `error` is set).
+   * @example
+   * ```
+   * // private function; wired to the grid/list onToggleFavorite below
+   * void flipFavorite("a1");
+   * ```
+   */
+  async function flipFavorite(id: string): Promise<void> {
+    try {
+      favorites = await toggleFavorite(id);
+    } catch (e) {
+      error = t("assetBrowser.error", { message: String(e) });
+    }
+  }
+
+  /** Switches the layout and stores the choice for the account.
+   * @param mode - The chosen layout.
+   * @returns Resolves once the choice is stored (or `error` is set).
+   * @example
+   * ```
+   * // private function; wired to FilterBar's onViewModeChange below
+   * void chooseViewMode("list");
+   * ```
+   */
+  async function chooseViewMode(mode: ViewMode): Promise<void> {
+    viewMode = mode;
+    try {
+      await setViewMode(mode);
+    } catch (e) {
+      error = t("assetBrowser.error", { message: String(e) });
+    }
+  }
+
+  // Load the account's favorites and layout once. A failed read leaves the defaults (no
+  // favorites, grid); the listing itself is unaffected.
+  $effect(() => {
+    void getFavorites().then(
+      (ids) => (favorites = ids),
+      () => {},
+    );
+    void getViewMode().then(
+      (mode) => (viewMode = mode),
+      () => {},
+    );
+  });
+
+  // The favorites filter narrows the fetched pages client-side, so a page with few favorites
+  // could never scroll far enough to trigger load-more: keep fetching while it is on.
+  $effect(() => {
+    if (filter.favoritesOnly && nextCursor) void loadMore();
+  });
+
   // Load on mount; reload when any asset notice lands (created/moved change
   // listings; deleted drops tiles; replaced re-renders thumbs at the bumped
   // version the resolver already reflects).
@@ -247,7 +314,12 @@
         onclick={() => (treeOpen = !treeOpen)}
       >📁</button>
     {/if}
-    <FilterBar {filter} onChange={onFilterChange} />
+    <FilterBar
+      {filter}
+      onChange={onFilterChange}
+      {viewMode}
+      onViewModeChange={(mode) => void chooseViewMode(mode)}
+    />
     {#if mutable}
       <label class="upload-fallback">
         {t("assetBrowser.upload")}
@@ -280,18 +352,20 @@
     {#if error}
       <p class="error">{error}</p>
     {:else}
-      <AssetGrid
-        {items}
+      <ListingView
+        items={displayed}
         {selected}
-        onSelectionChange={(ids) => (selected = ids)}
+        {favorites}
+        onToggleFavorite={(id: string) => void flipFavorite(id)}
+        onSelectionChange={(ids: string[]) => (selected = ids)}
         appendOnClick={mode === "pick" && initialFilters?.multiple === true}
-        onOpen={(id) => {
+        onOpen={(id: string) => {
           if (mode === "pick" && !initialFilters?.multiple) onConfirm?.([id]);
         }}
         onNearEnd={() => void loadMore()}
         getDropTargets={() => tree?.dropTargets() ?? []}
-        onDropAssets={(ids, targetId) => void fileAssets(ids, targetId)}
-        onDragHover={(result) => (assetDropHover = result)}
+        onDropAssets={(ids: string[], targetId: string) => void fileAssets(ids, targetId)}
+        onDragHover={(result: DropResult | null) => (assetDropHover = result)}
       />
     {/if}
     <UploadQueue queue={uploads} />
