@@ -642,6 +642,16 @@ const ACKNOWLEDGED = [
     name: "a numbered-rule citation into the durable truthfulness-rules design doc",
     re: /\bRULE\s?\d+\b/,
   },
+  // A skill or skill reference file split into numbered parts labels itself "Part NN of NN". The
+  // total after "of" is what marks the label as a document-part label: a bare "Part N" names a
+  // section of some plan or spec outside the file and stays residue. This entry needs to see the
+  // " of NN" that follows the matched token, so it carries its own `contextChars`; the word-shaped
+  // candidate class that reaches it runs over skill prose only, so code comments never match.
+  {
+    name: "a document-part label (Part NN of NN) naming one numbered part of a split skill file",
+    re: /^Part \d+ of \d+\b/,
+    contextChars: 8,
+  },
 ];
 
 // Deliberately narrow: no entry here matches a bare, single English verb by itself. `re` is
@@ -1037,6 +1047,7 @@ export function subjectGroups(content, isMd) {
  * A class's own `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's
  * `re` can see: 0 for the identifier class (its entries match the bare token), a few for the
  * narration class (an entry there can require a specific following word, e.g. "replaced BY").
+ * An entry may carry its own `contextChars`, which replaces the class's value for that entry.
  */
 export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
   const banned = bannedFor(isMd, banLists);
@@ -1061,8 +1072,9 @@ export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
         if (banned.some((b) => bannedMatchesIn(b.re, token).length > 0)) continue;
-        const context = subject.slice(m.index, m.index + token.length + contextChars);
-        const ack = acks.find((a) => a.re.test(context));
+        const windowFor = (a) =>
+          subject.slice(m.index, m.index + token.length + (a.contextChars ?? contextChars));
+        const ack = acks.find((a) => a.re.test(windowFor(a)));
         const at = group.lineAt(m.index);
         if (ack) {
           acknowledged.push({ line: at.line, token, reason: ack.name });
@@ -1248,7 +1260,8 @@ const INSTRUMENT_COMPONENTS = [
   valueOf("MD_EXTS", () => MD_EXTS),
   valueOf("SKIP_DIRS", () => [...SKIP_DIRS].sort()),
   valueOf("GENERATED_ROOT", () => GENERATED_ROOT),
-  valueOf("ACKNOWLEDGED", () => ACKNOWLEDGED.map((a) => [a.name, a.re.source, a.re.flags])),
+  valueOf("ACKNOWLEDGED", () =>
+    ACKNOWLEDGED.map((a) => [a.name, a.re.source, a.re.flags, a.contextChars ?? null])),
   valueOf("ACKNOWLEDGED_NARRATION", () =>
     ACKNOWLEDGED_NARRATION.map((a) => [a.name, a.re.source, a.re.flags])),
 ];
