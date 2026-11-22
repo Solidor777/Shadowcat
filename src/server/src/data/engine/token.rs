@@ -82,7 +82,10 @@ pub struct TokenEngine {
     /// When true, a move never auto-rotates this token to face its movement direction (see
     /// `scene::move_exec::bearing_degrees`), whatever the resolved scene's `auto_rotate_tokens`
     /// says. Per-token presentation state like `elevation`, so linked and instanced tokens
-    /// carry it identically (it is not an `overrides` field).
+    /// carry it identically (it is not an `overrides` field). Writing it is GM-only
+    /// (`permission::rotation_lock_touched`): the lock binds a player's rotation
+    /// (`scene::rotation_gate::rotation_refusal`), so an owner who could clear it would not be
+    /// bound by it.
     #[serde(default)]
     pub lock_rotation: bool,
     /// Secret-identity mode: when true, every recipient who is neither the token's effective
@@ -98,6 +101,7 @@ pub struct TokenEngine {
     /// Facing-limited field of view of an ACTORLESS token (no `actor_id`, no embedded actor);
     /// every other token resolves it from its actor or `TokenOverrides::facing_vision`
     /// (`SceneEcs::token_facing_vision`). Ignored unless the scene's `facing_vision` switch is on.
+    /// Writing it is GM-only (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,
@@ -396,7 +400,8 @@ pub struct TokenOverrides {
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
     /// Per-token facing-limited field of view: replaces the actor's `facing_vision` wholesale
-    /// when present. Ignored unless the scene's `facing_vision` switch is on.
+    /// when present. Ignored unless the scene's `facing_vision` switch is on. Writing it is
+    /// GM-only (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,
@@ -1134,7 +1139,8 @@ pub struct ActorEngine {
     pub vision: Option<Vec<VisionAssignment>>,
     /// The actor's facing-limited field of view, inherited by every token resolving this actor
     /// (a per-token `TokenOverrides::facing_vision` replaces it wholesale). Ignored unless the
-    /// scene's `facing_vision` switch is on.
+    /// scene's `facing_vision` switch is on. Writing it is GM-only
+    /// (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,

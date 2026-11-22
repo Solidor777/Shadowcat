@@ -24,12 +24,12 @@ use uuid::Uuid;
 
 use crate::data::command::{Operation, WriteOrigin};
 use crate::data::document::{
-    world_of, CapabilityRequirement, Document, OwnerStanding, WorldCapDefaults,
+    world_of, CapabilityRequirement, Document, OwnerStanding, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, declared_caps_for_path, filter_properties, owner_standing, required_cap_for_path,
-    resolve_access_world, Access,
+    cap, declared_caps_for_path, filter_properties, gm_only_field_touched, owner_standing,
+    required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -126,14 +126,31 @@ impl AuthInputs {
 /// additive by construction — it can only narrow an audience, never widen one,
 /// so the requester's own `cap::EDIT_PERMISSIONS` standing is immaterial).
 /// `/base/...` sub-paths and any other unmappable path refuse, fail-closed, for
-/// every origin there and so for the merge here.
-fn update_authorized(update: &Operation, access: &Access, inputs: &AuthInputs) -> bool {
+/// every origin there and so for the merge here. A non-GM `ctx` is also refused any change that
+/// touches a GM-only engine field of `instance` (`gm_only_field_touched`): the same value-aware
+/// gate `apply_intent` applies, so a template cannot carry a player past the lock a GM set.
+fn update_authorized(
+    update: &Operation,
+    access: &Access,
+    inputs: &AuthInputs,
+    ctx: &PermissionContext,
+    instance: &Document,
+) -> bool {
     let Operation::Update { changes, .. } = update else {
+        return false;
+    };
+    // Serialization of a stored document cannot fail; fail closed if it somehow does.
+    let Ok(whole) = serde_json::to_value(instance) else {
         return false;
     };
     changes.iter().all(|ch| {
         if ch.path == "/base" || ch.path == "/permissions/property_overrides" {
             return true;
+        }
+        if ctx.world_role != WorldRole::Gm
+            && gm_only_field_touched(&instance.doc_type, &ch.path, ch.remove, &whole, &ch.new)
+        {
+            return false;
         }
         let Some(need) = required_cap_for_path(&ch.path) else {
             return false;
@@ -507,7 +524,7 @@ async fn pull(
         &bands,
         docs.owner_standing,
     );
-    if !update_authorized(&update, &docs.child_access, &inputs) {
+    if !update_authorized(&update, &docs.child_access, &inputs, ctx, &docs.child) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
     // A conflicted first call writes nothing: the conflict set is the reply.
@@ -585,7 +602,7 @@ async fn revert(
         ),
         Err(e) => return merge_error(request_id, engine_error(child_id, e)),
     };
-    if !update_authorized(&update, &docs.child_access, &inputs) {
+    if !update_authorized(&update, &docs.child_access, &inputs, ctx, &docs.child) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
     let applied = ServerMsg::MergeResult {
@@ -707,12 +724,13 @@ fn push_outcome(
     instances: &[(Uuid, PlannedInstance)],
     inputs: &AuthInputs,
     template: &Document,
+    ctx: &PermissionContext,
 ) -> MergeOutcome {
     let instances = instances
         .iter()
         .map(|(id, p)| {
             let update = plan_to_update(&p.doc, template, &p.plan.merged_bands, p.owner_standing);
-            let status = if !update_authorized(&update, &p.access, inputs) {
+            let status = if !update_authorized(&update, &p.access, inputs, ctx, &p.doc) {
                 PushInstanceStatus::Excluded
             } else if p.plan.conflicts.is_empty() {
                 PushInstanceStatus::Applied
@@ -835,7 +853,7 @@ async fn push(
     };
     if let Some(map) = &resolutions {
         if let Err(rejection) = check_push_resolutions(map, &instances) {
-            let fresh = push_outcome(template_id, &instances, &inputs, &template);
+            let fresh = push_outcome(template_id, &instances, &inputs, &template, ctx);
             return merge_error(request_id, rejection.into_kind(fresh));
         }
     }
@@ -861,7 +879,7 @@ async fn push(
             ) {
                 Ok(b) => b,
                 Err(_) => {
-                    let fresh = push_outcome(template_id, &instances, &inputs, &template);
+                    let fresh = push_outcome(template_id, &instances, &inputs, &template, ctx);
                     return merge_error(
                         request_id,
                         ResolutionsRejection::Unresolvable.into_kind(fresh),
@@ -876,7 +894,7 @@ async fn push(
     let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(resolved.len());
     for (id, p, bands) in resolved {
         let update = plan_to_update(&p.doc, &template, &bands, p.owner_standing);
-        if !update_authorized(&update, &p.access, &inputs) {
+        if !update_authorized(&update, &p.access, &inputs, ctx, &p.doc) {
             outcomes.push(PushInstanceOutcome {
                 instance_id: id,
                 name: p.name.clone(),
@@ -924,7 +942,13 @@ async fn push(
                         &template_access,
                     )
                     .await?;
-                    Ok(push_outcome(template_id, &instances, &inputs, &template))
+                    Ok(push_outcome(
+                        template_id,
+                        &instances,
+                        &inputs,
+                        &template,
+                        ctx,
+                    ))
                 })
                 .await;
             }

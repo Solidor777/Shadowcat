@@ -65,7 +65,8 @@ shape: string | null,
 vision: Array<VisionAssignment> | null, 
 /**
  * Per-token facing-limited field of view: replaces the actor's `facing_vision` wholesale
- * when present. Ignored unless the scene's `facing_vision` switch is on.
+ * when present. Ignored unless the scene's `facing_vision` switch is on. Writing it is
+ * GM-only (`permission::facing_vision_touched`).
  */
 facing_vision?: FacingVision, 
 /**

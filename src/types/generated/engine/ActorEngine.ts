@@ -87,7 +87,8 @@ vision: Array<VisionAssignment> | null,
 /**
  * The actor's facing-limited field of view, inherited by every token resolving this actor
  * (a per-token `TokenOverrides::facing_vision` replaces it wholesale). Ignored unless the
- * scene's `facing_vision` switch is on.
+ * scene's `facing_vision` switch is on. Writing it is GM-only
+ * (`permission::facing_vision_touched`).
  */
 facing_vision?: FacingVision, 
 /**
