@@ -137,10 +137,13 @@ export function createDragController(opts: DragControllerOptions): DragControlle
    * press, so the first `touchmove` is still cancelable.
    * @param e The touch event.
    * @example
-   * ```
-   * // private function; registered on window while a touch drag is armed
-   * declare const e: Event;
-   * blockScroll(e);
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
+   * declare const ev: PointerEvent;
+   * drag.beginDrag("a", ev); // a touch pointer arms after the long press, then blocks page scroll
+   * drag.cancel(); // removes the touchmove listener
    * ```
    */
   function blockScroll(e: Event): void {
@@ -149,9 +152,14 @@ export function createDragController(opts: DragControllerOptions): DragControlle
 
   /** Clears all drag state and listeners.
    * @example
-   * ```
-   * // private function; closed over `createDragController`'s state
-   * reset();
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
+   * declare const ev: PointerEvent;
+   * drag.beginDrag("a", ev);
+   * drag.cancel(); // clears the drag state and listeners
+   * drag.dragging; // null
    * ```
    */
   function reset(): void {
@@ -168,9 +176,13 @@ export function createDragController(opts: DragControllerOptions): DragControlle
    * @param y The pointer's `clientY`.
    * @returns The result for the active drag.
    * @example
-   * ```
-   * // private function; invoked from end()
-   * resolve(0, 0);
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
+   * declare const ev: PointerEvent;
+   * drag.beginDrag("a", ev);
+   * drag.end(ev); // resolves the drop at the pointer position
    * ```
    */
   function resolve(x: number, y: number): DropResult {
@@ -208,10 +220,13 @@ export function createDragController(opts: DragControllerOptions): DragControlle
    * @param ev The release event.
    * @returns The result, or `null` when no armed drag was in progress.
    * @example
-   * ```
-   * // private function; exposed as the controller's `end`
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
    * declare const ev: PointerEvent;
-   * finish(ev);
+   * drag.beginDrag("a", ev);
+   * drag.end(ev); // a DropResult, or null when the drag never armed
    * ```
    */
   function finish(ev: PointerEvent): DropResult | null {
@@ -223,10 +238,13 @@ export function createDragController(opts: DragControllerOptions): DragControlle
   /** Re-resolves the hover target and reports it.
    * @param ev The pointer event carrying the position.
    * @example
-   * ```
-   * // private function; exposed as the controller's `move`
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
    * declare const ev: PointerEvent;
-   * move(ev);
+   * drag.beginDrag("a", ev);
+   * drag.move(ev); // reports the hovered target through onHover
    * ```
    */
   function move(ev: PointerEvent): void {
@@ -236,9 +254,13 @@ export function createDragController(opts: DragControllerOptions): DragControlle
 
   /** Aborts the drag and clears the hover report.
    * @example
-   * ```
-   * // private function; exposed as the controller's `cancel`
-   * cancel();
+   * ```ts
+   * import { createDragController } from "@shadowcat/core";
+   *
+   * const drag = createDragController({ axis: "vertical", getTargets: () => [], onDrop: (result) => void result });
+   * declare const ev: PointerEvent;
+   * drag.beginDrag("a", ev);
+   * drag.cancel(); // aborts and reports onHover(null)
    * ```
    */
   function cancel(): void {
