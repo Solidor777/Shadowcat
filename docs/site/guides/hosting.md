@@ -92,6 +92,8 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `modules_dir` | `modules/` beside the db | Installed community modules |
 | `log_dir` | `logs/` beside the db | Rolling daily log-file output root (retains 14 files; stdout logging is unaffected) |
 | `backups_dir` | `backups/` beside the db | In-app backup output root |
+| `trash_retention` | `30` | Days a deleted file stays in the trash before the hourly sweep removes it. A positive whole number, `"never"` (entries stay until an admin empties them) or `"disabled"` (delete at once, no trash). `0` stops the server at start: write `"disabled"` for immediate deletion |
+| `trash_dir` | `trash/` beside the db | Where deleted files are kept. The server stops at start if it is the same as, inside, or around `assets_dir`, `backups_dir`, `modules_dir` or `log_dir` |
 | `upload_max_bytes` | 25 MiB | Upload size cap (players) |
 | `upload_rate_per_min` | 20 | Uploads per minute (players) |
 | `upload_max_bytes_gm` / `upload_rate_per_min_gm` | 2× player values | GM upload caps |
@@ -337,6 +339,7 @@ Everything lives beside the database file unless configured elsewhere:
 ├── assets/          uploaded images/files (content-addressed by UUID)
 ├── modules/         installed community modules (one folder per module)
 ├── tls/             the self-signed certificate and its private key (created on first start)
+├── trash/           files the server deleted, kept until the retention window ends
 └── backups/         in-app backup output
 ```
 
@@ -363,6 +366,37 @@ prints one summary line — output directory, asset file count, database bytes,
 and the Shadowcat version that wrote it (useful when restoring later). A running
 server also writes backups into `backups_dir` through the admin-only
 `POST /api/admin/backup` endpoint.
+
+### Trash
+
+Every file or folder the server deletes (a deleted asset or world, an upload that
+failed halfway, a leftover staging file) moves into `trash_dir` instead of being
+removed. Players and GMs see no difference: the item is gone from their point of
+view. Each item gets its own folder:
+
+```
+trash/
+└── 1737490000123-3fa85f64-5717-4562-b3fc-2c963f66afa6/
+    ├── manifest.json    where the item came from, when, and whether it was a file or a folder
+    └── item             the deleted file or folder
+```
+
+The server empties the trash itself: an hourly sweep, starting at launch, removes
+entries older than `trash_retention` days. `"never"` turns the sweep off, and
+`"disabled"` turns the trash off, so a delete removes the item at once.
+
+An administrator can see the trash under **Settings → Trash** (or through
+`GET /api/admin/trash`). It lists each item, with a **Delete permanently** button
+per item (`DELETE /api/admin/trash/{entry_id}`) and an **Empty trash** button
+(`POST /api/admin/trash/empty`). Both ask for confirmation first.
+
+Recovery is manual. Stop the server, then move `item` back to the path in
+`manifest.json`.
+
+A backup never contains the trash: `trash_dir` cannot sit inside any directory a
+backup copies, and the server refuses to start with a `trash_dir` that does. A
+restore does put its own leftover staging files into the trash, like any other
+delete, and leaves the entries already there alone.
 
 ## Serving to your table
 

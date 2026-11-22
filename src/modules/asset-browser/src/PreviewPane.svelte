@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
   import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl } from "@shadowcat/core";
+  import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl, fmtBytes } from "@shadowcat/core";
 
   let {
     asset,
@@ -92,21 +92,6 @@
     });
   }
 
-  /** A human-readable byte size.
-   * @param n - Byte count.
-   * @returns The formatted size.
-   * @example
-   * ```
-   * // private helper; used by the metadata rows below
-   * fmtBytes(2048); // "2.0 KiB"
-   * ```
-   */
-  function fmtBytes(n: number | bigint): string {
-    const v = Number(n);
-    if (v < 1024) return `${v} B`;
-    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KiB`;
-    return `${(v / (1024 * 1024)).toFixed(1)} MiB`;
-  }
 </script>
 
 <div class="preview-pane" data-testid="preview-pane">

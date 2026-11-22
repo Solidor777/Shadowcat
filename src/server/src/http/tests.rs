@@ -3166,3 +3166,155 @@ async fn serve_honours_the_configured_egress_window() {
     let err = outcome.expect_err("serve ran on a window other than the configured one");
     assert!(err.is_panic(), "{err:?}");
 }
+
+/// An initialized state whose trash keeps what it receives, rooted in a fresh temp dir, plus three
+/// discarded files (oldest `a.bin`, then `b.bin`, newest `c.bin`), their entry ids newest first,
+/// and the dir guard.
+async fn state_with_trashed_files() -> (AppState, tempfile::TempDir, Vec<String>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = initialized_state().await;
+    state.trash = Arc::new(crate::trash::Trash::new(
+        tmp.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    ));
+    for name in ["a.bin", "b.bin", "c.bin"] {
+        let file = tmp.path().join(name);
+        std::fs::write(&file, name.as_bytes()).unwrap();
+        state.trash.discard_sync(&file).unwrap();
+        // Distinct millisecond stamps so the newest-first order is unambiguous.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    let ids = state
+        .trash
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    (state, tmp, ids)
+}
+
+#[tokio::test]
+async fn trash_routes_are_admin_only() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let user = login_server(&state, "pleb").await;
+    let anon = anon_server(&state).await;
+
+    for (server, want) in [
+        (&user, StatusCode::FORBIDDEN),
+        (&anon, StatusCode::UNAUTHORIZED),
+    ] {
+        server.get("/api/admin/trash").await.assert_status(want);
+        server
+            .post("/api/admin/trash/empty")
+            .await
+            .assert_status(want);
+        server
+            .delete(&format!("/api/admin/trash/{}", ids[0]))
+            .await
+            .assert_status(want);
+    }
+    // Nothing was removed by the rejected calls.
+    assert_eq!(state.trash.list().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn list_trash_returns_entries_newest_first_with_their_manifest_fields() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.get("/api/admin/trash").await;
+    res.assert_status_ok();
+    let body: Vec<serde_json::Value> = res.json();
+    let listed: Vec<&str> = body.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, ids.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(body[0]["original_path"]
+        .as_str()
+        .unwrap()
+        .ends_with("c.bin"));
+    assert_eq!(body[0]["kind"], "file");
+    assert_eq!(body[0]["size_bytes"], 5);
+    assert!(body[0]["trashed_at_ms"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn list_trash_pages_by_cursor_and_clamps_limit() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let first: Vec<serde_json::Value> = admin.get("/api/admin/trash?limit=2").await.json();
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[1]["id"], ids[1]);
+    let second: Vec<serde_json::Value> = admin
+        .get(&format!("/api/admin/trash?limit=2&before={}", ids[1]))
+        .await
+        .json();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0]["id"], ids[2]);
+    // A limit of zero is clamped up to one entry, never rejected.
+    let one: Vec<serde_json::Value> = admin.get("/api/admin/trash?limit=0").await.json();
+    assert_eq!(one.len(), 1);
+    // A cursor whose entry is gone still pages from its position.
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let after_gone: Vec<serde_json::Value> = admin
+        .get(&format!("/api/admin/trash?before={}", ids[1]))
+        .await
+        .json();
+    assert_eq!(after_gone.len(), 1);
+    assert_eq!(after_gone[0]["id"], ids[2]);
+    admin
+        .get("/api/admin/trash?before=..%2Fx")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn delete_trash_entry_removes_only_that_entry_and_a_second_delete_is_not_found() {
+    let (state, _tmp, ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let left: Vec<String> = state
+        .trash
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(left, vec![ids[0].clone(), ids[2].clone()]);
+    admin
+        .delete(&format!("/api/admin/trash/{}", ids[1]))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete("/api/admin/trash/not-an-entry-id")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn empty_trash_removes_every_entry_and_reports_the_totals() {
+    let (state, _tmp, _ids) = state_with_trashed_files().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let res = admin.post("/api/admin/trash/empty").await;
+    res.assert_status_ok();
+    let body: serde_json::Value = res.json();
+    assert_eq!(body["entries"], 3);
+    assert_eq!(body["bytes"], 15);
+    assert!(state.trash.list().unwrap().is_empty());
+    let again: serde_json::Value = admin.post("/api/admin/trash/empty").await.json();
+    assert_eq!(again["entries"], 0);
+}

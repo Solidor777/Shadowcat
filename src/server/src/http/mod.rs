@@ -14,6 +14,7 @@ pub mod peer_slots;
 pub mod routes;
 pub mod scheme;
 pub mod throttle;
+pub mod trash;
 pub mod world_bundle;
 
 use std::sync::atomic::AtomicBool;
@@ -232,6 +233,12 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/debug/rooms", get(routes::debug_rooms))
         .route("/api/admin/backup", post(routes::admin_backup))
         .route("/api/admin/tls", get(routes::admin_tls))
+        .route("/api/admin/trash", get(trash::list_trash))
+        .route("/api/admin/trash/empty", post(trash::empty_trash))
+        .route(
+            "/api/admin/trash/{entry_id}",
+            delete(trash::delete_trash_entry),
+        )
         .route("/api/me", get(routes::me))
         .route(
             "/api/me/ui-state",
