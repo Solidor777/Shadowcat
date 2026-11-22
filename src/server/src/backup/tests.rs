@@ -805,6 +805,26 @@ async fn staged_restore_failing_on_the_assets_copy_records_the_failure() {
     assert!(!failed.error.is_empty());
 }
 
+/// A restore whose database swap succeeds reports success even when the replaced assets tree
+/// cannot be moved to the trash. The trash root is a regular file, so every trash move fails.
+/// Fails if a failed cleanup after the swap is returned as a failed restore.
+#[tokio::test]
+async fn restore_succeeds_when_trashing_the_replaced_assets_fails() {
+    let (tmp, db_path, assets_dir, backup_dir) = live_and_backup().await;
+    let blocked_root = tmp.path().join("trash-blocked");
+    tokio::fs::write(&blocked_root, b"not a directory")
+        .await
+        .unwrap();
+    let blocked_trash = Trash::new(blocked_root, crate::trash::TrashRetention::default());
+
+    let result = restore_backup(&backup_dir, &db_path, &assets_dir, true, &blocked_trash).await;
+
+    assert!(result.is_ok(), "restore failed: {result:?}");
+    assert_eq!(read_val(&db_path).await, "hello");
+    assert!(assets_dir.join("backed.png").exists());
+    assert!(!assets_dir.join("live.png").exists());
+}
+
 /// A restore whose database swap fails after the assets were swapped puts the old assets back.
 /// The live database path is a directory, so renaming the staged file over it fails. Fails if the
 /// assets swap is not rolled back (the live assets would hold `backed.png`).
