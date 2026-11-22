@@ -227,13 +227,15 @@ fn non_empty_trimmed(s: &str) -> Option<&str> {
 }
 
 /// Splits a `/roll` body on its FIRST `|` into `(formula, flavor)`. The dice grammar has no `|`
-/// token, so the first `|` always ends the formula. The flavor is trimmed and is `None` when
-/// the body has no `|` or the text after it is empty. The body reaches this function straight
-/// from `parse_command`, never through `scan_body_capped`, so no bracket nesting is involved.
+/// token, so the first `|` always ends the formula. The formula loses the whitespace before the
+/// `|`, because it is stored and shown as the roll's formula text. The flavor is trimmed and is
+/// `None` when the body has no `|` or the text after it is empty. The body reaches this function
+/// straight from `parse_command`, never through `scan_body_capped`, so no bracket nesting is
+/// involved.
 pub(crate) fn split_roll_flavor(body: &str) -> (&str, Option<&str>) {
     match body.split_once('|') {
         None => (body, None),
-        Some((formula, flavor)) => (formula, non_empty_trimmed(flavor)),
+        Some((formula, flavor)) => (formula.trim_end(), non_empty_trimmed(flavor)),
     }
 }
 
