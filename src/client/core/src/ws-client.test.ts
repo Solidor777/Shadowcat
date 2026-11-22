@@ -991,8 +991,8 @@ describe("WsClient", () => {
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
         mover_light: [
-          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
         ],
         cost: 2,
         truncated: true,
@@ -1006,8 +1006,8 @@ describe("WsClient", () => {
     expect(result.truncated).toBe(true);
     // The mapper must copy the light timeline field for field, camelCased.
     expect(result.moverLight).toEqual([
-      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
     ]);
     expect(result.startServerMs).toBe(1000);
     expect(result.durationMs).toBe(500);

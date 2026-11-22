@@ -4,7 +4,7 @@ import LightEmissionEditor from "./LightEmissionEditor.svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import type { LightEmission } from "@shadowcat/core";
 
-const torch: LightEmission = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+const torch: LightEmission = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
 
 describe("LightEmissionEditor", () => {
   it("commits whole-payload updates: one field changes, the rest are preserved", async () => {

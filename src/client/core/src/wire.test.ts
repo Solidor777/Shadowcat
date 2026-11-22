@@ -434,7 +434,7 @@ describe("parseServerMsg", () => {
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
       mover_light: [
-        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
       ],
       cost: 3.5,
       truncated: true,
@@ -453,7 +453,7 @@ describe("parseServerMsg", () => {
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
       // Same rule for the carried-light timeline: every field is asserted by value.
       expect(m.mover_light).toEqual([
-        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, angle: 90, rotation: 45, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
       ]);
     }
   });

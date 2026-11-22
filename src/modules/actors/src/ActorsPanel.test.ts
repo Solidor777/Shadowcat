@@ -833,7 +833,7 @@ describe("ActorsPanel — carried light", () => {
           {
             path: "/engine/light",
             old: null, // raw stored value: absent
-            new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+            new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
           },
         ],
       },
@@ -842,7 +842,7 @@ describe("ActorsPanel — carried light", () => {
 
   it("a row with an emission renders the field editor, which dispatches /engine/light with the raw stored emission as old", async () => {
     const dispatchIntent = vi.fn();
-    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
     const actor = buildActorDoc(
       "w1",
       "Troll",
@@ -900,7 +900,7 @@ describe("ActorsPanel — carried light", () => {
     const op = ops[0] as { op: string; doc: WireDocument };
     expect(op.op).toBe("create");
     expect((op.doc.engine as { light: unknown }).light).toEqual({
-      color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true,
+      color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true, rotation: 0, followTokenRotation: false,
     });
   });
 });

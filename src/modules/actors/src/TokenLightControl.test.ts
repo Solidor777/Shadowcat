@@ -14,7 +14,7 @@ import {
 } from "@shadowcat/core";
 import TokenLightControl from "./TokenLightControl.svelte";
 
-const torch: LightEmission = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+const torch: LightEmission = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
 
 const actorEngine = {
   displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 },

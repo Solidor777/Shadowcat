@@ -91,6 +91,11 @@ export interface MoveLightSample {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`). */
   falloff: FalloffCurve;
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this sample (`0` = +x, growing toward +y); present
+   * exactly when `angle` is. A token-following cone already holds the bearer's facing. */
+  rotation?: number;
   /** The light's illumination polygon(s) at this sample, as rings of `[x, y]` scene coords. */
   polygons: [number, number][][];
 }
@@ -1321,6 +1326,8 @@ export class WsClient {
                 color: l.color,
                 intensity: l.intensity,
                 falloff: l.falloff,
+                angle: l.angle,
+                rotation: l.rotation,
                 polygons: l.polygons as [number, number][][],
               }))
             : null,

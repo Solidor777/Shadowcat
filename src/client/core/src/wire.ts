@@ -630,6 +630,12 @@ export type WireMoveStreamLightSample = {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
   falloff: "linear" | "quadratic" | "none";
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this instant (`0` = +x, growing toward +y);
+   * present exactly when `angle` is. A token-following cone already holds the bearer's
+   * rotation plus the authored offset. */
+  rotation?: number;
   /** The light's illumination polygon(s) at this instant, each an ordered list of [x, y]
    * scene-coord vertices. */
   polygons: [number, number][][];
@@ -1464,6 +1470,8 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
           color: z.number(),
           intensity: z.number(),
           falloff: z.enum(["linear", "quadratic", "none"]),
+          angle: z.number().optional(),
+          rotation: z.number().optional(),
           polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
         }),
       )
