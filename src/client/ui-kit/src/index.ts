@@ -13,6 +13,13 @@ export { Dice3DBridge } from "./dice3dInteraction";
 export type { Dice3DHost, Dice3DInteraction } from "./dice3dInteraction";
 export { createMenuKeyboard } from "./MenuKeyboard";
 export type { MenuKeyboard } from "./MenuKeyboard";
+export { default as ContextMenu } from "./ContextMenu.svelte";
+export {
+  createContextMenuTrigger,
+  DEFAULT_CONTEXT_MENU_LONG_PRESS_MS,
+  CONTEXT_MENU_SLOP_PX,
+} from "./contextMenu";
+export type { ContextMenuItem, ContextMenuRequest, ContextMenuTrigger, ContextMenuTriggerOptions } from "./contextMenu";
 export { EscapeCoordinator, escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
 export { trapFocus } from "./focusTrap";
 export { default as DialogHost } from "./DialogHost.svelte";
