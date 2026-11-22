@@ -85,6 +85,8 @@ async fn main() -> anyhow::Result<()> {
     // backup/restore modes above are not blocked by them.
     config.validate_tls()?;
 
+    apply_staged_restore(&config).await?;
+
     let repo = SqliteRepository::connect(&config.db)
         .await?
         .with_modules_dir(config.modules_path());
@@ -259,6 +261,43 @@ async fn run_backup(config: &Config, out_dir: &std::path::Path, force: bool) -> 
         manifest.db_bytes,
         manifest.shadowcat_version,
     );
+    Ok(())
+}
+
+/// Applies a restore the admin route staged before shutting the server down
+/// (`shadowcat::backup::apply_pending_restore`), then lets startup continue. Runs before the
+/// database pool opens, because the restore swaps the database file. A failed restore is logged
+/// and recorded in `restore-failed.json`; the server starts on the data it had. An in-memory
+/// database has no marker and is skipped.
+///
+/// # Examples
+///
+/// ```text
+/// // Called once from `main`, ahead of `SqliteRepository::connect`; the staged-restore behavior
+/// // is exercised by `shadowcat::backup::apply_pending_restore`'s tests.
+/// apply_staged_restore(&config).await?;
+/// ```
+async fn apply_staged_restore(config: &Config) -> anyhow::Result<()> {
+    let Some(db_path) = shadowcat::db::database_file(&config.db)? else {
+        return Ok(());
+    };
+    let trash = shadowcat::trash::Trash::from_config(config);
+    match shadowcat::backup::apply_pending_restore(
+        &db_path,
+        &config.assets_path(),
+        &config.backups_path_for(&db_path),
+        &trash,
+    )
+    .await?
+    {
+        shadowcat::backup::PendingRestore::Absent => {}
+        shadowcat::backup::PendingRestore::Applied(id) => {
+            tracing::info!(backup = %id, "staged restore applied");
+        }
+        shadowcat::backup::PendingRestore::Failed(error) => {
+            tracing::error!(%error, "staged restore failed; starting on the existing data");
+        }
+    }
     Ok(())
 }
 

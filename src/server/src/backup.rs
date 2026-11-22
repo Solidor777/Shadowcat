@@ -435,6 +435,138 @@ pub async fn restore_backup(
     Ok(())
 }
 
+/// The file name of the failed-restore marker, written beside the database file when a staged
+/// restore could not be applied at startup.
+pub const RESTORE_FAILED_FILE: &str = "restore-failed.json";
+
+/// What a failed staged restore leaves for the admin list: the backup that was requested and why
+/// it was not applied.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::RestoreFailed;
+///
+/// let marker = RestoreFailed { id: "backup-1".into(), requested_at_ms: 5, error: "no such backup".into() };
+/// let json = serde_json::to_string(&marker).unwrap();
+/// assert_eq!(serde_json::from_str::<RestoreFailed>(&json).unwrap(), marker);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreFailed {
+    /// The requested backup directory name; empty when the pending marker itself was unreadable.
+    pub id: String,
+    /// When the restore was requested, Unix epoch milliseconds; `0` when unreadable.
+    pub requested_at_ms: u64,
+    /// The error text that stopped the restore.
+    pub error: String,
+}
+
+/// The result of [`apply_pending_restore`].
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::PendingRestore;
+///
+/// assert_eq!(PendingRestore::Absent, PendingRestore::Absent);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRestore {
+    /// No `restore-pending.json` marker exists; nothing was touched.
+    Absent,
+    /// The named backup was restored over the database and assets, and the marker was removed.
+    Applied(String),
+    /// The restore failed; `restore-failed.json` records why and the marker was removed.
+    Failed(String),
+}
+
+/// Applies a restore the admin route staged: reads `restore-pending.json` beside `db_path`, and
+/// when present restores that backup from `backups_root` with `force = true`, then moves the
+/// marker into `trash`. A failure (unreadable marker, unknown id, invalid backup, copy error)
+/// writes `restore-failed.json` and also moves the marker into `trash`, so the next start does
+/// not retry. Must run before the database pool opens: a restore swaps the database file, which
+/// a live connection cannot survive (Windows refuses the rename outright). A backup that fails
+/// validation leaves the live database untouched, because `restore_backup` validates before it
+/// writes a destination file.
+///
+/// # Errors
+///
+/// An unreadable marker file, or a failure to write the failed marker or to discard the pending
+/// marker. The last case aborts startup rather than risk applying the same restore twice.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::backup::{apply_pending_restore, PendingRestore};
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let outcome = apply_pending_restore(
+///     &dir.path().join("shadowcat.db"),
+///     &dir.path().join("assets"),
+///     &dir.path().join("backups"),
+///     &trash,
+/// )
+/// .await
+/// .unwrap();
+/// assert_eq!(outcome, PendingRestore::Absent);
+/// # }
+/// ```
+pub async fn apply_pending_restore(
+    db_path: &Path,
+    assets_dir: &Path,
+    backups_root: &Path,
+    trash: &Trash,
+) -> Result<PendingRestore, BackupError> {
+    let marker_path = catalog::restore_pending_path(db_path);
+    let bytes = match tokio::fs::read(&marker_path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PendingRestore::Absent),
+        Err(e) => return Err(e.into()),
+    };
+    let failed_path = db_path.with_file_name(RESTORE_FAILED_FILE);
+    let outcome: Result<String, RestoreFailed> =
+        match serde_json::from_slice::<catalog::RestorePending>(&bytes) {
+            Err(e) => Err(RestoreFailed {
+                id: String::new(),
+                requested_at_ms: 0,
+                error: format!("unreadable {}: {e}", catalog::RESTORE_PENDING_FILE),
+            }),
+            Ok(pending) => {
+                let attempt = match catalog::resolve_backup(backups_root, &pending.id) {
+                    Ok(dir) => restore_backup(&dir, db_path, assets_dir, true, trash).await,
+                    Err(e) => Err(e),
+                };
+                match attempt {
+                    Ok(()) => Ok(pending.id),
+                    Err(e) => Err(RestoreFailed {
+                        id: pending.id,
+                        requested_at_ms: pending.requested_at_ms,
+                        error: e.to_string(),
+                    }),
+                }
+            }
+        };
+    match outcome {
+        Ok(id) => {
+            // A restored server starts clean: a failure recorded by an earlier attempt no longer
+            // describes the data.
+            trash.discard(&failed_path).await?;
+            trash.discard(&marker_path).await?;
+            Ok(PendingRestore::Applied(id))
+        }
+        Err(failed) => {
+            let staging = failed_path.with_extension("json.tmp");
+            tokio::fs::write(&staging, serde_json::to_vec(&failed)?).await?;
+            tokio::fs::rename(&staging, &failed_path).await?;
+            trash.discard(&marker_path).await?;
+            Ok(PendingRestore::Failed(failed.error))
+        }
+    }
+}
+
 pub mod catalog;
 
 #[cfg(test)]

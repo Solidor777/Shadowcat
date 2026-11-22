@@ -530,3 +530,174 @@ async fn restore_backup_trashes_the_replaced_assets_directory() {
         "the replaced directory's stale.png is retained"
     );
 }
+
+/// The `val` of row 1 in a `seed_db`-shaped file.
+async fn read_val(path: &Path) -> String {
+    let url = format!("sqlite://{}", path.to_string_lossy());
+    let pool = crate::db::connect_pool(&url).await.unwrap();
+    let row = sqlx::query("SELECT val FROM t WHERE id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let val: String = row.get("val");
+    pool.close().await;
+    val
+}
+
+/// Stages a restore of `id` the way the admin route does.
+fn stage_restore(db_path: &Path, id: &str) {
+    let marker = catalog::RestorePending {
+        id: id.into(),
+        requested_at_ms: 7,
+    };
+    std::fs::write(
+        catalog::restore_pending_path(db_path),
+        serde_json::to_vec(&marker).unwrap(),
+    )
+    .unwrap();
+}
+
+/// A staged restore replaces the live database and assets with the backup's, removes the marker
+/// and reports the id. Fails if `apply_pending_restore` restores without `force` (the live db
+/// exists, so the restore is refused) or leaves the marker behind.
+#[tokio::test]
+async fn apply_pending_restore_replaces_live_data_with_the_backup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let assets_dir = tmp.path().join("assets");
+    tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+    tokio::fs::write(assets_dir.join("old.png"), b"OLD")
+        .await
+        .unwrap();
+    let trash = test_trash(tmp.path());
+    let root = tmp.path().join("backups");
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &root.join("backup-1"),
+        &trash,
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Live state diverges after the backup.
+    let url = format!("sqlite://{}", db_path.to_string_lossy());
+    let pool = crate::db::connect_pool(&url).await.unwrap();
+    sqlx::query("UPDATE t SET val = 'changed' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    tokio::fs::write(assets_dir.join("new.png"), b"NEW")
+        .await
+        .unwrap();
+
+    stage_restore(&db_path, "backup-1");
+    let outcome = apply_pending_restore(&db_path, &assets_dir, &root, &trash)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, PendingRestore::Applied("backup-1".into()));
+    assert_eq!(read_val(&db_path).await, "hello");
+    assert!(assets_dir.join("old.png").exists());
+    assert!(!assets_dir.join("new.png").exists());
+    assert!(!catalog::restore_pending_path(&db_path).exists());
+    assert!(!db_path.with_file_name(RESTORE_FAILED_FILE).exists());
+}
+
+/// A backup that fails validation leaves the live database byte-identical, records the failure
+/// and removes the pending marker so the next start does not retry. Fails if the failure path
+/// leaves the marker in place or skips the failed marker.
+#[tokio::test]
+async fn apply_pending_restore_records_a_failure_and_keeps_live_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let assets_dir = tmp.path().join("assets");
+    let root = tmp.path().join("backups");
+    let broken = root.join("backup-2");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("world.db"), b"not a database").unwrap();
+    std::fs::write(broken.join("manifest.json"), b"{ not json").unwrap();
+    let before = std::fs::read(&db_path).unwrap();
+
+    stage_restore(&db_path, "backup-2");
+    let outcome = apply_pending_restore(&db_path, &assets_dir, &root, &test_trash(tmp.path()))
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, PendingRestore::Failed(_)));
+    assert_eq!(std::fs::read(&db_path).unwrap(), before);
+    assert!(!catalog::restore_pending_path(&db_path).exists());
+    let failed: RestoreFailed = serde_json::from_slice(
+        &std::fs::read(db_path.with_file_name(RESTORE_FAILED_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(failed.id, "backup-2");
+    assert_eq!(failed.requested_at_ms, 7);
+    assert!(failed.error.contains("malformed manifest.json"));
+}
+
+/// An id that is not a direct child of the backups root, and an unreadable marker, both fail
+/// closed with a failed marker and no destination write. Fails if the marker's id reaches the
+/// filesystem without `resolve_backup`.
+#[tokio::test]
+async fn apply_pending_restore_rejects_a_traversal_id_and_a_garbled_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let root = tmp.path().join("backups");
+    std::fs::create_dir_all(&root).unwrap();
+    let trash = test_trash(tmp.path());
+    let assets_dir = tmp.path().join("assets");
+    let failed_path = db_path.with_file_name(RESTORE_FAILED_FILE);
+
+    stage_restore(&db_path, "..");
+    let outcome = apply_pending_restore(&db_path, &assets_dir, &root, &trash)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, PendingRestore::Failed(_)));
+    assert!(failed_path.exists());
+
+    std::fs::write(catalog::restore_pending_path(&db_path), b"garbage").unwrap();
+    let outcome = apply_pending_restore(&db_path, &assets_dir, &root, &trash)
+        .await
+        .unwrap();
+    assert!(matches!(outcome, PendingRestore::Failed(_)));
+    let failed: RestoreFailed =
+        serde_json::from_slice(&std::fs::read(&failed_path).unwrap()).unwrap();
+    assert_eq!(failed.id, "");
+    assert_eq!(read_val(&db_path).await, "hello");
+}
+
+/// A later successful restore clears the failed marker an earlier attempt left.
+#[tokio::test]
+async fn apply_pending_restore_success_clears_an_earlier_failed_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let assets_dir = tmp.path().join("assets");
+    let trash = test_trash(tmp.path());
+    let root = tmp.path().join("backups");
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &root.join("backup-1"),
+        &trash,
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
+    std::fs::write(db_path.with_file_name(RESTORE_FAILED_FILE), b"{}").unwrap();
+
+    stage_restore(&db_path, "backup-1");
+    apply_pending_restore(&db_path, &assets_dir, &root, &trash)
+        .await
+        .unwrap();
+
+    assert!(!db_path.with_file_name(RESTORE_FAILED_FILE).exists());
+}
