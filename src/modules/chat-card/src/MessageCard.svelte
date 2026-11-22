@@ -259,7 +259,7 @@
   // GM reveal/conceal editor state. Advisory UI only: the server re-authorizes every
   // revision against its own GM-only check in `handle_revise_audience`.
   let revising = $state(false);
-  let reviseKind = $state<"public" | "gm_only" | "whisper">("public");
+  let reviseKind = $state<"public" | "gm_only" | "whisper" | "blind">("public");
   let reviseRecipients = $state<string[]>([]);
   // Members a whisper can name: everyone but the author, who always keeps the message.
   const whisperCandidates = $derived(

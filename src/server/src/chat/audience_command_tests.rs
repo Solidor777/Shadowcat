@@ -328,6 +328,10 @@ async fn editing_in_any_audience_command_is_audience_locked() {
         "/gm hi",
         "/gmroll 1d20",
         "/publicroll 1d20",
+        "/blindroll 1d20",
+        "/br 1d20",
+        "/selfroll 1d20",
+        "/sr 1d20",
         "/players hi",
         "/reply hi",
     ] {

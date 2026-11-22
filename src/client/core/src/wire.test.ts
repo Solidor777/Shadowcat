@@ -961,6 +961,18 @@ describe("SendMessageSchema", () => {
     expect(parsed.audience).toEqual({ kind: "gm_only" });
   });
 
+  it("parses a blind audience", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
+      channel: "general",
+      content: "/blindroll 1d20",
+      actor_owner: null,
+      audience: { kind: "blind" },
+    });
+    expect(parsed.audience).toEqual({ kind: "blind" });
+  });
+
   it("carries an opaque system payload and treats it as optional", () => {
     const base = {
       type: "send_message",

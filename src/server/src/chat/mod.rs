@@ -201,6 +201,12 @@ pub enum Audience {
     /// Only whoever currently holds `WorldRole::Gm` (plus the sender) may
     /// read — resolved dynamically, not a frozen roster at send time.
     GmOnly,
+    /// Every member holds the message, but each roll in it carries its formula and result
+    /// only for the GM: `roll_property_overrides` registers them under the GM-only tier, so the
+    /// roller sees a card saying a blind roll was made and nothing else. Valid only on a
+    /// message that holds a roll (`SendMessageError::BlindNeedsRoll` otherwise). The sender
+    /// stays `Owner` of the document and may delete it.
+    Blind,
 }
 
 /// Client-facing mirror of `dice::RecalcOp`, carried on the `RecalcRoll` wire
@@ -323,11 +329,16 @@ pub enum Segment {
     /// produced on edit (rolls are immutable, see `handle_edit_message`) --
     /// `handle_recalc_roll` is the only path that ever mutates an existing one.
     RollEmbed {
-        /// The formula as the author wrote it.
+        /// The formula as the author wrote it. Absent from a copy of a blind roll's message
+        /// that a non-GM reader receives (`#[serde(default)]` reads it as empty).
+        #[serde(default)]
         formula: String,
         /// The full deterministic outcome, natural faces included. Overwritten by
         /// `handle_recalc_roll` on each recalculation; the PRE-recalc value is
-        /// preserved as the newest `recalc_history` entry's `previous_outcome`.
+        /// preserved as the newest `recalc_history` entry's `previous_outcome`. Absent from
+        /// a blind roll's copy for a non-GM reader (`#[serde(default)]` reads it as the
+        /// zero outcome).
+        #[serde(default)]
         outcome: RollOutcome,
         /// Stable identity for this roll, independent of its position in `content`
         /// -- a recalc targets a roll by this id, never by array index, so it
@@ -524,8 +535,10 @@ pub struct TableDrawSegment {
     pub roll_id: Uuid,
     /// The notation actually rolled: `1d<sum>` for `DrawRule::Weighted`, or
     /// the table's own notation for `DrawRule::Formula`.
+    #[serde(default)]
     pub formula: String,
     /// The full deterministic outcome of the roll that selected a row.
+    #[serde(default)]
     pub outcome: RollOutcome,
     /// The parsed spec the row-selecting roll was scored from. GM-visible only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -651,10 +664,14 @@ pub struct RecalcEntry {
     /// The targeted mutation(s) applied this recalculation.
     pub ops: Vec<RecalcOp>,
     /// The roll's natural-face log immediately BEFORE this recalculation.
-    /// GM-visible only, same as `Segment::RollEmbed`'s `raw` field.
+    /// GM-visible only, same as `Segment::RollEmbed`'s `raw` field. `#[serde(default)]` reads a
+    /// copy the GM-only tier stripped as the empty log.
+    #[serde(default)]
     pub previous_raw: RawRoll,
     /// The roll's outcome immediately BEFORE this recalculation. Visible to
-    /// every recipient (not GM-gated) -- same visibility as `RollEmbed::outcome`.
+    /// every recipient (not GM-gated) -- same visibility as `RollEmbed::outcome`, so GM-only
+    /// on a blind roll like it.
+    #[serde(default)]
     pub previous_outcome: RollOutcome,
     /// The GM who performed this recalculation.
     pub recalculated_by: Uuid,
@@ -674,13 +691,25 @@ pub struct RecalcEntry {
 /// depth (a table draw carries no recalc history — it is not recalculable).
 /// Applied uniformly to every `RollSpec`/`RawRoll`-shaped value under a
 /// `RollEmbed`/`TableDraw` -- `outcome`/`previous_outcome`/`recalc_history`/
-/// `row` themselves stay visible to every recipient. Recomputed from scratch
+/// `row` themselves stay visible to every recipient, except under `Audience::Blind`, where
+/// every roll's `formula` and `outcome` (and each recalc entry's `previous_outcome`, and a table
+/// draw's matched `row`) are GM-only as well. Recomputed from scratch
 /// against the CURRENT `content` (never incrementally patched), so a
 /// message's override set always matches what it actually carries; called
 /// from `build_message_doc` at Create time and from `handle_recalc_roll`
 /// after every recalculation.
-pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
-    segment_property_overrides("/engine/content", content)
+pub(crate) fn roll_property_overrides(
+    content: &[Segment],
+    audience: &Audience,
+) -> BTreeMap<String, Visibility> {
+    let mut out = BTreeMap::new();
+    push_segment_overrides(
+        "/engine/content",
+        content,
+        matches!(audience, Audience::Blind),
+        &mut out,
+    );
+    out
 }
 
 /// The override set for a segment list stored at `root` (`/engine/content` for a message,
@@ -695,13 +724,22 @@ pub(crate) fn segment_property_overrides(
     content: &[Segment],
 ) -> BTreeMap<String, Visibility> {
     let mut out = BTreeMap::new();
-    push_segment_overrides(root, content, &mut out);
+    push_segment_overrides(root, content, false, &mut out);
     out
 }
 
-/// Recursive worker for `segment_property_overrides`: emits the override entries for
-/// `content[i]` at `{root}/{i}` for every `i`.
-fn push_segment_overrides(root: &str, content: &[Segment], out: &mut BTreeMap<String, Visibility>) {
+/// Recursive worker for `segment_property_overrides` and `roll_property_overrides`: emits the
+/// override entries for `content[i]` at `{root}/{i}` for every `i`. `blind` additionally
+/// registers each roll's `formula`, `outcome` and every recalc entry's `previous_outcome` (and
+/// a table draw's `formula`, `outcome` and matched `row`) under the GM-only tier; it is the one
+/// switch by which a blind message hides its results, shared by message creation, recalculation
+/// and audience revision.
+fn push_segment_overrides(
+    root: &str,
+    content: &[Segment],
+    blind: bool,
+    out: &mut BTreeMap<String, Visibility>,
+) {
     for (i, seg) in content.iter().enumerate() {
         let prefix = format!("{root}/{i}");
         match seg {
@@ -717,17 +755,27 @@ fn push_segment_overrides(root: &str, content: &[Segment], out: &mut BTreeMap<St
                 if raw.is_some() {
                     out.insert(format!("{prefix}/raw"), Visibility::GmOnly);
                 }
+                if blind {
+                    out.insert(format!("{prefix}/formula"), Visibility::GmOnly);
+                    out.insert(format!("{prefix}/outcome"), Visibility::GmOnly);
+                }
                 if let Some(history) = recalc_history {
                     for j in 0..history.len() {
                         out.insert(
                             format!("{prefix}/recalc_history/{j}/previous_raw"),
                             Visibility::GmOnly,
                         );
+                        if blind {
+                            out.insert(
+                                format!("{prefix}/recalc_history/{j}/previous_outcome"),
+                                Visibility::GmOnly,
+                            );
+                        }
                     }
                 }
             }
             Segment::TableDraw(draw) => {
-                push_draw_overrides(&prefix, draw, out);
+                push_draw_overrides(&prefix, draw, blind, out);
             }
             Segment::Secret {
                 visibility,
@@ -735,11 +783,33 @@ fn push_segment_overrides(root: &str, content: &[Segment], out: &mut BTreeMap<St
             } => {
                 out.insert(format!("{prefix}/content"), visibility.clone());
                 out.insert(format!("{prefix}/visibility"), visibility.clone());
-                push_segment_overrides(&format!("{prefix}/content"), content, out);
+                push_segment_overrides(&format!("{prefix}/content"), content, blind, out);
             }
             _ => {}
         }
     }
+}
+
+/// Whether `content` holds a roll (`RollEmbed` or `TableDraw`) anywhere, including inside a
+/// secret. A blind message with none has nothing to hide.
+fn holds_roll(content: &[Segment]) -> bool {
+    content.iter().any(|seg| match seg {
+        Segment::RollEmbed { .. } | Segment::TableDraw(_) => true,
+        Segment::Secret { content, .. } => holds_roll(content),
+        _ => false,
+    })
+}
+
+/// Refuses an `Audience::Blind` over content with no roll to hide. The one check shared by
+/// `handle_send_message` and `handle_revise_audience`; every other audience passes.
+pub(crate) fn validate_blind_content(
+    audience: &Audience,
+    content: &[Segment],
+) -> Result<(), SendMessageError> {
+    if matches!(audience, Audience::Blind) && !holds_roll(content) {
+        return Err(SendMessageError::BlindNeedsRoll);
+    }
+    Ok(())
 }
 
 /// The `visibility` a `Segment::Secret` deserializes to when egress removed the key: `GmOnly`,
@@ -761,9 +831,11 @@ pub(crate) fn has_secret(content: &[Segment]) -> bool {
 /// input the secret spans were parsed from, so leaving it readable would hand every reader the
 /// text the secret hides; the author keeps it for edit prefill. Used by every site that writes
 /// a message's `permissions.property_overrides`, so the set always matches the content it
-/// protects.
+/// protects. A blind message's `source` also goes GM-only, since it holds the formula the
+/// roller typed; the message's own `audience` selects the blind rule, so a revision must store
+/// the new audience before calling this.
 pub(crate) fn message_property_overrides(engine: &MessageEngine) -> BTreeMap<String, Visibility> {
-    let mut out = roll_property_overrides(&engine.content);
+    let mut out = roll_property_overrides(&engine.content, &engine.audience);
     if has_secret(&engine.content) {
         out.insert(
             "/engine/source".to_string(),
@@ -772,16 +844,22 @@ pub(crate) fn message_property_overrides(engine: &MessageEngine) -> BTreeMap<Str
             },
         );
     }
+    if matches!(engine.audience, Audience::Blind) && holds_roll(&engine.content) {
+        out.insert("/engine/source".to_string(), Visibility::GmOnly);
+    }
     out
 }
 
 /// Recursive helper for `roll_property_overrides`'s `TableDraw` arm: emits
 /// `{prefix}/spec`/`{prefix}/raw` for this draw, then recurses into every
 /// nested draw its matched row fanned out (`{prefix}/row/nested/{j}`),
-/// mirroring the draw's own recursive shape (`Segment::TableDraw`'s doc).
+/// mirroring the draw's own recursive shape (`Segment::TableDraw`'s doc). A `blind` draw
+/// registers its `formula`, `outcome` and matched `row` GM-only and stops there: the nested
+/// draws sit inside the hidden `row`, so a reader never reaches them.
 fn push_draw_overrides(
     prefix: &str,
     seg: &TableDrawSegment,
+    blind: bool,
     out: &mut BTreeMap<String, Visibility>,
 ) {
     if seg.spec.is_some() {
@@ -790,9 +868,15 @@ fn push_draw_overrides(
     if seg.raw.is_some() {
         out.insert(format!("{prefix}/raw"), Visibility::GmOnly);
     }
+    if blind {
+        out.insert(format!("{prefix}/formula"), Visibility::GmOnly);
+        out.insert(format!("{prefix}/outcome"), Visibility::GmOnly);
+        out.insert(format!("{prefix}/row"), Visibility::GmOnly);
+        return;
+    }
     if let Some(row) = &seg.row {
         for (j, nested) in row.nested.iter().enumerate() {
-            push_draw_overrides(&format!("{prefix}/row/nested/{j}"), nested, out);
+            push_draw_overrides(&format!("{prefix}/row/nested/{j}"), nested, false, out);
         }
     }
 }
@@ -960,7 +1044,7 @@ pub fn permissions_for_audience(
     audience: &Audience,
 ) -> (DocRole, Option<DocRole>, BTreeMap<Uuid, DocRole>) {
     let (default, gm_role, mut users) = match audience {
-        Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
+        Audience::Public | Audience::Blind => (DocRole::Observer, None, BTreeMap::new()),
         Audience::Whisper { recipients } => {
             let mut users = BTreeMap::new();
             for &r in recipients {
@@ -987,6 +1071,8 @@ pub fn permissions_for_audience(
 /// - `GmOnly` — `default: None`, `gm_role: Some(Observer)` (ANY current GM
 ///   reads, resolved dynamically — not a frozen roster), `users` holds only
 ///   `owner: Owner`.
+/// - `Blind` — the `Public` shape; the GM-only hiding of each roll's formula and result is a
+///   property override (`roll_property_overrides`), not a readership change.
 ///
 /// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
 /// redundantly names the sender as their own recipient can never downgrade
@@ -1196,6 +1282,8 @@ pub enum SendMessageError {
     ActorNotSpeakable,
     /// `/reply` found no whisper addressed to the sender from another member.
     NoReplyTarget,
+    /// An `Audience::Blind` message holds no roll, so there is nothing to hide.
+    BlindNeedsRoll,
 }
 
 /// Player-presentable text for the sender's failure notice (correlated `ChatError`
@@ -1238,6 +1326,10 @@ impl std::fmt::Display for SendMessageError {
                 // Safe: reveals only that the sender has received no whisper, which
                 // the sender can already see in their own chat log.
                 f.write_str("There is no whisper to reply to.")
+            }
+            SendMessageError::BlindNeedsRoll => {
+                // Safe: reflects only the sender's own message having no roll.
+                f.write_str("A blind message needs a roll to hide.")
             }
             // Authorization-class: generic only. The inner value is deliberately unused.
             SendMessageError::ActorNotSpeakable => {
@@ -1349,7 +1441,9 @@ pub(crate) async fn validate_audience(
 
 /// Resolves a command's `AudienceIntent` into a concrete `Audience`: the one decider for
 /// every content-level audience shortcut. `Whisper` resolves each `@username` to a member
-/// uuid (unknown name fails the whole send); `GmOnly` and `Public` map directly; `Players`
+/// uuid (unknown name fails the whole send); `GmOnly`, `Public` and `Blind` map directly;
+/// `SelfOnly` maps to a whisper with no recipients, which the sender alone reads (the sender is
+/// always `Owner` and a whisper excludes the GM unless listed); `Players`
 /// snapshots every current non-GM member except the sender into a whisper roster;
 /// `ReplyToLastWhisper` targets the author of the sender's most recent received whisper
 /// (`Repository::last_whisper_to`). The caller still runs `validate_audience` on the result.
@@ -1376,6 +1470,10 @@ pub(crate) async fn resolve_audience_intent(
         }
         AudienceIntent::GmOnly => Ok(Audience::GmOnly),
         AudienceIntent::Public => Ok(Audience::Public),
+        AudienceIntent::Blind => Ok(Audience::Blind),
+        AudienceIntent::SelfOnly => Ok(Audience::Whisper {
+            recipients: Vec::new(),
+        }),
         AudienceIntent::Players => {
             let recipients = repo
                 .list_members(world_id)
@@ -1816,6 +1914,8 @@ pub async fn handle_send_message(
             }
         }
     };
+    // Before the enrich stage, so a refused blind message makes no outbound fetch.
+    validate_blind_content(&audience, &content_segments)?;
     let mut pending: Vec<PendingEnrichment> = Vec::new();
     // Link-preview / inline-image enrich stage, for non-Roll bodies only. A successful roll
     // falls through here with `content_segments == [RollEmbed]` (a roll-execution failure
@@ -2788,8 +2888,11 @@ pub async fn handle_revise_audience(
     validate_audience(repo, world_id, ctx.user_id, &audience).await?;
 
     let (default, gm_role, users) = permissions_for_audience(sys.user_owner, &audience);
-    let overrides = message_property_overrides(&sys);
+    validate_blind_content(&audience, &sys.content)?;
     sys.audience = audience;
+    // After the audience is stored: `message_property_overrides` reads it to decide whether the
+    // rolls hide their results.
+    let overrides = message_property_overrides(&sys);
 
     let op_failed =
         |e: serde_json::Error| SendMessageError::Data(DataError::OpFailed(e.to_string()));
@@ -2846,6 +2949,9 @@ mod revise_audience_tests;
 
 #[cfg(test)]
 mod secret_tests;
+
+#[cfg(test)]
+mod blind_tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;
