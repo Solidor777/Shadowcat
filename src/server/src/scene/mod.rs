@@ -249,54 +249,16 @@ impl ResolvedScene {
     }
 }
 
-/// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
-/// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
-/// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
-/// `perceives`/`requires_los` carry the sense descriptor through: a `Creatures` mode
-/// contributes nothing to the illumination-floor mask and instead feeds
-/// `SceneEcs::player_perceived_tokens`.
-///
-/// # Examples
-///
-/// ```
-/// use shadowcat::data::engine::scene::Perception;
-/// use shadowcat::scene::VisionMode;
-///
-/// let darkvision = VisionMode {
-///     illumination_floor: "dark".into(),
-///     default_range: 12.0,
-///     render_hint: Some("desaturate".into()),
-///     perceives: Perception::Terrain,
-///     requires_los: true,
-/// };
-/// assert_eq!(darkvision.illumination_floor, "dark");
-/// ```
-#[derive(Clone, Debug)]
-pub struct VisionMode {
-    /// Minimum illumination band name the mode can see under.
-    pub illumination_floor: String,
-    /// Default vision range in cells (used when a token authors none).
-    pub default_range: f64,
-    /// Client render treatment (e.g. `"desaturate"`); `None` = plain.
-    pub render_hint: Option<String>,
-    /// What the mode perceives (terrain mask vs creature perception).
-    pub perceives: eng::Perception,
-    /// Whether sight walls bound the mode's reach (creature senses only; the
-    /// terrain mask is always LOS-gated).
-    pub requires_los: bool,
-}
+/// The resolved vision mode IS the `data::engine` document type: `SceneEcs::resolved_vision_modes`
+/// returns the authored or seed `VisionMode` unchanged, so the wire shape and the server's
+/// resolved shape cannot drift (a second hand-copied struct would have to be edited in step with
+/// every field the engine type gains).
+pub use crate::data::engine::VisionMode;
 
-/// Wire (`eng::VisionMode`) → resolved bridge — the single conversion both the
-/// authored-doc branch and the seed fallback of `resolved_vision_modes` pass through.
-fn conv_vision_mode(m: eng::VisionMode) -> VisionMode {
-    VisionMode {
-        illumination_floor: m.illumination_floor,
-        default_range: m.default_range,
-        render_hint: m.render_hint,
-        perceives: m.perceives,
-        requires_los: m.requires_los,
-    }
-}
+/// The shared, cheaply clonable handle a resolved `VisionMode.render_hint` travels as through
+/// the per-source vision floors and lit-mask cells: a `Custom` hint's `params` is cloned once per
+/// token floor build rather than once per candidate cell.
+pub(crate) type SharedRenderHint = Option<std::sync::Arc<eng::RenderHint>>;
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
 /// (untinted) on any malformed input. CSS shorthand: each nibble is doubled (`#abc` → `#aabbcc`).
@@ -476,8 +438,17 @@ pub struct LitScene {
     /// Grid cell size in scene units.
     pub cell: f64,
     /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
-    pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
+    pub cells: Vec<LitCell>,
 }
+
+/// One visible cell: `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
+pub type LitCell = (
+    i32,
+    i32,
+    usize,
+    u32,
+    Option<std::sync::Arc<eng::RenderHint>>,
+);
 
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
 /// so rays always terminate on the box rather than escaping to infinity.
@@ -492,7 +463,7 @@ pub(crate) struct SightSource {
     /// Committed viewpoint in scene units.
     vp: vision::P,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    floors: Vec<(f64, f64, Option<String>)>,
+    floors: Vec<(f64, f64, SharedRenderHint)>,
     /// The source token's elevation (`elevation::GROUND` = grounded) — a creature sense
     /// (`senses`) feels nothing from the air (`senses::sense_perceives`).
     elevation: f64,
@@ -2194,17 +2165,11 @@ impl SceneEcs {
             .and_then(|d| self.engine_as_cached::<eng::VisionModesEngine>(d.id, d));
         match parsed {
             Some(vme) => {
-                for (id, m) in vme.modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                out.extend(vme.modes);
             }
             None => {
-                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it):
-                // read through the SAME `conv_vision_mode` as the authored-doc branch so the two
-                // can never drift.
-                for (id, m) in eng::VisionModesEngine::seed().modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it).
+                out.extend(eng::VisionModesEngine::seed().modes);
             }
         }
         out
@@ -3429,7 +3394,7 @@ impl SceneEcs {
     /// triples, resolved from the assignments `token_vision_assignments` walks (that shared
     /// resolver owns the linked/instanced/override precedence; this function owns only the
     /// per-mode terrain-floor projection). `range_cells == 0.0` ⇒ unlimited. `render_hint`
-    /// mirrors `VisionMode.render_hint` (e.g. `Some("desaturate")` for darkvision).
+    /// mirrors `VisionMode.render_hint` (`Some(RenderHint::Desaturate)` for darkvision).
     /// An unknown mode id is dropped (fail-closed: it contributes no vision floor). A
     /// `Perception::Creatures` mode is likewise
     /// absent here — creature senses perceive tokens, not terrain
@@ -3465,11 +3430,14 @@ impl SceneEcs {
     /// let floors = ecs.token_vision_floors(&token);
     /// assert_eq!(floors.len(), 1);
     /// ```
-    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
+    pub fn token_vision_floors(
+        &self,
+        token: &Document,
+    ) -> Vec<(f64, f64, Option<std::sync::Arc<eng::RenderHint>>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
+        let mut out: Vec<(f64, f64, SharedRenderHint)> = Vec::new();
         if let Some(arr) = self.token_vision_assignments(token) {
             for a in arr {
                 let Some(vm) = modes.get(&a.mode) else {
@@ -3488,7 +3456,7 @@ impl SceneEcs {
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     a.range.unwrap_or(vm.default_range),
-                    vm.render_hint.clone(),
+                    vm.render_hint.clone().map(std::sync::Arc::new),
                 ));
             }
         }
@@ -4354,7 +4322,7 @@ impl SceneEcs {
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
-        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, SharedRenderHint)>;
         // (scene, level id) -> (the scene's `cell` indexing scale, per-cell best): one entry per
         // level a source occupies — `""` for ground/a level-less scene.
         let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
@@ -4460,7 +4428,7 @@ impl SceneEcs {
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
                     // and is reused verbatim by the movement gate (anti-drift).
                     let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
-                    let mut admit_hint: Option<String> = None;
+                    let mut admit_hint: SharedRenderHint = None;
                     for (fmin, range, hint) in &src.floors {
                         let in_range = *range == 0.0 || dist_cells <= *range;
                         if !in_range {

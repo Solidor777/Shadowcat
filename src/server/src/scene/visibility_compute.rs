@@ -127,7 +127,7 @@ impl LightingInputs {
 pub(crate) fn point_qualifies(
     point: (f64, f64),
     src_vp: (f64, f64),
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     settings: &ResolvedScene,
     li: &LightingInputs,
     world_units_per_cell: f64,
@@ -152,7 +152,7 @@ pub(crate) struct VisSrc {
     /// `elevation::wall_occludes` and grounds tremorsense (`SceneEcs::player_perceived_tokens`).
     pub(crate) elevation: f64,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    pub(crate) floors: Vec<(f64, f64, Option<String>)>,
+    pub(crate) floors: Vec<(f64, f64, SharedRenderHint)>,
     /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
     /// read by `player_perceived_tokens` and the clip's `SightSource`; the lit mask ignores
     /// them, so they are no part of `VisibilityInputsSnapshot`.
@@ -162,7 +162,7 @@ pub(crate) struct VisSrc {
 /// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.
 /// Elevation is part of the fingerprint: a token gaining/losing height changes which walls
 /// occlude it, so the same walls at two elevations must never share a cached mask.
-pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
+pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, SharedRenderHint)>);
 
 /// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
 /// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
@@ -366,7 +366,7 @@ pub(crate) fn accumulate_visible_cells(
 /// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
 /// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
 pub(crate) fn cell_visible(
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     cl_level: f64,
     dist_cells: f64,
 ) -> bool {
@@ -529,7 +529,7 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` alongside them).
-                // `renderHints` is a deterministic string table (first-seen order over the
+                // `renderHints` is a deterministic table of distinct hints (first-seen order over the
                 // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
                 // hint_idx is the index into `renderHints`, or -1 for None.
                 // The gradation is resolved ONCE here and passed into the mask computation, so
@@ -553,7 +553,7 @@ pub fn compute_derived(
                     .into_iter()
                     .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
                     .collect();
-                let mut hints: Vec<String> = Vec::new();
+                let mut hints: Vec<std::sync::Arc<eng::RenderHint>> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {
                     let mut flat: Vec<i64> = Vec::new();
@@ -574,8 +574,14 @@ pub fn compute_derived(
                         serde_json::json!({ "scene": s.scene, "level": s.level, "cell": s.cell, "cells": flat }),
                     );
                 }
+                // Each table entry is the hint's own tagged wire object (`{"kind": ...}`), so the
+                // client dispatches on `kind` exactly as it does on a `VisionMode.renderHint`.
+                let hints_json: Vec<serde_json::Value> = hints
+                    .iter()
+                    .map(|h| serde_json::to_value(h.as_ref()).unwrap_or(serde_json::Value::Null))
+                    .collect();
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit, "perceived": perceived }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints_json, "lit": lit, "perceived": perceived }),
                 )
             }
         }

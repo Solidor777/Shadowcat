@@ -1073,10 +1073,129 @@ pub struct VisionMode {
     /// always LOS-gated by the mask pipeline itself.
     #[serde(default = "default_requires_los")]
     pub requires_los: bool,
-    /// Optional client render treatment tag (e.g. a tint); never interpreted
-    /// server-side.
+    /// The visual treatment the client paints over the cells this mode perceives; absent
+    /// behaves as `RenderHint::None`. Validated at ingress (`RenderHint::validate`) and
+    /// otherwise never interpreted server-side.
     #[serde(default)]
-    pub render_hint: Option<String>,
+    pub render_hint: Option<RenderHint>,
+}
+
+/// Longest `RenderHint::Custom` treatment name, in characters.
+pub const MAX_RENDER_TREATMENT_CHARS: usize = 64;
+
+/// The visual treatment a `VisionMode` asks the client to paint over the cells it perceives,
+/// composed on top of the ordinary lit/dim/dark banding (it never replaces a band's darkening).
+/// The four built-in arms are closed and ingress-validated; `Custom` is the one open arm, so a
+/// module-defined sense can bring its own treatment without an engine change. The wire tag is
+/// `kind`, so `Custom` names its treatment in `treatment` (a field also called `kind` would
+/// collide with the tag).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RenderHint;
+///
+/// let wash = RenderHint::ColorWash { color: "#00aa00".to_string(), opacity: 0.25 };
+/// assert!(wash.validate().is_ok());
+/// assert_eq!(serde_json::to_value(&RenderHint::Desaturate).unwrap()["kind"], "desaturate");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RenderHint {
+    /// Flat luminance desaturation wash.
+    Desaturate,
+    /// A uniform colour wash at `opacity`.
+    ColorWash {
+        /// Wash colour, a css `#rrggbb` string.
+        color: String,
+        /// Wash opacity in `0.0..=1.0`.
+        opacity: f64,
+    },
+    /// Outline-only rendering: the perceived cell's silhouette, no fill.
+    Outline {
+        /// Outline colour, a css `#rrggbb` string.
+        color: String,
+    },
+    /// No visual treatment beyond the ordinary lit/dim/dark banding.
+    None,
+    /// A module-defined treatment. `treatment` names what a client module must have registered
+    /// to interpret `params`; an unregistered name renders exactly like `None` (the server
+    /// cannot know which modules a world's clients have installed). `params` is opaque to the
+    /// engine and only size-checked.
+    Custom {
+        /// The registered treatment name.
+        treatment: String,
+        /// Opaque payload the registering module interprets.
+        #[ts(type = "unknown")]
+        params: serde_json::Value,
+    },
+}
+
+impl RenderHint {
+    /// Ingress check: `ColorWash`/`Outline` colours are `#rrggbb` (`validate_hex_color`),
+    /// `ColorWash.opacity` is finite and in `0.0..=1.0`, and a `Custom` treatment name is
+    /// non-empty, at most `MAX_RENDER_TREATMENT_CHARS` long, and its `params` serialize within
+    /// `MAX_SYSTEM_BYTES` (the ceiling the whole `vision-modes` band shares, so one oversized
+    /// payload is refused rather than truncated).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::RenderHint;
+    ///
+    /// let bad = RenderHint::ColorWash { color: "#00aa00".to_string(), opacity: 1.5 };
+    /// assert!(bad.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        use crate::data::engine::geometry::validate_hex_color;
+        match self {
+            Self::Desaturate | Self::None => Ok(()),
+            Self::ColorWash { color, opacity } => {
+                validate_hex_color(color)?;
+                if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                    return Err("color wash opacity must be within 0..=1".to_string());
+                }
+                Ok(())
+            }
+            Self::Outline { color } => validate_hex_color(color),
+            Self::Custom { treatment, params } => {
+                if treatment.is_empty() || treatment.chars().count() > MAX_RENDER_TREATMENT_CHARS {
+                    return Err(format!(
+                        "custom treatment name must be 1..={MAX_RENDER_TREATMENT_CHARS} characters"
+                    ));
+                }
+                let bytes = serde_json::to_vec(params).map_err(|e| e.to_string())?.len();
+                if bytes > crate::data::validation::MAX_SYSTEM_BYTES {
+                    return Err(
+                        "custom treatment params exceed the engine band size cap".to_string()
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl VisionMode {
+    /// Ingress check for one mode: its `render_hint`, when present, passes
+    /// `RenderHint::validate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::VisionModesEngine;
+    ///
+    /// assert!(VisionModesEngine::seed().modes["darkvision"].validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        match &self.render_hint {
+            Some(hint) => hint
+                .validate()
+                .map_err(|m| format!("vision mode `{}`: {m}", self.id)),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The engine body of a "vision-modes" config document.
@@ -1136,7 +1255,7 @@ impl VisionModesEngine {
                 default_range: 12.0,
                 perceives: Perception::Terrain,
                 requires_los: true,
-                render_hint: Some("desaturate".to_string()),
+                render_hint: Some(RenderHint::Desaturate),
             },
         );
         modes.insert(
@@ -1153,6 +1272,19 @@ impl VisionModesEngine {
             },
         );
         Self { modes }
+    }
+
+    /// Ingress check: every mode passes `VisionMode::validate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::VisionModesEngine;
+    ///
+    /// assert!(VisionModesEngine::seed().validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        self.modes.values().try_for_each(VisionMode::validate)
     }
 }
 

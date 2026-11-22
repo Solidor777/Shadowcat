@@ -1,5 +1,6 @@
 //! `SceneEcs` hydration/apply-op, movement-collision geometry, the `footprints` derived channel, and the vision/lighting config-doc resolvers.
 use super::*;
+use crate::data::engine::RenderHint;
 use crate::scene::pathfinding::MoveTraits;
 
 #[test]
@@ -510,14 +511,59 @@ fn vision_payload_resolves_render_hint_index() {
     };
     let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     let hints = pv["renderHints"].as_array().unwrap();
-    assert!(hints.iter().any(|h| h == "desaturate"));
+    assert!(hints.iter().any(|h| *h == json!({ "kind": "desaturate" })));
     let cells = pv["lit"][0]["cells"].as_array().unwrap();
     let hint_idx = cells[4].as_i64().unwrap(); // 5th int of the first cell
     assert!(
         hint_idx >= 0,
         "first cell must have a resolved hint, not -1"
     );
-    assert_eq!(pv["renderHints"][hint_idx as usize], json!("desaturate"));
+    assert_eq!(
+        pv["renderHints"][hint_idx as usize],
+        json!({ "kind": "desaturate" })
+    );
+}
+
+/// A `Custom` hint (opaque `params`) travels through the masked vision payload as its own tagged
+/// wire object, and every cell it governs shares ONE table entry.
+#[test]
+fn vision_payload_carries_a_custom_hint_once() {
+    use crate::data::document::WorldRole;
+    use serde_json::json;
+    let player = crate::test_ids::test_uuid(7);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(player);
+    tok.embedded.insert(
+        "actor".into(),
+        vec![{
+            let mut a = doc(99, None, "actor");
+            a.engine = Some(actor_body(json!([{ "mode": "echo", "range": 6 }])));
+            a
+        }],
+    );
+    let mut vm = entity_doc_eng(30, 10, "vision-modes", json!({}));
+    vm.parent_id = None;
+    let custom = json!({ "kind": "custom", "treatment": "echo", "params": { "ring": 3 } });
+    vm.engine = Some(json!({ "modes": { "echo": {
+        "id": "echo", "name": "Echo", "illuminationFloor": "dark", "defaultRange": 6,
+        "renderHint": custom
+    } } }));
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
+    let pl = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
+    assert_eq!(pv["renderHints"], json!([custom]));
+    let cells = pv["lit"][0]["cells"].as_array().unwrap();
+    assert!(cells.len() > 5, "several cells, so sharing is observable");
+    assert!(cells.chunks(5).all(|c| c[4] == json!(0)));
 }
 
 #[test]
@@ -1229,7 +1275,10 @@ fn token_vision_floors_resolve_through_actor_join() {
     );
     let floors = ecs.token_vision_floors(&linked);
     assert_eq!(floors.len(), 1);
-    assert_eq!(floors[0], (0.0, 6.0, Some("desaturate".to_string()))); // dark floor, 6-cell range, darkvision hint
+    assert_eq!(
+        floors[0],
+        (0.0, 6.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))
+    ); // dark floor, 6-cell range, darkvision hint
 
     // A per-token override REPLACES the actor's vision entirely.
     linked.engine.as_mut().unwrap()["overrides"] =
@@ -1274,7 +1323,7 @@ fn token_vision_floors_resolve_through_actor_join() {
     // actor 200 grants darkvision range 6 → linked wins → (0.0, 6.0), not the embedded normal.
     assert_eq!(
         ecs.token_vision_floors(&linked_empty),
-        vec![(0.0, 6.0, Some("desaturate".to_string()))]
+        vec![(0.0, 6.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))]
     );
 
     // A DANGLING link (actor_id with no matching actor) + an overrides.vision is normal — the
@@ -2203,7 +2252,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         mask[0]
             .cells
             .iter()
-            .all(|(_, _, _, _, h)| h.as_deref() == Some("desaturate")),
+            .all(|(_, _, _, _, h)| h.as_deref() == Some(&RenderHint::Desaturate)),
         "dark cells perceived only via darkvision carry the desaturate hint"
     );
 
@@ -2315,7 +2364,7 @@ fn vision_modes_carry_render_hint() {
     let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let m = seeded.resolved_vision_modes();
     assert_eq!(m["normal"].render_hint, None);
-    assert_eq!(m["darkvision"].render_hint.as_deref(), Some("desaturate"));
+    assert_eq!(m["darkvision"].render_hint, Some(RenderHint::Desaturate));
 
     // Present doc → renderHint parsed; absent field → None.
     let mut vm = entity_doc_eng(30, 10, "vision-modes", json!({}));
@@ -2323,14 +2372,20 @@ fn vision_modes_carry_render_hint() {
     vm.parent_id = None;
     vm.engine = Some(json!({ "modes": {
         "truesight": { "id": "truesight", "name": "Truesight",
-                       "illuminationFloor": "dark", "defaultRange": 8, "renderHint": "outline" },
+                       "illuminationFloor": "dark", "defaultRange": 8,
+                       "renderHint": { "kind": "outline", "color": "#ffffff" } },
         "plain":     { "id": "plain", "name": "Plain",
                        "illuminationFloor": "dim",  "defaultRange": 0 }
     }}));
     let mut ecs = SceneEcs::new();
     ecs.set_world_config(None, None, Some(vm), None, None, None);
     let m = ecs.resolved_vision_modes();
-    assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
+    assert_eq!(
+        m["truesight"].render_hint,
+        Some(RenderHint::Outline {
+            color: "#ffffff".to_string()
+        })
+    );
     assert_eq!(m["plain"].render_hint, None);
 }
 
@@ -2360,7 +2415,7 @@ fn token_vision_floors_include_render_hint() {
     // darkvision entry carries the desaturate hint; normal carries none.
     assert!(floors
         .iter()
-        .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
+        .any(|(_, _, h)| h.as_deref() == Some(&RenderHint::Desaturate)));
     assert!(floors.iter().any(|(_, _, h)| h.is_none()));
 }
 
@@ -2386,7 +2441,10 @@ fn token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_ra
     let floors = ecs.token_vision_floors(&tok);
     // No vision-modes doc set -> `resolved_vision_modes`'s built-in fallback seed, whose
     // darkvision entry carries `default_range: 12.0`.
-    assert_eq!(floors, vec![(0.0, 12.0, Some("desaturate".to_string()))]);
+    assert_eq!(
+        floors,
+        vec![(0.0, 12.0, Some(std::sync::Arc::new(RenderHint::Desaturate)))]
+    );
 }
 
 #[test]

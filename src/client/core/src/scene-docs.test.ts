@@ -416,7 +416,7 @@ describe("vision-modes registry", () => {
     const m = resolveVisionModes(storeWith(buildVisionModesDoc("w1")));
     expect(Object.keys(m).sort()).toEqual(["darkvision", "normal", "tremorsense"]);
     expect(m.normal).toEqual({ id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null });
-    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" });
+    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } });
     // A creature sense: perceives tokens, ignores walls (requiresLos false); its
     // illuminationFloor is inert (creature perception never reads it).
     expect(m.tremorsense).toEqual({ id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null });

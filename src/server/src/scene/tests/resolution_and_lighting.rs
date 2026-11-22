@@ -6,6 +6,7 @@
 //! navmesh cache's invalidation and memoization.
 
 use super::*;
+use crate::data::engine::RenderHint;
 
 #[test]
 fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
@@ -513,7 +514,11 @@ fn cell_visible_predicate_honors_floor_and_range() {
     assert!(cell_visible(&normal, 1.0, 5.0));
     assert!(!cell_visible(&normal, 0.1, 5.0));
     // Darkvision floor 0.0 within range 6 admits an unlit cell; beyond range it does not.
-    let dark = vec![(0.0_f64, 6.0_f64, Some("desaturate".into()))];
+    let dark = vec![(
+        0.0_f64,
+        6.0_f64,
+        Some(std::sync::Arc::new(RenderHint::Desaturate)),
+    )];
     assert!(
         cell_visible(&dark, 0.0, 3.0),
         "unlit but within darkvision range"

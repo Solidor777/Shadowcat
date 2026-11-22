@@ -1085,7 +1085,7 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null },
-  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } },
   tremorsense: { id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null },
 });
 

@@ -50,10 +50,10 @@ pub use registries::{
 pub use scene::{
     AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
     FalloffCurve, FogPooling, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine,
-    LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception,
+    LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, RenderHint,
     SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides,
     VisionMode, VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
-    MAX_SCENE_LEVELS,
+    MAX_RENDER_TREATMENT_CHARS, MAX_SCENE_LEVELS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
@@ -351,7 +351,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("world-settings: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
+        "vision-modes" => {
+            let typed: VisionModesEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("vision-modes: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("vision-modes: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
         "dice-settings" => {
