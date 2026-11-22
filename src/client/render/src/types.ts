@@ -438,10 +438,19 @@ export interface LightingInput {
 
 /** Which lattice point `SceneToolHost.snap` resolves a point to while snapping is enabled:
  * `"center"` snaps to the containing/nearest cell's center; `"vertex"` snaps to the nearest
- * cell corner (`Grid.snapVertex`). Orthogonal to the snap on/off axis
+ * cell corner (`Grid.snapVertex`); `"edge"` snaps to the nearest point on the nearest cell
+ * edge (`Grid.snapEdge`). Orthogonal to the snap on/off axis
  * (`SceneToolHost.setSnapEnabled`): the mode selects the snap TARGET, never whether a snap
  * happens. */
-export type SnapMode = "center" | "vertex";
+export type SnapMode = "center" | "vertex" | "edge";
+
+/** Options for `SceneToolHost.panToPoint` / `panToToken`. The easing curve is the scene's
+ * resolved token-move easing and reduced motion follows the performance budget, so neither is a
+ * per-call choice. */
+export interface PanToOptions {
+  /** Tween length in milliseconds; defaults to the camera's own default. */
+  durationMs?: number;
+}
 
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
  * RenderEngine implements this; a detached bridge no-ops. */
@@ -452,7 +461,7 @@ export interface SceneToolHost {
   /** Snap a scene point to the active grid per the current snap mode (see
    * `setSnapMode`): the containing/nearest cell's CENTER under `"center"` (square: the
    * containing cell's center; hex: the nearest hex's center), the nearest cell VERTEX
-   * under `"vertex"`.
+   * under `"vertex"`, the nearest point on a cell EDGE under `"edge"`.
    * @param p A scene-coordinate point.
    * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled. */
   snap(p: Point): Point;
@@ -469,6 +478,18 @@ export interface SceneToolHost {
    * mode automatically; no per-tool opt-in exists.
    * @param mode The snap-target mode to apply. */
   setSnapMode(mode: SnapMode): void;
+  /** Animate the camera so scene point `(x,y)` is centered in the viewport (snaps instantly
+   * under the reduced-motion budget). A manual pan or zoom cancels it.
+   * @param x The scene x-coordinate to center.
+   * @param y The scene y-coordinate to center.
+   * @param opts Optional tween duration. */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void;
+  /** Animate the camera to center on token `tokenId`, tracking the token's LIVE (tweened)
+   * position each frame so a moving token is followed rather than panned to a stale spot. A
+   * token the view does not track is a no-op.
+   * @param tokenId The token document id to center on.
+   * @param opts Optional tween duration. */
+  panToToken(tokenId: string, opts?: PanToOptions): void;
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it.
    * @param id The token document id to mark as dragging, or `null` to clear it. */

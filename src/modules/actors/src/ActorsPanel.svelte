@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
@@ -150,6 +150,27 @@
     if (ids.size === 0) return null;
     return ctx.documents.query("token").find((t) => ids.has(t.id))?.id ?? null;
   });
+
+  /** The id of the first token on the viewed scene linked to actor `actorId` (`engine.actor_id`),
+   * or `null` when the actor has no token there. Drives the row's "locate on scene" action and
+   * its enablement.
+   * @param actorId The actor document id.
+   * @returns The token document id, or `null`.
+   * @example
+   * ```
+   * // private helper; read by each row's locate button
+   * locatedTokenId("actor-1"); // "tok1" | null
+   * ```
+   */
+  function locatedTokenId(actorId: string): string | null {
+    subscribe();
+    const sceneId = ctx.viewedSceneId;
+    if (sceneId === null) return null;
+    const tok = ctx.documents
+      .query("token")
+      .find((d) => d.parent_id === sceneId && (d.engine as TokenEngine | undefined)?.actor_id === actorId);
+    return tok?.id ?? null;
+  }
 
   const factionOptions = $derived.by((): [string, Faction][] => {
     subscribe();
@@ -407,6 +428,7 @@
   />
   <ul class="list">
     {#each visibleActors as a (a.id)}
+      {@const locatedId = locatedTokenId(a.id)}
       <li>
         <button
           type="button"
@@ -415,6 +437,16 @@
         >{actorDisplayName({ name: a.name, displayName: (a.engine as DisplayNameEngineShape | undefined)?.displayName })}</button>
         <button type="button" class="open-sheet" onclick={() => ctx.openDocument({ docId: a.id })}>
           {t("actors.openSheet")}
+        </button>
+        <!-- Pans the camera to (and follows) this actor's token on the viewed scene; disabled
+             while the actor has none there. -->
+        <button
+          type="button"
+          class="locate-on-scene"
+          disabled={locatedId === null}
+          onclick={() => locatedId !== null && ctx.scene.panToToken(locatedId)}
+        >
+          {t("actors.locateOnScene")}
         </button>
         {#if ctx.role === "gm"}
           <button type="button" class="hide-toggle" onclick={() => toggleHidden(a)}>
@@ -594,7 +626,8 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .open-sheet {
+  .open-sheet,
+  .locate-on-scene {
     min-height: 44px;
     padding: var(--space-1) var(--space-2);
     border: 1px solid var(--border);
@@ -603,7 +636,8 @@
     color: var(--text-primary);
     cursor: pointer;
   }
-  .open-sheet:focus-visible {
+  .open-sheet:focus-visible,
+  .locate-on-scene:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }

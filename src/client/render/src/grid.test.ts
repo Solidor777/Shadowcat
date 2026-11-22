@@ -299,3 +299,40 @@ test("snapVertex breaks exact ties deterministically (lowest x, then lowest y)",
   // A point on the shared edge midpoint ties between the two corners of that edge.
   expect(g.snapVertex({ x: 100, y: 50 })).toEqual({ x: 100, y: 0 });
 });
+
+test("snapEdge resolves to the nearest point on a cell edge, mid-span rather than at a corner", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // Near the top edge's mid-span: the edge point directly above, where snapVertex resolves a corner.
+  expect(g.snapEdge({ x: 30, y: 4 })).toEqual({ x: 30, y: 0 });
+  expect(g.snapVertex({ x: 30, y: 4 })).toEqual({ x: 0, y: 0 });
+  // Nearer the lower edge (30) than the left edge (40): the edge point below, not a corner.
+  expect(g.snapEdge({ x: 140, y: 170 })).toEqual({ x: 140, y: 200 });
+});
+
+test("snapEdge resolves a corner point to that corner and a boundary point across cells", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // A point exactly on a corner resolves to that corner (both flanking edges clamp to it).
+  expect(g.snapEdge({ x: 100, y: 100 })).toEqual({ x: 100, y: 100 });
+  // (95,50) is in cell (0,0); the nearest edge is the x=100 edge it shares with cell (1,0).
+  expect(g.snapEdge({ x: 95, y: 50 })).toEqual({ x: 100, y: 50 });
+  // A point in a negative-coordinate cell resolves on that cell's own edge.
+  expect(g.snapEdge({ x: -30, y: -40 })).toEqual({ x: 0, y: -40 });
+});
+
+test("snapEdge breaks exact ties deterministically (lowest x, then lowest y)", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  // A cell's exact center is equidistant (50) to all four edges: the tie-break picks the
+  // left edge's point (0,50), lowest x, never candidate enumeration order.
+  expect(g.snapEdge({ x: 50, y: 50 })).toEqual({ x: 0, y: 50 });
+});
+
+test("snapEdge resolves to the nearest hex edge point", () => {
+  const g = new Grid({ kind: "hex", size: 100 });
+  // Hex (0,0)'s top-right edge runs (0,-100) to (86.6,-50); its midpoint is (43.3,-75) and its
+  // outward normal points at -60 degrees. A point 10 units inside the midpoint snaps back to it.
+  const mid = { x: (100 * Math.cos(-Math.PI / 6)) / 2, y: -75 };
+  const inside = { x: mid.x - 10 * Math.cos(-Math.PI / 3), y: mid.y - 10 * Math.sin(-Math.PI / 3) };
+  const snapped = g.snapEdge(inside);
+  expect(snapped.x).toBeCloseTo(mid.x, 9);
+  expect(snapped.y).toBeCloseTo(mid.y, 9);
+});

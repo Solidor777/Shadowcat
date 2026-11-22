@@ -424,6 +424,9 @@ test("the snap-mode toggle flips the session preference and reflects it (center 
   expect(snapModePreference.mode).toBe("vertex");
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("edge");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
   expect(snapModePreference.mode).toBe("center");
   expect(toggle.getAttribute("aria-pressed")).toBe("false");
 });
@@ -519,6 +522,64 @@ test("a player who owns the single selected token sees and can use the speak-as-
   const button = screen.getByTestId("speak-as-token");
   await fireEvent.click(button);
   expect(speakAsToken.tokenId).toBe("tok1");
+});
+
+/** Documents with scene `S1`, an `S2`, and tokens: two owned by `u-self` on S1 at (100,200) and
+ * (300,400), one owned by someone else on S1, one owned by `u-self` on S2. */
+function ownedTokenStore(): DocumentStore {
+  const documents = new DocumentStore();
+  documents.applyCommand({
+    seq: 1, world_id: "w1", author: "gm", ts: 0,
+    ops: [
+      { op: "create" as const, doc: buildSceneDoc("w1", {}, "S1") },
+      { op: "create" as const, doc: buildSceneDoc("w1", {}, "S2") },
+    ],
+  });
+  const tok = (id: string, scene: string, x: number, y: number, owner: string) => ({
+    ...buildTokenDoc(
+      "w1", scene,
+      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+      id,
+    ),
+    owner,
+  });
+  documents.applyCommand({
+    seq: 2, world_id: "w1", author: "gm", ts: 0,
+    ops: [
+      { op: "create" as const, doc: tok("mine-a", "S1", 100, 200, "u-self") },
+      { op: "create" as const, doc: tok("mine-b", "S1", 300, 400, "u-self") },
+      { op: "create" as const, doc: tok("theirs", "S1", 9000, 9000, "someone-else") },
+      { op: "create" as const, doc: tok("mine-elsewhere", "S2", 5000, 5000, "u-self") },
+    ],
+  });
+  return documents;
+}
+
+test("pan-to-owned pans the camera to the average of the viewer's own tokens on the viewed scene", async () => {
+  const pans: unknown[][] = [];
+  const scene = new SceneInteractionBridge();
+  scene.attach(fakeSceneHost({ panToPoint: (x, y) => pans.push([x, y]) }));
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "player", selfId: "u-self", scene, documents: ownedTokenStore(), viewedSceneId: "S1" }),
+  });
+  const button = screen.getByTestId("pan-to-owned");
+  expect(button.hasAttribute("disabled")).toBe(false);
+  await fireEvent.click(button);
+  // The average of the two S1 tokens this user owns; another user's token and the token on S2 are excluded.
+  expect(pans).toEqual([[200, 300]]);
+});
+
+test("pan-to-owned is disabled, and pans nowhere, when the viewer owns no token on the viewed scene", async () => {
+  const pans: unknown[][] = [];
+  const scene = new SceneInteractionBridge();
+  scene.attach(fakeSceneHost({ panToPoint: (x, y) => pans.push([x, y]) }));
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "player", selfId: "u-other", scene, documents: ownedTokenStore(), viewedSceneId: "S1" }),
+  });
+  const button = screen.getByTestId("pan-to-owned");
+  expect(button.hasAttribute("disabled")).toBe(true);
+  await fireEvent.click(button);
+  expect(pans).toEqual([]);
 });
 
 test("a non-owner player does not see the speak-as-token button", () => {

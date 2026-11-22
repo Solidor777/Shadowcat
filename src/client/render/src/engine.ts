@@ -2,12 +2,12 @@ import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } fr
 import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
-import type { TokenTweenConfig } from "./easing";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
+import type { EasingMode, TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
 import { holdLightingCells, unionLightingInputs } from "./lighting";
-import { Camera } from "./camera";
+import { Camera, type PanTarget } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
@@ -183,10 +183,13 @@ export class RenderEngine implements SceneToolHost {
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
   /** Which lattice point `snap` resolves to while `snapEnabled` — `"center"` (default) via
-   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`. An orthogonal axis to `snapEnabled`:
+   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`, `"edge"` via `Grid.snapEdge`. An orthogonal axis to `snapEnabled`:
    * the mode selects the snap TARGET, never whether a snap happens. Pushed by the host
    * through {@link setSnapMode}; every `ctx.scene.snap` caller inherits it. */
   private snapMode: SnapMode = "center";
+  /** The easing curve the world's token-move animation resolved to ({@link setAnimation});
+   * camera pans reuse it so a world's chosen move easing governs both. */
+  private animationEasing: EasingMode = "easeInOut";
   /** Diffs the store's `scene`/background doc into backend nodes; one of the six views
    * {@link start}/{@link reapplyViewedScene} re-run per store commit or scene switch. */
   private readonly reconciler: SceneReconciler;
@@ -481,6 +484,9 @@ export class RenderEngine implements SceneToolHost {
       this.flushPendingDerived();
     });
     this.backend.startTicker((dt) => {
+      // Camera tween first, so a tracked token's pan reads the position the token animator
+      // advanced on the PREVIOUS tick and then both land in this frame's render together.
+      if (this.camera.tick(dt, this.viewport)) this.applyCamera();
       this.tokens.tick(dt);
       this.vfxView.tick(dt);
       const vfxCount = this.vfxView.count();
@@ -1239,7 +1245,8 @@ export class RenderEngine implements SceneToolHost {
    * center via axial-round-then-convert for hex (`Grid.snap`; `Grid.axialToPixel` returns a hex
    * center, the same method `Grid.hexLines` calls to get the origin it draws the six corners
    * around — so center mode resolves a center, never a vertex, on either grid kind);
-   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`). The identity function when {@link
+   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`); `"edge"`: the nearest point on the
+   * nearest cell edge (`Grid.snapEdge`). The identity function when {@link
    * setSnapEnabled} has disabled snapping for the current scene, regardless of mode.
    * @param p A scene-coordinate point.
    * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled.
@@ -1253,7 +1260,17 @@ export class RenderEngine implements SceneToolHost {
    */
   snap(p: Point): Point {
     if (!this.snapEnabled) return p;
-    return this.snapMode === "vertex" ? this.grid.snapVertex(p) : this.grid.snap(p);
+    switch (this.snapMode) {
+      case "vertex": return this.grid.snapVertex(p);
+      case "edge": return this.grid.snapEdge(p);
+      case "center": return this.grid.snap(p);
+      // Exhaustiveness guard: a new `SnapMode` member fails to compile here rather than
+      // silently snapping to centers.
+      default: {
+        const _exhaustive: never = this.snapMode;
+        return _exhaustive;
+      }
+    }
   }
 
   /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
@@ -1275,7 +1292,8 @@ export class RenderEngine implements SceneToolHost {
 
   /** `SceneToolHost.setSnapMode`: select which lattice point {@link snap} resolves to while
    * snapping is enabled — `"center"` (the default) routes through `Grid.snap` (cell centers),
-   * `"vertex"` through `Grid.snapVertex` (cell corners). Orthogonal to {@link setSnapEnabled}:
+   * `"vertex"` through `Grid.snapVertex` (cell corners), `"edge"` through `Grid.snapEdge` (the
+   * nearest point on a cell edge). Orthogonal to {@link setSnapEnabled}:
    * a snap-off scene stays identity under either mode. This is the single routing point —
    * every tool that calls `ctx.scene.snap` inherits the mode with no per-tool change.
    * @param mode The snap-target mode to apply.
@@ -1543,7 +1561,64 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   setAnimation(cfg: TokenTweenConfig): void {
+    this.animationEasing = cfg.easing;
     this.tokens.setAnimationConfig(cfg);
+  }
+
+  /** `SceneToolHost.panToPoint`: tween the camera so scene point `(x,y)` is centered. The curve
+   * is the world's resolved token-move easing (the same `easing` {@link setAnimation} receives),
+   * so camera and token motion feel consistent; the performance budget's `reducedMotion` snaps
+   * the camera to the point instead. Forwards to `Camera.panTo`, then applies the camera so a
+   * snap shows without waiting for the next tick.
+   * @param x The scene x-coordinate to center.
+   * @param y The scene y-coordinate to center.
+   * @param opts Optional tween duration.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.panToPoint(500, 300, { durationMs: 300 });
+   * ```
+   */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void {
+    this.startPan({ x, y }, opts);
+  }
+
+  /** `SceneToolHost.panToToken`: tween the camera to center on token `tokenId`, re-reading the
+   * token's live tweened transform (`TokenView.transformOf`, the accessor the VFX emitters
+   * anchor to) every frame so a moving token is tracked. An untracked token is a no-op.
+   * @param tokenId The token document id to center on.
+   * @param opts Optional tween duration.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.panToToken("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
+  panToToken(tokenId: string, opts?: PanToOptions): void {
+    this.startPan(() => this.tokens.transformOf(tokenId), opts);
+  }
+
+  /** Starts a camera pan with the engine's resolved easing and reduced-motion budget, then
+   * applies the camera (a snap changes the transform immediately).
+   * @param target A scene point, or a live provider of one.
+   * @param opts Optional tween duration.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.startPan({ x: 500, y: 300 });
+   * ```
+   */
+  private startPan(target: PanTarget, opts?: PanToOptions): void {
+    this.camera.panTo(target, this.viewport, {
+      durationMs: opts?.durationMs,
+      easing: this.animationEasing,
+      reducedMotion: this.perf().reducedMotion,
+    });
+    this.applyCamera();
   }
 
   /** Has no production caller today (`WorldSession` drives route playback exclusively through

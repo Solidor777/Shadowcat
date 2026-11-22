@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
-import { TokenSelection } from "@shadowcat/ui-kit";
+import { setAppContextForTest, fakeSceneHost } from "@shadowcat/ui-kit/test";
+import { DocumentStore, buildActorDoc, buildTokenDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { TokenSelection, SceneInteractionBridge } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
 // Suppress listAssets fetch: EmissionEditor calls listAssets($effect) which hits /api/... in jsdom.
@@ -645,6 +645,51 @@ describe("ActorsPanel — post-create visual editing", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("ActorsPanel — locate on scene", () => {
+  const actor = (id: string): WireDocument =>
+    buildActorDoc(
+      "w1",
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+      id,
+    );
+  const token = (id: string, sceneId: string, actorId: string | null): WireDocument =>
+    buildTokenDoc(
+      "w1", sceneId,
+      { x: 10, y: 20, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: actorId, overrides: null, face: null, elevation: null },
+      id,
+    );
+  const realT = (k: string): string => ({ "actors.locateOnScene": "Locate on scene" })[k as "actors.locateOnScene"] ?? k;
+
+  it("pans the camera to the actor's token on the viewed scene", async () => {
+    const pans: string[] = [];
+    const scene = new SceneInteractionBridge();
+    scene.attach(fakeSceneHost({ panToToken: (id) => pans.push(id) }));
+    const store = storeWith(actor("a1"), token("t-other-scene", "S2", "a1"), token("t-here", "S1", "a1"));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, scene, viewedSceneId: "S1", t: realT }),
+    });
+    const button = getByRole("button", { name: /locate on scene/i });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(button);
+    expect(pans).toEqual(["t-here"]); // the token on the viewed scene, never the one on S2
+  });
+
+  it("disables the action when the actor has no token on the viewed scene", async () => {
+    const pans: string[] = [];
+    const scene = new SceneInteractionBridge();
+    scene.attach(fakeSceneHost({ panToToken: (id) => pans.push(id) }));
+    const store = storeWith(actor("a1"), token("t-other-scene", "S2", "a1"), token("unlinked", "S1", null));
+    const { getByRole } = render(ActorsPanel, {
+      context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, scene, viewedSceneId: "S1", t: realT }),
+    });
+    const button = getByRole("button", { name: /locate on scene/i });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    await fireEvent.click(button);
+    expect(pans).toEqual([]);
   });
 });
 

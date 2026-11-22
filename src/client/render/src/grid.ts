@@ -37,6 +37,29 @@ interface SceneRect {
   h: number;
 }
 
+/**
+ * The point on segment `a`–`b` closest to `p`: `p` projected onto the segment's line, with the
+ * projection parameter clamped to `[0,1]` so a point beyond an end resolves to that endpoint.
+ * A zero-length segment resolves to `a`.
+ * @param p The point to project.
+ * @param a The segment's first endpoint.
+ * @param b The segment's second endpoint.
+ * @returns The closest point to `p` on the segment.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * closestPointOnSegment({ x: 5, y: 3 }, { x: 0, y: 0 }, { x: 10, y: 0 }); // { x: 5, y: 0 }
+ * ```
+ */
+function closestPointOnSegment(p: Point, a: Point, b: Point): Point {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby;
+  if (len2 === 0) return a;
+  const t = Math.min(1, Math.max(0, ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2));
+  return { x: a.x + t * abx, y: a.y + t * aby };
+}
+
 /** Engine-owned grid model + coordinate math (square + pointy-top hex). Pure: the
  * engine draws `lines(...)` into the grid layer and uses `snap`/`cellOf` for
  * placement. Hex uses axial coords (Red Blob Games). */
@@ -103,31 +126,92 @@ export class Grid {
    * ```
    */
   snapVertex(p: Point): Point {
+    const candidates: Point[] = [];
+    for (const [col, row] of this.neighborhood(p)) candidates.push(...this.cellVertices(col, row));
+    return this.nearestOf(p, candidates);
+  }
+
+  /**
+   * Snaps a scene point to the nearest point on the nearest cell EDGE — the edge-target
+   * counterpart of {@link snapVertex}, for placing a wall or region point along a cell
+   * boundary rather than at a corner. Every cell edge is a consecutive pair of
+   * {@link cellVertices} (closed polygon, so the last vertex pairs with the first) over the same
+   * cell neighborhood {@link snapVertex} scans, so the edge set is exactly the one the grid
+   * overlay draws, never a second edge definition. Each edge contributes its closest point to
+   * `p` (the projection of `p` onto the segment, clamped to the segment's endpoints). A point
+   * exactly on a vertex resolves to that vertex; exact ties resolve to the lowest-x candidate,
+   * then lowest-y, as in {@link snapVertex}.
+   * @param p A scene-coordinate point.
+   * @returns `p` snapped to the nearest point on a cell edge.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 70 });
+   * grid.snapEdge({ x: 30, y: 4 }); // { x: 30, y: 0 } — the top edge, where snapVertex gives a corner
+   * ```
+   */
+  snapEdge(p: Point): Point {
+    const candidates: Point[] = [];
+    for (const [col, row] of this.neighborhood(p)) {
+      const vs = this.cellVertices(col, row);
+      for (let i = 0; i < vs.length; i++) {
+        candidates.push(closestPointOnSegment(p, vs[i], vs[(i + 1) % vs.length]));
+      }
+    }
+    return this.nearestOf(p, candidates);
+  }
+
+  /**
+   * The cells whose vertices/edges can be nearest to `p`: the containing cell plus every
+   * immediate neighbor — square: the 3×3 block (the four edge-neighbors plus the four
+   * corner-touching ones); hex: the containing hex plus its six axial neighbors. A point near a
+   * cell boundary can be closer to a corner or edge of an adjacent cell than to any of its own
+   * containing cell's.
+   * @param p A scene-coordinate point.
+   * @returns The neighborhood as `[col, row]` pairs (square indices, or hex axial `q`/`r`).
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
+  private neighborhood(p: Point): [number, number][] {
     const { col, row } = this.cellOf(p);
-    // Square: the 3×3 cell block around the containing cell (the four edge-neighbors plus
-    // the four corner-touching ones). Hex: the containing hex plus its six axial neighbors.
     const offsets: [number, number][] = this.spec.kind === "square"
       ? [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]
       : [[0, 0], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+    return offsets.map(([dc, dr]) => [col + dc, row + dr]);
+  }
+
+  /**
+   * The candidate nearest to `p` by squared Euclidean distance. Exact ties resolve to the
+   * lowest x, then lowest y — never to candidate enumeration order, so the result is
+   * independent of how {@link neighborhood} orders its cells.
+   * @param p A scene-coordinate point.
+   * @param candidates The points to choose among; every caller passes a non-empty list (the
+   * containing cell always contributes), and an empty list returns `p` rather than fabricating
+   * a point.
+   * @returns The nearest candidate, or `p` when `candidates` is empty.
+   * @example
+   * ```
+   * // private — not constructible/callable outside Grid.
+   * ```
+   */
+  private nearestOf(p: Point, candidates: Point[]): Point {
     let best: Point | null = null;
     let bestD2 = Infinity;
-    for (const [dc, dr] of offsets) {
-      for (const v of this.cellVertices(col + dc, row + dr)) {
-        const dx = v.x - p.x;
-        const dy = v.y - p.y;
-        const d2 = dx * dx + dy * dy;
-        if (
-          d2 < bestD2 ||
-          (d2 === bestD2 && best !== null && (v.x < best.x || (v.x === best.x && v.y < best.y)))
-        ) {
-          best = v;
-          bestD2 = d2;
-        }
+    for (const v of candidates) {
+      const dx = v.x - p.x;
+      const dy = v.y - p.y;
+      const d2 = dx * dx + dy * dy;
+      if (
+        d2 < bestD2 ||
+        (d2 === bestD2 && best !== null && (v.x < best.x || (v.x === best.x && v.y < best.y)))
+      ) {
+        best = v;
+        bestD2 = d2;
       }
     }
-    // Every `offsets` list names the containing cell, whose `cellVertices` is non-empty on
-    // both grid kinds, so `best` is always set; a degenerate empty scan snaps to nothing
-    // rather than fabricating a vertex.
     return best ?? p;
   }
 

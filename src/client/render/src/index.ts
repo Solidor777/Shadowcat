@@ -1,4 +1,4 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, SnapMode, MoveVisionSample, MoveLightSample } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, SnapMode, PanToOptions, MoveVisionSample, MoveLightSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
 export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, mergeSweepCells, unionLightingInputs, holdLightingCells, lightingFrameKey, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
