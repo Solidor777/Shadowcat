@@ -1067,7 +1067,10 @@ pub struct ChangePasswordRequest {
 /// `evict_user` with `reset_user_password`; the caller's own session and live connections
 /// end too, as for any password change. A wrong current password, or an account with no
 /// stored credential, is a uniform `AppError::Unauthorized` (401); a new password failing
-/// policy is `AppError::Unprocessable` (422).
+/// policy is `AppError::Unprocessable` (422). Each call first spends one unit of the
+/// per-account `password_change:u:<uuid>` budget in `AuthThrottle`
+/// (`PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT` per minute, successes included, like `login`); an
+/// exhausted budget is `AppError::TooManyRequests` (429) before any Argon2 verify.
 ///
 /// # Examples
 ///
@@ -1117,6 +1120,16 @@ pub async fn change_own_password(
     State(state): State<AppState>,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
+    // Every attempt spends budget before any Argon2 work, as in `login`; an exhausted budget
+    // is a 429 with no verify, so a stolen session cannot guess the current password.
+    let throttle_key = format!("password_change:u:{}", user.id);
+    if !state.auth_throttle.check(
+        &throttle_key,
+        now_millis(),
+        crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT,
+    ) {
+        return Err(AppError::TooManyRequests("try again later".into()));
+    }
     let record = state.repo.user_by_id(user.id).await?;
     // Exactly one Argon2 verify on every path, like `login`: a missing credential still pays
     // for a throwaway-hash verify so the cost does not depend on the account's state.

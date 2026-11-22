@@ -54,6 +54,19 @@ describe("ChangePasswordForm", () => {
     expect(logout).not.toHaveBeenCalled();
   });
 
+  it("shows the fixed too-many-attempts text on a 429 and keeps the session", async () => {
+    const { changeOwnPassword, ChangePasswordError } = await import("@shadowcat/core");
+    vi.mocked(changeOwnPassword).mockRejectedValueOnce(
+      new ChangePasswordError("try again later", 429),
+    );
+    const logout = vi.fn(async () => {});
+    render(ChangePasswordForm, { context: setAppContextForTest({ logout }) });
+    await fill("old-pw", "new-password", "new-password");
+    expect(await screen.findByText("settings.account.tooManyAttempts")).toBeTruthy();
+    expect(screen.queryByText("settings.account.failed")).toBeNull();
+    expect(logout).not.toHaveBeenCalled();
+  });
+
   it("shows the server's message for any other refusal, such as a policy failure", async () => {
     const { changeOwnPassword, ChangePasswordError } = await import("@shadowcat/core");
     vi.mocked(changeOwnPassword).mockRejectedValueOnce(

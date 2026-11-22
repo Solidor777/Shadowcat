@@ -1149,6 +1149,88 @@ async fn change_own_password_spends_exactly_one_verify_per_call() {
     assert_eq!(verify_count() - before, 1, "policy failure");
 }
 
+/// Fails if the route drops its `AuthThrottle` check: the wrong-password guesses would never
+/// reach 429.
+#[tokio::test]
+async fn change_own_password_wrong_guesses_exhaust_the_budget_into_429() {
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let body =
+        serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" });
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT {
+        me.post("/api/account/password")
+            .json(&body)
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+    me.post("/api/account/password")
+        .json(&body)
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    // Even the correct password is refused once the budget is spent, and nothing changes.
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert!(state.repo.user_by_id(id).await.unwrap().is_some());
+    anon_server(&state)
+        .await
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "self-user", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// Fails if the throttle check moves after the verify: a 429 call would then spend Argon2 work.
+#[tokio::test]
+async fn change_own_password_429_runs_no_verify() {
+    use crate::auth::password::verify_count;
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    let id = seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    let now = crate::auth::setup::now_millis();
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT {
+        assert!(state.auth_throttle.check(
+            &format!("password_change:u:{id}"),
+            now,
+            PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT
+        ));
+    }
+
+    let before = verify_count();
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        verify_count() - before,
+        0,
+        "a throttled call verifies nothing"
+    );
+}
+
+/// Fails if the budget is too tight to use: the last in-budget call, correct password, succeeds.
+#[tokio::test]
+async fn change_own_password_succeeds_on_the_last_attempt_within_budget() {
+    use crate::http::throttle::PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT;
+    let state = initialized_state().await;
+    seed_user(&state, "self-user").await;
+    let me = login_server(&state, "self-user").await;
+    for _ in 0..PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT - 1 {
+        me.post("/api/account/password")
+            .json(&serde_json::json!({ "current_password": "not-it", "new_password": "a-new-password" }))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+    me.post("/api/account/password")
+        .json(&serde_json::json!({ "current_password": "pw", "new_password": "a-new-password" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
 #[tokio::test]
 async fn world_delete_authz_matrix() {
     use crate::data::document::WorldRole;

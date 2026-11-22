@@ -17,7 +17,7 @@
 
   /**
    * Submits the change. A mismatched confirmation blocks the request. A 401 shows the
-   * fixed "current password incorrect" text; any other refusal (a 422 policy failure
+   * fixed "current password incorrect" text; a 429 shows the fixed "too many attempts" text; any other refusal (a 422 policy failure
    * included) shows the server's message. On success the typed values are dropped
    * from component state and the local session is ended.
    * @param e The form's submit event; only `preventDefault` is used.
@@ -42,6 +42,8 @@
     } catch (err) {
       if (err instanceof ChangePasswordError && err.status === 401) {
         error = t("settings.account.currentIncorrect");
+      } else if (err instanceof ChangePasswordError && err.status === 429) {
+        error = t("settings.account.tooManyAttempts");
       } else {
         error = t("settings.account.failed", {
           message: err instanceof Error ? err.message : String(err),

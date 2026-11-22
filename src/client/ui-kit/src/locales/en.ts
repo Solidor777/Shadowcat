@@ -108,6 +108,7 @@ export const en: Messages = {
   "settings.account.submit": "Change password",
   "settings.account.mismatch": "The new passwords do not match.",
   "settings.account.currentIncorrect": "The current password is incorrect.",
+  "settings.account.tooManyAttempts": "Too many attempts. Wait a minute, then try again.",
   "settings.account.failed": "Could not change password: {message}",
   "settings.trash.title": "Trash",
   "settings.trash.loading": "Loading trash…",
