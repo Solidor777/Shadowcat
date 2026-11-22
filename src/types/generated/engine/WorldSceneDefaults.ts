@@ -58,4 +58,10 @@ partialCellLeniency: boolean,
 /**
  * Default explored-fog pooling mode (see `FogPooling`).
  */
-fogPooling: FogPooling, };
+fogPooling: FogPooling, 
+/**
+ * Whether a completed move rotates the mover to face its net movement direction (a token
+ * whose `TokenEngine.lock_rotation` is set is never rotated). Off by default: an existing
+ * world sees no behaviour change until it opts in.
+ */
+autoRotateTokens: boolean, };

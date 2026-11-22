@@ -3559,6 +3559,7 @@ async fn resync_floors_are_independent_per_user() {
 }
 
 mod audio_transport;
+mod auto_rotate;
 mod door_toggle;
 mod movement_budget;
 

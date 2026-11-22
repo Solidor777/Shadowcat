@@ -290,6 +290,7 @@ export const DEFAULT_WORLD_SETTINGS: {
     movementModel: "grid-stepped",
     partialCellLeniency: true,
     fogPooling: "individual",
+    autoRotateTokens: false,
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
@@ -317,6 +318,9 @@ export interface ResolvedSceneSettings {
   /** Which `explored_fog` bucket this scene's players accumulate into; scene `vision` override,
    * else the world default. */
   fogPooling: FogPooling;
+  /** Whether a completed move rotates the mover to face its movement direction (a token with
+   * `lockRotation` never rotates); scene `vision` override, else the world default. */
+  autoRotateTokens: boolean;
   /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
@@ -660,6 +664,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     movementRestriction: v?.movementRestriction ?? world?.scene?.movementRestriction ?? system?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction,
     movementModel,
     fogPooling: v?.fogPooling ?? world?.scene?.fogPooling ?? system?.scene?.fogPooling ?? DEFAULT_WORLD_SETTINGS.scene.fogPooling,
+    autoRotateTokens: v?.autoRotateTokens ?? world?.scene?.autoRotateTokens ?? system?.scene?.autoRotateTokens ?? DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens,
     // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
@@ -870,7 +875,7 @@ export function buildTokenFromActor(
   // the defect this seam exists to remove.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null, elevation: null,
+    visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
   };
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, {}, id, { ...base, actor_id: actor.id }, null);
@@ -925,7 +930,7 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
  *
  * const engine: TokenEngine = {
  *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
- *   visual: null, actor_id: null, overrides: null, face: null, elevation: null,
+ *   visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
  * };
  * const token = buildTokenDoc("world-1", "scene-1", engine);
  * token.doc_type; // "token"
@@ -1611,6 +1616,8 @@ export function resolveSettingProvenance(
       return resolvePick(v?.movementModel, world?.scene?.movementModel, system?.scene?.movementModel, DEFAULT_WORLD_SETTINGS.scene.movementModel);
     case "scene.fogPooling":
       return resolvePick(v?.fogPooling, world?.scene?.fogPooling, system?.scene?.fogPooling, DEFAULT_WORLD_SETTINGS.scene.fogPooling);
+    case "scene.autoRotateTokens":
+      return resolvePick(v?.autoRotateTokens, world?.scene?.autoRotateTokens, system?.scene?.autoRotateTokens, DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens);
     case "scene.partialCellLeniency":
       return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":

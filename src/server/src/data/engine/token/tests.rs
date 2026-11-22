@@ -12,7 +12,17 @@ fn base() -> TokenEngine {
         overrides: None,
         face: None,
         elevation: None,
+        lock_rotation: false,
     }
+}
+
+#[test]
+fn a_stored_token_without_lock_rotation_decodes_unlocked() {
+    let t: TokenEngine = serde_json::from_value(
+        serde_json::json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+    )
+    .unwrap();
+    assert!(!t.lock_rotation);
 }
 
 #[test]

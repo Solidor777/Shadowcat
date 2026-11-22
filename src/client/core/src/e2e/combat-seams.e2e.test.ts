@@ -148,7 +148,7 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
       },
     ],
   };
-  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" }, actor_id: null, overrides: null, face: null, elevation: null }, playerTokenId);
+  const tokenDoc = buildTokenDoc(world, sceneId, { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "0a5e7a11-0000-4000-8000-000000000001" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, playerTokenId);
   tokenDoc.owner = player;
 
   const combatEngine: CombatEngine = {

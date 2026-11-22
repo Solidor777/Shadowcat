@@ -281,6 +281,7 @@ pub enum FogPooling {
 ///     movement_restriction: None,
 ///     movement_model: None,
 ///     fog_pooling: None,
+///     auto_rotate_tokens: None,
 /// };
 /// assert_eq!(overrides.los_restriction, Some(true));
 /// ```
@@ -306,6 +307,10 @@ pub struct SceneVisionOverrides {
     /// Explored-fog pooling override (see `FogPooling`).
     #[serde(default)]
     pub fog_pooling: Option<FogPooling>,
+    /// Auto-rotate-tokens override (see `WorldSceneDefaults.auto_rotate_tokens`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub auto_rotate_tokens: Option<bool>,
 }
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
@@ -478,6 +483,11 @@ pub struct WorldSceneDefaults {
     pub partial_cell_leniency: bool,
     /// Default explored-fog pooling mode (see `FogPooling`).
     pub fog_pooling: FogPooling,
+    /// Whether a completed move rotates the mover to face its net movement direction (a token
+    /// whose `TokenEngine.lock_rotation` is set is never rotated). Off by default: an existing
+    /// world sees no behaviour change until it opts in.
+    #[serde(default)]
+    pub auto_rotate_tokens: bool,
 }
 
 /// A scene's ambient playlist override: when this scene becomes the world's active scene
@@ -742,6 +752,7 @@ impl Default for WorldSceneDefaults {
             movement_model: MovementModel::GridStepped,
             partial_cell_leniency: true,
             fog_pooling: FogPooling::Individual,
+            auto_rotate_tokens: false,
         }
     }
 }

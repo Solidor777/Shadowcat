@@ -1776,6 +1776,11 @@ impl Room {
         // no active combat on the token's scene, or the token names no combatant in it — either
         // way the caller treats that as "moves freely", never a refusal.
         let budget_gate: Option<BudgetGate>;
+        // The stored rotation this move would replace, or `None` when the move must not write
+        // one: the resolved scene has `auto_rotate_tokens` off, or the token has
+        // `lock_rotation` set. Captured under the first guard so the rotation `FieldChange`'s
+        // OCC pre-image is as fresh as the position pre-image.
+        let auto_rotate_from: Option<f64>;
         {
             let scene = self.scene.read().await;
 
@@ -1809,6 +1814,10 @@ impl Room {
             };
 
             let settings = scene.resolve_scene(token_scene);
+            auto_rotate_from = scene
+                .token_rotation_state(token)
+                .filter(|&(_, locked)| settings.auto_rotate_tokens && !locked)
+                .map(|(rotation, _)| rotation);
             // Captured under this same read guard for the same reason `cell` is: the explored
             // decode below runs after the guard is dropped. Also feeds `visible_cells_cached`
             // below, so the movement gate's mask is level-scoped to this SAME mover floor.
@@ -2088,22 +2097,39 @@ impl Room {
         // movement. `old` is keyed on the authoritative ECS-read `start` (the committed start
         // `SceneEcs::token_move` returns, itself `/engine/x,y`) so the optimistic-concurrency
         // check in `apply_intent` passes as defense-in-depth.
+        let mut position_changes = vec![
+            FieldChange {
+                remove: false,
+                path: "/engine/x".into(),
+                old: serde_json::json!(start.0),
+                new: serde_json::json!(outcome.stop.0),
+            },
+            FieldChange {
+                remove: false,
+                path: "/engine/y".into(),
+                old: serde_json::json!(start.1),
+                new: serde_json::json!(outcome.stop.1),
+            },
+        ];
+        // Auto-rotate: the facing rides in the SAME `Update` as the position so every viewer
+        // sees both change together under one commit. Only reachable past the zero-progress
+        // return above, so `start != stop` and the bearing is a real direction. A GM move
+        // rotates too: the GM exemption covers gameplay gates, not a cosmetic write.
+        if let Some(current_rotation) = auto_rotate_from {
+            position_changes.push(FieldChange {
+                remove: false,
+                path: "/engine/rotation".into(),
+                old: serde_json::json!(current_rotation),
+                new: serde_json::json!(move_exec::bearing_degrees(
+                    start,
+                    outcome.stop,
+                    current_rotation
+                )),
+            });
+        }
         let ops = vec![Operation::Update {
             doc_id: token,
-            changes: vec![
-                FieldChange {
-                    remove: false,
-                    path: "/engine/x".into(),
-                    old: serde_json::json!(start.0),
-                    new: serde_json::json!(outcome.stop.0),
-                },
-                FieldChange {
-                    remove: false,
-                    path: "/engine/y".into(),
-                    old: serde_json::json!(start.1),
-                    new: serde_json::json!(outcome.stop.1),
-                },
-            ],
+            changes: position_changes,
         }];
 
         // Position write commits ALONE under `WriteOrigin::Client`, UNCONDITIONALLY — never
