@@ -652,6 +652,7 @@ fn eval_notice(failures: Vec<String>, world: Uuid, author: Uuid, now: i64) -> Op
                 ),
             }],
             source: None,
+            system: None,
         },
         now,
     );
@@ -893,6 +894,7 @@ fn resolve_event(
                 kind: MessageKind::Normal,
                 content: vec![Segment::Text { text }],
                 source: None,
+                system: None,
             },
             now,
         );
@@ -1982,6 +1984,7 @@ pub fn roll(
                     recalc_history: None,
                 }],
                 source: None,
+                system: None,
             },
             now,
         );

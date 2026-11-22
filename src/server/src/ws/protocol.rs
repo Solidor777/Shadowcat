@@ -263,6 +263,13 @@ pub enum ClientMsg {
         /// Visibility policy (public / gm-only / whisper).
         #[serde(default)]
         audience: Audience,
+        /// Opaque, module-owned payload stored verbatim as the message document's `system`
+        /// band. The server never inspects its shape; it is bounded only by the structural
+        /// size cap every document's `system` band gets, and it inherits the message's own
+        /// audience-derived permissions. `None` stores `{}`.
+        #[serde(default)]
+        #[ts(optional, type = "unknown")]
+        system: Option<serde_json::Value>,
     },
     /// Edit an existing message the requester owns (or any, if GM). The server
     /// re-runs the sanitize+command pipeline; audience/channel are frozen.

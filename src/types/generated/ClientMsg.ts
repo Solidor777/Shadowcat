@@ -218,7 +218,14 @@ actor_owner: ActorOwnerRef | null,
 /**
  * Visibility policy (public / gm-only / whisper).
  */
-audience: Audience, } | { "type": "edit_message", 
+audience: Audience, 
+/**
+ * Opaque, module-owned payload stored verbatim as the message document's `system`
+ * band. The server never inspects its shape; it is bounded only by the structural
+ * size cap every document's `system` band gets, and it inherits the message's own
+ * audience-derived permissions. `None` stores `{}`.
+ */
+system?: unknown, } | { "type": "edit_message", 
 /**
  * Correlation token for a `ChatError` rejection.
  */

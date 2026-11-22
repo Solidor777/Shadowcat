@@ -450,6 +450,7 @@ fn build_message_doc_threads_kind() {
             kind: MessageKind::Emote,
             content: plain_text_content("waves"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -522,6 +523,7 @@ fn build_message_doc_is_server_owned_message() {
             kind: MessageKind::Normal,
             content: plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1234,
     );
@@ -554,6 +556,7 @@ fn ops_target_message_detects_message_create_and_update() {
             kind: MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         0,
     );
@@ -572,6 +575,7 @@ fn ops_target_message_detects_message_create_and_update() {
             kind: MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         0,
     );
@@ -594,6 +598,7 @@ fn ops_target_message_detects_message_in_mixed_batch() {
             kind: MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         0,
     );
@@ -608,6 +613,7 @@ fn ops_target_message_detects_message_in_mixed_batch() {
             kind: MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         0,
     );
@@ -645,6 +651,7 @@ fn build_message_doc_public_matches_c1_shape() {
             kind: MessageKind::Normal,
             content: plain_text_content("hi"),
             source: None,
+            system: None,
         },
         0,
     );
@@ -669,6 +676,7 @@ fn build_message_doc_whisper_restricts_default_and_gm() {
             kind: MessageKind::Normal,
             content: plain_text_content("psst"),
             source: None,
+            system: None,
         },
         0,
     );
@@ -696,6 +704,7 @@ fn build_message_doc_whisper_self_recipient_does_not_downgrade_owner() {
             kind: MessageKind::Normal,
             content: plain_text_content("note to self"),
             source: None,
+            system: None,
         },
         0,
     );
@@ -719,6 +728,7 @@ fn build_message_doc_gm_only_has_no_named_recipients() {
             kind: MessageKind::Normal,
             content: plain_text_content("only the GM sees this"),
             source: None,
+            system: None,
         },
         0,
     );
@@ -841,6 +851,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -872,6 +883,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             "x".into(),
             None,
             Audience::Public,
+            None,
         )
         .await;
     }
@@ -895,6 +907,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
         "x".into(),
         None,
         Audience::Public,
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::RateLimited)));
@@ -921,6 +934,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             "".into(),
             None,
             Audience::Public,
+            None,
         )
         .await,
         Err(SendMessageError::Empty)
@@ -947,6 +961,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             long,
             None,
             Audience::Public,
+            None,
         )
         .await,
         Err(SendMessageError::TooLong)
@@ -975,6 +990,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             "hi".into(),
             None,
             Audience::Public,
+            None,
         )
         .await,
         Err(SendMessageError::Empty)
@@ -1001,6 +1017,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             "hi".into(),
             None,
             Audience::Public,
+            None,
         )
         .await,
         Err(SendMessageError::TooLong)
@@ -1061,6 +1078,7 @@ async fn a_roll_messages_spec_and_raw_are_gm_only_but_outcome_and_roll_id_are_no
         "/roll 1d6".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1140,6 +1158,7 @@ async fn send_message_stores_a_doc_link_segment() {
         format!("see [[doc:{target_id}|My Doc]] please"),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1212,6 +1231,7 @@ async fn send_message_stores_a_token_link_segment() {
         format!("[[token:{token_id}|Goblin]]"),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1276,6 +1296,7 @@ async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidate
         format!("[[doc:{nonexistent}|Ghost Doc]]"),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1340,6 +1361,7 @@ async fn send_message_rejects_a_malformed_doc_link_and_authors_no_message() {
         "[[doc:not-a-uuid]]".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1413,6 +1435,7 @@ async fn handle_send_message_rejects_unknown_whisper_recipient() {
         Audience::Whisper {
             recipients: vec![foreign],
         },
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::UnknownRecipient)));
@@ -1479,6 +1502,7 @@ async fn handle_send_message_accepts_a_whisper_to_a_real_member() {
         Audience::Whisper {
             recipients: vec![recipient],
         },
+        None,
     )
     .await
     .unwrap()
@@ -1542,6 +1566,7 @@ async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
         "psst".into(),
         None,
         Audience::Whisper { recipients },
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::TooLong)));
@@ -1604,6 +1629,7 @@ async fn handle_send_message_accepts_whisper_at_exactly_the_recipient_cap() {
         "psst".into(),
         None,
         Audience::Whisper { recipients },
+        None,
     )
     .await
     .unwrap()
@@ -1674,6 +1700,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1706,6 +1733,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
         "/me waves".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1738,6 +1766,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
         "/w @alice hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1799,6 +1828,7 @@ async fn edit_replaces_source_and_delete_clears_it() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -1887,6 +1917,7 @@ async fn editing_into_a_doc_link_span_stores_the_doc_link_segment() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2024,6 +2055,7 @@ async fn editing_into_an_asset_span_stores_the_image_segment_when_images_are_ena
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2104,6 +2136,7 @@ async fn editing_into_a_roll_button_span_validates_without_rolling() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2186,6 +2219,7 @@ async fn editing_into_an_inline_formula_span_is_roll_immutable_not_executed() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2280,6 +2314,7 @@ async fn whisper_edit_body_is_scanned_for_doc_link_spans_like_a_send() {
         "/w @alice hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2386,6 +2421,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
         "/w @alice /me waves".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2461,6 +2497,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
         "/w @alice hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2530,6 +2567,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2648,6 +2686,7 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
         "attack! [[1d20]] done".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2710,6 +2749,7 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
         "hello there".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -2804,6 +2844,7 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
         Audience::Whisper {
             recipients: vec![alice],
         },
+        None,
     )
     .await
     .unwrap()
@@ -2899,6 +2940,7 @@ async fn posted_message_is_searchable_by_members() {
             kind: MessageKind::Normal,
             content: plain_text_content("banshee wail"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -3045,6 +3087,7 @@ async fn send_message_allows_token_owner_via_its_own_override_to_speak_as_it() {
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3128,6 +3171,7 @@ async fn send_message_allows_the_linked_actors_owner_to_speak_as_its_token() {
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3212,6 +3256,7 @@ async fn send_message_rejects_a_non_owner_non_gm_speaking_as_a_token() {
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -3286,6 +3331,7 @@ async fn send_message_rejects_a_token_from_another_world_even_for_its_owner() {
         "hi".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap_err();
@@ -3354,6 +3400,7 @@ async fn send_message_allows_gm_to_speak_as_any_token_regardless_of_owner() {
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3431,6 +3478,7 @@ async fn send_message_allows_player_attributing_own_actor() {
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3516,6 +3564,7 @@ async fn send_message_rejects_player_attributing_another_users_actor() {
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -3595,6 +3644,7 @@ async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
         "hi".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap_err();
@@ -3653,6 +3703,7 @@ async fn send_message_rejects_attributing_a_nonexistent_actor() {
             actor_id: Uuid::new_v4(),
         }),
         Audience::Public,
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -3720,6 +3771,7 @@ async fn send_message_allows_gm_attributing_any_actor() {
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3780,6 +3832,7 @@ async fn send_message_rejects_attributing_a_nonexistent_token() {
             token_id: Uuid::new_v4(),
         }),
         Audience::Public,
+        None,
     )
     .await;
     assert!(
@@ -3853,6 +3906,7 @@ async fn send_message_rejects_attribution_to_a_non_actor_doc() {
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id: doc_id }),
         Audience::Public,
+        None,
     )
     .await;
     assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -3932,6 +3986,7 @@ async fn handle_recalc_roll_rejects_a_non_gm_sender() {
         "/roll 1d6".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -3996,6 +4051,7 @@ async fn handle_recalc_roll_rejects_unknown_roll_id_and_missing_stored_state() {
         "/roll 1d6".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -4076,6 +4132,7 @@ async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
             kind: MessageKind::Roll,
             content,
             source: None,
+            system: None,
         },
         0,
     );
@@ -4143,6 +4200,7 @@ async fn handle_recalc_roll_succeeds_for_public_whisper_and_gmonly_audiences() {
             "/roll 1d6".into(),
             None,
             audience.clone(),
+            None,
         )
         .await
         .unwrap()
@@ -4205,6 +4263,7 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
         "/roll 1d6".into(),
         None,
         Audience::GmOnly,
+        None,
     )
     .await
     .unwrap()
@@ -4390,6 +4449,7 @@ async fn send(
         content.into(),
         actor_owner,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()
@@ -4425,6 +4485,7 @@ async fn handle_send_message_rejects_an_unregistered_channel_and_persists_nothin
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap_err();

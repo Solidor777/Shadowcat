@@ -835,16 +835,16 @@ fn authorize_update_change(
     }
     // Declarative requirements are additive: a module/world may demand extra
     // capabilities for a sub-path on top of the structural base above. SKIPPED
-    // only for a `ServerMessageRevision` write to exactly `/engine` or
-    // `/permissions/property_overrides` — a world's `CapabilityRequirement`
-    // carries no `doc_type`, so an ancestor write to `/engine` would otherwise
-    // inherit a requirement declared for a wholly unrelated doc_type's field,
-    // blocking a GM's already-vetted moderation write. Any OTHER path under this
-    // origin still goes through this check.
+    // only for a `ServerMessageRevision` write to exactly `/engine`, `/system` (the
+    // delete tombstone's payload clear) or `/permissions/property_overrides` — a
+    // world's `CapabilityRequirement` carries no `doc_type`, so an ancestor write
+    // to `/engine` would otherwise inherit a requirement declared for a wholly
+    // unrelated doc_type's field, blocking a GM's already-vetted moderation write.
+    // Any OTHER path under this origin still goes through this check.
     let is_scoped_smr_write = is_server_message_revision
         && matches!(
             ch.path.as_str(),
-            "/engine" | "/permissions/property_overrides"
+            "/engine" | "/system" | "/permissions/property_overrides"
         );
     if !origin.skips_capability_gates() && !is_scoped_smr_write {
         for extra in declared_caps_for_path(&ch.path, world_reqs) {

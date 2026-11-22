@@ -481,6 +481,7 @@ fn send_message_frame_parses() {
             content,
             actor_owner,
             audience,
+            system,
         } => {
             assert_eq!(request_id, Uuid::from_u128(0xaa));
             assert_eq!(channel, "all");
@@ -491,6 +492,19 @@ fn send_message_frame_parses() {
                 crate::chat::Audience::Public,
                 "omitted audience defaults to Public"
             );
+            assert_eq!(system, None, "omitted system payload defaults to None");
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn send_message_frame_carries_an_opaque_system_payload() {
+    let raw = r#"{"type":"send_message","request_id":"00000000-0000-0000-0000-0000000000aa","channel":"all","content":"hi","actor_owner":null,"system":{"k":[1,{"z":true}]}}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::SendMessage { system, .. } => {
+            assert_eq!(system, Some(serde_json::json!({"k": [1, {"z": true}]})));
         }
         _ => panic!("wrong variant"),
     }

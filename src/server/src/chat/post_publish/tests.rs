@@ -96,6 +96,7 @@ async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionCont
         "hello".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .unwrap()

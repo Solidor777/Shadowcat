@@ -1616,6 +1616,7 @@ impl Room {
                             ),
                         }],
                         source: None,
+                        system: None,
                     },
                     crate::ws::time::now_millis(),
                 );
@@ -2985,6 +2986,7 @@ impl Room {
                                             ),
                                         }],
                                         source: None,
+                                        system: None,
                                     },
                                     ts,
                                 );
@@ -3117,6 +3119,7 @@ impl Room {
                         kind: MessageKind::System,
                         content: vec![Segment::Text { text: text.clone() }],
                         source: None,
+                        system: None,
                     },
                     ts,
                 );
@@ -3156,6 +3159,7 @@ impl Room {
                         text: format!("Region trigger did not apply: {}", lines.join("; ")),
                     }],
                     source: None,
+                    system: None,
                 },
                 ts,
             );

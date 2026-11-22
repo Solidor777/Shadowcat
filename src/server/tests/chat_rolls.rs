@@ -140,6 +140,7 @@ impl Fixture {
             content.into(),
             None,
             Audience::Public,
+            None,
         )
         .await
         .map(|opt| opt.expect("a plain message is not a /fx command"))

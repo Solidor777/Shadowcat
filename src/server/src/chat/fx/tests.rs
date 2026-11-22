@@ -214,6 +214,7 @@ impl FxFixture {
             content.into(),
             None,
             Audience::Public,
+            None,
         )
         .await
     }
