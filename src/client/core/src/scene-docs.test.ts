@@ -416,7 +416,7 @@ describe("vision-modes registry", () => {
     const m = resolveVisionModes(storeWith(buildVisionModesDoc("w1")));
     expect(Object.keys(m).sort()).toEqual(["darkvision", "normal", "tremorsense"]);
     expect(m.normal).toEqual({ id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null });
-    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" });
+    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } });
     // A creature sense: perceives tokens, ignores walls (requiresLos false); its
     // illuminationFloor is inert (creature perception never reads it).
     expect(m.tremorsense).toEqual({ id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null });
@@ -818,6 +818,25 @@ describe("system defaults", () => {
     const storeNoWorld = storeWith(sdDoc, scene);
     expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({
       value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+  });
+
+  it("resolveSettingProvenance resolves facingTurnRule and facingVision through scene, world and system", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { scene: { facingTurnRule: "own_turn", facingVision: true } });
+    const bare = storeWith(sdDoc);
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingTurnRule")).toEqual({
+      value: "own_turn", source: "system", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingVision").value).toBe(true);
+
+    const scene = buildSceneDoc("w1", {
+      vision: { facingTurnRule: "free", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "s1");
+    expect(resolveSettingProvenance(storeWith(sdDoc, scene), scene, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "scene", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWith(), undefined, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "engine", systemOrEngine: { value: "free", source: "engine" },
     });
   });
 

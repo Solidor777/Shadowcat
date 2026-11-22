@@ -39,6 +39,7 @@ use crate::data::engine::scene::LightEmission;
 ///     elevation: None,
 ///     lock_rotation: false,
 ///     identity_hidden: false,
+///     facing_vision: None,
 /// };
 /// assert_eq!(token.w, 50.0);
 /// ```
@@ -94,6 +95,12 @@ pub struct TokenEngine {
     /// every other viewer perceives.
     #[serde(default)]
     pub identity_hidden: bool,
+    /// Facing-limited field of view of an ACTORLESS token (no `actor_id`, no embedded actor);
+    /// every other token resolves it from its actor or `TokenOverrides::facing_vision`
+    /// (`SceneEcs::token_facing_vision`). Ignored unless the scene's `facing_vision` switch is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
 }
 
 impl TokenEngine {
@@ -127,6 +134,9 @@ impl TokenEngine {
             if !e.is_finite() {
                 return Err("elevation must be finite".to_string());
             }
+        }
+        if let Some(f) = &self.facing_vision {
+            f.validate()?;
         }
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
         if self.x.abs() > bound || self.y.abs() > bound {
@@ -348,6 +358,7 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 ///     size: None,
 ///     shape: None,
 ///     vision: None,
+///     facing_vision: None,
 ///     light: None,
 ///     movement: None,
 ///     aura: None,
@@ -384,6 +395,11 @@ pub struct TokenOverrides {
     /// when present.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Per-token facing-limited field of view: replaces the actor's `facing_vision` wholesale
+    /// when present. Ignored unless the scene's `facing_vision` switch is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
     /// Per-token light override: replaces the actor's `light` entirely when
     /// present (wholesale, same shape as `vision`); an emission with
     /// `enabled: false` suppresses this token's carried light. Authoring it is
@@ -425,6 +441,9 @@ impl TokenOverrides {
             visual
                 .validate()
                 .map_err(|m| format!("overrides.visual: {m}"))?;
+        }
+        if let Some(f) = &self.facing_vision {
+            f.validate().map_err(|m| format!("overrides.{m}"))?;
         }
         if let Some(light) = &self.light {
             light
@@ -498,6 +517,55 @@ pub struct VisionAssignment {
     /// so the GM-authored mode default becomes live only once a caller resolves
     /// it against the mode, never by a struct-level fallback here.
     pub range: Option<f64>,
+}
+
+/// A creature's facing-limited field of view: it sees a forward arc of `arc` degrees instead of
+/// all round, plus an all-round awareness bubble of `near` cells. It takes effect only on a scene
+/// whose resolved `facing_vision` switch is on (`ResolvedScene::facing_vision`); the forward
+/// direction is the token's `TokenEngine::rotation`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FacingVision;
+///
+/// let guard = FacingVision { arc: 120.0, near: 1.0 };
+/// assert!(guard.validate().is_ok());
+/// assert!(FacingVision { arc: 0.0, near: 0.0 }.validate().is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct FacingVision {
+    /// Full width of the forward arc in degrees, finite and in `(0, 360]`; `360` is no restriction.
+    pub arc: f64,
+    /// All-round awareness radius in grid CELLS, finite and `>= 0`: inside it facing does not
+    /// matter.
+    pub near: f64,
+}
+
+impl FacingVision {
+    /// Ingress validation: `arc` finite and in `(0, 360]`, `near` finite and `>= 0`. A stored value
+    /// that fails this at read time resolves to the bubble-only view (`scene::facing_arc_for`),
+    /// never to full sight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::FacingVision;
+    ///
+    /// assert!(FacingVision { arc: 360.0, near: 0.0 }.validate().is_ok());
+    /// assert!(FacingVision { arc: 361.0, near: 0.0 }.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.arc.is_finite() || self.arc <= 0.0 || self.arc > 360.0 {
+            return Err("facing_vision.arc must be finite and in (0, 360]".to_string());
+        }
+        if !self.near.is_finite() || self.near < 0.0 {
+            return Err("facing_vision.near must be finite and >= 0".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// The client-owned token/actor visual union. Internally tagged on
@@ -1019,6 +1087,7 @@ impl AnimatedSource {
 ///     conditions: Vec::new(),
 ///     prototype: false,
 ///     vision: None,
+///     facing_vision: None,
 ///     light: None,
 ///     movement: Vec::new(),
 ///     aura: None,
@@ -1063,6 +1132,12 @@ pub struct ActorEngine {
     /// + range in grid cells.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// The actor's facing-limited field of view, inherited by every token resolving this actor
+    /// (a per-token `TokenOverrides::facing_vision` replaces it wholesale). Ignored unless the
+    /// scene's `facing_vision` switch is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facing_vision: Option<FacingVision>,
     /// Light this actor's tokens carry: every token resolving this actor
     /// emits it at its live position unless the token's override replaces or
     /// suppresses it (`TokenOverrides::light`). Writing it is GM-only at ingress
@@ -1100,6 +1175,9 @@ impl ActorEngine {
     /// serde-enforced shape.
     pub(crate) fn validate(&self) -> Result<(), String> {
         self.visual.validate().map_err(|m| format!("visual: {m}"))?;
+        if let Some(f) = &self.facing_vision {
+            f.validate()?;
+        }
         if let Some(light) = &self.light {
             light.validate().map_err(|m| format!("light: {m}"))?;
         }

@@ -439,6 +439,114 @@ pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
     poly
 }
 
+/// A source's facing-limited field of view: a forward arc plus an all-round bubble.
+///
+/// `facing_rad` is the direction the source looks (radians, `0` = +x, growing toward +y, the
+/// convention of `scene::move_exec::token_facing_radians`). `half_rad` is half the arc's width: a
+/// ray whose angle lies strictly within `half_rad` of `facing_rad` runs to its occluder, every
+/// other ray is cut at `near_world`. `near_world` is the bubble radius in WORLD units (the
+/// authored cell radius times `GridShape::world_units_per_cell`). `half_rad == 0.0` is the
+/// bubble-only view an invalid stored value resolves to (fail closed).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::vision::FacingArc;
+///
+/// let arc = FacingArc { facing_rad: 0.0, half_rad: std::f64::consts::FRAC_PI_4, near_world: 1.0 };
+/// assert_eq!(arc.near_world, 1.0);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FacingArc {
+    /// Direction the source looks, radians.
+    pub facing_rad: f64,
+    /// Half the arc's full width, radians, in `[0, π)`.
+    pub half_rad: f64,
+    /// All-round awareness radius, world units, `>= 0`.
+    pub near_world: f64,
+}
+
+/// Angular spacing (radians, 10 degrees) of the extra samples `visibility_polygon_facing` adds so
+/// the all-round bubble is round and not a few long chords.
+const FACING_RING_STEP: f64 = std::f64::consts::PI / 18.0;
+
+/// The visibility polygon of a facing-limited source: `visibility_polygon`'s rays, each cut at
+/// `facing.near_world` when its angle lies outside the forward arc. Still one star-shaped polygon
+/// about `viewpoint`, so `point_in_poly`, the lit mask, the egress clip and the client's fog hole
+/// consume it unchanged.
+///
+/// Algorithm: the same endpoint angular sweep as `visibility_polygon`, with three extra sample
+/// families so the arc boundary is exact and the bubble is round: both arc edges (each ±`EPS`, so
+/// the radial step between "runs to the wall" and "capped at the bubble" is a near-radial edge),
+/// and a ring sample every `FACING_RING_STEP`. Each sample's relative angle to the facing is
+/// wrapped into `[-π, π)` before the arc test, so an arc spanning the ±π seam is handled.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::vision::{visibility_polygon_facing, FacingArc, Rect};
+///
+/// let bound = Rect { minx: -10.0, miny: -10.0, maxx: 10.0, maxy: 10.0 };
+/// let arc = FacingArc { facing_rad: 0.0, half_rad: std::f64::consts::FRAC_PI_4, near_world: 0.0 };
+/// let poly = visibility_polygon_facing((0.0, 0.0), &[], bound, arc);
+/// assert!(poly.len() >= 3);
+/// ```
+pub fn visibility_polygon_facing(
+    viewpoint: P,
+    walls: &[Seg],
+    bound: Rect,
+    facing: FacingArc,
+) -> Vec<P> {
+    let mut segs: Vec<Seg> = walls
+        .iter()
+        .copied()
+        .filter(|s| seg_overlaps_rect(s, &bound))
+        .collect();
+    segs.extend(bound.edges());
+
+    let mut angles: Vec<f64> = Vec::with_capacity(segs.len() * 6 + 80);
+    for s in &segs {
+        for p in [s.a, s.b] {
+            let ang = (p.1 - viewpoint.1).atan2(p.0 - viewpoint.0);
+            angles.push(wrap_angle(ang - EPS));
+            angles.push(ang);
+            angles.push(wrap_angle(ang + EPS));
+        }
+    }
+    for edge in [
+        facing.facing_rad - facing.half_rad,
+        facing.facing_rad + facing.half_rad,
+    ] {
+        angles.push(wrap_angle(edge - EPS));
+        angles.push(wrap_angle(edge));
+        angles.push(wrap_angle(edge + EPS));
+    }
+    let ring = (std::f64::consts::TAU / FACING_RING_STEP).round() as usize;
+    for k in 0..ring {
+        angles.push(wrap_angle(
+            -std::f64::consts::PI + k as f64 * FACING_RING_STEP,
+        ));
+    }
+    angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mut poly: Vec<P> = Vec::with_capacity(angles.len());
+    for &ang in &angles {
+        let dir = (ang.cos(), ang.sin());
+        let Some(hit) = nearest_hit(viewpoint, dir, &segs) else {
+            continue;
+        };
+        let rel = wrap_angle(ang - facing.facing_rad).abs();
+        if rel < facing.half_rad {
+            poly.push(hit);
+            continue;
+        }
+        let dist = ((hit.0 - viewpoint.0).powi(2) + (hit.1 - viewpoint.1).powi(2)).sqrt();
+        let reach = dist.min(facing.near_world);
+        poly.push((viewpoint.0 + dir.0 * reach, viewpoint.1 + dir.1 * reach));
+    }
+    poly
+}
+
 /// Euclidean distance from point `p` to segment `a→b`, clamping the projection to the segment.
 /// Source: standard point-to-segment projection (clean-room). Used by the pathfinder footprint
 /// clearance: a footprint disc of radius R is wall-clear iff this distance ≥ R for every wall.

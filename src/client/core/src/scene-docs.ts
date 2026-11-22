@@ -302,6 +302,8 @@ export const DEFAULT_WORLD_SETTINGS: {
     partialCellLeniency: true,
     fogPooling: "individual",
     autoRotateTokens: false,
+    facingVision: false,
+    facingTurnRule: "free",
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
@@ -1085,7 +1087,7 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null },
-  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: { kind: "desaturate" } },
   tremorsense: { id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null },
 });
 
@@ -1757,6 +1759,10 @@ export function resolveSettingProvenance(
       return resolvePick(v?.fogPooling, world?.scene?.fogPooling, system?.scene?.fogPooling, DEFAULT_WORLD_SETTINGS.scene.fogPooling);
     case "scene.autoRotateTokens":
       return resolvePick(v?.autoRotateTokens, world?.scene?.autoRotateTokens, system?.scene?.autoRotateTokens, DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens);
+    case "scene.facingVision":
+      return resolvePick(v?.facingVision, world?.scene?.facingVision, system?.scene?.facingVision, DEFAULT_WORLD_SETTINGS.scene.facingVision);
+    case "scene.facingTurnRule":
+      return resolvePick(v?.facingTurnRule, world?.scene?.facingTurnRule, system?.scene?.facingTurnRule, DEFAULT_WORLD_SETTINGS.scene.facingTurnRule);
     case "scene.partialCellLeniency":
       return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":

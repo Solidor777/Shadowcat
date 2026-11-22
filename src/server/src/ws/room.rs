@@ -1158,11 +1158,14 @@ impl Room {
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
             // grants — an await, which must not run under the scene read guard below. Fetched
-            // once, ahead of the guard, and only when this batch actually contains a token
-            // Create (the sole op shape that reads the mask); every other batch skips the fetch.
-            let needs_world_defaults = ops.iter().any(
-                |op| matches!(op, Operation::Create { doc } if doc.doc_type == "token" && doc.parent_id.is_some()),
-            );
+            // once, ahead of the guard, and only when this batch contains a token Create (which
+            // reads the mask) or an Update (whose token rotation write resolves the caller's
+            // standing on the token's combatant); every other batch skips the fetch.
+            let needs_world_defaults = ops.iter().any(|op| match op {
+                Operation::Create { doc } => doc.doc_type == "token" && doc.parent_id.is_some(),
+                Operation::Update { .. } => true,
+                _ => false,
+            });
             let world_defaults = if needs_world_defaults {
                 Some(repo.world_cap_defaults(self.world_id).await?)
             } else {
@@ -1183,6 +1186,33 @@ impl Room {
                         if let Some((_, a0, a1)) = scene.token_move(*doc_id, changes) {
                             if a0 != a1 {
                                 return Err(DataError::Forbidden);
+                            }
+                        }
+                        // A non-GM rotation write is refused by the one rotation predicate
+                        // (`rotation_refusal`): the token's `lock_rotation`, then the scene's
+                        // turn rule. The auto-rotate `FieldChange` of `execute_move` never
+                        // passes through here (it commits through `commit_ops_locked`).
+                        if let Some(w) = scene.token_rotation_write(*doc_id, changes) {
+                            if w.rotation_changed {
+                                let rule = scene.resolve_scene(w.scene).facing_turn_rule;
+                                let standing =
+                                    if rule == crate::data::engine::FacingTurnRule::OwnTurn {
+                                        // Fail closed: the defaults were fetched for every batch
+                                        // holding an Update, so `None` cannot occur.
+                                        let Some(wd) = world_defaults.as_ref() else {
+                                            return Err(DataError::Forbidden);
+                                        };
+                                        scene.token_turn_standing(w.scene, *doc_id, ctx, wd)
+                                    } else {
+                                        crate::scene::rotation_gate::TurnStanding::Unconstrained
+                                    };
+                                if crate::scene::rotation_gate::rotation_refusal(
+                                    w.locked, rule, standing,
+                                )
+                                .is_some()
+                                {
+                                    return Err(DataError::Forbidden);
+                                }
                             }
                         }
                     }
@@ -1825,7 +1855,10 @@ impl Room {
             let settings = scene.resolve_scene(token_scene);
             auto_rotate_from = scene
                 .token_rotation_state(token)
-                .filter(|&(_, locked)| settings.auto_rotate_tokens && !locked)
+                .filter(|&(_, locked)| {
+                    settings.auto_rotate_tokens
+                        && crate::scene::rotation_gate::lock_refusal(locked).is_none()
+                })
                 .map(|(rotation, _)| rotation);
             // Captured under this same read guard for the same reason `cell` is: the explored
             // decode below runs after the guard is dropped. Also feeds `visible_cells_cached`

@@ -127,7 +127,7 @@ impl LightingInputs {
 pub(crate) fn point_qualifies(
     point: (f64, f64),
     src_vp: (f64, f64),
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     settings: &ResolvedScene,
     li: &LightingInputs,
     world_units_per_cell: f64,
@@ -152,17 +152,29 @@ pub(crate) struct VisSrc {
     /// `elevation::wall_occludes` and grounds tremorsense (`SceneEcs::player_perceived_tokens`).
     pub(crate) elevation: f64,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    pub(crate) floors: Vec<(f64, f64, Option<String>)>,
+    pub(crate) floors: Vec<(f64, f64, SharedRenderHint)>,
     /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
     /// read by `player_perceived_tokens` and the clip's `SightSource`; the lit mask ignores
     /// them, so they are no part of `VisibilityInputsSnapshot`.
     pub(crate) senses: Vec<(f64, bool)>,
+    /// The source's facing-limited field of view (`facing_arc_for` of its resolved
+    /// `FacingVision` and rotation), `None` when the scene's `facing_vision` switch is off, the
+    /// token carries no `FacingVision`, or its arc is `360`.
+    pub(crate) facing: Option<vision::FacingArc>,
 }
 
-/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.
-/// Elevation is part of the fingerprint: a token gaining/losing height changes which walls
-/// occlude it, so the same walls at two elevations must never share a cached mask.
-pub(crate) type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
+/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors,
+/// facing)`. Elevation is part of the fingerprint: a token gaining/losing height changes which
+/// walls occlude it, so the same walls at two elevations must never share a cached mask. The
+/// facing arc is part of it too: it carries the token's rotation, so turning a token misses the
+/// cache.
+pub(crate) type VisSrcSnapshot = (
+    Uuid,
+    vision::P,
+    f64,
+    Vec<(f64, f64, SharedRenderHint)>,
+    Option<vision::FacingArc>,
+);
 
 /// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
 /// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
@@ -250,6 +262,7 @@ pub(crate) fn accumulate_visible_cells(
             &src_walls,
             settings.los_restriction,
             grid.world_extent(settings.bounds),
+            src.facing,
         );
         if poly.len() < 3 {
             continue;
@@ -366,7 +379,7 @@ pub(crate) fn accumulate_visible_cells(
 /// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
 /// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
 pub(crate) fn cell_visible(
-    floors: &[(f64, f64, Option<String>)],
+    floors: &[(f64, f64, SharedRenderHint)],
     cl_level: f64,
     dist_cells: f64,
 ) -> bool {
@@ -393,18 +406,70 @@ pub(crate) fn source_los_poly(
     sight_walls: &[vision::Seg],
     los_restriction: bool,
     scene_extent: grid_shape::WorldExtent,
+    facing: Option<vision::FacingArc>,
 ) -> Vec<vision::P> {
     let b = vision::bound_for_scene(vp, sight_walls, scene_extent, VISION_BOUND_MARGIN);
-    if los_restriction {
-        vision::visibility_polygon(vp, sight_walls, b)
-    } else {
-        vec![
+    match (los_restriction, facing) {
+        (true, None) => vision::visibility_polygon(vp, sight_walls, b),
+        (true, Some(arc)) => vision::visibility_polygon_facing(vp, sight_walls, b, arc),
+        // A facing arc still limits sight on a scene without wall occlusion: the same fan over the
+        // whole bound with no occluders, so the arc and bubble are the only restriction.
+        (false, Some(arc)) => vision::visibility_polygon_facing(vp, &[], b, arc),
+        (false, None) => vec![
             (b.minx, b.miny),
             (b.maxx, b.miny),
             (b.maxx, b.maxy),
             (b.minx, b.maxy),
-        ]
+        ],
     }
+}
+
+/// Smallest all-round bubble radius (world units) a facing-limited source keeps. With a zero
+/// radius every ray outside the arc collapses onto the viewpoint, which then lies ON the polygon
+/// boundary, where `vision::point_in_poly` (even-odd) answers arbitrarily — the source could lose
+/// its own position. One world unit keeps the viewpoint strictly interior and is far below a cell.
+pub(crate) const FACING_MIN_NEAR_WORLD: f64 = 1.0;
+
+/// Resolves a token's `FacingVision` and rotation to the geometry `source_los_poly` consumes.
+/// `None` means unrestricted sight (an arc of `360`). An invalid stored value (out-of-range or
+/// non-finite `arc`) fails closed to the bubble-only view (`half_rad == 0`), never to full sight;
+/// a non-finite or negative `near`, or a non-positive `world_units_per_cell`, resolves to a
+/// zero-radius bubble. `world_units_per_cell` is `GridShape::world_units_per_cell`, the
+/// authored-distance scale the source's vision range also converts through.
+pub(crate) fn facing_arc_for(
+    fv: &crate::data::engine::FacingVision,
+    rotation_deg: f64,
+    world_units_per_cell: f64,
+) -> Option<vision::FacingArc> {
+    let arc_valid = fv.arc.is_finite() && fv.arc > 0.0 && fv.arc <= 360.0;
+    if arc_valid && fv.arc >= 360.0 {
+        return None;
+    }
+    let near_cells = if fv.near.is_finite() && fv.near > 0.0 {
+        fv.near
+    } else {
+        0.0
+    };
+    let scaled = if world_units_per_cell.is_finite() && world_units_per_cell > 0.0 {
+        near_cells * world_units_per_cell
+    } else {
+        0.0
+    };
+    let near_world = scaled.max(FACING_MIN_NEAR_WORLD);
+    let facing_rad = if rotation_deg.is_finite() {
+        crate::scene::move_exec::token_facing_radians(rotation_deg)
+    } else {
+        0.0
+    };
+    Some(vision::FacingArc {
+        facing_rad,
+        half_rad: if arc_valid {
+            (fv.arc / 2.0).to_radians()
+        } else {
+            0.0
+        },
+        near_world,
+    })
 }
 
 /// Signed area ×2 of triangle abc; >0 = ccw, <0 = cw, 0 = collinear.
@@ -529,7 +594,7 @@ pub fn compute_derived(
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
                 // unchanged (the client consumes `lit` alongside them).
-                // `renderHints` is a deterministic string table (first-seen order over the
+                // `renderHints` is a deterministic table of distinct hints (first-seen order over the
                 // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
                 // hint_idx is the index into `renderHints`, or -1 for None.
                 // The gradation is resolved ONCE here and passed into the mask computation, so
@@ -553,7 +618,7 @@ pub fn compute_derived(
                     .into_iter()
                     .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
                     .collect();
-                let mut hints: Vec<String> = Vec::new();
+                let mut hints: Vec<std::sync::Arc<eng::RenderHint>> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {
                     let mut flat: Vec<i64> = Vec::new();
@@ -574,8 +639,14 @@ pub fn compute_derived(
                         serde_json::json!({ "scene": s.scene, "level": s.level, "cell": s.cell, "cells": flat }),
                     );
                 }
+                // Each table entry is the hint's own tagged wire object (`{"kind": ...}`), so the
+                // client dispatches on `kind` exactly as it does on a `VisionMode.renderHint`.
+                let hints_json: Vec<serde_json::Value> = hints
+                    .iter()
+                    .map(|h| serde_json::to_value(h.as_ref()).unwrap_or(serde_json::Value::Null))
+                    .collect();
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit, "perceived": perceived }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints_json, "lit": lit, "perceived": perceived }),
                 )
             }
         }

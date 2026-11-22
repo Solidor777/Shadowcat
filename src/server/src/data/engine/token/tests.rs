@@ -14,6 +14,7 @@ fn base() -> TokenEngine {
         elevation: None,
         lock_rotation: false,
         identity_hidden: false,
+        facing_vision: None,
     }
 }
 
@@ -44,6 +45,67 @@ fn non_finite_fields_are_rejected() {
         t.elevation = Some(f);
         assert!(t.validate().is_err(), "elevation = {f} must be rejected");
     }
+}
+
+#[test]
+fn facing_vision_validates_arc_and_near() {
+    let ok = |arc: f64, near: f64| FacingVision { arc, near }.validate().is_ok();
+    assert!(ok(120.0, 1.0));
+    assert!(ok(360.0, 0.0), "a full circle is admissible");
+    assert!(ok(0.5, 0.0));
+    for bad in [0.0, -1.0, 360.5, f64::NAN, f64::INFINITY] {
+        assert!(!ok(bad, 0.0), "arc {bad} must be rejected");
+    }
+    for bad in [-0.1, f64::NAN, f64::INFINITY] {
+        assert!(!ok(90.0, bad), "near {bad} must be rejected");
+    }
+}
+
+#[test]
+fn facing_vision_is_validated_on_all_three_bands() {
+    let bad = FacingVision {
+        arc: 0.0,
+        near: 0.0,
+    };
+    let mut t = base();
+    t.facing_vision = Some(bad);
+    assert!(t.validate().is_err(), "token band");
+
+    let o = TokenOverrides {
+        name: None,
+        visual: None,
+        size: None,
+        shape: None,
+        vision: None,
+        facing_vision: Some(bad),
+        light: None,
+        movement: None,
+        aura: None,
+        sound: None,
+        vfx: None,
+        disposition: None,
+    };
+    assert!(o.validate().is_err(), "overrides band");
+
+    let mut actor: ActorEngine = serde_json::from_value(serde_json::json!({
+        "displayName": "A",
+        "visual": { "kind": "image", "asset": "11111111-1111-1111-1111-111111111111" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": false,
+    }))
+    .unwrap();
+    assert!(actor.validate().is_ok());
+    actor.facing_vision = Some(bad);
+    assert!(actor.validate().is_err(), "actor band");
+}
+
+#[test]
+fn an_absent_facing_vision_is_not_serialized() {
+    let v = serde_json::to_value(base()).unwrap();
+    assert!(v.get("facing_vision").is_none());
 }
 
 #[test]
@@ -225,6 +287,7 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        facing_vision: None,
         light: None,
         movement: None,
         aura: Some(AuraEmission {
@@ -247,6 +310,7 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        facing_vision: None,
         light: None,
         movement: None,
         aura: Some(aura()),

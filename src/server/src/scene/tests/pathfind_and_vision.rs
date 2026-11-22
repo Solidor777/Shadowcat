@@ -2411,6 +2411,7 @@ fn strict_lenient_band_span(ecs: &SceneEcs, scene: Uuid, token: Uuid) -> (i64, i
         &walls,
         settings.los_restriction,
         grid.world_extent(settings.bounds),
+        None,
     );
     let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for &(x, y) in &poly {

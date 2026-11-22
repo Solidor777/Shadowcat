@@ -48,12 +48,12 @@ pub use registries::{
     FactionRegistryEngine, FactionStance, ModuleSettingsEngine,
 };
 pub use scene::{
-    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
-    FalloffCurve, FogPooling, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine,
-    LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception,
-    SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides,
-    VisionMode, VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
-    MAX_SCENE_LEVELS,
+    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, FacingTurnRule,
+    Falloff, FalloffCurve, FogPooling, Grid, GridDistance, LightEmission, LightEngine,
+    LightGradationEngine, LightMode, MovementModel, MovementRestriction, Occlusion, Pathfinding,
+    Perception, RenderHint, SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides,
+    SceneVisionOverrides, VisionMode, VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine,
+    MAX_LEVEL_ID_CHARS, MAX_RENDER_TREATMENT_CHARS, MAX_SCENE_LEVELS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
@@ -61,9 +61,9 @@ pub use system_defaults::{
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use table_folder::TableFolderEngine;
 pub use token::{
-    ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, SoundEmission, TokenArtFilter, TokenEngine, TokenOverrides, TokenVisual, TransformAnchor,
-    VisionAssignment, VisualTransform,
+    ActorEngine, AnimatedSource, FacingVision, GeneratedBackground, GeneratedBorder, GeneratedCrop,
+    RenderVisual, Size, SoundEmission, TokenArtFilter, TokenEngine, TokenOverrides, TokenVisual,
+    TransformAnchor, VisionAssignment, VisualTransform,
 };
 
 use crate::data::DataError;
@@ -351,7 +351,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("world-settings: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
+        "vision-modes" => {
+            let typed: VisionModesEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("vision-modes: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("vision-modes: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
         "dice-settings" => {

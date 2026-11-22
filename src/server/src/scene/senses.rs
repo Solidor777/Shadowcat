@@ -245,6 +245,9 @@ impl SceneEcs {
                                     &self.sight_walls_for(scene, elev),
                                     settings.los_restriction,
                                     extent,
+                                    // Creature senses are all-round by definition: facing
+                                    // limits the eyes, not tremorsense and its kin.
+                                    None,
                                 )
                             });
                             vision::point_in_poly(poly, center)

@@ -719,5 +719,20 @@ pub(crate) fn bearing_degrees(start: (f64, f64), stop: (f64, f64), prior_rotatio
     }
 }
 
+/// The direction a token looks, radians, from its `TokenEngine::rotation` (degrees): the exact
+/// inverse of `bearing_degrees`, so `token_facing_radians(bearing_degrees(a, b, _))` is
+/// `atan2(b.y - a.y, b.x - a.x)` up to a `2π` wrap. `0` = +x, growing toward +y (clockwise on the
+/// y-down canvas). `bearing_degrees` (auto-rotate) writes the heading and this reads it back, so
+/// the facing-limited field of view and auto-rotate share one angle convention.
+///
+/// # Examples
+///
+/// ```text
+/// token_facing_radians(90.0)  // π/2: +y, a quarter turn clockwise
+/// ```
+pub(crate) fn token_facing_radians(rotation_deg: f64) -> f64 {
+    rotation_deg.to_radians()
+}
+
 #[cfg(test)]
 mod tests;

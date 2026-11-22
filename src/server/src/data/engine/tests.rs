@@ -1200,6 +1200,8 @@ fn engine_literal_defaults_match_client_default() {
             "environment": { "color": "#0a0e1a", "intensity": 0.0 },
             "observerVision": false,
             "autoRotateTokens": false,
+            "facingVision": false,
+            "facingTurnRule": "free",
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
@@ -1741,7 +1743,7 @@ fn vision_modes_seed_content() {
             n.name.as_str(),
             n.illumination_floor.as_str(),
             n.default_range,
-            n.render_hint.as_deref(),
+            n.render_hint.as_ref(),
             n.perceives,
             n.requires_los,
         ),
@@ -1762,7 +1764,7 @@ fn vision_modes_seed_content() {
             d.name.as_str(),
             d.illumination_floor.as_str(),
             d.default_range,
-            d.render_hint.as_deref(),
+            d.render_hint.as_ref(),
             d.perceives,
             d.requires_los,
         ),
@@ -1771,7 +1773,7 @@ fn vision_modes_seed_content() {
             "Darkvision",
             "dark",
             12.0,
-            Some("desaturate"),
+            Some(&RenderHint::Desaturate),
             Perception::Terrain,
             true
         )
@@ -1782,7 +1784,7 @@ fn vision_modes_seed_content() {
             t.id.as_str(),
             t.name.as_str(),
             t.default_range,
-            t.render_hint.as_deref(),
+            t.render_hint.as_ref(),
             t.perceives,
             t.requires_los,
         ),
@@ -1823,6 +1825,122 @@ fn vision_mode_unknown_field_is_rejected() {
         "illuminationFloor": "dim", "defaultRange": 0.0, "bogus": 1
     });
     assert!(serde_json::from_value::<VisionMode>(v).is_err());
+}
+
+/// A `vision-modes` body holding one mode whose `renderHint` is `hint`.
+fn vision_modes_with_hint(hint: serde_json::Value) -> serde_json::Value {
+    json!({ "modes": { "m": {
+        "id": "m", "name": "M", "illuminationFloor": "dim", "defaultRange": 0.0,
+        "renderHint": hint
+    } } })
+}
+
+#[test]
+fn render_hint_color_wash_rejects_bad_hex() {
+    let bad =
+        vision_modes_with_hint(json!({ "kind": "colorWash", "color": "green", "opacity": 0.5 }));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+    let ok =
+        vision_modes_with_hint(json!({ "kind": "colorWash", "color": "#00aa00", "opacity": 0.5 }));
+    assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+}
+
+#[test]
+fn render_hint_color_wash_rejects_opacity_out_of_range() {
+    for opacity in [-0.01, 1.01, 7.0] {
+        let bad = vision_modes_with_hint(
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": opacity }),
+        );
+        assert!(
+            validate_engine("vision-modes", Some(&bad)).is_err(),
+            "opacity {opacity}"
+        );
+    }
+    assert!(RenderHint::ColorWash {
+        color: "#00aa00".to_string(),
+        opacity: f64::NAN,
+    }
+    .validate()
+    .is_err());
+    for opacity in [0.0, 1.0] {
+        let ok = vision_modes_with_hint(
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": opacity }),
+        );
+        assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+    }
+}
+
+#[test]
+fn render_hint_outline_rejects_bad_hex() {
+    let bad = vision_modes_with_hint(json!({ "kind": "outline", "color": "#12" }));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+}
+
+#[test]
+fn render_hint_round_trips_every_arm_under_its_tag() {
+    let arms = [
+        (RenderHint::Desaturate, json!({ "kind": "desaturate" })),
+        (RenderHint::None, json!({ "kind": "none" })),
+        (
+            RenderHint::ColorWash {
+                color: "#00aa00".to_string(),
+                opacity: 0.25,
+            },
+            json!({ "kind": "colorWash", "color": "#00aa00", "opacity": 0.25 }),
+        ),
+        (
+            RenderHint::Outline {
+                color: "#ffffff".to_string(),
+            },
+            json!({ "kind": "outline", "color": "#ffffff" }),
+        ),
+        (
+            RenderHint::Custom {
+                treatment: "blood-sense".to_string(),
+                params: json!({ "pulse": 2 }),
+            },
+            json!({ "kind": "custom", "treatment": "blood-sense", "params": { "pulse": 2 } }),
+        ),
+    ];
+    for (hint, wire) in arms {
+        assert_eq!(serde_json::to_value(&hint).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RenderHint>(wire).unwrap(), hint);
+    }
+}
+
+#[test]
+fn render_hint_legacy_string_form_is_rejected() {
+    let bad = vision_modes_with_hint(json!("desaturate"));
+    assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+}
+
+#[test]
+fn render_hint_custom_rejects_empty_or_overlong_treatment() {
+    for treatment in [String::new(), "x".repeat(MAX_RENDER_TREATMENT_CHARS + 1)] {
+        let bad = vision_modes_with_hint(
+            json!({ "kind": "custom", "treatment": treatment, "params": {} }),
+        );
+        assert!(validate_engine("vision-modes", Some(&bad)).is_err());
+    }
+    let longest = "x".repeat(MAX_RENDER_TREATMENT_CHARS);
+    let ok =
+        vision_modes_with_hint(json!({ "kind": "custom", "treatment": longest, "params": {} }));
+    assert!(validate_engine("vision-modes", Some(&ok)).is_ok());
+}
+
+#[test]
+fn render_hint_custom_params_bounded_by_document_size_ceiling() {
+    let blob = "x".repeat(crate::data::validation::MAX_SYSTEM_BYTES);
+    let hint = RenderHint::Custom {
+        treatment: "big".to_string(),
+        params: json!({ "blob": blob }),
+    };
+    assert!(hint.validate().is_err());
+    let small = RenderHint::Custom {
+        treatment: "small".to_string(),
+        params: json!({ "blob": "x" }),
+    };
+    assert!(small.validate().is_ok());
 }
 
 #[test]

@@ -21,6 +21,7 @@ pub(crate) mod movement_tags;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
+pub mod rotation_gate;
 pub(crate) mod senses;
 mod visibility_compute;
 pub mod vision;
@@ -50,8 +51,8 @@ use crate::scene::lighting::Band;
 pub use visibility_compute::compute_derived;
 pub(crate) use visibility_compute::segments_cross;
 use visibility_compute::{
-    accumulate_visible_cells, cell_visible, point_qualifies, source_los_poly, LightingInputs,
-    VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
+    accumulate_visible_cells, cell_visible, facing_arc_for, point_qualifies, source_los_poly,
+    LightingInputs, VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
 };
 
 /// Resolved per-scene lighting mode. The client's wire twin is generated from
@@ -188,6 +189,8 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     grid_kind: GridKind::Square,
 ///     fog_pooling: FogPooling::Individual,
 ///     auto_rotate_tokens: false,
+///     facing_vision: false,
+///     facing_turn_rule: shadowcat::data::engine::FacingTurnRule::Free,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -233,6 +236,13 @@ pub struct ResolvedScene {
     /// Whether a completed move rotates the mover to face its movement direction
     /// (`Room::execute_move`, gated per token by `TokenEngine::lock_rotation`).
     pub auto_rotate_tokens: bool,
+    /// Whether a token's `FacingVision` limits its sight to a forward arc plus bubble
+    /// (`gather_vision_sources_in_scene` reads it). Part of `ResolvedScene`, so toggling it misses
+    /// the visibility cache (`VisibilityInputsSnapshot::settings`).
+    pub facing_vision: bool,
+    /// When a player may rotate their own token (`Room::publish` refuses a non-GM rotation write
+    /// through `rotation_gate::rotation_refusal`).
+    pub facing_turn_rule: eng::FacingTurnRule,
 }
 
 impl ResolvedScene {
@@ -249,54 +259,16 @@ impl ResolvedScene {
     }
 }
 
-/// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
-/// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
-/// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
-/// `perceives`/`requires_los` carry the sense descriptor through: a `Creatures` mode
-/// contributes nothing to the illumination-floor mask and instead feeds
-/// `SceneEcs::player_perceived_tokens`.
-///
-/// # Examples
-///
-/// ```
-/// use shadowcat::data::engine::scene::Perception;
-/// use shadowcat::scene::VisionMode;
-///
-/// let darkvision = VisionMode {
-///     illumination_floor: "dark".into(),
-///     default_range: 12.0,
-///     render_hint: Some("desaturate".into()),
-///     perceives: Perception::Terrain,
-///     requires_los: true,
-/// };
-/// assert_eq!(darkvision.illumination_floor, "dark");
-/// ```
-#[derive(Clone, Debug)]
-pub struct VisionMode {
-    /// Minimum illumination band name the mode can see under.
-    pub illumination_floor: String,
-    /// Default vision range in cells (used when a token authors none).
-    pub default_range: f64,
-    /// Client render treatment (e.g. `"desaturate"`); `None` = plain.
-    pub render_hint: Option<String>,
-    /// What the mode perceives (terrain mask vs creature perception).
-    pub perceives: eng::Perception,
-    /// Whether sight walls bound the mode's reach (creature senses only; the
-    /// terrain mask is always LOS-gated).
-    pub requires_los: bool,
-}
+/// The resolved vision mode IS the `data::engine` document type: `SceneEcs::resolved_vision_modes`
+/// returns the authored or seed `VisionMode` unchanged, so the wire shape and the server's
+/// resolved shape cannot drift (a second hand-copied struct would have to be edited in step with
+/// every field the engine type gains).
+pub use crate::data::engine::VisionMode;
 
-/// Wire (`eng::VisionMode`) → resolved bridge — the single conversion both the
-/// authored-doc branch and the seed fallback of `resolved_vision_modes` pass through.
-fn conv_vision_mode(m: eng::VisionMode) -> VisionMode {
-    VisionMode {
-        illumination_floor: m.illumination_floor,
-        default_range: m.default_range,
-        render_hint: m.render_hint,
-        perceives: m.perceives,
-        requires_los: m.requires_los,
-    }
-}
+/// The shared, cheaply clonable handle a resolved `VisionMode.render_hint` travels as through
+/// the per-source vision floors and lit-mask cells: a `Custom` hint's `params` is cloned once per
+/// token floor build rather than once per candidate cell.
+pub(crate) type SharedRenderHint = Option<std::sync::Arc<eng::RenderHint>>;
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
 /// (untinted) on any malformed input. CSS shorthand: each nibble is doubled (`#abc` → `#aabbcc`).
@@ -476,8 +448,17 @@ pub struct LitScene {
     /// Grid cell size in scene units.
     pub cell: f64,
     /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
-    pub cells: Vec<(i32, i32, usize, u32, Option<String>)>,
+    pub cells: Vec<LitCell>,
 }
+
+/// One visible cell: `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
+pub type LitCell = (
+    i32,
+    i32,
+    usize,
+    u32,
+    Option<std::sync::Arc<eng::RenderHint>>,
+);
 
 /// Margin (scene units, ~one default grid cell) the vision bound box extends past the walls
 /// so rays always terminate on the box rather than escaping to infinity.
@@ -492,7 +473,7 @@ pub(crate) struct SightSource {
     /// Committed viewpoint in scene units.
     vp: vision::P,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    floors: Vec<(f64, f64, Option<String>)>,
+    floors: Vec<(f64, f64, SharedRenderHint)>,
     /// The source token's elevation (`elevation::GROUND` = grounded) — a creature sense
     /// (`senses`) feels nothing from the air (`senses::sense_perceives`).
     elevation: f64,
@@ -503,6 +484,9 @@ pub(crate) struct SightSource {
     walls: Vec<vision::Seg>,
     /// LOS polygon from `vp` through `walls` (the whole scene bound when LOS is off).
     poly: Vec<vision::P>,
+    /// The source's facing arc: `los_at`'s re-raycast of a moving source reuses it, because the
+    /// token's rotation does not change mid-move.
+    facing: Option<vision::FacingArc>,
 }
 
 /// A recipient's line of sight in one scene — the LOS half of the visibility predicate: the
@@ -570,6 +554,7 @@ impl SightSources {
                         &s.walls,
                         self.settings.los_restriction,
                         self.extent,
+                        s.facing,
                     )),
                 ),
                 None => (s.vp, Cow::Borrowed(s.poly.as_slice())),
@@ -1938,6 +1923,14 @@ impl SceneEcs {
             .and_then(|s| s.auto_rotate_tokens)
             .or(sd_scene.and_then(|s| s.auto_rotate_tokens))
             .unwrap_or(d.auto_rotate_tokens);
+        let d_facing_vision = ws_scene
+            .and_then(|s| s.facing_vision)
+            .or(sd_scene.and_then(|s| s.facing_vision))
+            .unwrap_or(d.facing_vision);
+        let d_turn_rule = ws_scene
+            .and_then(|s| s.facing_turn_rule)
+            .or(sd_scene.and_then(|s| s.facing_turn_rule))
+            .unwrap_or(d.facing_turn_rule);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1969,6 +1962,12 @@ impl SceneEcs {
         let auto_rotate_tokens = vision_ov
             .and_then(|v| v.auto_rotate_tokens)
             .unwrap_or(d_auto_rotate);
+        let facing_vision = vision_ov
+            .and_then(|v| v.facing_vision)
+            .unwrap_or(d_facing_vision);
+        let facing_turn_rule = vision_ov
+            .and_then(|v| v.facing_turn_rule)
+            .unwrap_or(d_turn_rule);
 
         // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -1995,6 +1994,8 @@ impl SceneEcs {
             grid_kind: grid_kind_from(s),
             fog_pooling,
             auto_rotate_tokens,
+            facing_vision,
+            facing_turn_rule,
         }
     }
 
@@ -2194,17 +2195,11 @@ impl SceneEcs {
             .and_then(|d| self.engine_as_cached::<eng::VisionModesEngine>(d.id, d));
         match parsed {
             Some(vme) => {
-                for (id, m) in vme.modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                out.extend(vme.modes);
             }
             None => {
-                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it):
-                // read through the SAME `conv_vision_mode` as the authored-doc branch so the two
-                // can never drift.
-                for (id, m) in eng::VisionModesEngine::seed().modes {
-                    out.insert(id, conv_vision_mode(m));
-                }
+                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it).
+                out.extend(eng::VisionModesEngine::seed().modes);
             }
         }
         out
@@ -2411,7 +2406,8 @@ impl SceneEcs {
                 .into_iter()
                 .map(|s| {
                     let walls = elevation::walls_at_elevation(&sight_walls, s.elevation);
-                    let poly = source_los_poly(s.vp, &walls, settings.los_restriction, extent);
+                    let poly =
+                        source_los_poly(s.vp, &walls, settings.los_restriction, extent, s.facing);
                     SightSource {
                         id: s.id,
                         vp: s.vp,
@@ -2420,6 +2416,7 @@ impl SceneEcs {
                         senses: s.senses,
                         walls,
                         poly,
+                        facing: s.facing,
                     }
                 })
                 .collect()
@@ -3386,42 +3383,71 @@ impl SceneEcs {
         Some(ent.doc.clone())
     }
 
-    /// The token's effective vision assignments — the ONE linked/instanced/override precedence
-    /// walk, shared by `token_vision_floors` (the terrain-floor view) and
-    /// `senses::SceneEcs::token_creature_senses` (the creature-sense view) so the two consumers
-    /// can never disagree on which assignments a token carries. Precedence (mirrors
-    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and
-    /// applies `overrides.vision` as a wholesale replacement when present; a dangling link
-    /// (actor absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`)
-    /// uses its `embedded.actor[0].engine.vision` without overrides.
+    /// The token's effective vision assignments, shared by `token_vision_floors` (the
+    /// terrain-floor view) and `senses::SceneEcs::token_creature_senses` (the creature-sense
+    /// view) so the two consumers can never disagree on which assignments a token carries. The
+    /// precedence is `resolve_token_actor_field`'s: a LINKED token applies `overrides.vision` as
+    /// a wholesale replacement when present; an INSTANCED token uses its
+    /// `embedded.actor[0].engine.vision` without overrides.
     fn token_vision_assignments(&self, token: &Document) -> Option<Vec<eng::VisionAssignment>> {
+        self.resolve_token_actor_field(token, |o| o.vision.clone(), |a| a.vision, |_| None)
+    }
+
+    /// The token's effective facing-limited field of view (`None` = unrestricted), through the
+    /// SAME linked/instanced/override walk as `token_vision_assignments`
+    /// (`resolve_token_actor_field`). An actorless token (no `actor_id`, no embedded actor) reads
+    /// its own `TokenEngine::facing_vision`; that is the only field the two views differ on,
+    /// because an actorless token has no vision assignments at all.
+    fn token_facing_vision(&self, token: &Document) -> Option<eng::FacingVision> {
+        self.resolve_token_actor_field(
+            token,
+            |o| o.facing_vision,
+            |a| a.facing_vision,
+            |t| t.facing_vision,
+        )
+    }
+
+    /// THE linked/instanced/override precedence walk for a token's actor-sourced field: every
+    /// field that follows it (`token_vision_assignments`, `token_facing_vision`) calls this, so
+    /// two such fields can never resolve through different rules. Precedence (mirrors
+    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and a
+    /// present `pick_override` value REPLACES the actor's wholesale; a dangling link (actor
+    /// absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
+    /// embedded actor's value without overrides; with no embedded actor either, `pick_raw` reads
+    /// the token's own engine band.
+    fn resolve_token_actor_field<T>(
+        &self,
+        token: &Document,
+        pick_override: impl Fn(&eng::TokenOverrides) -> Option<T>,
+        pick_actor: impl Fn(eng::ActorEngine) -> Option<T>,
+        pick_raw: impl Fn(&eng::TokenEngine) -> Option<T>,
+    ) -> Option<T> {
         let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
-        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
-        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
-        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
-        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
         match token_eng.as_ref().and_then(|t| t.actor_id) {
             Some(id) => match self.actors.get(&id) {
                 Some(actor) => token_eng
                     .as_ref()
                     .and_then(|t| t.overrides.as_ref())
-                    .and_then(|o| o.vision.clone())
+                    .and_then(&pick_override)
                     .or_else(|| {
                         self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
-                            .and_then(|a| a.vision)
+                            .and_then(&pick_actor)
                     }),
                 None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
             },
             // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
             // `apply_op`'s invalidation removes on a token mutation — caching under the
             // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
-            None => token
+            None => match token
                 .embedded
                 .get("actor")
                 .and_then(|v| v.first())
                 .and_then(engine_as::<eng::ActorEngine>)
-                .and_then(|a| a.vision),
+            {
+                Some(a) => pick_actor(a),
+                None => token_eng.as_ref().and_then(&pick_raw),
+            },
         }
     }
 
@@ -3429,7 +3455,7 @@ impl SceneEcs {
     /// triples, resolved from the assignments `token_vision_assignments` walks (that shared
     /// resolver owns the linked/instanced/override precedence; this function owns only the
     /// per-mode terrain-floor projection). `range_cells == 0.0` ⇒ unlimited. `render_hint`
-    /// mirrors `VisionMode.render_hint` (e.g. `Some("desaturate")` for darkvision).
+    /// mirrors `VisionMode.render_hint` (`Some(RenderHint::Desaturate)` for darkvision).
     /// An unknown mode id is dropped (fail-closed: it contributes no vision floor). A
     /// `Perception::Creatures` mode is likewise
     /// absent here — creature senses perceive tokens, not terrain
@@ -3465,11 +3491,14 @@ impl SceneEcs {
     /// let floors = ecs.token_vision_floors(&token);
     /// assert_eq!(floors.len(), 1);
     /// ```
-    pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
+    pub fn token_vision_floors(
+        &self,
+        token: &Document,
+    ) -> Vec<(f64, f64, Option<std::sync::Arc<eng::RenderHint>>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
+        let mut out: Vec<(f64, f64, SharedRenderHint)> = Vec::new();
         if let Some(arr) = self.token_vision_assignments(token) {
             for a in arr {
                 let Some(vm) = modes.get(&a.mode) else {
@@ -3488,7 +3517,7 @@ impl SceneEcs {
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     a.range.unwrap_or(vm.default_range),
-                    vm.render_hint.clone(),
+                    vm.render_hint.clone().map(std::sync::Arc::new),
                 ));
             }
         }
@@ -4354,7 +4383,7 @@ impl SceneEcs {
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
-        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
+        type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, SharedRenderHint)>;
         // (scene, level id) -> (the scene's `cell` indexing scale, per-cell best): one entry per
         // level a source occupies — `""` for ground/a level-less scene.
         let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
@@ -4406,6 +4435,7 @@ impl SceneEcs {
                     &src_walls,
                     settings.los_restriction,
                     cell_grid.world_extent(settings.bounds),
+                    src.facing,
                 );
                 if poly.len() < 3 {
                     continue;
@@ -4460,7 +4490,7 @@ impl SceneEcs {
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
                     // and is reused verbatim by the movement gate (anti-drift).
                     let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
-                    let mut admit_hint: Option<String> = None;
+                    let mut admit_hint: SharedRenderHint = None;
                     for (fmin, range, hint) in &src.floors {
                         let in_range = *range == 0.0 || dist_cells <= *range;
                         if !in_range {
@@ -4692,7 +4722,7 @@ impl SceneEcs {
             cell,
             sources: sources
                 .iter()
-                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
+                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone(), s.facing))
                 .collect(),
             // The scene's declared levels decide each source's level (`elevation::level_of`)
             // and therefore which level-filtered illumination field its cells are judged
@@ -4766,6 +4796,16 @@ impl SceneEcs {
         settings: &ResolvedScene,
     ) -> Vec<VisSrc> {
         let mut sources: Vec<VisSrc> = Vec::new();
+        // One grid step's world distance, resolved only when the facing switch is on: the bubble
+        // radius is authored in cells and converts through it (the same scale a source's vision
+        // range uses).
+        let world_units_per_cell = if settings.facing_vision {
+            self.scene_grid_sizes()
+                .get(&scene)
+                .map(|&cell| self.resolve_grid_shape(scene, cell).world_units_per_cell())
+        } else {
+            None
+        };
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
                 continue;
@@ -4787,6 +4827,12 @@ impl SceneEcs {
                     elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
                     senses: self.token_creature_senses(&e.doc),
+                    // An observer-vision source (a non-owned readable token) uses ITS OWN
+                    // rotation and arc: one admission decision, one geometry per source.
+                    facing: world_units_per_cell.and_then(|wupc| {
+                        self.token_facing_vision(&e.doc)
+                            .and_then(|fv| facing_arc_for(&fv, t.rotation, wupc))
+                    }),
                 });
             }
         }
