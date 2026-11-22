@@ -30,7 +30,7 @@ fn doc(perms: PermissionSet, system: serde_json::Value) -> Document {
 fn perms_with(overrides: &[(&str, Visibility)]) -> PermissionSet {
     let mut p = PermissionSet::default();
     for (ptr, v) in overrides {
-        p.property_overrides.insert((*ptr).into(), *v);
+        p.property_overrides.insert((*ptr).into(), v.clone());
     }
     p
 }
@@ -54,6 +54,7 @@ fn non_gm() -> Access {
         all: false,
         see_gm_only: false,
         is_owner: false,
+        user_id: None,
     }
 }
 
@@ -125,5 +126,7 @@ mod core_redaction;
 mod ownership;
 #[cfg(test)]
 mod read_transition;
+#[cfg(test)]
+mod recipients;
 #[cfg(test)]
 mod snapshot_redaction;

@@ -189,6 +189,7 @@ impl MergeVisibility for AllVisible {
 ///     all: false,
 ///     see_gm_only: false,
 ///     is_owner: false,
+///     user_id: None,
 /// };
 /// let vis = RequesterView { template: &player, child: &player };
 /// // `/base` is hardcoded `OwnerOrGm`; an ordinary player sees neither tier.

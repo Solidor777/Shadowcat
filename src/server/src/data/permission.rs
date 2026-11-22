@@ -844,6 +844,7 @@ pub fn declared_caps_for_document<'a>(
 ///     all: false,
 ///     see_gm_only: false,
 ///     is_owner: false,
+///     user_id: None,
 /// };
 /// assert!(access.has(cap::READ));
 /// assert!(!access.has(cap::WRITE_FIELDS));
@@ -861,6 +862,10 @@ pub struct Access {
     /// The recipient is the document's EFFECTIVE owner; admits the `OwnerOrGm`
     /// property tier without widening to `GmOnly`.
     pub is_owner: bool,
+    /// The resolving user's id; the only input to `Visibility::Recipients`
+    /// membership. `None` marks a viewer-less `Access` (the public search
+    /// index), which can never match a recipient list.
+    pub user_id: Option<Uuid>,
 }
 
 impl Access {
@@ -876,6 +881,7 @@ impl Access {
     ///     all: false,
     ///     see_gm_only: false,
     ///     is_owner: false,
+    ///     user_id: None,
     /// };
     /// assert!(access.has(cap::READ));
     /// assert!(!access.has(cap::DELETE));
@@ -895,15 +901,22 @@ impl Access {
     /// use shadowcat::data::document::Visibility;
     /// use shadowcat::data::permission::Access;
     ///
-    /// let owner = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: true };
-    /// assert!(owner.can_see(Visibility::OwnerOrGm)); // owner sees their own hidden fields
-    /// assert!(!owner.can_see(Visibility::GmOnly));   // without widening to GM-only
+    /// let owner = Access {
+    ///     caps: Default::default(),
+    ///     all: false,
+    ///     see_gm_only: false,
+    ///     is_owner: true,
+    ///     user_id: None,
+    /// };
+    /// assert!(owner.can_see(&Visibility::OwnerOrGm)); // owner sees their own hidden fields
+    /// assert!(!owner.can_see(&Visibility::GmOnly));   // without widening to GM-only
     /// ```
-    pub fn can_see(&self, v: Visibility) -> bool {
+    pub fn can_see(&self, v: &Visibility) -> bool {
         match v {
             Visibility::All => true,
             Visibility::GmOnly => self.see_gm_only,
             Visibility::OwnerOrGm => self.see_gm_only || self.is_owner,
+            Visibility::Recipients(ids) => self.user_id.is_some_and(|u| ids.contains(&u)),
         }
     }
 }
@@ -1040,6 +1053,7 @@ pub fn resolve_access(
             all: true,
             see_gm_only: true,
             is_owner: true,
+            user_id: Some(user),
         };
     };
     let mut caps = role_floor(role);
@@ -1060,6 +1074,7 @@ pub fn resolve_access(
         // the EFFECTIVE owner, so ownership means one thing across authz and
         // redaction.
         is_owner: effective_owner == Some(user),
+        user_id: Some(user),
     }
 }
 
@@ -1211,8 +1226,28 @@ impl std::fmt::Display for RedactionError {
 
 impl std::error::Error for RedactionError {}
 
+/// Whether any entry of `tiers` is a `Visibility::Recipients` list. A GM's
+/// `see_gm_only` sight short-circuits redaction for every other tier, but a
+/// recipient list admits by exact membership and never by role, so a document
+/// or command carrying one cannot take the short-circuit: it goes through
+/// `Access::can_see` like any other recipient's view.
+fn has_recipients_tier<'a>(tiers: impl IntoIterator<Item = &'a Visibility>) -> bool {
+    tiers
+        .into_iter()
+        .any(|v| matches!(v, Visibility::Recipients(_)))
+}
+
+/// `has_recipients_tier` over `doc`'s own overrides and, recursively, every
+/// embedded child's.
+fn holds_recipients_tier(doc: &Document) -> bool {
+    has_recipients_tier(doc.permissions.property_overrides.values())
+        || doc.embedded.values().flatten().any(holds_recipients_tier)
+}
+
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
-/// false, strip every property whose override is `GmOnly`. Fails closed with
+/// false, strip every property whose override is `GmOnly`. A document holding
+/// a `Visibility::Recipients` tier is filtered for every recipient, a GM
+/// included, since that tier never admits by role. Fails closed with
 /// `RedactionError` when a `property_overrides` pointer cannot be classified by
 /// `redaction_target` — withholding, never guessing at what the pointer meant.
 /// # Examples
@@ -1238,14 +1273,20 @@ impl std::error::Error for RedactionError {}
 ///     "updated_at": 0
 /// })).unwrap();
 ///
-/// let observer = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: false };
+/// let observer = Access {
+///     caps: Default::default(),
+///     all: false,
+///     see_gm_only: false,
+///     is_owner: false,
+///     user_id: None,
+/// };
 /// let filtered = filter_properties(&doc, &observer).unwrap();
 /// assert!(filtered.system.get("secret").is_none()); // stripped BEFORE transmission
 /// assert_eq!(filtered.system["public"], 1);
 /// ```
 pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, RedactionError> {
     let mut out = doc.clone();
-    if access.see_gm_only {
+    if access.see_gm_only && !holds_recipients_tier(doc) {
         return Ok(out);
     }
     // Each embedded child carries its own `property_overrides`, independent of the
@@ -1342,7 +1383,7 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
         if redaction_target(p).is_none() {
             return Err(RedactionError { pointer: p.clone() });
         }
-        out.push((p.clone(), *v));
+        out.push((p.clone(), v.clone()));
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
     if let Some(base) = &doc.base {
@@ -1441,7 +1482,7 @@ fn collect_band_policy(
         if !writes_a_content_band(p) {
             return Err(RedactionError { pointer });
         }
-        out.push((pointer, standing.relate(*tier)));
+        out.push((pointer, standing.relate(tier.clone())));
     }
     Ok(())
 }
@@ -1542,7 +1583,7 @@ pub(crate) fn collect_overrides(
 fn hidden_from_overrides(overrides: &[(String, Visibility)], access: &Access) -> Vec<String> {
     overrides
         .iter()
-        .filter(|(_, v)| !access.can_see(*v))
+        .filter(|(_, v)| !access.can_see(v))
         .map(|(p, _)| p.clone())
         .collect()
 }
@@ -1898,7 +1939,15 @@ pub fn filter_command<'a>(
                 }
                 let kept: Vec<FieldChange> = if access_current.see_gm_only
                     && access_commit.see_gm_only
-                {
+                    && !holds_recipients_tier(&cur.doc)
+                    && !has_recipients_tier(op_snapshot.overrides_at_commit.iter().map(|(_, v)| v))
+                    && !has_recipients_tier(
+                        op_snapshot
+                            .retraction_hidden_at_commit
+                            .iter()
+                            .flatten()
+                            .map(|(_, v)| v),
+                    ) {
                     changes.clone()
                 } else {
                     let mut hidden_current = Vec::new();

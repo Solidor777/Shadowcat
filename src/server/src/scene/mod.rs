@@ -1260,9 +1260,9 @@ fn engine_tier_visible_to(doc: &Document, access: &crate::data::permission::Acce
         .permissions
         .property_overrides
         .get("/engine")
-        .copied()
+        .cloned()
         .unwrap_or(crate::data::document::Visibility::All);
-    access.can_see(tier)
+    access.can_see(&tier)
 }
 
 /// Whether `access` receives `doc`'s `/engine` geometry: BOTH gates document egress applies, in
@@ -3984,10 +3984,10 @@ impl SceneEcs {
                     .permissions
                     .property_overrides
                     .get("/engine/resources")
-                    .copied()
+                    .cloned()
                     .unwrap_or(Visibility::All);
                 let host = self.combatant_formula_host(&cengine.kind);
-                let resources = if c_access.can_see(resources_visible) {
+                let resources = if c_access.can_see(&resources_visible) {
                     let mut resolved: BTreeMap<String, ResolvedResourceView> = BTreeMap::new();
                     if let Some(reg) = &registry {
                         for (key, def) in &reg.resources {

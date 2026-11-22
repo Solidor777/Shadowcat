@@ -430,6 +430,71 @@ async fn search_score_unaffected_by_gm_only_match_non_gm() {
 }
 
 #[tokio::test]
+async fn search_never_matches_recipients_tiered_text_for_anyone() {
+    // The public partition is built once per document from a viewer-less
+    // `Access`, so text under a `Visibility::Recipients` tier is absent from
+    // it for every searcher, including a listed recipient and the GM.
+    use crate::auth::role::ServerRole;
+    use crate::data::command::Operation;
+    use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let alice = r
+        .create_user("alice", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let alice_ctx = PermissionContext {
+        user_id: alice,
+        world_role: WorldRole::Player,
+    };
+
+    let mut d = tests_doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "name": "Wolf Pack", "whisper": "zzquux" }),
+    );
+    d.scope = Scope::World { world_id: w.id };
+    d.permissions.property_overrides.insert(
+        "/system/whisper".into(),
+        Visibility::Recipients(vec![alice]),
+    );
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: d.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    for (who, ctx) in [("alice", &alice_ctx), ("gm", &gm_ctx)] {
+        let page = r.search(ctx, w.id, "zzquux", 10, None, &[]).await.unwrap();
+        assert!(
+            page.hits.is_empty(),
+            "{who} matched recipient-only text through search"
+        );
+    }
+    let control = r
+        .search(&alice_ctx, w.id, "wolf", 10, None, &[])
+        .await
+        .unwrap();
+    assert_eq!(control.hits.len(), 1, "the document itself must be found");
+}
+
+#[tokio::test]
 async fn search_paginates_without_underfill() {
     use crate::auth::role::ServerRole;
     use crate::data::command::Operation;

@@ -89,7 +89,7 @@ impl Harness {
         let cur = self.get(id).await;
         let new: std::collections::BTreeMap<String, Visibility> = overrides
             .iter()
-            .map(|(p, v)| ((*p).to_string(), *v))
+            .map(|(p, v)| ((*p).to_string(), v.clone()))
             .collect();
         self.room
             .publish(

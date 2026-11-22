@@ -16,6 +16,12 @@
  * assert_eq!(OwnerStanding::Owner.relate(Visibility::OwnerOrGm), Visibility::OwnerOrGm);
  * // Wire form is snake_case.
  * assert_eq!(serde_json::to_value(Visibility::OwnerOrGm).unwrap(), "owner_or_gm");
+ * // A recipient list serializes as an object, distinct from the bare-string tiers.
+ * let ids = vec![uuid::Uuid::nil()];
+ * assert_eq!(
+ *     serde_json::to_value(Visibility::Recipients(ids)).unwrap(),
+ *     serde_json::json!({ "recipients": ["00000000-0000-0000-0000-000000000000"] })
+ * );
  * ```
  */
-export type Visibility = "all" | "gm_only" | "owner_or_gm";
+export type Visibility = "all" | "gm_only" | "owner_or_gm" | { "recipients": Array<string> };

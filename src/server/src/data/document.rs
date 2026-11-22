@@ -132,8 +132,14 @@ pub enum DocRole {
 /// assert_eq!(OwnerStanding::Owner.relate(Visibility::OwnerOrGm), Visibility::OwnerOrGm);
 /// // Wire form is snake_case.
 /// assert_eq!(serde_json::to_value(Visibility::OwnerOrGm).unwrap(), "owner_or_gm");
+/// // A recipient list serializes as an object, distinct from the bare-string tiers.
+/// let ids = vec![uuid::Uuid::nil()];
+/// assert_eq!(
+///     serde_json::to_value(Visibility::Recipients(ids)).unwrap(),
+///     serde_json::json!({ "recipients": ["00000000-0000-0000-0000-000000000000"] })
+/// );
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum Visibility {
@@ -144,6 +150,10 @@ pub enum Visibility {
     /// Readable by the document's owner and the GM; redacted from everyone else.
     /// The recipient's owner-status is `Access::is_owner`.
     OwnerOrGm,
+    /// Readable only by the listed users, by exact membership against
+    /// `Access::user_id`. Never grants by role: a GM sees it only when
+    /// individually listed, the same rule as `Audience::Whisper`'s recipients.
+    Recipients(Vec<Uuid>),
 }
 
 /// The standing an instance's effective owner held on the instance's

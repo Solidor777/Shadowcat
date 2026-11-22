@@ -222,7 +222,7 @@ pub(crate) fn recorded_overrides(doc: &Document) -> BTreeMap<String, Visibility>
         .property_overrides
         .iter()
         .filter(|(p, _)| writes_a_content_band(p))
-        .map(|(p, v)| (p.clone(), *v))
+        .map(|(p, v)| (p.clone(), v.clone()))
         .collect()
 }
 

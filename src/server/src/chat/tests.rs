@@ -326,6 +326,7 @@ fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() 
         all: false,
         see_gm_only: false,
         is_owner: false,
+        user_id: Some(Uuid::from_u128(0xA)),
     };
     let filtered = filter_properties(&doc, &player).unwrap();
     let engine = filtered.engine.unwrap();
@@ -352,6 +353,7 @@ fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() 
         all: false,
         see_gm_only: true,
         is_owner: false,
+        user_id: Some(Uuid::from_u128(0xB)),
     };
     let filtered_gm = filter_properties(&doc, &gm).unwrap();
     let engine_gm = filtered_gm.engine.unwrap();
