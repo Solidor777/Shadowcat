@@ -84,30 +84,27 @@ export interface CombatEffectTickEvent extends CombatEffectEventBase {
 /** Payload for `combat:effect-expired`. */
 export type CombatEffectExpiredEvent = CombatEffectEventBase;
 
-declare module "./hooks" {
-  /** Declaration-merged with `./hooks`'s own `CoreHooks` to add the nine `combat:*`
-   * entries below. */
-  interface CoreHooks {
-    /** A combat began running its clock (`combat_start` accepted, or resumed off a paused
-     * turn). */
-    "combat:start": CombatStartEvent;
-    /** A combat stopped running its clock, either paused (still exists) or ended (deleted). */
-    "combat:end": CombatEndEvent;
-    /** A round completed; never fires for round 0 (creation is not a round boundary). */
-    "combat:round-end": CombatRoundEvent;
-    /** A new round began. */
-    "combat:round-start": CombatRoundEvent;
-    /** A combatant's (or intermediate event's) turn began. */
-    "combat:turn-start": CombatTurnEvent;
-    /** A combatant's (or intermediate event's) turn ended. */
-    "combat:turn-end": CombatTurnEvent;
-    /** The GM rewound the clock to an earlier turn record. */
-    "combat:rewind": CombatRewindEvent;
-    /** An embedded effect's remaining-duration counter decreased (or was newly set). */
-    "combat:effect-tick": CombatEffectTickEvent;
-    /** An embedded effect's `active` flag flipped from `true` to `false`. */
-    "combat:effect-expired": CombatEffectExpiredEvent;
-  }
+/** The nine `combat:*` entries `CoreHooks` inherits, each mapping a hook name to its payload. */
+export interface CombatHooks {
+  /** A combat began running its clock (`combat_start` accepted, or resumed off a paused
+   * turn). */
+  "combat:start": CombatStartEvent;
+  /** A combat stopped running its clock, either paused (still exists) or ended (deleted). */
+  "combat:end": CombatEndEvent;
+  /** A round completed; never fires for round 0 (creation is not a round boundary). */
+  "combat:round-end": CombatRoundEvent;
+  /** A new round began. */
+  "combat:round-start": CombatRoundEvent;
+  /** A combatant's (or intermediate event's) turn began. */
+  "combat:turn-start": CombatTurnEvent;
+  /** A combatant's (or intermediate event's) turn ended. */
+  "combat:turn-end": CombatTurnEvent;
+  /** The GM rewound the clock to an earlier turn record. */
+  "combat:rewind": CombatRewindEvent;
+  /** An embedded effect's remaining-duration counter decreased (or was newly set). */
+  "combat:effect-tick": CombatEffectTickEvent;
+  /** An embedded effect's `active` flag flipped from `true` to `false`. */
+  "combat:effect-expired": CombatEffectExpiredEvent;
 }
 
 /** Semver of the nine `combat:*` hook payload contracts declared above. */

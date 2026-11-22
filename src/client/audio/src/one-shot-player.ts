@@ -1,4 +1,4 @@
-import type { AssetResolver, AudioChannelId } from "@shadowcat/core";
+import type { AssetResolver, AudioChannelId, OneShotOptions } from "@shadowcat/core";
 import type { AudioBufferLike, AudioContextLike, GainNodeLike, WasmOpusDecoderLike } from "./context";
 import { decodeAudioCandidate, type DecodePreference } from "./decode";
 
@@ -64,19 +64,12 @@ export class OneShotPlayer {
    * first play; a cache hit replays instantly.
    * @param asset Asset id to play.
    * @param opts Channel override and gain multiplier.
-   * @param opts.channel The bus to play through; default `"sfx"`.
-   * @param opts.gain Per-call gain multiplier; default `1`.
    * @example
    * ```
    * // exercised through `one-shot-player.test.ts`'s play/cache cases
    * ```
    */
-  async play(asset: string, opts: {
-    /** The bus to play through; default `"sfx"`. */
-    channel?: AudioChannelId;
-    /** Per-call gain multiplier; default `1`. */
-    gain?: number;
-  } = {}): Promise<void> {
+  async play(asset: string, opts: OneShotOptions = {}): Promise<void> {
     const channel = opts.channel ?? "sfx";
     const gain = opts.gain ?? 1;
     const buffer = await this.getBuffer(asset, "oneshot");

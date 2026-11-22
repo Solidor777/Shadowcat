@@ -14,7 +14,7 @@ export { RemoteRulerView, RULER_STALE_MS, rulerColor, rulerKey, type RemoteRuler
 export { EmoteView, truncateForDisplay, MAX_GLYPH_DISPLAY_CHARS, MAX_OVERLAY_DISPLAY_CHARS, type EmoteGlyph, type EmoteKind } from "./emote-view";
 export { VfxView, vfxAnchorZIndex } from "./vfx-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
-export { Camera } from "./camera";
+export { Camera, type PanTarget } from "./camera";
 export { Grid, type GridKind, type GridSpec, type DiagonalRule } from "./grid";
 export type { DisplayBackend, BackgroundSpec } from "./backend";
 export { MockBackend } from "./backend.mock";

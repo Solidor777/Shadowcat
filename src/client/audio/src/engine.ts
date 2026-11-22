@@ -2,9 +2,11 @@ import type {
   AssetResolver,
   AudioApi,
   AudioChannelId,
+  AudioChannelPatch,
   AudioChannelState,
   AudioStateEngine,
   DuckController,
+  OneShotOptions,
   PlayingTrack,
   SceneAudibility,
   WireAudioOp,
@@ -325,19 +327,12 @@ export class AudioEngine implements AudioApi {
    * channel node follows immediately (muted ⇒ gain 0).
    * @param id The channel to adjust.
    * @param patch The fields to change.
-   * @param patch.gain The new gain, `0..=1`; omitted = unchanged.
-   * @param patch.muted The new mute state; omitted = unchanged.
    * @example
    * ```ts
    * // implements `AudioApi.setChannel` — see that interface's own doc
    * ```
    */
-  setChannel(id: AudioChannelId, patch: {
-    /** The new gain, `0..=1`; omitted = unchanged. */
-    gain?: number;
-    /** The new mute state; omitted = unchanged. */
-    muted?: boolean;
-  }): void {
+  setChannel(id: AudioChannelId, patch: AudioChannelPatch): void {
     const gain = patch.gain === undefined ? undefined : Math.max(0, Math.min(1, patch.gain));
     this.#channelState[id] = { ...this.#channelState[id], ...patch, ...(gain === undefined ? {} : { gain }) };
     const node = this.#channelNodes.get(id);
@@ -545,19 +540,12 @@ export class AudioEngine implements AudioApi {
    * queued — a missed UI cue is inconsequential).
    * @param asset Asset id of the sound to play.
    * @param opts Optional channel override and gain multiplier.
-   * @param opts.channel The bus to play through; default `"sfx"`.
-   * @param opts.gain Per-call gain multiplier; default `1`.
    * @example
    * ```ts
    * // implements `AudioApi.playOneShot` — see that interface's own doc
    * ```
    */
-  playOneShot(asset: string, opts?: {
-    /** The bus to play through; default `"sfx"`. */
-    channel?: AudioChannelId;
-    /** Per-call gain multiplier; default `1`. */
-    gain?: number;
-  }): void {
+  playOneShot(asset: string, opts?: OneShotOptions): void {
     if (this.#noWebAudio) {
       // Degraded mode: a detached fire-and-forget element plays the cue straight to the
       // device (no graph, no LRU — nothing tracks the element after `play()`).

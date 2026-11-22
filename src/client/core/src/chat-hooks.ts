@@ -18,14 +18,11 @@ export interface ChatComposerSendPayload {
   cancel: boolean;
 }
 
-declare module "./hooks" {
-  /** Declaration-merged with `./hooks`'s own `CoreHooks` to add the composer's
-   * pre-send interception hook. */
-  interface CoreHooks {
-    /** Fires once per composer send attempt, before the frame is built — see
-     * `ChatComposerSendPayload`. */
-    "chat:composer-send": ChatComposerSendPayload;
-  }
+/** The composer's pre-send interception entry `CoreHooks` inherits. */
+export interface ChatComposerHooks {
+  /** Fires once per composer send attempt, before the frame is built — see
+   * `ChatComposerSendPayload`. */
+  "chat:composer-send": ChatComposerSendPayload;
 }
 
 /** Semver of the `chat:composer-send` hook payload contract declared above. */
