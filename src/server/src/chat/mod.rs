@@ -2359,6 +2359,7 @@ pub struct RecalcRollRequestCtx<'a> {
 ///     "/roll 1d6".to_string(),
 ///     None,
 ///     Audience::Public,
+///     None,
 /// )
 /// .await
 /// .unwrap()

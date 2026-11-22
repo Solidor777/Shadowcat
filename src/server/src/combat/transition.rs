@@ -1961,7 +1961,8 @@ pub fn roll(
 ///     CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind,
 ///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, TurnControl,
 /// };
-/// use shadowcat::dice::{evaluate, parse, roll_dice, NoiseRng, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::{evaluate, parse, roll as roll_dice, ParseContext};
 /// use std::collections::HashMap;
 /// use uuid::Uuid;
 ///
