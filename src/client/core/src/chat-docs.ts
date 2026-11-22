@@ -867,7 +867,8 @@ export function buildDiceSettingsDoc(
  * (false), except `link_previews` which is tri-state: absent/`null` defaults previews ON
  * whenever `hyperlinks` is also on (`ChatContentPolicy::previews_enabled`), and OFF when
  * `hyperlinks` is off regardless of this field; `true`/`false` is an explicit GM override.
- * The panel writes single fields via
+ * `blind_visible_to_players` and `blind_visible_to_actor_owner` decide who holds a blind
+ * roll's card (absent = false: only the roller and the GM; see `Audience` `blind`). The panel writes single fields via
  * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 
@@ -887,6 +888,8 @@ export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
  *   hyperlinks: true,
  *   emails: null,
  *   link_previews: null,
+ *   blind_visible_to_players: null,
+ *   blind_visible_to_actor_owner: null,
  * });
  * ```
  */

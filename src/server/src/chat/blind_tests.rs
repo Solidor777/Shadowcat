@@ -2,6 +2,7 @@
 //! formula and result, the refusals, recalculation and audience revision over a blind roll, and
 //! the search partitions.
 
+use super::blind_settings_tests::set_blind_settings;
 use super::revise_audience_tests::{harness, next_event, send, wire_ops, Harness};
 use super::*;
 use crate::data::command::Operation;
@@ -114,6 +115,7 @@ fn assert_blinded(engine: &serde_json::Value) {
 #[tokio::test]
 async fn a_blind_roll_reaches_only_the_gm_with_its_formula_and_result() {
     let h = harness().await;
+    set_blind_settings(&h, true, false).await;
     let (id, ev) = send_and_event(&h, &h.sender, "/blindroll 7d11 | sneaking").await;
 
     let gm = delivered_engine(&h, &h.gm, &ev, id).await;
@@ -137,6 +139,7 @@ async fn a_blind_roll_reaches_only_the_gm_with_its_formula_and_result() {
 #[tokio::test]
 async fn a_blind_roll_is_hidden_from_a_non_gm_list_and_shown_to_the_gm() {
     let h = harness().await;
+    set_blind_settings(&h, true, false).await;
     let id = send(&h, &h.sender, "/br 7d11", Audience::Public).await;
     assert!(listed_engine(&h, &h.gm, id).await["content"][0]["outcome"].is_object());
     for who in [&h.sender, &h.bystander] {
@@ -445,10 +448,11 @@ fn segment_property_overrides_never_applies_the_blind_rule() {
 }
 
 #[test]
-fn blind_has_the_public_readership_shape() {
+fn blind_with_no_readers_is_closed_to_the_default_tier() {
     let author = Uuid::new_v4();
-    let (default, gm_role, users) = permissions_for_audience(author, &Audience::Blind);
-    assert_eq!(default, DocRole::Observer);
+    let (default, gm_role, users) =
+        permissions_for_audience(author, &Audience::Blind, &BlindReaders::default());
+    assert_eq!(default, DocRole::None);
     assert_eq!(gm_role, None);
     assert_eq!(users.get(&author), Some(&DocRole::Owner));
     assert_eq!(

@@ -590,12 +590,12 @@ test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () =
 
 test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () => {
   const d = buildChatSettingsDoc("w1", {
-    markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false,
+    markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false, blind_visible_to_players: null, blind_visible_to_actor_owner: null,
   });
   expect(d.doc_type).toBe("chat-settings");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false });
+  expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false, blind_visible_to_players: null, blind_visible_to_actor_owner: null });
   expect(d.system).toEqual({});
 });
 

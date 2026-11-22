@@ -22,7 +22,7 @@ function gmStoreWith(...docs: WireDocument[]) {
 
 /** Full ChatSettingsEngine (every field required-nullable), overridable per test. */
 function chatEngine(over: Partial<ChatSettingsEngine> = {}): ChatSettingsEngine {
-  return { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null, ...over };
+  return { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null, blind_visible_to_players: null, blind_visible_to_actor_owner: null, ...over };
 }
 
 describe("chat settings editor", () => {

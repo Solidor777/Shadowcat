@@ -201,11 +201,14 @@ pub enum Audience {
     /// Only whoever currently holds `WorldRole::Gm` (plus the sender) may
     /// read — resolved dynamically, not a frozen roster at send time.
     GmOnly,
-    /// Every member holds the message, but each roll in it carries its formula and result
-    /// only for the GM: `roll_property_overrides` registers them under the GM-only tier, so the
-    /// roller sees a card saying a blind roll was made and nothing else. Valid only on a
-    /// message that holds a roll (`SendMessageError::BlindNeedsRoll` otherwise). The sender
-    /// stays `Owner` of the document and may delete it.
+    /// Each roll in the message carries its formula and result only for the GM:
+    /// `roll_property_overrides` registers them under the GM-only tier, so the roller sees a
+    /// card saying a blind roll was made and nothing else. Who holds the message at all is
+    /// the world's blind-roll settings (`BlindReaders`): the roller and the GM always;
+    /// other players only when `blind_visible_to_players` is on, and the owner of a GM
+    /// roll's actor when `blind_visible_to_actor_owner` is on. Valid only on a message that
+    /// holds a roll (`SendMessageError::BlindNeedsRoll` otherwise). The sender stays `Owner`
+    /// of the document and may delete it.
     Blind,
 }
 
@@ -1030,11 +1033,12 @@ pub struct MessageDraft {
 /// # Examples
 ///
 /// ```
-/// use shadowcat::chat::{permissions_for_audience, Audience};
+/// use shadowcat::chat::{permissions_for_audience, Audience, BlindReaders};
 /// use shadowcat::data::document::DocRole;
 ///
 /// let author = uuid::Uuid::new_v4();
-/// let (default, gm_role, users) = permissions_for_audience(author, &Audience::GmOnly);
+/// let (default, gm_role, users) =
+///     permissions_for_audience(author, &Audience::GmOnly, &BlindReaders::default());
 /// assert_eq!(default, DocRole::None);
 /// assert_eq!(gm_role, Some(DocRole::Observer));
 /// assert_eq!(users.get(&author), Some(&DocRole::Owner));
@@ -1042,9 +1046,25 @@ pub struct MessageDraft {
 pub fn permissions_for_audience(
     user: Uuid,
     audience: &Audience,
+    blind: &BlindReaders,
 ) -> (DocRole, Option<DocRole>, BTreeMap<Uuid, DocRole>) {
     let (default, gm_role, mut users) = match audience {
-        Audience::Public | Audience::Blind => (DocRole::Observer, None, BTreeMap::new()),
+        Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
+        // The GM's unconditional read needs no entry; `blind.everyone` opens the default
+        // tier, otherwise only the roller and the named `blind.also` readers hold it.
+        Audience::Blind => (
+            if blind.everyone {
+                DocRole::Observer
+            } else {
+                DocRole::None
+            },
+            None,
+            blind
+                .also
+                .iter()
+                .map(|&reader| (reader, DocRole::Observer))
+                .collect(),
+        ),
         Audience::Whisper { recipients } => {
             let mut users = BTreeMap::new();
             for &r in recipients {
@@ -1071,8 +1091,11 @@ pub fn permissions_for_audience(
 /// - `GmOnly` — `default: None`, `gm_role: Some(Observer)` (ANY current GM
 ///   reads, resolved dynamically — not a frozen roster), `users` holds only
 ///   `owner: Owner`.
-/// - `Blind` — the `Public` shape; the GM-only hiding of each roll's formula and result is a
-///   property override (`roll_property_overrides`), not a readership change.
+/// - `Blind` — the shape `BlindReaders` selects (`permissions_for_audience`); the GM-only
+///   hiding of each roll's formula and result is a property override
+///   (`roll_property_overrides`). `build_message_doc` passes no readers, so a blind draft
+///   built there reads only for its author and the GM; `build_message_doc_with_readers`
+///   takes the `resolve_blind_readers` result.
 ///
 /// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
 /// redundantly names the sender as their own recipient can never downgrade
@@ -1102,6 +1125,46 @@ pub fn permissions_for_audience(
 /// assert_eq!(doc.owner, Some(user));
 /// ```
 pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i64) -> Document {
+    build_message_doc_with_readers(world_id, user, draft, &BlindReaders::default(), now)
+}
+
+/// `build_message_doc` with the readership a blind message's world settings grant. A caller
+/// that may author an `Audience::Blind` message passes the `resolve_blind_readers` result;
+/// `build_message_doc` passes the empty default, so an `Audience::Blind` draft built there is
+/// readable only by its author and the GM.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{
+///     build_message_doc_with_readers, Audience, BlindReaders, MessageDraft, MessageKind, Segment,
+/// };
+/// use shadowcat::data::document::DocRole;
+///
+/// let doc = build_message_doc_with_readers(
+///     uuid::Uuid::new_v4(),
+///     uuid::Uuid::new_v4(),
+///     MessageDraft {
+///         channel: "general".to_string(),
+///         actor_owner: None,
+///         audience: Audience::Blind,
+///         kind: MessageKind::Roll,
+///         content: vec![Segment::Text { text: "x".to_string() }],
+///         source: None,
+///         system: None,
+///     },
+///     &BlindReaders { everyone: true, also: vec![] },
+///     0,
+/// );
+/// assert_eq!(doc.permissions.default, DocRole::Observer);
+/// ```
+pub fn build_message_doc_with_readers(
+    world_id: Uuid,
+    user: Uuid,
+    draft: MessageDraft,
+    blind: &BlindReaders,
+    now: i64,
+) -> Document {
     let MessageDraft {
         channel,
         actor_owner,
@@ -1111,7 +1174,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
         source,
         system,
     } = draft;
-    let (default, gm_role, users) = permissions_for_audience(user, &audience);
+    let (default, gm_role, users) = permissions_for_audience(user, &audience, blind);
     let engine = MessageEngine {
         channel,
         user_owner: user,
@@ -1516,52 +1579,136 @@ pub(crate) async fn validate_actor_owner(
     ctx: &PermissionContext,
     owner: &ActorOwnerRef,
 ) -> Result<(), SendMessageError> {
-    match owner {
-        ActorOwnerRef::Actor { actor_id } => {
-            let actor_doc = repo
-                .get_document(*actor_id)
-                .await
-                .map_err(SendMessageError::Data)?;
-            let is_gm = ctx.world_role == WorldRole::Gm;
-            let allowed = match &actor_doc {
-                Some(d)
-                    if d.doc_type == "actor"
-                        && crate::data::document::world_of(d) == Some(room.world_id) =>
-                {
-                    is_gm || d.owner == Some(ctx.user_id)
-                }
-                _ => false,
-            };
-            if !allowed {
-                return Err(SendMessageError::ActorNotSpeakable);
-            }
-        }
+    let Some(doc) = world_actor_doc(repo, room.world_id, owner)
+        .await
+        .map_err(SendMessageError::Data)?
+    else {
+        return Err(SendMessageError::ActorNotSpeakable);
+    };
+    let allowed = ctx.world_role == WorldRole::Gm
+        || actor_doc_owner(repo, owner, &doc)
+            .await
+            .map_err(SendMessageError::Data)?
+            == Some(ctx.user_id);
+    if allowed {
+        Ok(())
+    } else {
+        Err(SendMessageError::ActorNotSpeakable)
+    }
+}
+
+/// The document `owner` names, when it exists, has the type the reference kind requires
+/// (`actor` for `Actor`, a token for `TokenInstance`) and lives in `world_id`; `None` otherwise.
+/// The one lookup `validate_actor_owner` and `resolve_blind_readers` both start from, so they
+/// agree on which references name a speakable document.
+async fn world_actor_doc(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    owner: &ActorOwnerRef,
+) -> Result<Option<Document>, DataError> {
+    let (id, doc_type) = match owner {
+        ActorOwnerRef::Actor { actor_id } => (*actor_id, "actor"),
         ActorOwnerRef::TokenInstance { token_id } => {
-            let token_doc = repo
-                .get_document(*token_id)
+            (*token_id, crate::data::permission::TOKEN_DOC_TYPE)
+        }
+    };
+    Ok(repo
+        .get_document(id)
+        .await?
+        .filter(|d| d.doc_type == doc_type && crate::data::document::world_of(d) == Some(world_id)))
+}
+
+/// The user who owns the document `owner` names: an actor's own `owner`, a token's
+/// `Repository::effective_owner_of` (which resolves through the token's actor).
+async fn actor_doc_owner(
+    repo: &dyn Repository,
+    owner: &ActorOwnerRef,
+    doc: &Document,
+) -> Result<Option<Uuid>, DataError> {
+    match owner {
+        ActorOwnerRef::Actor { .. } => Ok(doc.owner),
+        ActorOwnerRef::TokenInstance { .. } => repo.effective_owner_of(doc).await,
+    }
+}
+
+/// Who can read an `Audience::Blind` message beyond its roller and the GM: the readership the
+/// world's blind-roll settings grant. Computed by `resolve_blind_readers` and consumed by
+/// `permissions_for_audience`, the single place a message's readership is decided. The default
+/// grants no one (fail-closed). Ignored by every other audience.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::BlindReaders;
+///
+/// let readers = BlindReaders::default();
+/// assert!(!readers.everyone);
+/// assert!(readers.also.is_empty());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlindReaders {
+    /// Every world member holds the message (the `blind_visible_to_players` setting is on).
+    pub everyone: bool,
+    /// Individual users who hold the message though `everyone` is false.
+    pub also: Vec<Uuid>,
+}
+
+/// Resolves the `BlindReaders` of a blind message by `roller` in `world_id`, attributed to
+/// `actor_owner`, from the world's chat settings. Players see the message when
+/// `blind_visible_to_players` is on. When the roller is the GM and
+/// `blind_visible_to_actor_owner` is on, the owner of the actor the roll is attributed to
+/// also reads it. Every site that builds or revises a blind message calls this with the stored
+/// roller and attribution, so creation, revision and the later read paths (resync, list,
+/// search) all see one decision; the result is stored in the message's `PermissionSet`.
+pub(crate) async fn resolve_blind_readers(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    roller: Uuid,
+    actor_owner: Option<&ActorOwnerRef>,
+) -> Result<BlindReaders, SendMessageError> {
+    let policy = resolve_content_policy(repo, world_id).await;
+    let mut readers = BlindReaders {
+        everyone: policy.blind_visible_to_players(),
+        also: Vec::new(),
+    };
+    if !policy.blind_visible_to_actor_owner() {
+        return Ok(readers);
+    }
+    let roller_is_gm = repo
+        .member_role(world_id, roller)
+        .await
+        .map_err(SendMessageError::Data)?
+        == Some(WorldRole::Gm);
+    if let (true, Some(owner_ref)) = (roller_is_gm, actor_owner) {
+        if let Some(doc) = world_actor_doc(repo, world_id, owner_ref)
+            .await
+            .map_err(SendMessageError::Data)?
+        {
+            if let Some(owner) = actor_doc_owner(repo, owner_ref, &doc)
                 .await
-                .map_err(SendMessageError::Data)?;
-            let is_gm = ctx.world_role == WorldRole::Gm;
-            let allowed = match &token_doc {
-                Some(d)
-                    if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
-                        && crate::data::document::world_of(d) == Some(room.world_id) =>
-                {
-                    is_gm
-                        || repo
-                            .effective_owner_of(d)
-                            .await
-                            .map_err(SendMessageError::Data)?
-                            == Some(ctx.user_id)
-                }
-                _ => false,
-            };
-            if !allowed {
-                return Err(SendMessageError::ActorNotSpeakable);
+                .map_err(SendMessageError::Data)?
+            {
+                readers.also.push(owner);
             }
         }
     }
-    Ok(())
+    Ok(readers)
+}
+
+/// The `BlindReaders` for a message: `resolve_blind_readers` for `Audience::Blind`, the empty
+/// default for every other audience (which never reads it).
+pub(crate) async fn readers_for_audience(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    roller: Uuid,
+    actor_owner: Option<&ActorOwnerRef>,
+    audience: &Audience,
+) -> Result<BlindReaders, SendMessageError> {
+    if matches!(audience, Audience::Blind) {
+        resolve_blind_readers(repo, world_id, roller, actor_owner).await
+    } else {
+        Ok(BlindReaders::default())
+    }
 }
 
 /// Shared request-scoped dependencies for `handle_send_message`/
@@ -1956,7 +2103,15 @@ pub async fn handle_send_message(
     } else {
         content.clone()
     });
-    let doc = build_message_doc(
+    let blind = readers_for_audience(
+        repo,
+        room.world_id,
+        ctx.user_id,
+        actor_owner.as_ref(),
+        &audience,
+    )
+    .await?;
+    let doc = build_message_doc_with_readers(
         room.world_id,
         ctx.user_id,
         MessageDraft {
@@ -1968,6 +2123,7 @@ pub async fn handle_send_message(
             source,
             system,
         },
+        &blind,
         now,
     );
     room.publish(
@@ -2887,7 +3043,15 @@ pub async fn handle_revise_audience(
     }
     validate_audience(repo, world_id, ctx.user_id, &audience).await?;
 
-    let (default, gm_role, users) = permissions_for_audience(sys.user_owner, &audience);
+    let blind = readers_for_audience(
+        repo,
+        world_id,
+        sys.user_owner,
+        sys.actor_owner.as_ref(),
+        &audience,
+    )
+    .await?;
+    let (default, gm_role, users) = permissions_for_audience(sys.user_owner, &audience, &blind);
     validate_blind_content(&audience, &sys.content)?;
     sys.audience = audience;
     // After the audience is stored: `message_property_overrides` reads it to decide whether the
@@ -2952,6 +3116,9 @@ mod secret_tests;
 
 #[cfg(test)]
 mod blind_tests;
+
+#[cfg(test)]
+mod blind_settings_tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;

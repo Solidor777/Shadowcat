@@ -66,7 +66,7 @@ function storeWithImagesToggle(enabled: boolean): DocumentStore {
       op: "create",
       doc: buildChatSettingsDoc(
         "w1",
-        { markdown: null, html: null, images: enabled, hyperlinks: null, emails: null, link_previews: null },
+        { markdown: null, html: null, images: enabled, hyperlinks: null, emails: null, link_previews: null, blind_visible_to_players: null, blind_visible_to_actor_owner: null },
         "chat1",
       ),
     }],
