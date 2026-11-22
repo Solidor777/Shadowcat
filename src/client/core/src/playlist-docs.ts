@@ -70,9 +70,9 @@ export function buildPlaylistDoc(
  * The server's own advance (`audio::state::apply`'s `resolve_track_index`) is not mirrored
  * here: `Sequential`/`LoopAll` are deterministic from the current index alone, so this resolves
  * them directly; `Shuffle` draws from a server-seeded RNG (`AudioStateEngine.shuffleSeed`) this
- * client cannot reproduce, and `Single` never advances at all, so both resolve to `null` —
- * preloading is simply skipped for those two modes rather than guessing wrong and evicting a
- * useful preload.
+ * client cannot reproduce, and `Single`, `Simultaneous` and `Soundboard` never advance at all,
+ * so all four resolve to `null` — preloading is simply skipped for those modes rather than
+ * guessing wrong and evicting a useful preload.
  * @param playlist The playlist document's engine body.
  * @param currentTrackIndex The currently-playing entry's `PlayingTrack.trackIndex`.
  * @returns The next track's asset id to preload, or `null` when no next track can be resolved
@@ -111,6 +111,8 @@ export function resolveNextTrackAsset(
     }
     case "shuffle":
     case "single":
+    case "simultaneous":
+    case "soundboard":
       return null;
   }
 }

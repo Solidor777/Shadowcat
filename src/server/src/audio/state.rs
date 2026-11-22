@@ -37,6 +37,9 @@ pub enum AudioError {
     Cap,
     /// A gain value was non-finite.
     InvalidGain,
+    /// `AudioOp::Play` named a single `track_index` of a `PlaylistMode::Simultaneous` playlist,
+    /// which only plays as a whole; a single track is what `PlaylistMode::Soundboard` is for.
+    NotSingleTrack,
 }
 
 impl fmt::Display for AudioError {
@@ -47,6 +50,7 @@ impl fmt::Display for AudioError {
             AudioError::EmptyPlaylist => "that playlist has no tracks",
             AudioError::Cap => "too many tracks are already playing",
             AudioError::InvalidGain => "gain must be a finite number",
+            AudioError::NotSingleTrack => "that playlist plays all its tracks together",
         })
     }
 }
@@ -117,6 +121,10 @@ fn resolve_track_index(
         return None;
     }
     match mode {
+        // Neither mode has a next track: a Simultaneous layer or a Soundboard one-shot that
+        // ends, or is skipped, is stopped. A fresh Soundboard play with no explicit track
+        // lands on track 0 through the caller's `unwrap_or(0)`.
+        PlaylistMode::Simultaneous | PlaylistMode::Soundboard => None,
         PlaylistMode::Single => Some(current.unwrap_or(0).min(len as u32 - 1)),
         PlaylistMode::Sequential | PlaylistMode::LoopAll => {
             let next = match current {
@@ -202,13 +210,51 @@ pub fn apply(
             if next.playing.len() >= MAX_PLAYING_TRACKS {
                 return Err(AudioError::Cap);
             }
-            let (resolved_asset, resolved_channel, resolved_gain, resolved_loop, resolved_index) =
-                match playlist {
-                    Some(pid) => {
-                        let pl = playlist_lookup(*pid).ok_or(AudioError::UnknownPlaylist)?;
-                        if pl.tracks.is_empty() {
-                            return Err(AudioError::EmptyPlaylist);
+            let resolved_playlist = match playlist {
+                Some(pid) => {
+                    let pl = playlist_lookup(*pid).ok_or(AudioError::UnknownPlaylist)?;
+                    if pl.tracks.is_empty() {
+                        return Err(AudioError::EmptyPlaylist);
+                    }
+                    Some(pl)
+                }
+                None => None,
+            };
+            // A Simultaneous playlist starts every track as its own entry. The cap is checked
+            // for the whole set before any entry is pushed: a play either starts every layer or
+            // is refused, never leaving some layers silently missing. The `asset` override is
+            // ignored because each layer plays its own track's asset.
+            if let (Some(pid), Some(pl)) = (playlist, &resolved_playlist) {
+                if pl.mode == PlaylistMode::Simultaneous {
+                    if track_index.is_some() {
+                        return Err(AudioError::NotSingleTrack);
+                    }
+                    if next.playing.len() + pl.tracks.len() > MAX_PLAYING_TRACKS {
+                        return Err(AudioError::Cap);
+                    }
+                    for (idx, track) in pl.tracks.iter().enumerate() {
+                        let gain = gain.unwrap_or(track.gain);
+                        if !gain.is_finite() {
+                            return Err(AudioError::InvalidGain);
                         }
+                        next.playing.push(PlayingTrack {
+                            id: Uuid::new_v4(),
+                            playlist: Some(*pid),
+                            track_index: idx as u32,
+                            asset: track.asset.clone(),
+                            channel: channel.unwrap_or(pl.channel),
+                            gain,
+                            loop_: loop_.unwrap_or(track.loop_),
+                            started_at: now,
+                            paused_at: None,
+                        });
+                    }
+                    return Ok(next);
+                }
+            }
+            let (resolved_asset, resolved_channel, resolved_gain, resolved_loop, resolved_index) =
+                match resolved_playlist {
+                    Some(pl) => {
                         // A fresh Shuffle play (no explicit track_index) advances the world's
                         // shuffle_seed first, so the order does not repeat identically forever;
                         // the committed seed still drives every client's walk identically.

@@ -52,6 +52,13 @@ pub enum PlaylistMode {
     LoopAll,
     /// Plays exactly one track (the first, or whichever `AudioOp::Play` names) on loop.
     Single,
+    /// Every track plays at once, each as its own `PlayingTrack` (a layered cue). One
+    /// `AudioOp::Play` pushes one entry per track; `Next`/`Prev`/`TrackEnded` on a layer stop
+    /// only that layer.
+    Simultaneous,
+    /// Each track is a one-shot trigger: `AudioOp::Play` naming a `track_index` starts that
+    /// track, and `AudioOp::TrackEnded` removes the entry rather than advancing.
+    Soundboard,
 }
 
 /// A device-independent audio bus a playlist or a one-shot sound plays through. `"master"` and
@@ -153,6 +160,14 @@ impl PlaylistEngine {
         if self.tracks.len() > MAX_PLAYLIST_TRACKS {
             return Err(format!(
                 "a playlist may have at most {MAX_PLAYLIST_TRACKS} tracks, got {}",
+                self.tracks.len()
+            ));
+        }
+        // One Simultaneous play starts every track, so the track count alone must fit the
+        // concurrent-playing cap.
+        if self.mode == PlaylistMode::Simultaneous && self.tracks.len() > MAX_PLAYING_TRACKS {
+            return Err(format!(
+                "a simultaneous playlist may have at most {MAX_PLAYING_TRACKS} tracks, got {}",
                 self.tracks.len()
             ));
         }

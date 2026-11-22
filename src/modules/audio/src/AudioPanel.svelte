@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
   import { createSubscriber } from "svelte/reactivity";
+  import { gainToSliderPosition, sliderPositionToGain } from "@shadowcat/audio";
   import {
     buildPlaylistDoc,
     getAssetMeta,
@@ -9,6 +10,7 @@
     type AudioChannelId,
     type AudioStateEngine,
     type PlayingTrack,
+    type PlaylistEngine,
     type WireAudioOp,
     type WireDocument,
     type WireSearchHit,
@@ -224,8 +226,9 @@
           step="0.05"
           data-testid={`channel-gain-${id}`}
           aria-label={t("audio.channelGainFor", { channel: t(CHANNEL_LABEL[id]) })}
-          value={ctx.audio.channels[id].gain}
-          onchange={(e) => ctx.audio.setChannel(id, { gain: Number((e.currentTarget as HTMLInputElement).value) })}
+          value={gainToSliderPosition(ctx.audio.channels[id].gain)}
+          onchange={(e) =>
+            ctx.audio.setChannel(id, { gain: sliderPositionToGain(Number((e.currentTarget as HTMLInputElement).value)) })}
         />
       </label>
       <button
@@ -293,7 +296,11 @@
       <li data-testid="playlist-row" data-playlist-id={hit.id}>
         <span>{hit.name ?? hit.id}</span>
         {#if isGm}
-          <button type="button" data-testid="playlist-play" onclick={() => play(hit.id)}>{t("audio.play")}</button>
+          {#if (hit.engine as PlaylistEngine | undefined)?.mode === "simultaneous"}
+            <button type="button" data-testid="playlist-play-all" onclick={() => play(hit.id)}>{t("audio.playAll")}</button>
+          {:else}
+            <button type="button" data-testid="playlist-play" onclick={() => play(hit.id)}>{t("audio.play")}</button>
+          {/if}
         {/if}
         {#if ctx.canDelete(hit)}
           <button type="button" data-testid="playlist-delete" onclick={() => deletePlaylist(hit)}>{t("audio.delete")}</button>

@@ -72,6 +72,13 @@ describe("resolveNextTrackAsset", () => {
     expect(resolveNextTrackAsset(playlist, 0)).toBeNull();
   });
 
+  test("simultaneous and soundboard: never resolve a next track (no entry advances)", () => {
+    for (const mode of ["simultaneous", "soundboard"] as const) {
+      const playlist: PlaylistEngine = { tracks, mode, channel: "music", fadeMs: 0 };
+      expect(resolveNextTrackAsset(playlist, 0)).toBeNull();
+    }
+  });
+
   test("empty playlist resolves null on every mode", () => {
     const playlist: PlaylistEngine = { tracks: [], mode: "loop_all", channel: "music", fadeMs: 0 };
     expect(resolveNextTrackAsset(playlist, 0)).toBeNull();

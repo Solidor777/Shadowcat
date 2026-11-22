@@ -344,6 +344,9 @@ importers:
 
   src/modules/audio:
     dependencies:
+      '@shadowcat/audio':
+        specifier: workspace:*
+        version: link:../../client/audio
       '@shadowcat/core':
         specifier: workspace:*
         version: link:../../client/core

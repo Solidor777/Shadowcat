@@ -1,5 +1,6 @@
 import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import { buildSilentWav } from "../e2e-support/wav";
+import { latchAttributeMax } from "./attribute-latch";
 
 /** The short silent WAV the upload tests use: PCM16, mono, 8kHz, about 0.2s — small enough to keep
  * the upload fast, long enough for `symphonia`'s WAV decoder to report a non-zero `duration_ms` and
@@ -107,4 +108,56 @@ test("audio: GM uploads a track, creates a playlist, plays it, and a player sees
   } finally {
     await playerCtx.close();
   }
+});
+
+// The two playlist modes that start more than one entry or none-advancing entries. The silent track
+// lasts about 0.2s and is not looped, so each entry leaves `audio-state` on its own almost at once:
+// the live count is latched (`latchAttributeMax`) rather than polled, since a poll can straddle the
+// whole window and read 0 both times.
+test("audio: a simultaneous playlist starts every track at once and a soundboard track plays once then leaves", async ({
+  page,
+  account,
+}) => {
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
+  const worldName = `Audio Modes ${Date.now().toString(36)}`;
+
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill(worldName);
+  await page.getByRole("button", { name: "Create world" }).click();
+  await expect(page.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  await openPanel(page, "asset-browser:panel");
+  await page.getByTestId("asset-upload-input").setInputFiles({ name: "tone.wav", mimeType: "audio/wav", buffer: SHORT_WAV });
+  await expect(page.getByTestId("asset-tile")).toHaveCount(1);
+
+  await openPanel(page, "audio:panel");
+  await page.getByTestId("audio-unlock").click();
+  await page.getByTestId("playlists-name").fill("Layers");
+  await page.getByTestId("playlists-create").click();
+  const sheet = page.getByRole("dialog", { name: "Sheet" });
+  await expect(sheet).toBeVisible({ timeout: 15_000 });
+  for (const n of [1, 2]) {
+    await sheet.getByTestId("playlist-add-track").click();
+    const pickDialog = page.getByTestId("asset-pick-dialog");
+    await expect(pickDialog).toBeVisible({ timeout: 15_000 });
+    await pickDialog.getByTestId("asset-tile").click();
+    await page.getByTestId("pick-confirm").click();
+    await expect(sheet.getByTestId("track-row")).toHaveCount(n);
+  }
+
+  const panel = page.getByTestId("audio-panel");
+  await sheet.getByTestId("playlist-mode").selectOption("simultaneous");
+  await page.getByTestId("playlists-search").fill("Layers");
+  await expect(page.getByTestId("playlist-row")).toHaveCount(1);
+  const layers = await latchAttributeMax(panel, "data-audio-playing");
+  await page.getByTestId("playlist-play-all").click();
+  await expect.poll(() => layers.max(), { timeout: 15_000 }).toBe(2);
+  await expect(panel).toHaveAttribute("data-audio-playing", "0", { timeout: 15_000 });
+
+  await sheet.getByTestId("playlist-mode").selectOption("soundboard");
+  await expect(sheet.getByTestId("track-trigger")).toHaveCount(2);
+  const shot = await latchAttributeMax(panel, "data-audio-playing");
+  await sheet.getByTestId("track-trigger").first().click();
+  await expect.poll(() => shot.max(), { timeout: 15_000 }).toBe(1);
+  await expect(panel).toHaveAttribute("data-audio-playing", "0", { timeout: 15_000 });
 });
