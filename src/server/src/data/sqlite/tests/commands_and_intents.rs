@@ -1470,7 +1470,7 @@ async fn apply_intent_same_batch_create_then_engine_update_is_rejected() {
 }
 
 #[tokio::test]
-async fn apply_intent_server_message_revision_may_write_property_overrides_but_nothing_else_under_permissions(
+async fn apply_intent_server_message_revision_may_write_the_four_permission_paths_but_nothing_else_under_permissions(
 ) {
     use crate::chat::MESSAGE_DOC_TYPE;
     use crate::data::document::{DocRole, PermissionSet};
@@ -1544,7 +1544,41 @@ async fn apply_intent_server_message_revision_may_write_property_overrides_but_n
         "property_overrides write should be admitted: {ok:?}"
     );
 
-    // `/permissions/default` is NOT admitted under the same origin.
+    // The readership trio is admitted under the same origin.
+    let ok = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/default".into(),
+                        old: serde_json::json!("observer"),
+                        new: serde_json::json!("none"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/gm_role".into(),
+                        old: serde_json::json!(null),
+                        new: serde_json::json!("observer"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/permissions/users".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ gm.to_string(): "owner" }),
+                    },
+                ],
+            }],
+            2,
+            WriteOrigin::ServerMessageRevision,
+        )
+        .await;
+    assert!(ok.is_ok(), "the readership trio should be admitted: {ok:?}");
+
+    // `/permissions/capabilities` is NOT admitted under the same origin.
     let denied = r
         .apply_intent(
             &ctx,
@@ -1553,18 +1587,156 @@ async fn apply_intent_server_message_revision_may_write_property_overrides_but_n
                 doc_id,
                 changes: vec![FieldChange {
                     remove: false,
-                    path: "/permissions/default".into(),
-                    old: serde_json::json!("observer"),
-                    new: serde_json::json!("owner"),
+                    path: "/permissions/capabilities".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({"some_cap": ["x"]}),
                 }],
             }],
-            2,
+            3,
             WriteOrigin::ServerMessageRevision,
         )
         .await;
     assert!(
         matches!(denied, Err(DataError::Forbidden)),
-        "widening /permissions/default must stay forbidden under ServerMessageRevision, got {denied:?}"
+        "a /permissions path outside the four-path set must stay forbidden under ServerMessageRevision, got {denied:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_server_message_revision_permission_write_ignores_a_declared_requirement_on_an_unrelated_path_but_embedded_stays_gated(
+) {
+    // Both `authorize_update_change` gates read `SMR_PERMISSION_PATHS`: the three
+    // readership paths must skip the additive declared-requirement check (a
+    // requirement carries no `doc_type`, so one declared on `/permissions/users`
+    // for an unrelated doc type would otherwise block a GM's vetted reveal),
+    // while `/embedded` under the same origin still honours a declared requirement.
+    use crate::chat::MESSAGE_DOC_TYPE;
+    use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.set_world_cap_requirements(
+        w.id,
+        &[
+            CapabilityRequirement {
+                path_prefix: "/permissions".into(),
+                caps: ["dnd5e:edit_permissions".to_string()].into_iter().collect(),
+            },
+            CapabilityRequirement {
+                path_prefix: "/embedded".into(),
+                caps: ["dnd5e:embed".to_string()].into_iter().collect(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    let doc_id = Uuid::new_v4();
+    let doc = Document {
+        id: doc_id,
+        scope: Scope::World { world_id: w.id },
+        doc_type: MESSAGE_DOC_TYPE.to_string(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: Some(gm),
+        permissions: PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        embedded: Default::default(),
+        parent_id: None,
+        engine: Some(serde_json::json!({
+            "channel": "all", "user_owner": gm, "kind": "normal",
+            "audience": {"kind": "public"}, "content": []
+        })),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    for (i, (path, old, new)) in [
+        (
+            "/permissions/default",
+            serde_json::json!("observer"),
+            serde_json::json!("none"),
+        ),
+        (
+            "/permissions/gm_role",
+            serde_json::json!(null),
+            serde_json::json!("observer"),
+        ),
+        (
+            "/permissions/users",
+            serde_json::json!({}),
+            serde_json::json!({ gm.to_string(): "owner" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ok = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                1 + i as i64,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            ok.is_ok(),
+            "{path} must skip the additive declared requirement: {ok:?}"
+        );
+    }
+
+    let denied = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded".into(),
+                    old: serde_json::json!({}),
+                    new: serde_json::json!({}),
+                }],
+            }],
+            10,
+            WriteOrigin::ServerMessageRevision,
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "/embedded must stay gated by a declared requirement, got {denied:?}"
     );
 }
 
@@ -1758,7 +1930,7 @@ async fn apply_intent_server_message_revision_write_to_an_unscoped_path_still_en
     assert!(
         matches!(denied, Err(DataError::Forbidden)),
         "a ServerMessageRevision write to a path outside the \
-         /engine + /permissions/property_overrides scope must still be \
+         /engine + four-/permissions-path scope must still be \
          gated by a matching declared requirement, got {denied:?}"
     );
 }

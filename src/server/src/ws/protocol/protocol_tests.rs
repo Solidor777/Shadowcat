@@ -567,6 +567,24 @@ fn recalc_roll_frame_parses() {
 }
 
 #[test]
+fn revise_audience_frame_parses() {
+    let raw = r#"{"type":"revise_audience","request_id":"00000000-0000-0000-0000-0000000000af","message_id":"00000000-0000-0000-0000-000000000001","audience":{"kind":"gm_only"}}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::ReviseAudience {
+            request_id,
+            message_id,
+            audience,
+        } => {
+            assert_eq!(request_id, Uuid::from_u128(0xaf));
+            assert_eq!(message_id, Uuid::from_u128(1));
+            assert_eq!(audience, crate::chat::Audience::GmOnly);
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn draw_table_frame_parses() {
     let raw = r#"{"type":"draw_table","request_id":"00000000-0000-0000-0000-0000000000ae","table_id":"00000000-0000-0000-0000-000000000003","channel":"general","count":2,"actor_owner":null,"audience":{"kind":"public"}}"#;
     let msg: ClientMsg = serde_json::from_str(raw).unwrap();

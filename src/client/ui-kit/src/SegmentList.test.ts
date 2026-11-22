@@ -389,7 +389,7 @@ describe("SegmentList — table_draw", () => {
       },
       context: setAppContextForTest({
         documents: storeWith(tableDoc),
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
       }),
     });
     const btn = container.querySelector('[data-testid="table-draw-button"]') as HTMLButtonElement;

@@ -38,7 +38,7 @@ function renderComposer(
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
   const context = setAppContextForTest({
-    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}), drawTable: vi.fn(async () => {}) },
+    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}), reviseAudience: vi.fn(async () => {}), drawTable: vi.fn(async () => {}) },
     documents: opts.documents ?? new DocumentStore(),
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",

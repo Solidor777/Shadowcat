@@ -261,7 +261,19 @@ roll_id: string,
 /**
  * The targeted mutation(s) to apply.
  */
-ops: Array<WireRecalcOp>, } | { "type": "draw_table", 
+ops: Array<WireRecalcOp>, } | { "type": "revise_audience", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The message whose audience changes.
+ */
+message_id: string, 
+/**
+ * The replacement readership (public / gm-only / whisper).
+ */
+audience: Audience, } | { "type": "draw_table", 
 /**
  * Correlation token for a `ChatError` rejection.
  */

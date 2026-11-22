@@ -306,6 +306,18 @@ pub enum ClientMsg {
         /// The targeted mutation(s) to apply.
         ops: Vec<WireRecalcOp>,
     },
+    /// GM-only reveal or conceal: replaces a stored message's `audience` and
+    /// readership permissions (`chat::handle_revise_audience`). Same asymmetric
+    /// reply protocol as `SendMessage`; a non-GM sender is rejected via a
+    /// correlated `ChatError`.
+    ReviseAudience {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The message whose audience changes.
+        message_id: Uuid,
+        /// The replacement readership (public / gm-only / whisper).
+        audience: Audience,
+    },
     /// Draw one or more rows from a `table` document, posted as ONE
     /// `MessageKind::Roll` message (`Segment::TableDraw`, recursive through
     /// any nested draws). Same asymmetric reply protocol as `SendMessage`;

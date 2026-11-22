@@ -776,6 +776,21 @@ struct UpdateAuthzContext<'a> {
     is_server_message_revision: bool,
 }
 
+/// The exact `/permissions` field paths a `WriteOrigin::ServerMessageRevision`
+/// write may touch on a message doc: `/permissions/property_overrides`
+/// (`chat::handle_recalc_roll`) plus the readership trio `/permissions/default`,
+/// `/permissions/gm_role` and `/permissions/users` (`chat::handle_revise_audience`).
+/// `authorize_update_change` reads this one list for BOTH the missing-capability
+/// admission and the additive declared-requirement skip. Deliberately not a
+/// prefix or `all: true`: that would also admit `/embedded` and every other
+/// `/permissions` sub-path.
+const SMR_PERMISSION_PATHS: [&str; 4] = [
+    "/permissions/default",
+    "/permissions/gm_role",
+    "/permissions/users",
+    "/permissions/property_overrides",
+];
+
 /// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
 /// (`declared_caps_for_path`), and the carried-light GM gate
@@ -818,13 +833,15 @@ fn authorize_update_change(
     if let Some(need) = need {
         if !origin.skips_capability_gates() && !access.has(need) {
             // A `ServerMessageRevision` write to a message doc may ALSO write
-            // exactly `/permissions/property_overrides` (never any other
-            // `/permissions` subpath) without holding `cap::EDIT_PERMISSIONS` —
-            // `handle_recalc_roll` needs this to register a freshly-appended
-            // recalc entry's gm_only override pointer. This exact-path admission
-            // widens nothing for any other doc_type/origin/path.
+            // exactly the `SMR_PERMISSION_PATHS` (never any other `/permissions`
+            // subpath) without holding `cap::EDIT_PERMISSIONS` —
+            // `handle_recalc_roll` needs `/permissions/property_overrides` to register
+            // a freshly-appended recalc entry's gm_only override pointer, and
+            // `handle_revise_audience` needs the other three to move a message's
+            // readership. This exact-path admission widens nothing for any other
+            // doc_type/origin/path.
             let is_recalc_override_write =
-                is_server_message_revision && ch.path == "/permissions/property_overrides";
+                is_server_message_revision && SMR_PERMISSION_PATHS.contains(&ch.path.as_str());
             if !is_recalc_override_write {
                 tracing::debug!(
                     user = %ctx.user_id, path = %ch.path, capability = need,
@@ -837,16 +854,16 @@ fn authorize_update_change(
     // Declarative requirements are additive: a module/world may demand extra
     // capabilities for a sub-path on top of the structural base above. SKIPPED
     // only for a `ServerMessageRevision` write to exactly `/engine`, `/system` (the
-    // delete tombstone's payload clear) or `/permissions/property_overrides` — a
+    // delete tombstone's payload clear) or one of `SMR_PERMISSION_PATHS` — a
     // world's `CapabilityRequirement` carries no `doc_type`, so an ancestor write
     // to `/engine` would otherwise inherit a requirement declared for a wholly
     // unrelated doc_type's field, blocking a GM's already-vetted moderation write.
-    // Any OTHER path under this origin still goes through this check.
+    // Any OTHER path under this origin still goes through this check. This skip
+    // and the capability admission above read the SAME `SMR_PERMISSION_PATHS`, so
+    // widening one without the other is structurally impossible.
     let is_scoped_smr_write = is_server_message_revision
-        && matches!(
-            ch.path.as_str(),
-            "/engine" | "/system" | "/permissions/property_overrides"
-        );
+        && (matches!(ch.path.as_str(), "/engine" | "/system")
+            || SMR_PERMISSION_PATHS.contains(&ch.path.as_str()));
     if !origin.skips_capability_gates() && !is_scoped_smr_write {
         for extra in declared_caps_for_path(&ch.path, world_reqs) {
             if !access.has(extra) {

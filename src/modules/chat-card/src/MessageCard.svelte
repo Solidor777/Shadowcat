@@ -256,6 +256,43 @@
     ctx.chat.recalc(message.id, rollId, [op]);
   }
 
+  // GM reveal/conceal editor state. Advisory UI only: the server re-authorizes every
+  // revision against its own GM-only check in `handle_revise_audience`.
+  let revising = $state(false);
+  let reviseKind = $state<"public" | "gm_only" | "whisper">("public");
+  let reviseRecipients = $state<string[]>([]);
+  // Members a whisper can name: everyone but the author, who always keeps the message.
+  const whisperCandidates = $derived(
+    [...ctx.members.entries()].filter(([id]) => id !== sys?.user_owner).sort((a, b) => a[1].localeCompare(b[1])),
+  );
+
+  /** Opens the audience editor seeded from the message's current audience.
+   * @example
+   * ```
+   * // internal; called from the "Change audience" button
+   * startRevise();
+   * ```
+   */
+  function startRevise(): void {
+    if (!sys) return;
+    reviseKind = sys.audience.kind;
+    reviseRecipients = sys.audience.kind === "whisper" ? [...sys.audience.recipients] : [];
+    revising = true;
+  }
+  /** Sends the chosen audience via `ctx.chat.reviseAudience` and closes the editor; a server
+   * rejection surfaces through chat's shared `ChatError` seam, not through this function.
+   * @example
+   * ```
+   * // internal; called from the audience editor's Apply button
+   * applyRevise();
+   * ```
+   */
+  function applyRevise(): void {
+    const audience = reviseKind === "whisper" ? { kind: "whisper" as const, recipients: [...reviseRecipients] } : { kind: reviseKind };
+    ctx.chat.reviseAudience(message.id, audience);
+    revising = false;
+  }
+
   let editing = $state(false);
   let draft = $state("");
 
@@ -487,6 +524,34 @@
         <div class="actions">
           <button type="button" onclick={startEdit}>{t("chat.edit")}</button>
           <button type="button" onclick={doDelete}>{t("chat.delete")}</button>
+          {#if isGm}
+            <button type="button" onclick={startRevise}>{t("chat.revise.open")}</button>
+          {/if}
+        </div>
+      {/if}
+      {#if isGm && revising}
+        <div class="revise-box">
+          <select aria-label={t("chat.revise.audience")} bind:value={reviseKind}>
+            <option value="public">{t("chat.revise.public")}</option>
+            <option value="gm_only">{t("chat.revise.gmOnly")}</option>
+            <option value="whisper">{t("chat.revise.whisper")}</option>
+          </select>
+          {#if reviseKind === "whisper"}
+            <ul class="revise-recipients">
+              {#each whisperCandidates as [id, name] (id)}
+                <li>
+                  <label>
+                    <input type="checkbox" value={id} bind:group={reviseRecipients} />
+                    {name}
+                  </label>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <div class="revise-actions">
+            <button type="button" onclick={applyRevise}>{t("chat.revise.apply")}</button>
+            <button type="button" onclick={() => (revising = false)}>{t("chat.cancel")}</button>
+          </div>
         </div>
       {/if}
     {/if}
@@ -514,6 +579,32 @@
     padding: 0 4px;
     border-radius: var(--radius-1);
     border: 1px solid var(--border);
+  }
+  .revise-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+  }
+  .revise-recipients {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .revise-recipients label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 2.5rem;
+  }
+  .revise-actions {
+    display: flex;
+    gap: var(--space-1);
   }
   .tombstone {
     font-style: italic;
