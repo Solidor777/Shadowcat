@@ -16,7 +16,7 @@ use std::time::Duration;
 use shadowcat::http::conn_serve::{egress_tick, ConnLimits, StallCuts, ABORT_WAIT};
 use shadowcat_test_support::acceptance::{progress_bytes_per_window, Acceptances};
 use shadowcat_test_support::egress::{first_close, wait_until_flat, EgressServer, Protocol};
-use shadowcat_test_support::measure::record_cut_overshoot;
+use shadowcat_test_support::measure::record_cut_after_progress;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -73,23 +73,25 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
     let server = serve().await;
     let started = Instant::now();
     let mut peer = request(&server).await;
-    let quiet = quiet_at(&server).await;
 
     let closed_at = first_close(&server.closed, Duration::from_secs(20))
         .await
         .expect("the server never ended a connection whose peer stopped reading");
     // Not before a full window of samples has elapsed since the request. How long after the
-    // producer was confirmed quiet (no earlier than the writer parking) the cut landed, past a
-    // window and a tick, is recorded and bounded by `CUT_OVERSHOOT_MAX`.
+    // socket last accepted a floor of progress the cut landed, past a window and a tick, is
+    // recorded and bounded by `CUT_OVERSHOOT_MAX`.
     assert!(
         closed_at >= started + WINDOW,
         "cut {:?} after the request, before the {WINDOW:?} window",
         closed_at.duration_since(started)
     );
-    record_cut_overshoot(
-        "h1 connection cut after the producer went quiet",
-        closed_at.duration_since(quiet),
-        WINDOW + tick(),
+    record_cut_after_progress(
+        "h1 connection cut after the socket last accepted progress",
+        closed_at,
+        &server.writes,
+        ConnLimits::default().egress_floor,
+        WINDOW,
+        tick(),
     );
 
     // The peer sees the connection end once it has drained what the kernel buffered.
