@@ -129,6 +129,14 @@
     canDelete: (doc) => session.canDelete(doc),
     openDocument: (ref) => sheets.openDocument(ref),
     notify: (message, level) => notifications.push(level ?? "warning", message),
+    notifyProgress: (message, progress) => {
+      const id = notifications.push("info", message, undefined, progress);
+      return {
+        id,
+        update: (patch) => notifications.update(id, patch),
+        dismiss: () => notifications.dismiss(id),
+      };
+    },
     members: session.members,
     t,
     plural,

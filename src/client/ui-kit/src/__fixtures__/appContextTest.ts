@@ -78,6 +78,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     canDelete: over.canDelete ?? (() => (over.role ?? "gm") === "gm"),
     openDocument: over.openDocument ?? (() => {}),
     notify: over.notify ?? (() => {}),
+    notifyProgress:
+      over.notifyProgress ?? (() => ({ id: "progress", update: () => {}, dismiss: () => {} })),
     members: over.members ?? new Map(),
     t: over.t ?? ((k: string) => k),
     plural: over.plural ?? ((k: string) => k),

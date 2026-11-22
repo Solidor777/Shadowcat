@@ -67,6 +67,91 @@ test("an info notification carrying an action is not auto-dismissed", async () =
   }
 });
 
+test("a progress notification is never auto-dismissed, at any level", async () => {
+  vi.useFakeTimers();
+  try {
+    const id = notifications.push("info", "Uploading", undefined, { value: 1, max: 4 });
+    render(NotificationHost);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(notifications.items.find((n) => n.id === id)).toBeDefined();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a determinate progress renders a progressbar with aria-valuenow and aria-valuemax", () => {
+  notifications.push("info", "Uploading", undefined, { value: 1, max: 4 });
+  render(NotificationHost);
+  const bar = screen.getByRole("progressbar");
+  expect(bar.getAttribute("aria-valuenow")).toBe("1");
+  expect(bar.getAttribute("aria-valuemax")).toBe("4");
+  expect(bar.getAttribute("aria-valuemin")).toBe("0");
+});
+
+test("an indeterminate progress renders a progressbar with no numeric aria values", () => {
+  notifications.push("info", "Working", undefined, { value: null, max: 0 });
+  render(NotificationHost);
+  const bar = screen.getByRole("progressbar");
+  expect(bar.hasAttribute("aria-valuenow")).toBe(false);
+  expect(bar.hasAttribute("aria-valuemax")).toBe(false);
+  expect(bar.getAttribute("aria-valuetext")).toBeTruthy();
+});
+
+test("a notification without progress renders no progressbar", () => {
+  notifications.push("info", "Plain.");
+  render(NotificationHost);
+  expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test("a live progress update re-renders the bar in place", async () => {
+  const id = notifications.push("info", "Uploading", undefined, { value: 1, max: 4 });
+  render(NotificationHost);
+  notifications.update(id, { progress: { value: 3, max: 4 } });
+  await tick();
+  expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("3");
+});
+
+test("clicking a plain notification's message dismisses it", async () => {
+  const id = notifications.push("warning", "Click me away.");
+  render(NotificationHost);
+  await fireEvent.click(screen.getByText("Click me away."));
+  expect(notifications.items.find((n) => n.id === id)).toBeUndefined();
+});
+
+test("an action button click dismisses exactly once: the row handler never sees the click", async () => {
+  const spy = vi.spyOn(notifications, "dismiss");
+  const run = vi.fn();
+  const id = notifications.push("warning", "Restore me.", { label: "Reopen windows", run });
+  render(NotificationHost);
+  await fireEvent.click(screen.getByRole("button", { name: "Reopen windows" }));
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(spy.mock.calls.filter(([dismissed]) => dismissed === id)).toHaveLength(1);
+  spy.mockRestore();
+});
+
+test("a dismiss button click dismisses exactly once: the row handler never sees the click", async () => {
+  const spy = vi.spyOn(notifications, "dismiss");
+  const id = notifications.push("warning", "Plain.");
+  render(NotificationHost);
+  await fireEvent.click(screen.getByRole("button"));
+  expect(spy.mock.calls.filter(([dismissed]) => dismissed === id)).toHaveLength(1);
+  spy.mockRestore();
+});
+
+test("clicking a progress notification's row does not dismiss it", async () => {
+  const id = notifications.push("info", "Uploading", undefined, { value: 1, max: 4 });
+  render(NotificationHost);
+  await fireEvent.click(screen.getByText("Uploading"));
+  expect(notifications.items.find((n) => n.id === id)).toBeDefined();
+});
+
+test("the dismiss button still dismisses a notification on its own", async () => {
+  const id = notifications.push("warning", "Plain.");
+  render(NotificationHost);
+  await fireEvent.click(screen.getByRole("button"));
+  expect(notifications.items.find((n) => n.id === id)).toBeUndefined();
+});
+
 test("a notification pushed AFTER the host mounts renders (the live push path every runtime notice takes)", async () => {
   render(NotificationHost);
   expect(screen.queryByText("It's your turn!")).toBeNull();
