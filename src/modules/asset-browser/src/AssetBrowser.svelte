@@ -31,7 +31,7 @@
     onCancel?: () => void;
   } = $props();
 
-  const { world, assets: resolver, onAssetChanged, t } = getAppContext();
+  const { world, assets: resolver, onAssetChanged, t, notifyProgress } = getAppContext();
 
   // The pick request's presets seed the filter ONCE — the browser owns it
   // afterward, so capturing the initial prop value is the intended semantics.
@@ -67,7 +67,7 @@
     selected.length === 1 ? (items.find((a) => a.id === selected[0]) ?? null) : null,
   );
   /** The browser's upload queue; refreshes the listing per created asset. */
-  const uploads = new UploadQueueModel(world, () => void reload());
+  const uploads = new UploadQueueModel(world, () => void reload(), { t, notifyProgress });
   // Monotonic reload marker: a stale page resolving after a newer reload
   // started must not clobber the newer listing.
   let generation = 0;

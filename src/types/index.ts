@@ -66,6 +66,8 @@ export type { TlsStatus } from "./generated/TlsStatus";
 export type { TlsSource } from "./generated/TlsSource";
 export type { TlsAdminStatus } from "./generated/TlsAdminStatus";
 export type { WorldEntry } from "./generated/WorldEntry";
+export type { BackupManifest } from "./generated/BackupManifest";
+export type { BackupKind } from "./generated/BackupKind";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";

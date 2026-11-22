@@ -1,11 +1,18 @@
 <script lang="ts">
   import { getAppContext, confirmDialog } from "@shadowcat/ui-kit";
-  import { listUsers, createUser, deleteUser, type ServerUser } from "@shadowcat/core";
+  import {
+    listUsers,
+    createUser,
+    deleteUser,
+    adminBackup,
+    fmtBytes,
+    type ServerUser,
+  } from "@shadowcat/core";
 
   // Server-administration surface: creating accounts and listing them are both
   // gated on ServerRole::Admin server-side. Rendering is gated on `serverRole`
   // (never `role` — a world GM is not a server admin), which is advisory only.
-  const { t, serverRole, selfId } = getAppContext();
+  const { t, serverRole, selfId, notify, notifyProgress } = getAppContext();
 
   let users = $state<ServerUser[]>([]);
   let loaded = $state(false);
@@ -16,6 +23,39 @@
   let error = $state<string | null>(null);
   let created = $state<string | null>(null);
   let deleteError = $state<string | null>(null);
+  /** Whether a manual server backup is in flight. */
+  let backingUp = $state(false);
+
+  /**
+   * Takes a manual whole-server backup. The request is a single call with no incremental
+   * signal, so an indeterminate progress notification stays up until it settles; the outcome is
+   * reported through the ordinary notification channel.
+   * @returns Resolves once the backup settled and the progress notification is dismissed; never
+   *   rejects.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the Back up now button
+   * await backUpNow();
+   * ```
+   */
+  async function backUpNow(): Promise<void> {
+    backingUp = true;
+    const toast = notifyProgress(t("settings.users.backupRunning"), { value: null, max: 0 });
+    try {
+      const manifest = await adminBackup();
+      // `db_bytes` is a generated `bigint` that the JSON delivers as a number; `fmtBytes`
+      // normalizes either.
+      notify(t("settings.users.backupDone", { size: fmtBytes(manifest.db_bytes) }), "info");
+    } catch (e) {
+      notify(
+        t("settings.users.backupError", { message: e instanceof Error ? e.message : String(e) }),
+        "error",
+      );
+    } finally {
+      toast.dismiss();
+      backingUp = false;
+    }
+  }
 
   /**
    * Deletes user `u` after an explicit confirm dialog, then reloads the user list.
@@ -137,6 +177,9 @@
 {#if serverRole === "admin"}
   <section class="user-manager">
     <h3>{t("settings.users.title")}</h3>
+    <button type="button" onclick={backUpNow} disabled={backingUp}>
+      {t("settings.users.backupNow")}
+    </button>
     <form onsubmit={submit}>
       <label>
         {t("settings.users.username")}

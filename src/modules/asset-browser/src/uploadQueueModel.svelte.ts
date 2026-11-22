@@ -4,6 +4,7 @@
 
 import { startChunkedUpload, ChunkedUploadError } from "@shadowcat/core";
 import type { Asset } from "@shadowcat/types";
+import type { AppContext } from "@shadowcat/ui-kit";
 
 /** One queued file's lifecycle state. */
 export type UploadStatus = "queued" | "uploading" | "done" | "error";
@@ -32,6 +33,9 @@ export interface UploadEntry {
   controller?: AbortController;
 }
 
+/** The slice of the app context an `UploadQueue` reads. */
+export type UploadQueueContext = Pick<AppContext, "t" | "notifyProgress">;
+
 /** Sequential upload queue: one in-flight upload, per-entry progress/retry/
  * abort, listing refresh after every server-side creation. */
 export class UploadQueue {
@@ -44,21 +48,28 @@ export class UploadQueue {
   readonly onCreated: () => void;
   /** Whether the sequential runner loop is active. */
   #running = false;
+  /** The shell seams the queue reports through: translation and progress notifications. */
+  readonly #ctx: UploadQueueContext;
 
   /** Builds the queue for one world.
    * @param world - The owning world id.
    * @param onCreated - Listing-refresh callback.
+   * @param ctx - The app context's `t` and `notifyProgress`; each uploading file shows one
+   * progress notification, dismissed when the upload settles.
    * @example
    * ```ts
    * import { UploadQueue } from "@shadowcat/module-asset-browser";
+   * import type { AppContext } from "@shadowcat/ui-kit";
    *
-   * const q = new UploadQueue("w1", () => {});
+   * declare const ctx: AppContext;
+   * const q = new UploadQueue("w1", () => {}, ctx);
    * q.entries.length; // 0
    * ```
    */
-  constructor(world: string, onCreated: () => void) {
+  constructor(world: string, onCreated: () => void, ctx: UploadQueueContext) {
     this.world = world;
     this.onCreated = onCreated;
+    this.#ctx = ctx;
   }
 
   /** Appends files and starts the runner if idle.
@@ -69,8 +80,10 @@ export class UploadQueue {
    * @example
    * ```ts
    * import { UploadQueue } from "@shadowcat/module-asset-browser";
+   * import type { AppContext } from "@shadowcat/ui-kit";
    *
-   * const q = new UploadQueue("w1", () => {});
+   * declare const ctx: AppContext;
+   * const q = new UploadQueue("w1", () => {}, ctx);
    * q.enqueue([new File([new Uint8Array([1])], "x.png")], null);
    * ```
    */
@@ -94,8 +107,10 @@ export class UploadQueue {
    * @example
    * ```ts
    * import { UploadQueue } from "@shadowcat/module-asset-browser";
+   * import type { AppContext } from "@shadowcat/ui-kit";
    *
-   * const q = new UploadQueue("w1", () => {});
+   * declare const ctx: AppContext;
+   * const q = new UploadQueue("w1", () => {}, ctx);
    * q.retry(0); // no-op on an empty queue
    * ```
    */
@@ -114,8 +129,10 @@ export class UploadQueue {
    * @example
    * ```ts
    * import { UploadQueue } from "@shadowcat/module-asset-browser";
+   * import type { AppContext } from "@shadowcat/ui-kit";
    *
-   * const q = new UploadQueue("w1", () => {});
+   * declare const ctx: AppContext;
+   * const q = new UploadQueue("w1", () => {}, ctx);
    * q.cancel(0); // no-op on an empty queue
    * ```
    */
@@ -147,6 +164,12 @@ export class UploadQueue {
         entry.status = "uploading";
         const controller = new AbortController();
         entry.controller = controller;
+        // The toast keeps the upload visible while the asset browser panel is closed; the
+        // panel's own progress UI is unchanged.
+        const toast = this.#ctx.notifyProgress(
+          this.#ctx.t("assetBrowser.uploadProgress", { name: entry.file.name }),
+          { value: 0, max: entry.total },
+        );
         try {
           await startChunkedUpload(this.world, entry.file, {
             folderId: entry.folderId,
@@ -154,6 +177,7 @@ export class UploadQueue {
             onProgress: (sent, total) => {
               entry.sent = sent;
               entry.total = total;
+              toast.update({ progress: { value: sent, max: total } });
             },
             signal: controller.signal,
           });
@@ -174,6 +198,7 @@ export class UploadQueue {
           }
         } finally {
           entry.controller = undefined;
+          toast.dismiss();
         }
       }
     } finally {
