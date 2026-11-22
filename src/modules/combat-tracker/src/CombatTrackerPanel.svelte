@@ -2,10 +2,9 @@
   import { onMount } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import type { WireDocument, ResourceRegistryEngine, Resource } from "@shadowcat/core";
+  import { createDragController, dropIndex, type DropResult, type WireDocument, type ResourceRegistryEngine, type Resource } from "@shadowcat/core";
   import type { TurnBadge } from "./turnBadge";
   import { rowsFor, moveInOrder, type Row } from "./model";
-  import { createReorder } from "./reorder";
   import CombatHeader from "./CombatHeader.svelte";
   import CombatantRow from "./CombatantRow.svelte";
   import AddCombatants from "./AddCombatants.svelte";
@@ -140,7 +139,20 @@
     rowEls.set(id, node);
     return { destroy: () => rowEls.delete(id) };
   }
-  const reorder = createReorder(() => rows.map((r) => rowEls.get(r.doc.id)?.getBoundingClientRect() ?? new DOMRect()));
+  let hover = $state<DropResult | null>(null);
+  const drag = createDragController({
+    axis: "vertical",
+    snapToNearest: true,
+    getTargets: () => rows.map((r) => ({ id: r.doc.id, rect: () => rowEls.get(r.doc.id)?.getBoundingClientRect() ?? new DOMRect() })),
+    onHover: (result) => (hover = result),
+    onDrop: (result) => {
+      if (!result.over || result.placement === "into") return;
+      const ids = rows.map((r) => r.doc.id);
+      const from = ids.indexOf(result.dragged);
+      const to = dropIndex(ids, result.dragged, result.over, result.placement);
+      if (to !== null && to !== from) dispatchReorder(from, to);
+    },
+  });
 
   /**
    * Computes the reordered turn sequence via `moveInOrder` and dispatches the one `reorder`
@@ -161,8 +173,8 @@
   }
 
   /**
-   * Begins a pointer-drag reorder on the row at `index`, tracking pointer move/up on `window`
-   * until release, at which point the computed move (if any) dispatches via
+   * Begins a pointer-drag reorder on the row at `index`; the shared drag controller tracks the
+   * pointer on `window` until release, at which point the computed move (if any) dispatches via
    * {@link dispatchReorder}. A no-op without edit capability.
    * @param index The dragged row's index.
    * @param ev The originating `pointerdown` event.
@@ -175,16 +187,7 @@
    */
   function onDragStart(index: number, ev: PointerEvent): void {
     if (!can?.edit) return;
-    reorder.beginDrag(index, ev);
-    const onMove = (e: PointerEvent) => reorder.move(e);
-    const onUp = (e: PointerEvent) => {
-      const move = reorder.end(e);
-      if (move) dispatchReorder(move.from, move.to);
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    drag.beginDrag(rows[index].doc.id, ev);
   }
 
   /**
@@ -232,7 +235,7 @@
     <CombatHeader combat={selectedCombat} {rows} {busy} {run} {compact} bind:notation />
     <div class="rows" class:compact>
       {#each rows as row, i (row.doc.id)}
-        <div class="row-wrap" class:stacked={compact} use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
+        <div class="row-wrap" class:stacked={compact} class:drop-before={hover?.over === row.doc.id && hover.placement === "before"} class:drop-after={hover?.over === row.doc.id && hover.placement === "after"} use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
           <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as CombatTurnShape).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} {compact} />
         </div>
       {/each}
@@ -274,6 +277,14 @@
     &.compact {
       grid-template-columns: 1fr;
     }
+  }
+
+  .row-wrap.drop-before {
+    box-shadow: 0 -2px 0 var(--accent);
+  }
+
+  .row-wrap.drop-after {
+    box-shadow: 0 2px 0 var(--accent);
   }
 
   .row-wrap.stacked {

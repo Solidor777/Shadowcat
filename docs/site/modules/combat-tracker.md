@@ -19,7 +19,8 @@ system or community module contributing its own `shadowcat.panel`.
 
 - `CombatTrackerPanel.svelte` — scene scoping, combat picker, and row
   composition (`CombatHeader` + `CombatantRow` + `AddCombatants`), plus
-  pointer-drag and Alt+arrow keyboard reordering.
+  pointer-drag (the shared `createDragController` from `@shadowcat/core`) and Alt+arrow
+  keyboard reordering.
 - `CombatHeader.svelte` — clock controls gated by `CombatAffordances`, the
   two-click End confirm, and "Roll all".
 - `CombatantRow.svelte` — one combatant or event row: name/conditions,
@@ -29,7 +30,6 @@ system or community module contributing its own `shadowcat.panel`.
   one-off events (name, lifespan, message, hidden).
 - `model.ts` — pure helpers: `rowsFor`, `moveInOrder`, `rollTargets`,
   `firstChannel`, `formatResource`.
-- `reorder.ts` — the pointer-drag state machine `CombatTrackerPanel` drives.
 - `turnBadge.ts` — the launcher badge, lit for the viewer's own turn only.
 
 ## Contracts & seams
