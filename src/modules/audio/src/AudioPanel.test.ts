@@ -120,8 +120,9 @@ describe("AudioPanel", () => {
     render(AudioPanel, {
       context: setAppContextForTest({ role: "gm", documents: storeWith(), audio }),
     });
-    await fireEvent.change(screen.getByTestId("channel-gain-music"), { target: { value: "0.4" } });
-    expect(audio.setChannel).toHaveBeenCalledWith("music", { gain: 0.4 });
+    // The slider position goes through the perceptual cubic taper: 0.5 of travel is 0.125 gain.
+    await fireEvent.change(screen.getByTestId("channel-gain-music"), { target: { value: "0.5" } });
+    expect(audio.setChannel).toHaveBeenCalledWith("music", { gain: 0.125 });
     await fireEvent.click(screen.getByTestId("channel-mute-sfx"));
     expect(audio.setChannel).toHaveBeenCalledWith("sfx", { muted: true });
   });
@@ -240,6 +241,70 @@ describe("AudioPanel", () => {
     // The Play and Open affordances are permission-independent for a GM.
     expect(screen.getByTestId("playlist-play")).toBeTruthy();
     expect(screen.getByTestId("playlist-open")).toBeTruthy();
+  });
+
+  it("a channel slider's handle sits at the inverse-curve position of the stored gain", () => {
+    const audio = audioFixture({
+      channels: {
+        master: { gain: 1, muted: false },
+        music: { gain: 0.125, muted: false },
+        ambience: { gain: 1, muted: false },
+        sfx: { gain: 1, muted: false },
+        ui: { gain: 1, muted: false },
+      },
+    });
+    render(AudioPanel, { context: setAppContextForTest({ role: "gm", documents: storeWith(), audio }) });
+    expect(Number((screen.getByTestId("channel-gain-music") as HTMLInputElement).value)).toBeCloseTo(0.5, 5);
+  });
+
+  it("a simultaneous playlist shows Play all, which plays the whole playlist; other modes keep Play", async () => {
+    const playlistHit = (id: string, mode: string) => ({
+      document: {
+        id,
+        scope: { kind: "world", world_id: "w1" },
+        doc_type: "playlist",
+        schema_version: 1,
+        name: id,
+        source: null,
+        owner: null,
+        permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+        embedded: {},
+        parent_id: null,
+        engine: { tracks: [], mode, channel: "music", fadeMs: 0 },
+        system: {},
+        created_at: 0,
+        updated_at: 0,
+      },
+    });
+    const searchDocuments = vi.fn().mockImplementation((_q, _o, onUpdate) => {
+      onUpdate([playlistHit("layers", "simultaneous"), playlistHit("plain", "sequential")]);
+      return Promise.resolve({ unsubscribe: () => {} });
+    });
+    const audio = audioFixture();
+    render(AudioPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        documents: storeWith(),
+        audio,
+        searchDocuments: searchDocuments as never,
+        canCreate: () => false,
+        canDelete: () => false,
+      }),
+    });
+    await fireEvent.input(screen.getByTestId("playlists-search"), { target: { value: "x" } });
+    await screen.findAllByTestId("playlist-row");
+    expect(screen.getAllByTestId("playlist-play-all")).toHaveLength(1);
+    expect(screen.getAllByTestId("playlist-play")).toHaveLength(1);
+    await fireEvent.click(screen.getByTestId("playlist-play-all"));
+    expect(audio.transport).toHaveBeenCalledWith({
+      type: "play",
+      playlist: "layers",
+      asset: null,
+      track_index: null,
+      channel: null,
+      gain: null,
+      loop: null,
+    });
   });
 
   it("channel sliders and mute icons re-render on an external channel-state change", async () => {

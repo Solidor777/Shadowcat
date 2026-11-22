@@ -57,6 +57,8 @@
     { value: "shuffle", label: "sheetPlaylist.modeShuffle" },
     { value: "loop_all", label: "sheetPlaylist.modeLoopAll" },
     { value: "single", label: "sheetPlaylist.modeSingle" },
+    { value: "simultaneous", label: "sheetPlaylist.modeSimultaneous" },
+    { value: "soundboard", label: "sheetPlaylist.modeSoundboard" },
   ];
   /** Mixer-channel options for the channel select. */
   const CHANNELS: {
@@ -103,6 +105,20 @@
       return;
     }
     patchTrack(i, { asset: picked });
+  }
+
+  /** Start one track of a Soundboard playlist through the server transport, so every client
+   * hears it and it leaves the now-playing list when it ends. Unlike the preview button, this
+   * is shared playback, not a local one-shot; it is a performance action, not a document edit,
+   * so it carries no edit gate.
+   * @param i The track index.
+   * @example
+   * ```
+   * // private handler; exercised through `PlaylistSheet.test.ts`'s trigger case
+   * ```
+   */
+  function triggerTrack(i: number): void {
+    ctx.audio.transport({ type: "play", playlist: docId, asset: null, track_index: i, channel: null, gain: null, loop: null });
   }
 
   /** Open the asset picker and append a track for the pick. Pick-first because
@@ -197,6 +213,14 @@
           aria-label={t("sheetPlaylist.trackPreview", { n: i + 1 })}
           onclick={() => ctx.audio.playOneShot(track.asset)}
         >▶</button>
+        {#if engine.mode === "soundboard"}
+          <button
+            type="button"
+            data-testid="track-trigger"
+            aria-label={t("sheetPlaylist.trackTrigger", { n: i + 1 })}
+            onclick={() => triggerTrack(i)}
+          >{t("sheetPlaylist.trigger")}</button>
+        {/if}
         <input
           type="text"
           data-testid="track-name"

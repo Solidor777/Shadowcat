@@ -4,6 +4,7 @@ export { TrackPlayer, setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS, SYNC_RAT
 export { PlaybackGate } from "./playback-gate";
 export { OneShotPlayer, ONE_SHOT_CACHE_BUDGET_BYTES } from "./one-shot-player";
 export { DuckControllerImpl, approach, DUCK_ATTACK_MS, DUCK_RELEASE_MS, DEFAULT_DUCK_DEPTH } from "./duck-controller";
+export { sliderPositionToGain, gainToSliderPosition } from "./perceptual-volume";
 export { decodeAudioCandidate, decodeCandidates, type DecodePreference } from "./decode";
 export { createOggOpusDecoder } from "./wasm";
 export type {
