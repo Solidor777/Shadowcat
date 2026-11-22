@@ -307,6 +307,18 @@ export interface TokenNodeSpec {
    * `TokenView.toSpec` (condition-registry fx folded in condition array order, then the
    * selection highlight); absent or empty for no effects. */
   fx?: TokenFx[];
+  /** The token's facing-vision wedge, drawn ON the rotating `visualContainer` (so it turns with
+   * the token), or absent for none. Present only for a viewer entitled to see the token's facing
+   * (`TokenView`'s `facingWedgeVisible`) on a scene whose resolved `facingVision` switch is on.
+   * Fully pre-resolved: lengths already in scene units, angle in degrees. */
+  facing?: {
+    /** Forward arc width, in degrees, centered on the facing direction (+x at rotation 0). */
+    arc: number;
+    /** All-round awareness radius, in scene units; `0` draws no ring. */
+    near: number;
+    /** Wedge length, in scene units. */
+    radius: number;
+  };
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

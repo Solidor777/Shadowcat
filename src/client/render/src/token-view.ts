@@ -1,4 +1,4 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS, levelOf } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, resolveTokenFacingVision, resolveSceneSettings, EMPTY_FOOTPRINTS, levelOf } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, VisualTransform, FootprintLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, ResolvedArtTransform, TokenTransform } from "./types";
@@ -15,6 +15,10 @@ const NO_PERCEIVED: ReadonlySet<string> = new Set();
 /** The empty selection a `TokenView` constructed without a `selectedTokens` source reads —
  * module-level so the default getter shares one frozen instance. */
 const EMPTY_TOKEN_SELECTION: ReadonlySet<string> = new Set();
+
+/** How far the facing wedge reaches from the token's center, in grid cells — a display length
+ * only; the server's sight range, not this, decides what the token sees. */
+const WEDGE_LENGTH_CELLS = 3;
 
 /** Blend strength a condition registry's `tint`/`highlight` fx applies at: the registry authors
  * a color, not a strength (`ConditionFx` carries no strength field), and full strength would
@@ -140,6 +144,9 @@ export class TokenView {
    * always-`true`.
    * @param reducedMotion Resolves the live `PerformanceSettings.reducedMotion` flag, forwarded
    * to the internal `TokenAnimator`. Defaults to always-`false`.
+   * @param facingWedgeVisible Decides, per token doc, whether THIS viewer may see the token's
+   * facing wedge (the host passes owner-or-GM). Defaults to always-`false`, so a view built
+   * without one never draws a wedge and never reveals another creature's facing.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -161,6 +168,7 @@ export class TokenView {
     private readonly ghostOtherLevels: () => boolean = () => false,
     private readonly tokenFx: () => boolean = () => true,
     reducedMotion: () => boolean = () => false,
+    private readonly facingWedgeVisible: (doc: WireDocument) => boolean = () => false,
   ) {
     this.animator = new TokenAnimator(reducedMotion);
   }
@@ -507,6 +515,29 @@ export class TokenView {
     return levelOf(levels, elevation)?.id ?? null;
   }
 
+  /** Resolve the facing wedge for `doc`: present only when the host says this viewer may see
+   * the token's facing (`facingWedgeVisible`), the token's scene has the resolved `facingVision`
+   * switch on, and the token's effective `FacingVision` (`resolveTokenFacingVision`, the one
+   * precedence decision) is set and narrower than a full circle. Lengths convert from cells
+   * through `worldUnitsPerCell`, the view's one cell-size source.
+   * @param doc The `token` document.
+   * @returns The wedge spec, or `undefined` for none.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const doc: WireDocument;
+   * this.facingWedge(doc);
+   * ```
+   */
+  private facingWedge(doc: WireDocument): TokenNodeSpec["facing"] {
+    if (!this.facingWedgeVisible(doc)) return undefined;
+    const sceneDoc = this.store.query("scene").find((s) => s.id === doc.parent_id);
+    if (!resolveSceneSettings(sceneDoc, this.store).facingVision) return undefined;
+    const fv = resolveTokenFacingVision(doc, this.store);
+    if (!fv || fv.arc >= 360) return undefined;
+    return { arc: fv.arc, near: fv.near * this.worldUnitsPerCell, radius: WEDGE_LENGTH_CELLS * this.worldUnitsPerCell };
+  }
+
   /** Resolve an actor/token-declared `AnimatedSource` (raw asset ids) into a `ResolvedAnimatedSource`
    * (already-URL'd) via `this.assets`, mirroring the `visual.kind === "image"` branch's
    * `assets.url(...)` call in `toSpec` — the backend never resolves asset ids itself.
@@ -674,6 +705,8 @@ export class TokenView {
     };
     if (aura) spec.aura = aura;
     if (fx.length > 0) spec.fx = fx;
+    const facing = this.facingWedge(doc);
+    if (facing) spec.facing = facing;
     return spec;
   }
 }
