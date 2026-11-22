@@ -27,6 +27,7 @@ pub mod sandbox;
 pub mod scene;
 pub mod tables;
 pub mod tls;
+pub mod trash;
 pub mod world_bundle;
 pub mod ws;
 

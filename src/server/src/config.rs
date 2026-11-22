@@ -106,6 +106,12 @@ pub struct Cli {
     /// In-server backup output root override (default: sibling `backups/`).
     #[arg(long)]
     pub backups_dir: Option<String>,
+    /// Trash retention override: a positive number of days, `never` or `disabled`.
+    #[arg(long)]
+    pub trash_retention: Option<String>,
+    /// Trash storage root override (default: sibling `trash/` beside the db file).
+    #[arg(long)]
+    pub trash_dir: Option<String>,
     /// One-shot: snapshot the resolved db + assets into this directory, print
     /// a summary, and exit before the server would otherwise start.
     #[arg(long)]
@@ -280,6 +286,12 @@ pub struct Config {
     /// In-server backup output root (`POST /api/admin/backup`). `None` → sibling
     /// `backups/` dir beside the db file.
     pub backups_dir: Option<String>,
+    /// How long a discarded file survives in the trash: a positive number of days (default 30),
+    /// `"never"` (no automatic sweep) or `"disabled"` (every removal is immediate and
+    /// unrecoverable). Zero is a boot error, not a spelling of `"disabled"`.
+    pub trash_retention: crate::trash::TrashRetention,
+    /// Trash storage root. `None` → [`Config::trash_path`]'s default.
+    pub trash_dir: Option<String>,
     /// Regular-uploader size cap (bytes). Default 25 MiB.
     pub upload_max_bytes: u64,
     /// Regular-uploader uploads per minute. Default 20.
@@ -405,6 +417,8 @@ impl Default for Config {
             modules_dir: None,
             log_dir: None,
             backups_dir: None,
+            trash_retention: crate::trash::TrashRetention::default(),
+            trash_dir: None,
             upload_max_bytes: 25 * 1024 * 1024,
             upload_rate_per_min: 20,
             upload_max_bytes_gm: None,
@@ -695,6 +709,14 @@ impl Config {
         if let Some(v) = cli.backups_dir {
             cfg.backups_dir = Some(v);
         }
+        if let Some(v) = cli.trash_retention {
+            cfg.trash_retention = v.parse().map_err(|e: crate::trash::TrashRetentionError| {
+                Box::new(figment::Error::from(e.to_string()))
+            })?;
+        }
+        if let Some(v) = cli.trash_dir {
+            cfg.trash_dir = Some(v);
+        }
         if let Some(v) = cli.behind_proxy {
             cfg.behind_proxy = v;
         }
@@ -749,7 +771,106 @@ impl Config {
                 cfg.egress_window_secs
             ))));
         }
+        cfg.validate_trash_placement()?;
         Ok(cfg)
+    }
+
+    /// Rejects a `trash_dir` that is the same as, or nested inside, `assets_dir`, `modules_dir`,
+    /// `backups_dir` or `log_dir`, and any of those nested inside it. A trash inside the asset
+    /// root would be walked by the asset routes and copied by every backup; one inside the
+    /// backups root would be captured by the next backup. The error names both paths.
+    ///
+    /// The backups and log roots are skipped when the database is in-memory and no override names
+    /// them (they have no location to collide with). Paths are compared component-wise after
+    /// resolving a relative one against the current directory, without touching the filesystem,
+    /// since none of these directories need exist at load time.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// Config::default().validate_trash_placement()  // Ok: trash/ and assets/ are siblings
+    /// // trash_dir = "data/assets/trash", assets_dir = "data/assets" -> Err naming both
+    /// ```
+    fn validate_trash_placement(&self) -> Result<(), Box<figment::Error>> {
+        let trash = self.trash_path();
+        let backups = crate::db::database_file(&self.db)
+            .ok()
+            .flatten()
+            .map(|file| self.backups_path_for(&file))
+            .or_else(|| self.backups_dir.as_ref().map(std::path::PathBuf::from));
+        let others = [
+            ("assets_dir", Some(self.assets_path())),
+            ("modules_dir", Some(self.modules_path())),
+            ("backups_dir", backups),
+            ("log_dir", self.logs_path()),
+        ];
+        for (label, other) in others {
+            let Some(other) = other else { continue };
+            if Self::paths_nest(&trash, &other) {
+                return Err(Box::new(figment::Error::from(format!(
+                    "trash_dir ({}) must not be the same as, or nested inside, {label} ({}), and {label} must not be nested inside trash_dir: a trash sharing a tree with a served or backed-up directory would be walked or backed up",
+                    trash.display(),
+                    other.display(),
+                ))));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `a` and `b` name the same directory or one is an ancestor of the other, compared
+    /// component-wise (so `assets-extra` is not under `assets`) after resolving a relative path
+    /// against the current directory.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// paths_nest("/d/trash", "/d/assets") == false
+    /// paths_nest("/d/assets/trash", "/d/assets") == true
+    /// ```
+    fn paths_nest(a: &std::path::Path, b: &std::path::Path) -> bool {
+        let absolute = |p: &std::path::Path| {
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(p)
+            }
+        };
+        let (a, b) = (absolute(a), absolute(b));
+        a.starts_with(&b) || b.starts_with(&a)
+    }
+
+    /// Resolve the trash storage root: explicit `trash_dir`, else a sibling `trash/` beside the db
+    /// file via `db_sibling_dir`, else a sibling of [`Config::assets_path`]. The fallback serves an
+    /// in-memory database with an explicit `assets_dir`: the trash then lands on the volume the
+    /// assets live on, so discarding an asset is a rename and not a cross-device copy. A bare
+    /// single-component `assets_dir` has an empty parent, which resolves to `.`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cfg = shadowcat::config::Config {
+    ///     db: "data/shadowcat.db".into(),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(cfg.trash_path(), std::path::Path::new("data").join("trash"));
+    /// let memory = shadowcat::config::Config {
+    ///     db: "sqlite::memory:".into(),
+    ///     assets_dir: Some("vol/assets".into()),
+    ///     ..Default::default()
+    /// };
+    /// assert_eq!(memory.trash_path(), std::path::Path::new("vol").join("trash"));
+    /// ```
+    pub fn trash_path(&self) -> std::path::PathBuf {
+        if let Some(dir) = &self.trash_dir {
+            return std::path::PathBuf::from(dir);
+        }
+        self.db_sibling_dir("trash").unwrap_or_else(|| {
+            self.assets_path()
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("trash")
+        })
     }
 
     /// The no-progress window every stalled-peer bound uses: [`Config::egress_window_secs`] as a

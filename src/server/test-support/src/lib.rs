@@ -165,6 +165,7 @@ async fn spawn_inner(mutate: impl FnOnce(&mut Config), setup: TlsSetup) -> Harne
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        trash: Arc::new(shadowcat::trash::Trash::from_config(&cfg)),
     };
     let ws_state = state.ws.clone();
     let app = http::router(state).await;

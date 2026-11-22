@@ -1124,3 +1124,211 @@ fn one_configured_window_reaches_the_response_bounds_and_the_websocket_send_boun
     );
     assert_eq!(sink.stall_timeout(), std::time::Duration::from_secs(7));
 }
+
+/// Loads a TOML body through the real layering with the env lock held.
+fn load_toml(body: &str) -> Result<Config, Box<figment::Error>> {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("shadowcat.toml");
+    std::fs::write(&file, body).unwrap();
+    let _guard = config_env_test_lock();
+    Config::load(Cli {
+        config: Some(file.to_string_lossy().into_owned()),
+        ..Default::default()
+    })
+}
+
+/// `n` days as a retention.
+fn retention_days(n: u32) -> crate::trash::TrashRetention {
+    crate::trash::TrashRetention::Days(std::num::NonZeroU32::new(n).unwrap())
+}
+
+/// A config rooted at `base` with the db beside it, so the default sibling layout applies.
+fn toml_for(base: &std::path::Path, extra: &str) -> String {
+    let db = base.join("shadowcat.db");
+    format!("db = {:?}\n{extra}", db.to_string_lossy())
+}
+
+#[test]
+fn retention_config_parses_int_never_and_disabled_and_rejects_zero_and_garbage() {
+    use crate::trash::TrashRetention;
+    let tmp = tempfile::tempdir().unwrap();
+    let load = |line: &str| load_toml(&toml_for(tmp.path(), line));
+
+    assert_eq!(load("").unwrap().trash_retention, TrashRetention::default());
+    assert_eq!(
+        load("trash_retention = 7").unwrap().trash_retention,
+        retention_days(7)
+    );
+    assert_eq!(
+        load("trash_retention = \"never\"").unwrap().trash_retention,
+        TrashRetention::Never
+    );
+    assert_eq!(
+        load("trash_retention = \"disabled\"")
+            .unwrap()
+            .trash_retention,
+        TrashRetention::Disabled
+    );
+    assert_eq!(
+        load("trash_retention = \"14\"").unwrap().trash_retention,
+        retention_days(14)
+    );
+    for bad in [
+        "trash_retention = 0",
+        "trash_retention = -5",
+        "trash_retention = \"sometimes\"",
+    ] {
+        assert!(load(bad).is_err(), "{bad} must fail to load");
+    }
+    let zero = load("trash_retention = 0").unwrap_err().to_string();
+    assert!(
+        zero.contains("disabled"),
+        "the zero error points at `disabled`: {zero}"
+    );
+}
+
+#[test]
+fn retention_cli_flag_overrides_the_file_and_env_supplies_an_int() {
+    use crate::trash::TrashRetention;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("shadowcat.toml");
+    std::fs::write(&file, toml_for(tmp.path(), "trash_retention = 7")).unwrap();
+    let _guard = config_env_test_lock();
+    let cfg = Config::load(Cli {
+        config: Some(file.to_string_lossy().into_owned()),
+        trash_retention: Some("never".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(cfg.trash_retention, TrashRetention::Never);
+
+    // SAFETY: serialised by the env lock, restored below.
+    unsafe { std::env::set_var("SHADOWCAT_TRASH_RETENTION", "21") };
+    let from_env = Config::load(Cli {
+        config: Some(file.to_string_lossy().into_owned()),
+        ..Default::default()
+    });
+    // SAFETY: matches the set_var above.
+    unsafe { std::env::remove_var("SHADOWCAT_TRASH_RETENTION") };
+    assert_eq!(from_env.unwrap().trash_retention, retention_days(21));
+}
+
+#[test]
+fn trash_path_defaults_to_the_db_sibling_and_honours_an_explicit_dir() {
+    let mut cfg = Config {
+        db: "/data/shadowcat.db".into(),
+        ..Config::default()
+    };
+    assert_eq!(
+        cfg.trash_path(),
+        std::path::PathBuf::from("/data").join("trash")
+    );
+    cfg.trash_dir = Some("/elsewhere/bin".into());
+    assert_eq!(cfg.trash_path(), std::path::PathBuf::from("/elsewhere/bin"));
+}
+
+#[test]
+fn trash_path_falls_back_to_assets_path_sibling_for_in_memory_db_with_explicit_assets_dir() {
+    let cfg = Config {
+        db: "sqlite::memory:".into(),
+        assets_dir: Some("/vol/assets".into()),
+        ..Config::default()
+    };
+    assert_eq!(
+        cfg.trash_path(),
+        std::path::PathBuf::from("/vol").join("trash")
+    );
+}
+
+#[test]
+fn trash_path_normalizes_a_single_component_assets_dir_parent_to_current_dir() {
+    let cfg = Config {
+        db: "sqlite::memory:".into(),
+        assets_dir: Some("assets".into()),
+        ..Config::default()
+    };
+    assert_eq!(
+        cfg.trash_path(),
+        std::path::PathBuf::from(".").join("trash")
+    );
+}
+
+#[test]
+fn config_load_accepts_the_default_sibling_layout() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(load_toml(&toml_for(tmp.path(), "")).is_ok());
+}
+
+#[test]
+fn config_load_rejects_trash_dir_nested_inside_each_sibling_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    for key in ["assets_dir", "modules_dir", "backups_dir", "log_dir"] {
+        let outer = base.join(format!("{key}-root"));
+        let inner = outer.join("trash");
+        let body = toml_for(
+            base,
+            &format!(
+                "{key} = {:?}\ntrash_dir = {:?}",
+                outer.to_string_lossy(),
+                inner.to_string_lossy()
+            ),
+        );
+        let err = load_toml(&body).expect_err(key).to_string();
+        assert!(
+            err.contains(key),
+            "{key}: the error names the sibling: {err}"
+        );
+        assert!(
+            err.contains(&*inner.to_string_lossy()) && err.contains(&*outer.to_string_lossy()),
+            "{key}: the error names both paths: {err}"
+        );
+    }
+}
+
+#[test]
+fn config_load_rejects_a_sibling_dir_nested_inside_trash_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trash = tmp.path().join("bin");
+    let body = toml_for(
+        tmp.path(),
+        &format!(
+            "trash_dir = {:?}\nassets_dir = {:?}",
+            trash.to_string_lossy(),
+            trash.join("assets").to_string_lossy()
+        ),
+    );
+    assert!(load_toml(&body).is_err());
+}
+
+#[test]
+fn config_load_rejects_trash_dir_equal_to_a_sibling_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let same = tmp.path().join("shared");
+    let body = toml_for(
+        tmp.path(),
+        &format!(
+            "trash_dir = {:?}\nmodules_dir = {:?}",
+            same.to_string_lossy(),
+            same.to_string_lossy()
+        ),
+    );
+    assert!(load_toml(&body).is_err());
+}
+
+#[test]
+fn trash_dir_sharing_only_a_name_prefix_with_a_sibling_is_accepted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let body = toml_for(
+        tmp.path(),
+        &format!(
+            "assets_dir = {:?}\ntrash_dir = {:?}",
+            tmp.path().join("assets").to_string_lossy(),
+            tmp.path().join("assets-trash").to_string_lossy()
+        ),
+    );
+    assert!(
+        load_toml(&body).is_ok(),
+        "component-wise comparison, not string prefix"
+    );
+}

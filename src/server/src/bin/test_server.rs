@@ -212,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    let trash = Arc::new(shadowcat::trash::Trash::from_config(&config));
     let state = AppState {
         repo,
         config: Arc::new(config),
@@ -225,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        trash,
     };
     shadowcat::http::assets::uploads::spawn_sweeper(
         state.uploads.clone(),
