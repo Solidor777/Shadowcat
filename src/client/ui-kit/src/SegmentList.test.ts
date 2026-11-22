@@ -524,7 +524,7 @@ describe("SegmentList — secret", () => {
 
   it("renders nothing for a secret the server stripped", () => {
     const { container } = render(SegmentList, {
-      props: { segments: [{ kind: "secret", visibility: "gm_only", content: [] }], channel: "general" },
+      props: { segments: [{ kind: "secret", content: [] }], channel: "general" },
       context: setAppContextForTest({ t: fakeT }),
     });
     expect(container.querySelector("[data-testid=secret-segment]")).toBeNull();

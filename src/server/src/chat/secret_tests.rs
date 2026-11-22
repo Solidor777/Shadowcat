@@ -117,6 +117,118 @@ async fn a_user_secret_reaches_only_the_named_user_and_the_author() {
     }
 }
 
+/// The secret segments of a delivered body, outermost first: each entry is the segment's JSON
+/// object, descending through `content` where it was delivered.
+fn secret_chain(engine: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut chain = Vec::new();
+    let mut level = engine["content"].as_array().cloned().unwrap_or_default();
+    while let Some(secret) = level.iter().find(|s| s["kind"] == "secret").cloned() {
+        level = secret
+            .get("content")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        chain.push(secret);
+    }
+    chain
+}
+
+/// A whole delivered document, serialized, so a test can assert an id appears nowhere in it.
+async fn delivered_text(
+    h: &Harness,
+    who: &PermissionContext,
+    ev: &crate::data::snapshot::StoredCommand,
+    id: Uuid,
+) -> String {
+    let doc = wire_ops(h, who, ev)
+        .await
+        .into_iter()
+        .find_map(|op| match op {
+            Operation::Create { doc } if doc.id == id => Some(doc),
+            _ => None,
+        })
+        .expect("the message arrives as a Create");
+    serde_json::to_string(&doc).unwrap()
+}
+
+// Fails if `push_segment_overrides` stops registering `{prefix}/visibility`: the non-recipient
+// copy then keeps `visibility` and its recipient ids.
+#[tokio::test]
+async fn a_non_recipient_copy_has_neither_visibility_nor_content_at_every_depth() {
+    let h = harness().await;
+    let friend = h.friend.user_id.to_string();
+    let bystander = h.bystander.user_id.to_string();
+    let (id, ev) = send_and_event(
+        &h,
+        &h.sender,
+        "[[secret:@friend|outer [[secret:@bystander|inner]] rest]]",
+    )
+    .await;
+
+    // The author reads both levels and both recipient lists.
+    let author = secret_chain(&delivered_engine(&h, &h.sender, &ev, id).await);
+    assert_eq!(author.len(), 2, "the author receives both depths");
+    for seg in &author {
+        assert!(seg.get("visibility").is_some() && seg.get("content").is_some());
+    }
+
+    // The friend reads the outer secret, and is excluded from the inner one.
+    let friend_copy = delivered_engine(&h, &h.friend, &ev, id).await;
+    let chain = secret_chain(&friend_copy);
+    assert_eq!(
+        chain.len(),
+        2,
+        "the inner secret is still on the wire as a stub"
+    );
+    assert!(chain[0].get("visibility").is_some() && chain[0].get("content").is_some());
+    assert!(
+        chain[1].get("visibility").is_none() && chain[1].get("content").is_none(),
+        "depth 2 is withheld from a reader the inner secret excludes: {}",
+        chain[1]
+    );
+    let text = delivered_text(&h, &h.friend, &ev, id).await;
+    assert!(
+        !text.contains(&bystander),
+        "the inner recipient id leaked: {text}"
+    );
+
+    // The bystander and the GM are excluded from the outer secret: no key at depth 1.
+    for who in [&h.bystander, &h.gm] {
+        let chain = secret_chain(&delivered_engine(&h, who, &ev, id).await);
+        assert_eq!(chain.len(), 1, "only the stub remains");
+        assert!(
+            chain[0].get("visibility").is_none() && chain[0].get("content").is_none(),
+            "the stub carries neither key: {}",
+            chain[0]
+        );
+        let text = delivered_text(&h, who, &ev, id).await;
+        assert!(
+            !text.contains(&friend),
+            "the outer recipient id leaked: {text}"
+        );
+    }
+}
+
+// Fails if the GM tier stops removing `visibility`: a GM-only secret then reaches a player with
+// its `visibility` key.
+#[tokio::test]
+async fn a_gm_secret_stub_for_a_player_has_no_visibility_and_the_gm_copy_keeps_both() {
+    let h = harness().await;
+    let (id, ev) = send_and_event(&h, &h.sender, "[[secret:gm|a [[secret:gm|b]]]]").await;
+
+    let gm_chain = secret_chain(&delivered_engine(&h, &h.gm, &ev, id).await);
+    assert_eq!(gm_chain.len(), 2);
+    for seg in &gm_chain {
+        assert_eq!(seg["visibility"], "gm_only");
+        assert!(seg.get("content").is_some());
+    }
+    for who in [&h.sender, &h.friend, &h.bystander] {
+        let chain = secret_chain(&delivered_engine(&h, who, &ev, id).await);
+        assert_eq!(chain.len(), 1);
+        assert!(chain[0].get("visibility").is_none() && chain[0].get("content").is_none());
+    }
+}
+
 #[tokio::test]
 async fn nested_secrets_are_stripped_at_every_depth() {
     let h = harness().await;
@@ -247,6 +359,47 @@ async fn an_edit_recomputes_the_overrides_for_the_new_content() {
     );
 }
 
+// Fails if `scrub_recipient_lists` stops running on Update changes: the edit's
+// `/permissions/property_overrides` write then carries the friend's id to the bystander.
+#[tokio::test]
+async fn an_edit_that_adds_a_secret_does_not_send_recipient_ids_to_a_non_recipient() {
+    let h = harness().await;
+    let id = send(&h, &h.sender, "plain", Audience::Public).await;
+    let (mut rx, _) = h.room.subscribe();
+    let rate = PingRateLimiter::new();
+    handle_edit_message(
+        MessageRequestCtx {
+            room: &h.room,
+            repo: &h.repo,
+            ctx: &h.sender,
+            rate: &rate,
+            vfx_rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 300,
+            budget_per_min: 30,
+        },
+        id,
+        "see [[secret:@friend|meet at dawn]]".into(),
+    )
+    .await
+    .unwrap();
+    let ev = next_event(&mut rx).await;
+
+    let friend = h.friend.user_id.to_string();
+    let bystander_ops = serde_json::to_string(&wire_ops(&h, &h.bystander, &ev).await).unwrap();
+    assert!(!bystander_ops.contains(&friend), "leaked: {bystander_ops}");
+    assert!(!bystander_ops.contains("dawn"));
+    let friend_ops = serde_json::to_string(&wire_ops(&h, &h.friend, &ev).await).unwrap();
+    assert!(
+        friend_ops.contains(&friend) && friend_ops.contains("dawn"),
+        "the named user keeps both: {friend_ops}"
+    );
+}
+
 #[tokio::test]
 async fn the_grammar_refuses_malformed_unknown_and_oversized_secrets() {
     assert!(matches!(
@@ -338,12 +491,13 @@ fn compose_static_builds_gm_secrets_and_refuses_user_secrets() {
     ));
 }
 
+// Fails if the `visibility` field loses its serde default: a stub with no key then refuses to
+// deserialize and the server cannot index or re-read a redacted copy.
 #[test]
-fn a_redacted_secret_deserializes_with_empty_content() {
-    let seg: Segment = serde_json::from_value(serde_json::json!({
-        "kind": "secret",
-        "visibility": "gm_only",
-    }))
-    .unwrap();
-    assert!(matches!(seg, Segment::Secret { content, .. } if content.is_empty()));
+fn a_redacted_secret_deserializes_with_empty_content_and_gm_only_visibility() {
+    let seg: Segment = serde_json::from_value(serde_json::json!({ "kind": "secret" })).unwrap();
+    assert!(matches!(
+        seg,
+        Segment::Secret { visibility: Visibility::GmOnly, content } if content.is_empty()
+    ));
 }

@@ -463,13 +463,18 @@ pub enum Segment {
     TableDraw(TableDrawSegment),
     /// A span only some readers may see, authored as `[[secret:<spec>|<inner>]]`. Produced by
     /// `chat::body::compose_message` and `chat::body::compose_static`. `content` is removed from
-    /// every reader the `visibility` excludes: `secret_property_overrides` registers
+    /// every reader the `visibility` excludes: `segment_property_overrides` registers
     /// `{path}/content` under `visibility`, so egress redaction drops the key itself and the text
-    /// never crosses the wire to an excluded reader. A redacted copy therefore deserializes with
-    /// an empty `content` (`#[serde(default)]`).
+    /// never crosses the wire to an excluded reader. `visibility` is registered under the same
+    /// tier, because a `Recipients` value names the users the secret is for and an excluded
+    /// reader must not learn them. A redacted copy therefore deserializes with an empty `content`
+    /// and a `GmOnly` `visibility` (`#[serde(default)]`), the fail-closed reading of a value the
+    /// reader was never given.
     Secret {
         /// Who may read `content`: `GmOnly` for `[[secret:gm|...]]`, `Recipients` (the named
-        /// users plus the author) for `[[secret:@name|...]]`.
+        /// users plus the author) for `[[secret:@name|...]]`. Absent from a copy the tier
+        /// excludes.
+        #[serde(default = "withheld_secret_visibility")]
         visibility: Visibility,
         /// The hidden segments, nested secrets included.
         #[serde(default)]
@@ -681,7 +686,8 @@ pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, V
 /// The override set for a segment list stored at `root` (`/engine/content` for a message,
 /// `/engine/body` for a note): `RollEmbed`/`TableDraw` internals GM-only as
 /// `roll_property_overrides` documents, and every `Segment::Secret`'s `content` under the
-/// secret's own `visibility`. Recurses into a secret's content, so a roll or a nested secret
+/// secret's own `visibility` (the `content` key and the `visibility` key alike, so the recipient
+/// ids go only where the content goes). Recurses into a secret's content, so a roll or a nested secret
 /// inside a secret is classified at its full path. One walk serves both document types so the
 /// two cannot disagree on which segment hides what.
 pub(crate) fn segment_property_overrides(
@@ -728,11 +734,18 @@ fn push_segment_overrides(root: &str, content: &[Segment], out: &mut BTreeMap<St
                 content,
             } => {
                 out.insert(format!("{prefix}/content"), visibility.clone());
+                out.insert(format!("{prefix}/visibility"), visibility.clone());
                 push_segment_overrides(&format!("{prefix}/content"), content, out);
             }
             _ => {}
         }
     }
+}
+
+/// The `visibility` a `Segment::Secret` deserializes to when egress removed the key: `GmOnly`,
+/// the most restrictive tier, so a copy that lost its recipient list never reads as broader.
+fn withheld_secret_visibility() -> Visibility {
+    Visibility::GmOnly
 }
 
 /// Whether `content` holds a top-level `Segment::Secret`. A nested secret sits inside a

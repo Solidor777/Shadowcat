@@ -469,13 +469,15 @@ export type ChatSegment =
 
 /** A server-redacted block. Mirrors `chat::Segment::Secret`. Declared as its own named type
  * (not a `ChatSegment` union member inline) because it recurses through `content`. The server
- * strips `content` from every copy whose recipient `visibility` excludes; a stripped segment
- * therefore arrives with `content` absent, and a reader treats that as empty. */
+ * strips `content` and `visibility` (which names the recipients) from every copy whose
+ * recipient the `visibility` excludes; a stripped segment therefore arrives with both absent,
+ * and a reader treats the content as empty. */
 export type SecretSegment = {
   /** Discriminant. */
   kind: "secret";
-  /** Who the server delivers `content` to. */
-  visibility: z.infer<typeof VisibilitySchema>;
+  /** Who the server delivers `content` to; absent when the server withheld it from this
+   * recipient, whom it excludes. */
+  visibility?: z.infer<typeof VisibilitySchema>;
   /** The hidden segments; empty when the server withheld them from this recipient. */
   content: (ChatSegment | UnknownSegment)[];
 };
@@ -579,11 +581,12 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
 );
 
 /** Validator for a `SecretSegment`; `z.lazy` since it recurses through `content`. `content`
- * defaults to empty because the server removes the key from a copy the recipient may not read. */
+ * defaults to empty and `visibility` is optional because the server removes both keys from a
+ * copy the recipient may not read. */
 const secretSegmentSchemaImpl: z.ZodType<SecretSegment, z.ZodTypeDef, unknown> = z.lazy(() =>
   z.object({
     kind: z.literal("secret"),
-    visibility: VisibilitySchema,
+    visibility: VisibilitySchema.optional(),
     content: SegmentListSchema.default([]),
   }),
 );

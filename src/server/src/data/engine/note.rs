@@ -174,8 +174,10 @@ impl NoteEngine {
 
     /// The `permissions.property_overrides` entries the derived `body` requires: every
     /// `Segment::Secret`'s `content` under the secret's own visibility, and, when the body holds
-    /// a secret, `/engine/source` as `GmOnly` -- `source` is the markdown the secret was parsed
-    /// from, so leaving it readable would show every reader the hidden text. Derived from the
+    /// a secret, `/engine/source` as `OwnerOrGm` -- `source` is the markdown the secret was parsed
+    /// from, so leaving it readable would show every reader the hidden text; the note's owner
+    /// keeps it so the author can edit their own note. The rendered secret text in `body` stays
+    /// under the secret's own `GmOnly` tier. Derived from the
     /// CURRENT `body`, so call it after `derive_body`. `data::validation::validate_engine_tree`
     /// is the one caller; it owns the `/engine/body` and `/engine/source` override keys of a note.
     ///
@@ -193,13 +195,13 @@ impl NoteEngine {
     /// };
     /// note.derive_body().unwrap();
     /// let overrides = note.secret_property_overrides();
-    /// assert_eq!(overrides["/engine/source"], Visibility::GmOnly);
+    /// assert_eq!(overrides["/engine/source"], Visibility::OwnerOrGm);
     /// assert!(overrides.keys().any(|k| k.starts_with("/engine/body/") && k.ends_with("/content")));
     /// ```
     pub fn secret_property_overrides(&self) -> BTreeMap<String, Visibility> {
         let mut out = segment_property_overrides("/engine/body", &self.body);
         if has_secret(&self.body) {
-            out.insert("/engine/source".to_string(), Visibility::GmOnly);
+            out.insert("/engine/source".to_string(), Visibility::OwnerOrGm);
         }
         out
     }

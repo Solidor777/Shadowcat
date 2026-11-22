@@ -632,7 +632,7 @@ describe("secret segments", () => {
   test("parses a nested secret and a redacted one whose content key is absent", () => {
     const inner = { kind: "secret", visibility: { recipients: ["u1"] }, content: [{ kind: "text", text: "in" }] };
     const outer = { kind: "secret", visibility: "gm_only", content: [inner] };
-    const stripped = { kind: "secret", visibility: "gm_only" };
+    const stripped = { kind: "secret" };
     const eng = parseMessageEngine(msgDoc({ ...base, content: [outer, stripped] }));
     expect(eng).not.toBeNull();
     const [o, s] = eng!.content as { kind: string; content: { kind: string }[] }[];
@@ -640,8 +640,17 @@ describe("secret segments", () => {
     expect(s.content).toEqual([]);
   });
 
-  test("refuses the whole message when a secret has no visibility", () => {
-    expect(parseMessageEngine(msgDoc({ ...base, content: [{ kind: "secret", content: [] }] }))).toBeNull();
+  test("a redacted secret carries no visibility, so no recipient ids, after parsing", () => {
+    const stripped = { kind: "secret" };
+    const eng = parseMessageEngine(msgDoc({ ...base, content: [stripped] }));
+    expect(eng).not.toBeNull();
+    expect((eng!.content[0] as { visibility?: unknown }).visibility).toBeUndefined();
+  });
+
+  test("refuses the whole message when a secret carries a malformed visibility", () => {
+    expect(
+      parseMessageEngine(msgDoc({ ...base, content: [{ kind: "secret", visibility: 5, content: [] }] })),
+    ).toBeNull();
   });
 
   test("isKnownSegment recognizes secret", () => {
