@@ -1759,6 +1759,10 @@ export function resolveSettingProvenance(
       return resolvePick(v?.fogPooling, world?.scene?.fogPooling, system?.scene?.fogPooling, DEFAULT_WORLD_SETTINGS.scene.fogPooling);
     case "scene.autoRotateTokens":
       return resolvePick(v?.autoRotateTokens, world?.scene?.autoRotateTokens, system?.scene?.autoRotateTokens, DEFAULT_WORLD_SETTINGS.scene.autoRotateTokens);
+    case "scene.facingVision":
+      return resolvePick(v?.facingVision, world?.scene?.facingVision, system?.scene?.facingVision, DEFAULT_WORLD_SETTINGS.scene.facingVision);
+    case "scene.facingTurnRule":
+      return resolvePick(v?.facingTurnRule, world?.scene?.facingTurnRule, system?.scene?.facingTurnRule, DEFAULT_WORLD_SETTINGS.scene.facingTurnRule);
     case "scene.partialCellLeniency":
       return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":

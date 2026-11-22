@@ -821,6 +821,25 @@ describe("system defaults", () => {
     });
   });
 
+  it("resolveSettingProvenance resolves facingTurnRule and facingVision through scene, world and system", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { scene: { facingTurnRule: "own_turn", facingVision: true } });
+    const bare = storeWith(sdDoc);
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingTurnRule")).toEqual({
+      value: "own_turn", source: "system", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(bare, undefined, "scene.facingVision").value).toBe(true);
+
+    const scene = buildSceneDoc("w1", {
+      vision: { facingTurnRule: "free", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "s1");
+    expect(resolveSettingProvenance(storeWith(sdDoc, scene), scene, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "scene", systemOrEngine: { value: "own_turn", source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWith(), undefined, "scene.facingTurnRule")).toEqual({
+      value: "free", source: "engine", systemOrEngine: { value: "free", source: "engine" },
+    });
+  });
+
   it("resolveSettingProvenance is STRUCTURAL: a present world leaf is a world override even when its value equals the layer beneath; an absent leaf reports the deeper layer", () => {
     // The world layer is an overlay: presence IS the override signal, so a
     // stored leaf reports "world" even when its value coincides with the
