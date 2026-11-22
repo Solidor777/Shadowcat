@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { AssetResolver, type AudibleEmitter } from "@shadowcat/core";
-import { EmitterPlayer, AUDIBILITY_RAMP_TAU_SECS } from "./emitter-player";
+import { EmitterPlayer, AUDIBILITY_RAMP_TAU_SECS, MUFFLED_LOWPASS_HZ } from "./emitter-player";
 import { OneShotPlayer } from "./one-shot-player";
 import { setMediaElementFactory } from "./track-player";
 import type { GainNodeLike } from "./context";
@@ -21,7 +21,7 @@ function oneShotFor(ctx: ReturnType<typeof stubAudioContext>): OneShotPlayer {
 }
 
 function emitter(over: Partial<AudibleEmitter> = {}): AudibleEmitter {
-  return { token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.4, loop: true, ...over };
+  return { token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.4, muffled: false, loop: true, ...over };
 }
 
 beforeEach(() => {
@@ -138,6 +138,59 @@ describe("EmitterPlayer", () => {
     await player.sync(emitter({ gain: -0.4 }), true);
     expect(ctx.gains[0].gain.value).toBeGreaterThanOrEqual(0);
     expect(ctx.gains[0].gain.value).toBe(0);
+  });
+
+  it("a muffled frame routes panner to lowpass to dest; an unmuffled frame leaves the graph untouched", async () => {
+    const ctx = stubAudioContext();
+    const out = dest();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), out);
+    const [lowpass] = ctx.filters;
+    expect(lowpass.type).toBe("lowpass");
+    expect(lowpass.frequency.value).toBe(MUFFLED_LOWPASS_HZ);
+    const pannerConnect = vi.spyOn(ctx.panners[0], "connect");
+    const pannerDisconnect = vi.spyOn(ctx.panners[0], "disconnect");
+
+    await player.sync(emitter({ muffled: false }), true);
+    expect(pannerConnect, "unmuffled start: the constructor's panner to dest route stands").not.toHaveBeenCalled();
+    expect(pannerDisconnect).not.toHaveBeenCalled();
+
+    await player.sync(emitter({ muffled: true }), true);
+    expect(pannerDisconnect).toHaveBeenCalledTimes(1);
+    expect(pannerConnect).toHaveBeenCalledTimes(1);
+    expect(pannerConnect).toHaveBeenCalledWith(lowpass);
+    expect(lowpass.connect).toHaveBeenCalledWith(out);
+  });
+
+  it("a repeated muffled value never reconnects (a reconnect each frame would click)", async () => {
+    const ctx = stubAudioContext();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), dest());
+    await player.sync(emitter({ muffled: true }), true);
+    const pannerConnect = vi.spyOn(ctx.panners[0], "connect");
+    const pannerDisconnect = vi.spyOn(ctx.panners[0], "disconnect");
+    await player.sync(emitter({ muffled: true, gain: 0.3 }), true);
+    await player.sync(emitter({ muffled: true, gain: 0.2 }), true);
+    expect(pannerConnect).not.toHaveBeenCalled();
+    expect(pannerDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("muffled true to false reconnects panner to dest and drops the lowpass", async () => {
+    const ctx = stubAudioContext();
+    const out = dest();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), out);
+    await player.sync(emitter({ muffled: true }), true);
+    const pannerConnect = vi.spyOn(ctx.panners[0], "connect");
+    await player.sync(emitter({ muffled: false }), true);
+    expect(pannerConnect).toHaveBeenCalledTimes(1);
+    expect(pannerConnect).toHaveBeenCalledWith(out);
+    expect(ctx.filters[0].disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispose also disconnects the lowpass", async () => {
+    const ctx = stubAudioContext();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), dest());
+    await player.sync(emitter({ muffled: true }), true);
+    player.dispose();
+    expect(ctx.filters[0].disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("clamps a gain above 1 to 1 before writing to the AudioParam", async () => {

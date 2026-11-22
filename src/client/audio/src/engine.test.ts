@@ -386,7 +386,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: "tok-listener",
       spatial: true,
-      emitters: tokens.map((token) => ({ token, asset: "a-wind", gain: 0.5, pan: 0.2, loop: true })),
+      emitters: tokens.map((token) => ({ token, asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true })),
     });
     engine.applyAudibility(slice("a", "b"));
     engine.applyAudibility(slice("b", "c"));
@@ -401,7 +401,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: "tok-listener",
       spatial: true,
-      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true }],
     });
     expect(ctx.sources).toHaveLength(0);
     await engine.unlock();
@@ -418,7 +418,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: "tok-listener",
       spatial: true,
-      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, loop: true }],
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, muffled: false, loop: true }],
     });
     await new Promise((r) => setTimeout(r, 20));
     expect(ctx.panners[0].pan.value, "the local opt-out centers panning").toBe(0);
@@ -444,7 +444,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: "tok-listener",
       spatial: true,
-      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, loop: true }],
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, muffled: false, loop: true }],
     });
     expect(created).toHaveLength(1);
     expect(created[0].loop).toBe(true);
@@ -457,7 +457,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: null,
       spatial: true,
-      emitters: [{ token: "tok-2", asset: "a-rain", gain: 1, pan: 0, loop: false }],
+      emitters: [{ token: "tok-2", asset: "a-rain", gain: 1, pan: 0, muffled: false, loop: false }],
     });
     expect(created).toHaveLength(2);
   });
@@ -481,7 +481,7 @@ describe("AudioEngine", () => {
       scene: "s1",
       listener: "tok-listener",
       spatial: true,
-      emitters: [{ token: "tok-1", asset: "a-wind", gain: -0.9, pan: 0, loop: true }],
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: -0.9, pan: 0, muffled: false, loop: true }],
     });
     expect(created[0].volume).toBeGreaterThanOrEqual(0);
     expect(created[0].volume).toBe(0);

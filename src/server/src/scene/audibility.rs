@@ -177,6 +177,7 @@ impl SceneEcs {
 ///     asset: "a-wind".into(),
 ///     gain: 0.5,
 ///     pan: -0.25,
+///     muffled: false,
 ///     loop_: true,
 /// };
 /// assert!(emitter.loop_);
@@ -196,6 +197,11 @@ pub struct AudibleEmitter {
     pub gain: f64,
     /// Stereo pan, `-1..=1`.
     pub pan: f64,
+    /// Whether `gain` was reduced by wall occlusion this frame (`Occlusion::Walls` plus
+    /// `segment_occluded`). The client runs a lowpass filter while `true`. Set by the same
+    /// branch that applies `throughWallGain`, so the two never disagree; `false` under flat
+    /// mixing, without a listener, and under `Occlusion::None`.
+    pub muffled: bool,
     /// Loop the asset per the emission's own `loop` flag.
     #[serde(rename = "loop")]
     pub loop_: bool,
@@ -325,11 +331,11 @@ impl SceneEcs {
                 0.0
             };
 
-            let (gain, pan) = if !overlay.spatial {
-                (volume, 0.0)
+            let (gain, pan, muffled) = if !overlay.spatial {
+                (volume, 0.0, false)
             } else {
                 match &listener_view {
-                    None => (0.0, 0.0),
+                    None => (0.0, 0.0, false),
                     Some((lp, walls)) => {
                         let dx = pos.0 - lp.0;
                         let dy = pos.1 - lp.1;
@@ -340,13 +346,15 @@ impl SceneEcs {
                             f64::INFINITY
                         };
                         let mut g = volume * falloff(t);
+                        let mut muffled = false;
                         if g > 0.0
                             && overlay.occlusion == eng::Occlusion::Walls
                             && segment_occluded(*lp, pos, walls)
                         {
                             g = (g * overlay.through_wall_gain).max(0.0);
+                            muffled = true;
                         }
-                        (g, pan_for(dx, radius_world))
+                        (g, pan_for(dx, radius_world), muffled)
                     }
                 }
             };
@@ -356,6 +364,7 @@ impl SceneEcs {
                 asset: sound.asset,
                 gain,
                 pan,
+                muffled,
                 loop_: sound.loop_,
             });
         }

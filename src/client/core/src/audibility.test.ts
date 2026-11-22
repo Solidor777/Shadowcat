@@ -16,7 +16,7 @@ function validPayload(): unknown {
         scene: "scene-1",
         listener: "tok-9",
         spatial: true,
-        emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: -0.25, loop: true }],
+        emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: -0.25, muffled: true, loop: true }],
       },
       {
         scene: "scene-2",
@@ -36,7 +36,7 @@ describe("parseAudibility", () => {
       scene: "scene-1",
       listener: "tok-9",
       spatial: true,
-      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: -0.25, loop: true }],
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: -0.25, muffled: true, loop: true }],
     });
     expect(parsed.scenes[1]).toEqual({ scene: "scene-2", listener: null, spatial: false, emitters: [] });
   });
