@@ -196,6 +196,7 @@
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     moduleStatus: session.moduleStatus,
+    activeModuleManifests: () => session.activeModuleManifests(),
     leaveWorld: () => leaveWorld(),
     logout: async () => {
       await logout();

@@ -313,13 +313,30 @@ pub async fn get_world_enabled_modules(
     Ok(Json(state.repo.world_enabled_modules(world).await?))
 }
 
+/// The module ids an installed module's raw manifest declares it conflicts with. A missing,
+/// non-array or partly non-string `conflicts` member contributes only its string entries (none
+/// when it is not an array): the scanner does not validate this optional member, so a malformed
+/// one must not reject the module.
+fn declared_conflicts(m: &crate::modules::InstalledModule) -> Vec<String> {
+    m.manifest_json
+        .get("conflicts")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Replace a world's enabled installed-module set. GM/admin only. Every entry
 /// must name a currently-installed, validly-manifested module whose
 /// `engines.shadowcat` range is satisfied by the running server version —
 /// enabling a version-incompatible or unknown module is rejected outright,
 /// atomically (never partially applied). An entry opting into
 /// `validators_enabled` on a module that declares no validators is rejected
-/// the same way (there is nothing to opt into).
+/// the same way (there is nothing to opt into). Two entries where one module's manifest
+/// `conflicts` names the other are rejected the same way; every failure is reported together.
 ///
 /// # Examples
 ///
@@ -410,6 +427,24 @@ pub async fn set_world_enabled_modules(
         // An enabled module with no declared validators can never meaningfully opt in.
         if entry.validators_enabled && m.validators.is_empty() {
             failures.push(format!("module '{}' declares no validators", entry.id));
+        }
+    }
+    // A module's `conflicts` names install-folder ids (the enable set's key space) that must not
+    // be enabled beside it. The check is directional per declaration and covers either listing
+    // order; a conflict with a module outside the requested set is irrelevant. An absent or
+    // malformed `conflicts` member reads as empty, the same fail-open posture the scanner takes
+    // for optional manifest members it does not validate.
+    for entry in &entries {
+        let Some(m) = installed.iter().find(|m| m.id == entry.id) else {
+            continue;
+        };
+        for named in declared_conflicts(m) {
+            if named != entry.id && entries.iter().any(|e| e.id == named) {
+                failures.push(format!(
+                    "module '{}' conflicts with module '{named}'; both cannot be enabled",
+                    entry.id
+                ));
+            }
         }
     }
     if !failures.is_empty() {

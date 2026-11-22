@@ -758,3 +758,123 @@ async fn enabled_modules_aggregates_every_bad_entrys_failure_into_one_response()
         "response must report the second bad entry too, not just the first: {message}"
     );
 }
+
+/// Writes an engine-compatible module whose manifest carries `extra` raw JSON members.
+fn write_compatible_module(dir: &std::path::Path, id: &str, extra: &str) {
+    std::fs::create_dir_all(dir.join(id)).unwrap();
+    std::fs::write(
+        dir.join(id).join("module.json"),
+        format!(
+            r#"{{"id":"{id}","version":"1.0.0","engines":{{"shadowcat":"^{}"}}{extra}}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+}
+
+/// Enabling two modules where one declares `conflicts` naming the other is rejected, naming both
+/// ids, and nothing is persisted; enabling either alone succeeds.
+#[tokio::test]
+async fn enabled_modules_rejects_a_conflicting_pair_and_accepts_either_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    let resp = gm
+        .put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+        ]))
+        .await;
+    resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let body: serde_json::Value = resp.json();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("mod-a") && message.contains("mod-b"),
+        "message must name both ids: {message}"
+    );
+    let got: serde_json::Value = gm.get(&url).await.json();
+    assert_eq!(
+        got,
+        serde_json::json!([]),
+        "a rejected batch persists nothing"
+    );
+
+    for only in ["mod-a", "mod-b"] {
+        gm.put(&url)
+            .json(&serde_json::json!([{"id":only,"validators_enabled":false}]))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+}
+
+/// The declaring module may be listed after the module it names, and a conflict with a module
+/// that is installed but not in the requested set is ignored.
+#[tokio::test]
+async fn enabled_modules_conflict_is_order_independent_and_ignores_modules_outside_the_set() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    write_compatible_module(dir.path(), "mod-c", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let url = format!("/api/worlds/{world_id}/enabled-modules");
+
+    gm.put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-b","validators_enabled":false},
+            {"id":"mod-a","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    gm.put(&url)
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-c","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// A malformed `conflicts` member is read as empty (fail-open, like every optional manifest
+/// member the scanner does not validate): it never rejects the module or its batch.
+#[tokio::test]
+async fn enabled_modules_treats_a_malformed_conflicts_member_as_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":"mod-b""#);
+    write_compatible_module(dir.path(), "mod-b", r#","conflicts":[7,null]"#);
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+        ]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+/// A conflict failure is reported beside the per-entry failures in one response.
+#[tokio::test]
+async fn enabled_modules_reports_a_conflict_together_with_other_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    write_compatible_module(dir.path(), "mod-a", r#","conflicts":["mod-b"]"#);
+    write_compatible_module(dir.path(), "mod-b", "");
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let resp = gm
+        .put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([
+            {"id":"mod-a","validators_enabled":false},
+            {"id":"mod-b","validators_enabled":false},
+            {"id":"ghost","validators_enabled":false},
+        ]))
+        .await;
+    resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let body: serde_json::Value = resp.json();
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ghost") && message.contains("conflicts with"),
+        "both failure kinds must be reported: {message}"
+    );
+}

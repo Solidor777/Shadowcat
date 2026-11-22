@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
-import { ModuleRegistry, type Module } from "./modules";
+import { ModuleRegistry, checkSatisfiability, type Module } from "./modules";
+import type { ModuleManifest } from "./manifest";
 import { HookBus } from "./hooks";
 import { ServiceRegistry } from "./services";
 import { MiddlewareChain } from "./middleware";
@@ -551,4 +552,88 @@ test("a module already active is not reported again by a later activate() pass",
   r.add(mod("second", {}));
   const result = await r.activate();
   expect(result.outcomes.map((o) => o.id)).toEqual(["second"]);
+});
+
+/** A catalog entry for `checkSatisfiability` tests. */
+function entry(
+  id: string,
+  extra: Partial<ModuleManifest> = {},
+): { id: string; manifest: ModuleManifest } {
+  return { id, manifest: { id, version: "1.0.0", dependencies: {}, ...extra } };
+}
+
+test("checkSatisfiability is empty for a satisfiable set", () => {
+  const catalog = [
+    entry("a", { dependencies: { b: "^1.0.0" }, requires: ["ui:x"] }),
+    entry("b", { provides: [{ contract: "ui:x", cardinality: "multi" }] }),
+    entry("c", { conflicts: ["zzz"] }),
+  ];
+  expect(checkSatisfiability(["a", "b", "c"], catalog)).toEqual([]);
+});
+
+test("checkSatisfiability reports a conflict between two checked modules, and not when one is unchecked", () => {
+  const catalog = [entry("a", { conflicts: ["b"] }), entry("b")];
+  expect(checkSatisfiability(["a", "b"], catalog)).toEqual([
+    { kind: "conflict", moduleId: "a", target: "b" },
+  ]);
+  expect(checkSatisfiability(["a"], catalog)).toEqual([]);
+  expect(checkSatisfiability(["b"], catalog)).toEqual([]);
+});
+
+test("checkSatisfiability reports an unmet dependency: absent, unchecked and out of range", () => {
+  const catalog = [
+    entry("a", { dependencies: { b: "^1.0.0" } }),
+    entry("b", { version: "2.0.0" }),
+  ];
+  const unmet = { kind: "dependency-unmet", moduleId: "a", target: "b" };
+  expect(checkSatisfiability(["a"], catalog)).toEqual([unmet]);
+  expect(checkSatisfiability(["a", "b"], catalog)).toEqual([unmet]);
+  expect(checkSatisfiability(["a"], [entry("a", { dependencies: { gone: "*" } })])).toEqual([
+    { kind: "dependency-unmet", moduleId: "a", target: "gone" },
+  ]);
+});
+
+test("checkSatisfiability reports an unmet required contract, honouring a version range", () => {
+  const catalog = [
+    entry("a", { requires: [{ contract: "ui:x", version: "^2.0.0" }] }),
+    entry("p", { provides: [{ contract: "ui:x", cardinality: "multi" }] }),
+  ];
+  expect(checkSatisfiability(["a", "p"], catalog)).toEqual([
+    { kind: "contract-unmet", moduleId: "a", target: "ui:x" },
+  ]);
+  expect(checkSatisfiability(["a"], [entry("a", { requires: ["ui:x"] })])).toEqual([
+    { kind: "contract-unmet", moduleId: "a", target: "ui:x" },
+  ]);
+});
+
+test("checkSatisfiability collects every problem rather than stopping at the first", () => {
+  const catalog = [
+    entry("a", { conflicts: ["b"], dependencies: { gone: "*" }, requires: ["ui:x"] }),
+    entry("b"),
+  ];
+  expect(checkSatisfiability(["a", "b"], catalog)).toHaveLength(3);
+});
+
+test("checkSatisfiability counts a running manifest outside the catalog, but not one the catalog owns", () => {
+  const firstParty: ModuleManifest = {
+    id: "core-ui",
+    version: "1.0.0",
+    dependencies: {},
+    provides: [{ contract: "ui:x", cardinality: "multi" }],
+  };
+  const catalog = [entry("a", { dependencies: { "core-ui": "^1.0.0" }, requires: ["ui:x"] })];
+  expect(checkSatisfiability(["a"], catalog, [firstParty])).toEqual([]);
+  const owned = [...catalog, entry("core-ui")];
+  expect(checkSatisfiability(["a"], owned, [firstParty])).toEqual([
+    { kind: "dependency-unmet", moduleId: "a", target: "core-ui" },
+    { kind: "contract-unmet", moduleId: "a", target: "ui:x" },
+  ]);
+});
+
+test("ModuleRegistry.activeManifests lists only active modules", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add(mod("on", {}));
+  await r.activate();
+  r.add(mod("off", { missing: "*" }));
+  expect(r.activeManifests().map((m) => m.id)).toEqual(["on"]);
 });

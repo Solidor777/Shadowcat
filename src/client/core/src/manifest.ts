@@ -136,6 +136,10 @@ export interface ModuleManifest {
    * `version` via `ContractRequire.version`. Normalize with `normalizeRequires` rather than
    * hand-rolling the `typeof` check. */
   requires?: (string | ContractRequire)[];
+  /** Install-folder ids of modules that must not be enabled in the same world as this one; absent
+   * means none. The server rejects an enable set holding a declared pair
+   * (`set_world_enabled_modules`) and `checkSatisfiability` previews that rejection. */
+  conflicts?: string[];
   /** Engine-compat range; optional because first-party modules never set it (see `ModuleEngines`
    * doc) while community modules must. */
   engines?: ModuleEngines;
@@ -193,6 +197,7 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
       z.union([z.string(), z.object({ contract: z.string(), version: z.string().optional() })]),
     )
     .optional(),
+  conflicts: z.array(z.string()).optional(),
   engines: ModuleEnginesSchema.optional(),
   // A bare relative `.css` path: no leading slash, no `..` segment, and no
   // backslash — WHATWG URL resolution treats `\` as a path separator for

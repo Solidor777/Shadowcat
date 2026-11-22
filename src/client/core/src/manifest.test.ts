@@ -216,3 +216,10 @@ test("a non-object systemDefaults is rejected (shape check only; the server is t
     }),
   ).toThrow();
 });
+
+test("conflicts survives parseManifest and a non-string-array conflicts is rejected", () => {
+  const base = { id: "m", version: "1.0.0", dependencies: {} };
+  expect(parseManifest({ ...base, conflicts: ["other"] }).conflicts).toEqual(["other"]);
+  expect(parseManifest(base).conflicts).toBeUndefined();
+  expect(() => parseManifest({ ...base, conflicts: "other" })).toThrow();
+});

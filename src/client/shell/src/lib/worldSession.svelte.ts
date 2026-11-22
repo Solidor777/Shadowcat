@@ -2095,6 +2095,18 @@ export class WorldSession {
     this.#moduleStyleLinks.delete(manifestId);
   }
 
+  /** The manifests of every module active in this session, first-party and external.
+   * @returns One manifest per active module, from `ModuleRegistry.activeManifests`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const manifests = session.activeModuleManifests();
+   * ```
+   */
+  activeModuleManifests(): ModuleManifest[] {
+    return this.#modules.activeManifests();
+  }
+
   /** Re-fetches this world's enabled external-module set and reconciles the running session
    * against it: unloads (cascade) any currently-loaded external module no longer enabled, and
    * loads + activates any newly-enabled one. First-party modules (`opts.modules`) are never

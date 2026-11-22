@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
 import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -417,6 +417,11 @@ export interface AppContext {
    * problem. This is the live `WorldSession.moduleStatus` map, not a copy, so reads inside a
    * Svelte reactive scope track it. */
   moduleStatus: ReadonlyMap<string, ModuleStatusEntry>;
+  /** The manifests of every module active in the running session, first-party included.
+   * `ModuleManager.svelte` hands them to `checkSatisfiability` as the modules that satisfy a
+   * candidate's dependencies and contracts without being toggled.
+   * @returns One manifest per active module. */
+  activeModuleManifests: () => ModuleManifest[];
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */

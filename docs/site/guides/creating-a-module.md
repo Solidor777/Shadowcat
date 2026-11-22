@@ -61,6 +61,11 @@ Field by field:
   version at **enable time** (a GM toggles the module on) *and* **load time** (a
   client imports it). A community module without this field can never be enabled.
 - **`dependencies`** — other module ids this module needs, with semver ranges.
+- **`conflicts`** *(optional)* — install-folder names of modules that must not be
+  enabled in the same world as yours. The server rejects an enable set holding a
+  declared pair, naming both modules, and the module manager shows the same problem
+  inline and disables Save before the request is sent. Declaring a conflict on
+  one side is enough; the check covers either listing order.
 - **`provides` / `requires`** — UI contract declarations. This module requires
   the panel-manager's `shadowcat.panel` contract and provides nothing of its own.
 - **`requirements`** — declarative path-prefix → capability rules, unioned into

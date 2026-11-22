@@ -145,6 +145,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     moduleStatus: over.moduleStatus ?? new Map(),
+    activeModuleManifests: over.activeModuleManifests ?? (() => []),
     // Mirrors `WorldSession.viewedSceneId`: null only when no scene exists, otherwise the
     // `resolveViewedScene` answer (snapshotted at construction).
     viewedSceneId: over.viewedSceneId !== undefined ? over.viewedSceneId : resolveViewedScene(documents),
