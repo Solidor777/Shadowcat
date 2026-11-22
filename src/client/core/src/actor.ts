@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission, FactionStance, Faction } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission, FactionStance, Faction, FacingVision } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -69,6 +69,11 @@ export interface EffectiveActor {
   sound: SoundEmission | null;
   /** Effective VFX emission, or `null` for none. Same wholesale-override precedence as `aura`. */
   vfx: VfxEmission | null;
+  /** Effective facing-limited field of view, or `null` for an all-round one. Per-token
+   * `overrides.facing_vision` replaces the actor base wholesale, exactly like `visionModes`
+   * (mirrors the server's `SceneEcs::token_facing_vision`). Takes effect only on a scene whose
+   * resolved `facingVision` switch is on; see `resolveTokenFacingVision`. */
+  facingVision: FacingVision | null;
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -111,6 +116,7 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     aura: overrides?.aura ?? base.aura ?? null,
     sound: overrides?.sound ?? base.sound ?? null,
     vfx: overrides?.vfx ?? base.vfx ?? null,
+    facingVision: overrides?.facing_vision ?? base.facing_vision ?? null,
   };
 }
 
@@ -175,6 +181,34 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
     return project(embedded, base, undefined, factionOf(base.faction));
   }
   return null;
+}
+
+/** A token's effective facing-limited field of view, by the precedence of the server's
+ * `SceneEcs::resolve_token_actor_field`: a linked token reads `overrides.facing_vision`, else its
+ * actor's; a dangling link yields `null` (overrides ignored); an instanced token reads its
+ * embedded actor's; an actorless token reads its own `TokenEngine.facing_vision`. The first three
+ * cases are `resolveTokenActor`'s `facingVision`; only the actorless case reads the token body.
+ * The value matters only on a scene whose resolved `facingVision` switch is on.
+ * @param token The token document to resolve.
+ * @param store The document store to resolve a linked actor against.
+ * @returns The effective `FacingVision`, or `null` when the token sees all round.
+ * @example
+ * ```ts
+ * import { resolveTokenFacingVision, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const token: WireDocument;
+ * declare const store: ReadableDocuments;
+ * const facing = resolveTokenFacingVision(token, store);
+ * facing?.arc;
+ * ```
+ */
+export function resolveTokenFacingVision(token: WireDocument, store: ReadableDocuments): FacingVision | null {
+  const eff = resolveTokenActor(token, store);
+  if (eff) return eff.facingVision;
+  const eng = token.engine as TokenEngine | undefined;
+  // A set `actor_id` with no resolvable actor is a dangling link: no fallback to the token body.
+  if (eng?.actor_id) return null;
+  return eng?.facing_vision ?? null;
 }
 
 /** Structural equality for the discriminated `WireScope` union — never `===`, which compares

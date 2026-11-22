@@ -2,7 +2,7 @@ import { describe, it, expect, test } from "vitest";
 import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
 import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, buildFactionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
-import { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
+import { resolveTokenActor, resolveTokenFacingVision, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 import type { RenderVisual, TokenVisual } from "./scene-docs";
 
@@ -94,6 +94,40 @@ describe("resolveTokenActor", () => {
     const raw = buildTokenDoc("w1", "scene1", rawTokenEngine({ visual: { kind: "image", asset: "z" } }));
     const eff = resolveTokenActor(raw, new DocumentStore());
     expect(eff).toBeNull(); // a raw token has no EffectiveActor at all — hence no emissions
+  });
+});
+
+describe("resolveTokenFacingVision", () => {
+  const ACTOR_FACING = { arc: 120, near: 1 };
+  const TOKEN_FACING = { arc: 60, near: 0 };
+  const overrides = (facing_vision: { arc: number; near: number } | undefined): NonNullable<TokenEngine["overrides"]> => ({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null, disposition: null, facing_vision });
+
+  it("a linked token reads its actor's value, and a token override replaces it wholesale", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, facing_vision: ACTOR_FACING }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenFacingVision(token, storeWith(actor))).toEqual(ACTOR_FACING);
+    (token.engine as TokenEngine).overrides = overrides(TOKEN_FACING);
+    expect(resolveTokenFacingVision(token, storeWith(actor))).toEqual(TOKEN_FACING);
+  });
+
+  it("an instanced token reads its embedded actor's value and ignores overrides", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, facing_vision: ACTOR_FACING }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 });
+    (token.engine as TokenEngine).overrides = overrides(TOKEN_FACING);
+    expect(resolveTokenFacingVision(token, new DocumentStore())).toEqual(ACTOR_FACING);
+  });
+
+  it("an actorless token reads its own body, and a dangling link reads nothing", () => {
+    const raw = buildTokenDoc("w1", "scene1", rawTokenEngine({ facing_vision: TOKEN_FACING }));
+    expect(resolveTokenFacingVision(raw, new DocumentStore())).toEqual(TOKEN_FACING);
+    const dangling = buildTokenDoc("w1", "scene1", rawTokenEngine({ actor_id: "gone", facing_vision: TOKEN_FACING }));
+    expect(resolveTokenFacingVision(dangling, new DocumentStore())).toBeNull();
+  });
+
+  it("an actor with no facing value resolves null", () => {
+    const actor = buildActorDoc("w1", NAME, eng, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenFacingVision(token, storeWith(actor))).toBeNull();
   });
 });
 

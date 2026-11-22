@@ -788,6 +788,16 @@ describe("system defaults", () => {
     expect(r.animation.speedCellsPerSec).toBe(6);
   });
 
+  it("resolveSceneSettings folds facingVision and facingTurnRule engine < system < scene", () => {
+    expect(resolveSceneSettings(undefined, storeWith())).toMatchObject({ facingVision: false, facingTurnRule: "free" });
+    const sd = buildSystemDefaultsDoc("w1", { scene: { facingVision: true, facingTurnRule: "own_turn" } });
+    expect(resolveSceneSettings(undefined, storeWith(sd))).toMatchObject({ facingVision: true, facingTurnRule: "own_turn" });
+    const scene = buildSceneDoc("w1", {
+      vision: { facingVision: false, facingTurnRule: "free", losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "s1");
+    expect(resolveSceneSettings(scene, storeWith(sd, scene))).toMatchObject({ facingVision: false, facingTurnRule: "free" });
+  });
+
   it("resolveSettingProvenance names the layer that supplied the value", () => {
     const sd: SystemDefaultsEngine = { scene: { fog: false }, pathfinding: { diagonalRule: "manhattan" } };
     const sdDoc = buildSystemDefaultsDoc("w1", sd);
