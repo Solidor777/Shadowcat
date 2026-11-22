@@ -225,7 +225,7 @@ async fn a_paused_session_refuses_a_write_to_a_combat_document() {
         &h.repo,
         &h.player,
         Uuid::nil(),
-        &[combatant.clone()]
+        std::slice::from_ref(&combatant)
     )
     .await
     .is_none());

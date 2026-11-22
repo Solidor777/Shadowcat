@@ -662,7 +662,7 @@ async fn handle_socket(
                             .lock()
                             .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                         match frame {
-                            Message::Text(t) => match {
+                            Message::Text(t) => {
                                 let parsed = serde_json::from_str::<ClientMsg>(t.as_str());
                                 // A paused session refuses a non-GM's move request and combat
                                 // intents here, before any handler resolves them, so one rule
@@ -677,8 +677,7 @@ async fn handle_socket(
                                         continue;
                                     }
                                 }
-                                parsed
-                            } {
+                                match parsed {
                                 Ok(ClientMsg::Intent { intent_id, ops }) => {
                                     // Structural admission chokepoint for `MAX_INTENT_DOCS`:
                                     // `WS_MAX_MESSAGE_BYTES` derives the frame-size cap FROM
@@ -1436,6 +1435,7 @@ async fn handle_socket(
                                         })))
                                         .await;
                                 }
+                            }
                             },
                             Message::Close(_) => break,
                             _ => {}

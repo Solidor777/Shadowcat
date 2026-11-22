@@ -747,6 +747,17 @@ pub struct SessionState {
 impl SessionState {
     /// Ingress validation beyond serde shape: `message` is at most `MAX_SESSION_MESSAGE_CHARS`
     /// characters and holds no control character.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::SessionState;
+    ///
+    /// let ok = SessionState { message: Some("Back in ten".into()), ..Default::default() };
+    /// assert!(ok.validate().is_ok());
+    /// let bad = SessionState { message: Some("a\nb".into()), ..Default::default() };
+    /// assert!(bad.validate().is_err());
+    /// ```
     pub fn validate(&self) -> Result<(), String> {
         if let Some(m) = &self.message {
             if m.chars().count() > MAX_SESSION_MESSAGE_CHARS {
