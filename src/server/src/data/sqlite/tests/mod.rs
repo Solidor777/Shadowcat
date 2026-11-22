@@ -12,6 +12,7 @@ mod rows_and_validation;
 mod sandbox_validators;
 mod search_and_worlds;
 mod table_folders;
+mod token_art;
 
 pub(super) use super::*;
 pub(super) use crate::data::command::FieldChange;

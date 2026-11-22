@@ -62,7 +62,7 @@ pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC
 pub use table_folder::TableFolderEngine;
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, TransformAnchor,
+    Size, SoundEmission, TokenArtFilter, TokenEngine, TokenOverrides, TokenVisual, TransformAnchor,
     VisionAssignment, VisualTransform,
 };
 
