@@ -21,6 +21,7 @@ function track(id: string, over: Partial<PlayingTrack> = {}): PlayingTrack {
     loop: false,
     startedAt: 0,
     pausedAt: null,
+    sessionPaused: false,
     ...over,
   };
 }

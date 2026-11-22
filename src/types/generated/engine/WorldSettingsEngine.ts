@@ -4,6 +4,7 @@ import type { AudioOverlay } from "./AudioOverlay";
 import type { CombatDefaults } from "./CombatDefaults";
 import type { PathfindingOverlay } from "./PathfindingOverlay";
 import type { SceneDefaultsOverlay } from "./SceneDefaultsOverlay";
+import type { SessionState } from "./SessionState";
 
 /**
  * The engine body of a "world-settings" config document: the world layer of
@@ -52,4 +53,8 @@ combat?: CombatDefaults | null,
  * World-level audio overlay (spatial/occlusion/through-wall gain); absent fields fall
  * back to the engine literals on `AudioOverlay`'s own doc.
  */
-audio?: AudioOverlay | null, };
+audio?: AudioOverlay | null, 
+/**
+ * The whole-session pause switch; absent = not paused.
+ */
+session?: SessionState | null, };

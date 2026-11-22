@@ -203,6 +203,7 @@ impl PlaylistEngine {
 ///     loop_: false,
 ///     started_at: 0.0,
 ///     paused_at: None,
+///     session_paused: false,
 /// };
 /// assert!(entry.paused_at.is_none());
 /// ```
@@ -242,6 +243,11 @@ pub struct PlayingTrack {
     /// rationale as `started_at`.
     #[serde(default, rename = "pausedAt")]
     pub paused_at: Option<f64>,
+    /// `true` when the session pause (`SessionState.paused` with `pause_audio`) paused this entry;
+    /// the session resume resumes only entries carrying it, so a track the GM paused by hand stays
+    /// paused. Cleared by every `AudioOp::Resume` and by the session resume.
+    #[serde(default, rename = "sessionPaused")]
+    pub session_paused: bool,
 }
 
 /// The engine body of the world's singleton "audio-state" document: the server's own transport

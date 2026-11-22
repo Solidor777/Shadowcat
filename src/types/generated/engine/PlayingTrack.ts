@@ -20,6 +20,7 @@ import type { AudioChannel } from "./AudioChannel";
  *     loop_: false,
  *     started_at: 0.0,
  *     paused_at: None,
+ *     session_paused: false,
  * };
  * assert!(entry.paused_at.is_none());
  * ```
@@ -69,4 +70,10 @@ startedAt: number,
  * Server wall-clock ms at which this entry was paused; `Some` ⇒ paused. Same `f64`
  * rationale as `started_at`.
  */
-pausedAt: number | null, };
+pausedAt: number | null, 
+/**
+ * `true` when the session pause (`SessionState.paused` with `pause_audio`) paused this entry;
+ * the session resume resumes only entries carrying it, so a track the GM paused by hand stays
+ * paused. Cleared by every `AudioOp::Resume` and by the session resume.
+ */
+sessionPaused: boolean, };

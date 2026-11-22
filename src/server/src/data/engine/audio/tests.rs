@@ -82,6 +82,7 @@ fn audio_state_engine_rejects_over_cap_playing() {
             loop_: false,
             started_at: 0.0,
             paused_at: None,
+            session_paused: false,
         })
         .collect();
     let state = AudioStateEngine {

@@ -44,7 +44,12 @@ export const VisibilitySchema = z.union([
   z.object({ recipients: z.array(z.string()) }),
 ]);
 export const WorldRoleSchema = z.enum(["gm", "player", "spectator"]);
-export const RejectReasonSchema = z.enum(["forbidden", "conflict", "invalid"]);
+export const RejectReasonSchema = z.enum([
+  "forbidden",
+  "conflict",
+  "invalid",
+  "paused",
+]);
 export const PathErrorReasonSchema = z.enum(["unreachable", "invalid", "exceeded"]);
 /** Why a pathfind failed, as the server reports it on a `path_error` frame. */
 export type WirePathErrorReason = z.infer<typeof PathErrorReasonSchema>;
@@ -1133,6 +1138,9 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** `"paused"` when the session pause refused the move; absent or `null` for every
+       * other refusal. DECLARED optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
     }
   | {
       /** A `send_message`/`edit_message`/`delete_message` was rejected. One shared variant
@@ -1158,6 +1166,9 @@ export type ServerMsg =
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+      /** `"paused"` when the session pause refused the intent; absent or `null` for every
+       * other refusal. DECLARED optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
     }
   | {
       /** A combat intent was accepted and committed as the sequenced `event` at `seq`.
@@ -1448,6 +1459,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("move_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("chat_error"),
@@ -1458,6 +1470,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("combat_error"),
     request_id: z.string(),
     message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("combat_result"),
