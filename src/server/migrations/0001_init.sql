@@ -11,7 +11,11 @@ CREATE TABLE users (
   server_role TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   password_hash TEXT,
-  ui_state TEXT
+  ui_state TEXT,
+  avatar_bytes BLOB,
+  avatar_content_type TEXT,
+  colour TEXT,
+  pronouns TEXT
 );
 
 CREATE TABLE worlds (

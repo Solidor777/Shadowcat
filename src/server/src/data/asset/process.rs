@@ -49,6 +49,27 @@ fn decode_limits() -> image::Limits {
     limits
 }
 
+/// Decodes `bytes` fully under `decode_limits`, discarding the pixels: `Ok` when the bytes are
+/// a decodable image within the bound, otherwise the decoder's message. A caller that stores
+/// uploaded image bytes verbatim (the account avatar) runs this first so a decompression bomb
+/// is refused before it is stored and later served. BLOCKING (CPU-bound decode); async callers
+/// run it under `tokio::task::spawn_blocking`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::check_decodable;
+///
+/// assert!(check_decodable(b"not an image").is_err());
+/// ```
+pub fn check_decodable(bytes: &[u8]) -> Result<(), String> {
+    let mut reader = ImageReader::new(io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    reader.limits(decode_limits());
+    reader.decode().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// File-name suffix of the retained original beside the canonical.
 const ORIGINAL_SUFFIX: &str = ".orig";
 /// File-name suffix of the server-derived grid-sheet image (animated sources only).

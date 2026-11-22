@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
 
+mod account_profile;
+
 pub(crate) async fn test_state() -> AppState {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     AppState {

@@ -1479,9 +1479,17 @@ pub async fn delete_world(
 /// use shadowcat::data::document::WorldRole;
 /// use shadowcat::http::routes::MemberEntry;
 ///
-/// let entry = MemberEntry { user: uuid::Uuid::new_v4(), username: "pl".into(), role: WorldRole::Player };
+/// let entry = MemberEntry {
+///     user: uuid::Uuid::new_v4(),
+///     username: "pl".into(),
+///     role: WorldRole::Player,
+///     colour: Some("#336699".into()),
+///     pronouns: None,
+///     has_avatar: false,
+/// };
 /// let value = serde_json::to_value(&entry).unwrap();
 /// assert_eq!(value["username"], "pl");
+/// assert_eq!(value["colour"], "#336699");
 /// ```
 #[derive(Serialize)]
 pub struct MemberEntry {
@@ -1491,6 +1499,13 @@ pub struct MemberEntry {
     pub username: String,
     /// Member's world role.
     pub role: WorldRole,
+    /// Account colour accent as `#rrggbb`, or `null` when unset.
+    pub colour: Option<String>,
+    /// Account pronouns, or `null` when unset.
+    pub pronouns: Option<String>,
+    /// Whether the account has an avatar; the client builds the avatar URL from this flag, the
+    /// world and the user, so the roster payload never embeds bytes.
+    pub has_avatar: bool,
 }
 
 /// List the world's roster. Any member may call it (chat resolves user ids to
@@ -1551,13 +1566,322 @@ pub async fn list_members(
     Ok(Json(
         members
             .into_iter()
-            .map(|(user, username, role)| MemberEntry {
-                user,
-                username,
-                role,
+            .map(|m| MemberEntry {
+                user: m.user,
+                username: m.username,
+                role: m.role,
+                colour: m.colour,
+                pronouns: m.pronouns,
+                has_avatar: m.has_avatar,
             })
             .collect(),
     ))
+}
+
+/// Longest account pronouns text, in characters (display bound, like `MAX_USERNAME_LEN`).
+const MAX_PRONOUNS_CHARS: usize = 32;
+/// Largest accepted avatar upload, in bytes. An avatar is a small fixed class of upload (the
+/// client resizes to a small square first), so this is independent of `upload_max_bytes`.
+pub const MAX_AVATAR_BYTES: usize = 128 * 1024;
+/// The only avatar content types: the sniffed type must be one of these.
+const AVATAR_CONTENT_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// Normalize and validate account pronouns: trimmed, at most `MAX_PRONOUNS_CHARS` characters,
+/// no control characters. Free display text (unlike a username), so any printable character is
+/// admissible. A blank value reads as "not set" and yields `None`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::validate_pronouns;
+///
+/// assert_eq!(validate_pronouns("  they/them ").unwrap().as_deref(), Some("they/them"));
+/// assert_eq!(validate_pronouns("   ").unwrap(), None);
+/// assert!(validate_pronouns(&"x".repeat(33)).is_err());
+/// ```
+pub fn validate_pronouns(raw: &str) -> Result<Option<String>, AppError> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > MAX_PRONOUNS_CHARS {
+        return Err(AppError::Unprocessable(format!(
+            "pronouns must be at most {MAX_PRONOUNS_CHARS} characters"
+        )));
+    }
+    if text.chars().any(char::is_control) {
+        return Err(AppError::Unprocessable(
+            "pronouns may not contain control characters".into(),
+        ));
+    }
+    Ok(Some(text.to_owned()))
+}
+
+/// Body of `PUT /api/account/profile`. Both fields are replaced together; `null` clears one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::ProfileRequest;
+///
+/// let body: ProfileRequest =
+///     serde_json::from_str(r##"{"colour":"#336699","pronouns":null}"##).unwrap();
+/// assert_eq!(body.colour.as_deref(), Some("#336699"));
+/// ```
+#[derive(Deserialize)]
+pub struct ProfileRequest {
+    /// Colour accent as `#rrggbb` (`validate_hex_color`, the shape every colour field shares),
+    /// or `null` to clear.
+    pub colour: Option<String>,
+    /// Pronouns text (`validate_pronouns`), or `null` to clear.
+    pub pronouns: Option<String>,
+}
+
+/// PUT /api/account/profile — any authenticated account sets its OWN colour and pronouns.
+/// There is no path parameter, so the target is always the caller. The colour goes through the
+/// shared `validate_hex_color` and an invalid value is `AppError::Unprocessable` (422).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{put_profile, ProfileRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let id = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo: repo.clone(),
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let user = AuthUser { id, username: "gm".into(), role: ServerRole::User };
+/// let body = ProfileRequest { colour: Some("#336699".into()), pronouns: Some("she/her".into()) };
+/// let status = put_profile(user, State(state), Json(body)).await.unwrap();
+/// assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+/// let record = repo.user_by_id(id).await.unwrap().unwrap();
+/// assert_eq!(record.colour.as_deref(), Some("#336699"));
+/// # }
+/// ```
+pub async fn put_profile(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<ProfileRequest>,
+) -> Result<StatusCode, AppError> {
+    if let Some(colour) = body.colour.as_deref() {
+        crate::data::engine::geometry::validate_hex_color(colour)
+            .map_err(AppError::Unprocessable)?;
+    }
+    let pronouns = match body.pronouns.as_deref() {
+        Some(raw) => validate_pronouns(raw)?,
+        None => None,
+    };
+    state
+        .repo
+        .set_profile(user.id, body.colour.as_deref(), pronouns.as_deref())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT /api/account/avatar — any authenticated account sets its OWN avatar from the raw request
+/// body. The route layer caps the body at `MAX_AVATAR_BYTES` (413 beyond it, before this
+/// handler runs). The content type is sniffed from the bytes with `detect_image_type`, never
+/// taken from the request, and must be PNG, JPEG or WebP; the bytes must then decode under
+/// the asset pipeline's decode bound (`check_decodable`), so a decompression bomb is refused
+/// before it is stored. Either failure is `AppError::Unprocessable` (422). The avatar lives on
+/// the `users` row, not in the per-world asset store, so one avatar serves every world the
+/// account belongs to.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::body::Bytes;
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::put_avatar;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let id = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let user = AuthUser { id, username: "gm".into(), role: ServerRole::User };
+/// // Not an image: refused with 422.
+/// assert!(put_avatar(user, State(state), Bytes::from_static(b"not an image")).await.is_err());
+/// # }
+/// ```
+pub async fn put_avatar(
+    user: AuthUser,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, AppError> {
+    let content_type = crate::http::assets::detect_image_type(&body)
+        .filter(|t| AVATAR_CONTENT_TYPES.contains(t))
+        .ok_or_else(|| {
+            AppError::Unprocessable("avatar must be a PNG, JPEG or WebP image".into())
+        })?;
+    let probe = body.clone();
+    tokio::task::spawn_blocking(move || crate::data::asset::process::check_decodable(&probe))
+        .await
+        .map_err(|_| AppError::Internal)?
+        .map_err(|e| AppError::Unprocessable(format!("avatar image cannot be decoded: {e}")))?;
+    state
+        .repo
+        .set_avatar(user.id, Some((&body, content_type)))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /api/account/avatar — clears the caller's OWN avatar. Idempotent: clearing an absent
+/// avatar is also 204.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::delete_avatar;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let id = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let user = AuthUser { id, username: "gm".into(), role: ServerRole::User };
+/// let status = delete_avatar(user, State(state)).await.unwrap();
+/// assert_eq!(status, axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
+pub async fn delete_avatar(
+    user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<StatusCode, AppError> {
+    state.repo.set_avatar(user.id, None).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/worlds/{id}/members/{user}/avatar — a member's avatar bytes. Scoped under the world
+/// route family so the roster's own visibility boundary applies: the caller must be a member of
+/// the world (`permission_context`, 403 otherwise) AND the target must also be a member of that
+/// world, else 404 — the same answer as "no avatar", so the route cannot be used to learn which
+/// accounts share a world with someone else. The stored sniffed content type is served with
+/// `nosniff`; `no-cache` makes a changed avatar visible on the next load.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_member_avatar;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
+///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// // The GM is a member but has set no avatar: 404.
+/// assert!(get_member_avatar(user, State(state), Path((world.id, gm))).await.is_err());
+/// # }
+/// ```
+pub async fn get_member_avatar(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path((world, target)): Path<(Uuid, Uuid)>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::response::IntoResponse;
+    state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await?;
+    if state.repo.member_role(world, target).await?.is_none() {
+        return Err(AppError::NotFound);
+    }
+    let (bytes, content_type) = state
+        .repo
+        .avatar_for(target)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                "nosniff".to_owned(),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "private, no-cache".to_owned(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// Identifies the target of a membership write.
