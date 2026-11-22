@@ -11,11 +11,16 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::chat::{compose_static, Segment, NOTE_CONTENT_POLICY};
+use crate::chat::{
+    compose_static, has_secret, segment_property_overrides, Segment, NOTE_CONTENT_POLICY,
+};
+use crate::data::document::Visibility;
 
 /// Doc_type for a rich-text note: a document tree (`parent_id` names another
 /// note in the same scope, see `check_note_parent`), never embedded (see
@@ -165,6 +170,38 @@ impl NoteEngine {
         self.body = compose_static(&self.source, &NOTE_CONTENT_POLICY, MAX_NOTE_SPANS)
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// The `permissions.property_overrides` entries the derived `body` requires: every
+    /// `Segment::Secret`'s `content` under the secret's own visibility, and, when the body holds
+    /// a secret, `/engine/source` as `GmOnly` -- `source` is the markdown the secret was parsed
+    /// from, so leaving it readable would show every reader the hidden text. Derived from the
+    /// CURRENT `body`, so call it after `derive_body`. `data::validation::validate_engine_tree`
+    /// is the one caller; it owns the `/engine/body` and `/engine/source` override keys of a note.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::Visibility;
+    /// use shadowcat::data::engine::note::NoteEngine;
+    ///
+    /// let mut note = NoteEngine {
+    ///     source: "intro [[secret:gm|the vault code]]".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
+    /// note.derive_body().unwrap();
+    /// let overrides = note.secret_property_overrides();
+    /// assert_eq!(overrides["/engine/source"], Visibility::GmOnly);
+    /// assert!(overrides.keys().any(|k| k.starts_with("/engine/body/") && k.ends_with("/content")));
+    /// ```
+    pub fn secret_property_overrides(&self) -> BTreeMap<String, Visibility> {
+        let mut out = segment_property_overrides("/engine/body", &self.body);
+        if has_secret(&self.body) {
+            out.insert("/engine/source".to_string(), Visibility::GmOnly);
+        }
+        out
     }
 }
 

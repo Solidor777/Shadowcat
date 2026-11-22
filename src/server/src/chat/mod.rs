@@ -461,6 +461,20 @@ pub enum Segment {
     /// are GM-only at every depth (see `roll_property_overrides`'s
     /// `push_draw_overrides`), mirroring `RollEmbed`'s own GM-only fields.
     TableDraw(TableDrawSegment),
+    /// A span only some readers may see, authored as `[[secret:<spec>|<inner>]]`. Produced by
+    /// `chat::body::compose_message` and `chat::body::compose_static`. `content` is removed from
+    /// every reader the `visibility` excludes: `secret_property_overrides` registers
+    /// `{path}/content` under `visibility`, so egress redaction drops the key itself and the text
+    /// never crosses the wire to an excluded reader. A redacted copy therefore deserializes with
+    /// an empty `content` (`#[serde(default)]`).
+    Secret {
+        /// Who may read `content`: `GmOnly` for `[[secret:gm|...]]`, `Recipients` (the named
+        /// users plus the author) for `[[secret:@name|...]]`.
+        visibility: Visibility,
+        /// The hidden segments, nested secrets included.
+        #[serde(default)]
+        content: Vec<Segment>,
+    },
 }
 
 /// One executed table draw. See `Segment::TableDraw`'s doc for the recursion
@@ -661,8 +675,29 @@ pub struct RecalcEntry {
 /// from `build_message_doc` at Create time and from `handle_recalc_roll`
 /// after every recalculation.
 pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
+    segment_property_overrides("/engine/content", content)
+}
+
+/// The override set for a segment list stored at `root` (`/engine/content` for a message,
+/// `/engine/body` for a note): `RollEmbed`/`TableDraw` internals GM-only as
+/// `roll_property_overrides` documents, and every `Segment::Secret`'s `content` under the
+/// secret's own `visibility`. Recurses into a secret's content, so a roll or a nested secret
+/// inside a secret is classified at its full path. One walk serves both document types so the
+/// two cannot disagree on which segment hides what.
+pub(crate) fn segment_property_overrides(
+    root: &str,
+    content: &[Segment],
+) -> BTreeMap<String, Visibility> {
     let mut out = BTreeMap::new();
+    push_segment_overrides(root, content, &mut out);
+    out
+}
+
+/// Recursive worker for `segment_property_overrides`: emits the override entries for
+/// `content[i]` at `{root}/{i}` for every `i`.
+fn push_segment_overrides(root: &str, content: &[Segment], out: &mut BTreeMap<String, Visibility>) {
     for (i, seg) in content.iter().enumerate() {
+        let prefix = format!("{root}/{i}");
         match seg {
             Segment::RollEmbed {
                 spec,
@@ -671,25 +706,58 @@ pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, V
                 ..
             } => {
                 if spec.is_some() {
-                    out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
+                    out.insert(format!("{prefix}/spec"), Visibility::GmOnly);
                 }
                 if raw.is_some() {
-                    out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
+                    out.insert(format!("{prefix}/raw"), Visibility::GmOnly);
                 }
                 if let Some(history) = recalc_history {
                     for j in 0..history.len() {
                         out.insert(
-                            format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
+                            format!("{prefix}/recalc_history/{j}/previous_raw"),
                             Visibility::GmOnly,
                         );
                     }
                 }
             }
             Segment::TableDraw(draw) => {
-                push_draw_overrides(&format!("/engine/content/{i}"), draw, &mut out);
+                push_draw_overrides(&prefix, draw, out);
+            }
+            Segment::Secret {
+                visibility,
+                content,
+            } => {
+                out.insert(format!("{prefix}/content"), visibility.clone());
+                push_segment_overrides(&format!("{prefix}/content"), content, out);
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `content` holds a top-level `Segment::Secret`. A nested secret sits inside a
+/// top-level one, so the top level decides.
+pub(crate) fn has_secret(content: &[Segment]) -> bool {
+    content
+        .iter()
+        .any(|seg| matches!(seg, Segment::Secret { .. }))
+}
+
+/// The complete override set of a stored message: `roll_property_overrides` plus, when the
+/// content carries a secret, `/engine/source` restricted to the author. `source` is the raw
+/// input the secret spans were parsed from, so leaving it readable would hand every reader the
+/// text the secret hides; the author keeps it for edit prefill. Used by every site that writes
+/// a message's `permissions.property_overrides`, so the set always matches the content it
+/// protects.
+pub(crate) fn message_property_overrides(engine: &MessageEngine) -> BTreeMap<String, Visibility> {
+    let mut out = roll_property_overrides(&engine.content);
+    if has_secret(&engine.content) {
+        out.insert(
+            "/engine/source".to_string(),
+            Visibility::Recipients {
+                recipients: vec![engine.user_owner],
+            },
+        );
     }
     out
 }
@@ -972,7 +1040,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
             default,
             users,
             gm_role,
-            property_overrides: roll_property_overrides(&engine.content),
+            property_overrides: message_property_overrides(&engine),
             ..Default::default()
         },
         embedded: BTreeMap::new(),
@@ -1711,6 +1779,7 @@ pub async fn handle_send_message(
             channel: &channel,
             actor_owner: actor_owner.as_ref(),
             policy: &policy,
+            author: ctx.user_id,
         };
         match body::compose_message(&parsed.body, compose_deps, body::ScanMode::Execute).await {
             Ok((segments, image_urls)) => (segments, image_urls),
@@ -2029,6 +2098,7 @@ pub async fn handle_edit_message(
         channel: &sys.channel,
         actor_owner: sys.actor_owner.as_ref(),
         policy: &policy,
+        author: sys.user_owner,
     };
     let (mut segments, image_urls) =
         match body::compose_message(&body, compose_deps, body::ScanMode::NoExecute).await {
@@ -2077,15 +2147,31 @@ pub async fn handle_edit_message(
     sys.edited_at = Some(now);
     let new_engine = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+    // The edited content may add or drop a secret, so the override set is recomputed from it
+    // exactly as `handle_recalc_roll` does.
+    let op_failed =
+        |e: serde_json::Error| SendMessageError::Data(DataError::OpFailed(e.to_string()));
+    let new_overrides =
+        serde_json::to_value(message_property_overrides(&sys)).map_err(op_failed)?;
+    let old_overrides =
+        serde_json::to_value(&cur.permissions.property_overrides).map_err(op_failed)?;
 
     let op = Operation::Update {
         doc_id: message_id,
-        changes: vec![FieldChange {
-            remove: false,
-            path: "/engine".into(),
-            old: cur.engine.unwrap_or_default(),
-            new: new_engine,
-        }],
+        changes: vec![
+            FieldChange {
+                remove: false,
+                path: "/engine".into(),
+                old: cur.engine.unwrap_or_default(),
+                new: new_engine,
+            },
+            FieldChange {
+                remove: false,
+                path: "/permissions/property_overrides".into(),
+                old: old_overrides,
+                new: new_overrides,
+            },
+        ],
     };
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
         .await
@@ -2514,7 +2600,7 @@ pub async fn handle_recalc_roll(
         *outcome = new_outcome;
     }
 
-    let overrides = roll_property_overrides(&sys.content);
+    let overrides = message_property_overrides(&sys);
     let new_engine = serde_json::to_value(&sys)
         .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
     let new_overrides_json = serde_json::to_value(&overrides)
@@ -2689,7 +2775,7 @@ pub async fn handle_revise_audience(
     validate_audience(repo, world_id, ctx.user_id, &audience).await?;
 
     let (default, gm_role, users) = permissions_for_audience(sys.user_owner, &audience);
-    let overrides = roll_property_overrides(&sys.content);
+    let overrides = message_property_overrides(&sys);
     sys.audience = audience;
 
     let op_failed =
@@ -2744,6 +2830,9 @@ mod audience_command_tests;
 
 #[cfg(test)]
 mod revise_audience_tests;
+
+#[cfg(test)]
+mod secret_tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;

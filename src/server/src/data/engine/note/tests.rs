@@ -411,3 +411,67 @@ async fn an_update_whose_derived_body_exceeds_the_size_cap_is_rejected() {
     let engine: NoteEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     assert_eq!(engine.source, "hello");
 }
+
+#[tokio::test]
+async fn a_gm_secret_in_a_note_stamps_server_derived_overrides_over_client_ones() {
+    use crate::data::command::{FieldChange, Operation, WriteOrigin};
+    use crate::data::document::{Visibility, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let mut doc = note_doc(world_id, None, "a [[secret:gm|hidden]] b");
+    let doc_id = doc.id;
+    // A client cannot widen or pre-seed the derived keys.
+    doc.permissions
+        .property_overrides
+        .insert("/engine/source".to_string(), Visibility::All);
+    doc.permissions
+        .property_overrides
+        .insert("/engine/body/9/content".to_string(), Visibility::All);
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Create { doc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    let o = &stored.permissions.property_overrides;
+    assert_eq!(o.get("/engine/source"), Some(&Visibility::GmOnly));
+    assert_eq!(o.get("/engine/body/1/content"), Some(&Visibility::GmOnly));
+    assert!(
+        !o.contains_key("/engine/body/9/content"),
+        "a client key under the body is dropped"
+    );
+
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Update {
+            doc_id,
+            changes: vec![FieldChange {
+                path: "/engine/source".to_string(),
+                old: serde_json::json!("a [[secret:gm|hidden]] b"),
+                new: serde_json::json!("plain"),
+                remove: false,
+            }],
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    assert!(
+        stored.permissions.property_overrides.is_empty(),
+        "removing the secret drops the derived overrides"
+    );
+}

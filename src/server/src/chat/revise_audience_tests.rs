@@ -14,23 +14,23 @@ use crate::ws::PingRateLimiter;
 use std::sync::Arc;
 
 /// A world with a GM, a sender player, a second player and a bystander.
-struct Harness {
+pub(super) struct Harness {
     /// The backing repository.
-    repo: SqliteRepository,
+    pub(super) repo: SqliteRepository,
     /// The world's room.
-    room: Arc<Room>,
+    pub(super) room: Arc<Room>,
     /// The GM's context.
-    gm: PermissionContext,
+    pub(super) gm: PermissionContext,
     /// The message author's context.
-    sender: PermissionContext,
+    pub(super) sender: PermissionContext,
     /// A player a whisper can name.
-    friend: PermissionContext,
+    pub(super) friend: PermissionContext,
     /// A player no audience names.
-    bystander: PermissionContext,
+    pub(super) bystander: PermissionContext,
 }
 
 /// Builds the four-user world.
-async fn harness() -> Harness {
+pub(super) async fn harness() -> Harness {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let gm = repo
         .create_user("gm", None, ServerRole::User, 0)
@@ -72,7 +72,12 @@ async fn harness() -> Harness {
 }
 
 /// Sends `content` as `who` to `audience` and returns the stored message id.
-async fn send(h: &Harness, who: &PermissionContext, content: &str, audience: Audience) -> Uuid {
+pub(super) async fn send(
+    h: &Harness,
+    who: &PermissionContext,
+    content: &str,
+    audience: Audience,
+) -> Uuid {
     let rate = PingRateLimiter::new();
     let (cmd, _) = handle_send_message(
         MessageRequestCtx {
@@ -121,7 +126,9 @@ fn req<'a>(
 }
 
 /// Receives the next committed command off the room's broadcast.
-async fn next_event(rx: &mut tokio::sync::broadcast::Receiver<RoomEvent>) -> StoredCommand {
+pub(super) async fn next_event(
+    rx: &mut tokio::sync::broadcast::Receiver<RoomEvent>,
+) -> StoredCommand {
     loop {
         match rx.recv().await.unwrap() {
             RoomEvent::Event(ev) => return (*ev).clone(),
@@ -131,7 +138,11 @@ async fn next_event(rx: &mut tokio::sync::broadcast::Receiver<RoomEvent>) -> Sto
 }
 
 /// What `who` receives on the wire for `ev`: the per-recipient filtered ops.
-async fn wire_ops(h: &Harness, who: &PermissionContext, ev: &StoredCommand) -> Vec<Operation> {
+pub(super) async fn wire_ops(
+    h: &Harness,
+    who: &PermissionContext,
+    ev: &StoredCommand,
+) -> Vec<Operation> {
     let current = load_current_docs(&h.repo, &ev.command).await;
     filter_command(
         &ev.command,
