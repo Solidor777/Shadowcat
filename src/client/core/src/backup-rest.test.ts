@@ -5,6 +5,7 @@ import {
   deleteBackup,
   restoreBackup,
   pruneBackups,
+  dismissRestoreFailed,
 } from "./backup-rest";
 
 /** A fetch response with a JSON body. */
@@ -101,6 +102,15 @@ describe("backup-rest", () => {
     expect(fetchMock.mock.calls[0][1]).toEqual({ method: "DELETE" });
     fetchMock.mockResolvedValueOnce(json(404, { error: "not found" }));
     await expect(deleteBackup("backup-2")).rejects.toThrow("not found");
+  });
+
+  it("dismissRestoreFailed DELETEs the marker route and rejects on failure", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await dismissRestoreFailed();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/admin/backups/restore-failed");
+    expect(fetchMock.mock.calls[0][1]).toEqual({ method: "DELETE" });
+    fetchMock.mockResolvedValueOnce(json(403, { error: "forbidden" }));
+    await expect(dismissRestoreFailed()).rejects.toThrow("forbidden");
   });
 
   it("restoreBackup POSTs the restore route and returns the staged marker", async () => {

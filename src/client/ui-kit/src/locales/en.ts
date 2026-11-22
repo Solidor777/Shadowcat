@@ -143,6 +143,8 @@ export const en: Messages = {
   "settings.backups.restoreError": "Could not restore: {message}",
   "settings.backups.stopping": "The server is stopping to restore the backup from {when}. Start it again to apply the restore. A safety backup of the current state was saved as {id}.",
   "settings.backups.restoreFailed": "The restore of {id} requested {when} was not applied: {error}. The server started on its existing data.",
+  "settings.backups.dismissFailed": "Dismiss",
+  "settings.backups.dismissError": "Could not dismiss the failed-restore notice: {message}",
   "settings.backups.restoreFailedUnknown": "A staged restore was not applied: {error}. The server started on its existing data.",
   "settings.backups.delete": "Delete",
   "settings.backups.deleteRow": "Delete the backup from {when}",

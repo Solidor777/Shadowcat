@@ -47,6 +47,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
     deleteBackup: vi.fn(),
     restoreBackup: vi.fn(),
     pruneBackups: vi.fn(),
+    dismissRestoreFailed: vi.fn(),
   };
 });
 
@@ -59,6 +60,7 @@ describe("BackupManager", () => {
     vi.mocked(core.deleteBackup).mockResolvedValue(undefined);
     vi.mocked(core.restoreBackup).mockResolvedValue({ staged: true, pre_restore_id: "backup-9" });
     vi.mocked(core.pruneBackups).mockResolvedValue({ removed: ["backup-1"] });
+    vi.mocked(core.dismissRestoreFailed).mockResolvedValue(undefined);
   });
 
   it("renders nothing and fetches nothing for a non-admin, even a world GM", async () => {
@@ -293,6 +295,37 @@ describe("BackupManager", () => {
       expect((await screen.findByRole("alert")).textContent).toContain(
         "settings.backups.restoreFailedUnknown",
       );
+    });
+
+    it("hides the banner after the server clears the marker", async () => {
+      const { listBackups, dismissRestoreFailed } = await import("@shadowcat/core");
+      vi.mocked(listBackups).mockResolvedValue(
+        listing({ restore_failed: { id: "backup-1", requested_at_ms: 5, error: "boom" } }) as never,
+      );
+      const { container } = render(BackupManager, {
+        context: setAppContextForTest({ serverRole: "admin" }),
+      });
+      await screen.findByRole("alert");
+      await fireEvent.click(screen.getByRole("button", { name: "settings.backups.dismissFailed" }));
+      await vi.waitFor(() => expect(container.querySelector(".restore-failed")).toBeNull());
+      expect(vi.mocked(dismissRestoreFailed)).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the banner and reports the error when the dismissal fails", async () => {
+      const { listBackups, dismissRestoreFailed } = await import("@shadowcat/core");
+      vi.mocked(listBackups).mockResolvedValue(
+        listing({ restore_failed: { id: "backup-1", requested_at_ms: 5, error: "boom" } }) as never,
+      );
+      vi.mocked(dismissRestoreFailed).mockRejectedValueOnce(new Error("nope"));
+      const { container } = render(BackupManager, {
+        context: setAppContextForTest({ serverRole: "admin" }),
+      });
+      await screen.findByRole("alert");
+      await fireEvent.click(screen.getByRole("button", { name: "settings.backups.dismissFailed" }));
+      await vi.waitFor(() =>
+        expect(container.textContent).toContain("settings.backups.dismissError"),
+      );
+      expect(container.querySelector(".restore-failed")).not.toBeNull();
     });
   });
 });

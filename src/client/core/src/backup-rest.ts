@@ -148,6 +148,20 @@ export async function restoreBackup(id: string): Promise<RestoreStaged> {
   return (await res.json()) as RestoreStaged;
 }
 
+/** Clears the failed-restore marker the server wrote at startup, moving it into the server's
+ * trash. Succeeds when no marker exists. Admin-only.
+ * @example
+ * ```ts
+ * import { dismissRestoreFailed } from "@shadowcat/core";
+ *
+ * await dismissRestoreFailed();
+ * ```
+ */
+export async function dismissRestoreFailed(): Promise<void> {
+  const res = await fetch("/api/admin/backups/restore-failed", { method: "DELETE" });
+  if (!res.ok) throw new Error(await restError(res, "dismiss failed restore failed"));
+}
+
 /** Applies the server's retention policy now, moving the backups it no longer keeps into the
  * trash. Admin-only.
  * @returns The ids that were removed.

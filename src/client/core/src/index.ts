@@ -201,6 +201,7 @@ export {
   deleteBackup,
   restoreBackup,
   pruneBackups,
+  dismissRestoreFailed,
 } from "./backup-rest";
 export type {
   BackupManifestView,

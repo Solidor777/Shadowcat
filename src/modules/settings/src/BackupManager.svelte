@@ -6,6 +6,7 @@
     deleteBackup,
     restoreBackup,
     pruneBackups,
+    dismissRestoreFailed,
     fmtBytes,
     type BackupEntryView,
     type BackupListingView,
@@ -185,6 +186,28 @@
   }
 
   /**
+   * Asks the server to clear the failed-restore marker, then hides the banner. A failure is
+   * reported on `actionError` and leaves the banner showing.
+   * @returns Resolves once the banner state and `actionError` reflect the outcome; never rejects.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the banner's Dismiss button
+   * await dismissFailure();
+   * ```
+   */
+  async function dismissFailure(): Promise<void> {
+    actionError = null;
+    try {
+      await dismissRestoreFailed();
+      if (listing) listing = { ...listing, restore_failed: null };
+    } catch (e) {
+      actionError = t("settings.backups.dismissError", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /**
    * Applies the server's retention policy now and reports how many backups it moved into the
    * trash, then reloads the list.
    * @returns Resolves once `pruned`/`actionError`/`listing` reflect the outcome; never rejects.
@@ -218,15 +241,20 @@
       </p>
     {/if}
     {#if listing?.restore_failed}
-      <p class="error restore-failed" role="alert">
-        {listing.restore_failed.id
-          ? t("settings.backups.restoreFailed", {
-              id: listing.restore_failed.id,
-              when: when(listing.restore_failed.requested_at_ms),
-              error: listing.restore_failed.error,
-            })
-          : t("settings.backups.restoreFailedUnknown", { error: listing.restore_failed.error })}
-      </p>
+      <div class="restore-failed">
+        <p class="error" role="alert">
+          {listing.restore_failed.id
+            ? t("settings.backups.restoreFailed", {
+                id: listing.restore_failed.id,
+                when: when(listing.restore_failed.requested_at_ms),
+                error: listing.restore_failed.error,
+              })
+            : t("settings.backups.restoreFailedUnknown", { error: listing.restore_failed.error })}
+        </p>
+        <button type="button" onclick={dismissFailure}>
+          {t("settings.backups.dismissFailed")}
+        </button>
+      </div>
     {/if}
     <button type="button" onclick={backUpNow} disabled={backingUp || busy || staged !== null}>
       {t("settings.backups.backupNow")}
@@ -332,6 +360,12 @@
   }
   .error {
     color: var(--danger);
+  }
+  .restore-failed {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
   }
   .hint,
   .meta {
