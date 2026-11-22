@@ -19,7 +19,7 @@ function setup() {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "t1") }],
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "t1") }],
   });
   const drags: (string | null)[] = [];
   const overlays: unknown[][] = [];
@@ -42,8 +42,8 @@ function setupTwo() {
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok2") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok2") },
     ],
   });
   const bridge = new SceneInteractionBridge();
@@ -151,7 +151,7 @@ function harness(opts: {
       { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
       ...opts.tokens.map((t) => ({
         op: "create" as const,
-        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, t.id),
+        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, t.id),
       })),
     ],
   });
@@ -476,7 +476,7 @@ function doorHarness(opts: {
   if (opts.tokenAt) {
     const tok = buildTokenDoc("w1", "s1", {
       x: opts.tokenAt.x, y: opts.tokenAt.y, w: 100, h: 100, rotation: 0,
-      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
     }, "tok1");
     tok.owner = "u1";
     ops.push({ op: "create", doc: tok });

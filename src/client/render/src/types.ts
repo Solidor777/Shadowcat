@@ -159,6 +159,9 @@ export interface ResolvedArtTransform {
   scale: number;
   /** Multiply tint, packed `0xRRGGBB`; absent for none. */
   tint?: number;
+  /** Direction the art faces as drawn, degrees in the `TokenNodeSpec.rotation` convention; the
+   * backend turns the art by the token's rotation minus this. Absent means the art faces +x. */
+  facing?: number;
 }
 
 /** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
@@ -337,6 +340,15 @@ export interface ShapeNodeSpec {
     /** Stroke width, in scene (px) units. */
     width: number;
   } | null;
+  /** Dash pattern for an open polyline's stroke, in scene units: `on` drawn then `off` gap,
+   * restarting at the start of each polyline segment. Absent = a solid stroke. Ignored for a
+   * closed shape. */
+  dash?: {
+    /** Drawn length of one dash. */
+    on: number;
+    /** Gap length between dashes. */
+    off: number;
+  };
   /** Fill styling, or `null` for no fill (also unused when `closed` is `false`). */
   fill: {
     /** Fill color, `0xRRGGBB`. */

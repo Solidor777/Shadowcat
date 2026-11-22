@@ -51,6 +51,20 @@ describe("Settings theme picker", () => {
   });
 });
 
+describe("Settings trash section", () => {
+  it("mounts the trash manager for a server admin and not for a plain user", () => {
+    const admin = render(Settings, {
+      context: setAppContextForTest({ role: "player", serverRole: "admin" }),
+    });
+    expect(admin.container.querySelector(".trash-manager")).not.toBeNull();
+    admin.unmount();
+    const user = render(Settings, {
+      context: setAppContextForTest({ role: "gm", serverRole: "user" }),
+    });
+    expect(user.container.querySelector(".trash-manager")).toBeNull();
+  });
+});
+
 describe("Settings custom theme management", () => {
   afterEach(() => {
     theme.previewCustom(null);

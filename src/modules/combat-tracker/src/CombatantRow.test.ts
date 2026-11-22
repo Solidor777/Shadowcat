@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { tick } from "svelte";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, buildActorDoc, buildTokenDoc, buildConditionRegistryDoc, type CombatantEngine, type ActorEngine, type TokenEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
+import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, buildActorDoc, buildEffectDoc, buildTokenDoc, buildConditionRegistryDoc, type CombatantEngine, type ActorEngine, type TokenEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
 import CombatantRow from "./CombatantRow.svelte";
 import { fakeCombatApi } from "./__fixtures__/fakeCombatApi";
 import type { Row } from "./model";
@@ -113,7 +113,7 @@ describe("CombatantRow", () => {
       light: null, movement: [],
     };
     const actor = buildActorDoc("w1", "Goblin", actorEngine, "actor-1");
-    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null, elevation: null, lock_rotation: false };
+    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
     const token = buildTokenDoc("w1", "scene-1", tokenEngine, "token-1");
     const registry = buildConditionRegistryDoc("w1", { prone: { name: "Prone", icon: "🔻" } });
     const store = new DocumentStore();
@@ -258,5 +258,20 @@ describe("CombatantRow", () => {
   it("renders the drag handle only when can.edit", () => {
     const { getByLabelText } = renderRow(actorRow("a"), { can: { edit: true } });
     expect(getByLabelText("combatTracker.dragHandle")).toBeTruthy();
+  });
+
+  it("lists the host actor's effects with their origin", () => {
+    const row = actorRow("a");
+    row.art = { actorId: "actor-1" };
+    const store = new DocumentStore();
+    const actor = buildActorDoc("w1", "Goblin", { displayName: null } as unknown as ActorEngine, "actor-1");
+    const effect = buildEffectDoc("w1", { active: true, transfer: false, duration: null, origin: { label: "Spider Queen" } }, {}, "eff-1", "Poison");
+    actor.embedded = { effect: [effect] };
+    store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: actor }] });
+    const { getByTestId } = render(CombatantRow, {
+      props: { row, combatId: "combat-1", registry: [], isTurn: false, can: FULL_CAN, busy: false, run: async (fn: () => Promise<void>) => fn(), notation: "1d20", onDragStart: () => {}, index: 0 },
+      context: setAppContextForTest({ store, documents: store, combat: fakeCombatApi(store), t: (k, p) => (p ? k + ":" + p.origin : k) }),
+    });
+    expect(getByTestId("effects-list:eff-1").textContent).toContain("effects.origin:Spider Queen");
   });
 });

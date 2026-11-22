@@ -83,6 +83,8 @@ import type {
   DoorState,
   WallDirection,
   WallSightTier,
+  WallProximity,
+  WallSense,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
@@ -195,6 +197,8 @@ export type {
   DoorState,
   WallDirection,
   WallSightTier,
+  WallProximity,
+  WallSense,
   CombatDefaults,
   CombatEngine,
   CombatantEngine,
@@ -880,7 +884,7 @@ export function buildTokenFromActor(
   // the defect this seam exists to remove.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+    visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
   };
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, {}, id, { ...base, actor_id: actor.id }, null);
@@ -935,7 +939,7 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
  *
  * const engine: TokenEngine = {
  *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
- *   visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+ *   visual: null, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
  * };
  * const token = buildTokenDoc("world-1", "scene-1", engine);
  * token.doc_type; // "token"
@@ -1185,6 +1189,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  *   elevation: null,
  *   ambient_override: null,
+ *   occludes: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1216,6 +1221,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *   behavior: "impassable", cost: 1, cost_by_tag: {}, enabled: true, triggers: [],
  *   elevation: null,
  *   ambient_override: null,
+ *   occludes: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);
@@ -1344,6 +1350,7 @@ export function buildRegionFromTemplate(worldId: string, template: WireDocument,
     triggers: [],
     elevation: engine.elevation ?? null,
     ambient_override: null,
+    occludes: null,
   };
   const region = buildRegionDoc(worldId, template.parent_id as string, regionEngine, id);
   return {

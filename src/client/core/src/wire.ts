@@ -1049,6 +1049,12 @@ export type ServerMsg =
       level: string | null;
     }
   | {
+      /** A GM changed the world's enabled-module set. Every connection re-runs its own module
+       * reconcile on receipt. Out-of-band (no seq, never buffered/resynced), mirroring
+       * `scene_ping`; carries no payload. */
+      type: "modules_changed";
+    }
+  | {
       /** A region-triggered floating overlay over a token: the server-authored twin of
        * `emote`, bounded at INGRESS by the server's `chat::MAX_MESSAGE_CHARS` (never
        * `emote`'s 16-byte player bound, and never a tighter server-side cap of its own).
@@ -1387,6 +1393,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     user: z.string().nullable(),
     level: z.string().nullable(),
   }),
+  z.object({ type: z.literal("modules_changed") }),
   z.object({
     type: z.literal("scrolling_text"),
     scene: z.string(),

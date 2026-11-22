@@ -659,7 +659,7 @@ describe("ActorsPanel — locate on scene", () => {
   const token = (id: string, sceneId: string, actorId: string | null): WireDocument =>
     buildTokenDoc(
       "w1", sceneId,
-      { x: 10, y: 20, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: actorId, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x: 10, y: 20, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: actorId, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       id,
     );
   const realT = (k: string): string => ({ "actors.locateOnScene": "Locate on scene" })[k as "actors.locateOnScene"] ?? k;

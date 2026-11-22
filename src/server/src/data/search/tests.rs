@@ -289,3 +289,24 @@ fn build_match_punctuation_only_is_none() {
         assert!(build_match(q).is_none(), "expected None for {q:?}");
     }
 }
+
+#[test]
+fn public_index_never_holds_a_secret_identity_tokens_real_name() {
+    let mut token = doc("token", serde_json::json!({}));
+    token.name = Some("Mimic Gorgonzola".into());
+    token.engine = Some(serde_json::json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "identity_hidden": true,
+    }));
+    assert!(
+        index_content_gm(&token).contains("Gorgonzola"),
+        "the GM partition keeps the real name"
+    );
+    assert!(
+        !index_content_public(&token).contains("Gorgonzola"),
+        "the public partition must not tokenize an identity-hidden token's name"
+    );
+    // Control: the same token without the flag is searchable in the public partition.
+    token.engine.as_mut().unwrap()["identity_hidden"] = serde_json::json!(false);
+    assert!(index_content_public(&token).contains("Gorgonzola"));
+}

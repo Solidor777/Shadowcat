@@ -330,5 +330,6 @@ mod cone_and_window;
 mod cost_parity;
 mod ecs_and_footprints;
 mod pathfind_and_vision;
+mod region_occluders;
 mod resolution_and_lighting;
 mod system_defaults_layer;

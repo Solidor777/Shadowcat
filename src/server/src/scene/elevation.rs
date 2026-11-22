@@ -181,6 +181,97 @@ impl SceneEcs {
         })
     }
 
+    /// The wall entries the scene's enabled regions contribute for `sense`: one entry per outline
+    /// segment of every region whose `RegionEngine::occludes` flags `sense`
+    /// (`regions::occluder_outline`, so the region's coverage is the one `rasterize_compound`
+    /// derivation movement and ambient light read). Appended by `sight_wall_entries`,
+    /// `light_wall_entries` and `sound_wall_entries`, so every raycast, the visibility cache
+    /// fingerprint and the audibility test see one set. Entries are symmetric and immediate
+    /// (`one_way: None`, `limited: false`, `open_within: None`) and carry the region's
+    /// `elevation` band, so `walls_at_elevation` filters them exactly like a wall's. The
+    /// authority is the permission-blind view (a `gm_only` region still occludes for every
+    /// viewer, like a wall you cannot see). Movement collectors never include them.
+    /// Outlines are memoized per region in `SceneEcs::occluder_cache`; a scene with no
+    /// occluding region does no work beyond the document scan.
+    pub(crate) fn region_occluder_entries(
+        &self,
+        scene: Uuid,
+        sense: eng::WallSense,
+    ) -> Vec<WallEntry> {
+        let mut out = Vec::new();
+        let mut resolved: Option<(
+            f64,
+            super::GridKind,
+            Box<dyn super::grid_shape::GridShape + Send + Sync>,
+        )> = None;
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
+                continue;
+            }
+            let Some(region) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
+                continue;
+            };
+            if !region.enabled || !region.occludes.is_some_and(|o| o.blocks(sense)) {
+                continue;
+            }
+            let Some(parts) = super::regions::parse_region_shape(&region.shape) else {
+                continue;
+            };
+            if resolved.is_none() {
+                let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
+                    return out;
+                };
+                resolved = Some((
+                    cell,
+                    self.resolve_grid_kind(scene),
+                    self.resolve_grid_shape(scene, cell),
+                ));
+            }
+            let Some((cell, kind, grid)) = resolved.as_ref() else {
+                continue;
+            };
+            let outline = {
+                let mut cache = self.occluder_cache.lock().unwrap();
+                match cache.get(&doc.id) {
+                    Some(hit)
+                        if hit.shape == region.shape
+                            && hit.cell.to_bits() == cell.to_bits()
+                            && hit.kind == *kind =>
+                    {
+                        hit.outline.clone()
+                    }
+                    _ => {
+                        let outline = std::sync::Arc::new(super::regions::occluder_outline(
+                            &parts, *cell, &**grid,
+                        ));
+                        cache.insert(
+                            doc.id,
+                            super::regions::OccluderCacheEntry {
+                                shape: region.shape.clone(),
+                                cell: *cell,
+                                kind: *kind,
+                                outline: outline.clone(),
+                            },
+                        );
+                        outline
+                    }
+                }
+            };
+            out.extend(outline.iter().map(|&(a, b)| WallEntry {
+                seg: vision::Seg {
+                    a,
+                    b,
+                    one_way: None,
+                    limited: false,
+                    open_within: None,
+                },
+                elevation: region.elevation,
+            }));
+        }
+        out
+    }
+
     /// The scene's `blocksSight` walls with their elevation bands (the shared collector
     /// behind `sight_walls`/`sight_walls_for`). The flag read goes through
     /// `WallEngine::effective_flags` — the ONE resolver over the authored flags and the
@@ -220,6 +311,7 @@ impl SceneEcs {
                 elevation: wall.elevation,
             });
         }
+        out.extend(self.region_occluder_entries(scene, eng::WallSense::Sight));
         out
     }
 
@@ -261,6 +353,7 @@ impl SceneEcs {
                 elevation: wall.elevation,
             });
         }
+        out.extend(self.region_occluder_entries(scene, eng::WallSense::Light));
         out
     }
 
@@ -338,6 +431,7 @@ impl SceneEcs {
                 elevation: wall.elevation,
             });
         }
+        out.extend(self.region_occluder_entries(scene, eng::WallSense::Sound));
         out
     }
 

@@ -1,11 +1,11 @@
 import { consoleLogger, parseChatHistory, pushChatHistory as pushBoundedChatHistory, type KeybindingOverrides } from "@shadowcat/core";
-import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
+import { defaultUiState, getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
 import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
 import { COOLDOWN_MS } from "./uiStatePersistCooldown";
 
 const logger = consoleLogger();
-let state: UiState = { global: { locale: "en", lastWorld: null }, worlds: {} };
+let state: UiState = defaultUiState();
 let loaded = false;
 let observing = false;
 
@@ -504,9 +504,10 @@ export async function loadSessionState(): Promise<UiState> {
   // `ThemeController.serialize`'s output so the change subscriber below
   // compares against a canonical baseline. The mirror is overwritten on every
   // load, whatever a previous tab or session left behind.
-  theme.load(state.global.theme);
-  state.global.theme = theme.serialize();
-  if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, state.global.theme);
+  theme.load(state.global.theme as PersistedTheme | undefined);
+  const canonicalTheme = theme.serialize();
+  state.global.theme = canonicalTheme;
+  if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, canonicalTheme);
   loaded = true;
   // Observe future locale changes (switcher, etc.) and persist them — once for the
   // process lifetime (load runs again on re-login; the singleton must not stack

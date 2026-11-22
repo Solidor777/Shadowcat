@@ -116,6 +116,9 @@
     scale: number;
     /** Multiply tint as a css `#rrggbb` string, or `null` for none. */
     tint: string | null;
+    /** Degrees the art faces as drawn, in the token rotation convention (0 right, 90 down, 180 left,
+     * 270 up); any finite number, normalised into `[0, 360)` when built. `0` is the default. */
+    facing: number;
   };
   /**
    * Fresh `TransformState` at the default framing (centered, unscaled, untinted). Every call
@@ -124,11 +127,11 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * newTransformState(); // { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null }
+   * newTransformState(); // { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null, facing: 0 }
    * ```
    */
   function newTransformState(): TransformState {
-    return { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null };
+    return { anchorX: 0.5, anchorY: 0.5, scale: 1, tint: null, facing: 0 };
   }
   /**
    * The inverse projection of `buildTransform`: unfolds a wire `VisualTransform` into editor
@@ -138,26 +141,26 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * transformStateFrom({ anchor: { x: 0.5, y: 0.75 }, scale: 1.5, tint: "#ff8800" });
+   * transformStateFrom({ anchor: { x: 0.5, y: 0.75 }, scale: 1.5, tint: "#ff8800", facing: 270 });
    * ```
    */
   function transformStateFrom(t: VisualTransform | null | undefined): TransformState {
-    return t ? { anchorX: t.anchor.x, anchorY: t.anchor.y, scale: t.scale, tint: t.tint ?? null } : newTransformState();
+    return t ? { anchorX: t.anchor.x, anchorY: t.anchor.y, scale: t.scale, tint: t.tint ?? null, facing: t.facing ?? 0 } : newTransformState();
   }
   /**
    * Whether a transform state builds into a `VisualTransform` the server and `resolveTokenVisual`
-   * accept: finite anchors and a finite positive scale (a cleared number input reads as `0`/`NaN`
+   * accept: finite anchors, a finite facing and a finite positive scale (a cleared number input reads as `0`/`NaN`
    * and blocks the build rather than emitting a visual the renderer would reject).
    * @param s The transform editor state to check.
    * @returns `true` iff `s` is acceptable.
    * @example
    * ```
    * // private helper; not part of the public API
-   * transformComplete({ anchorX: 0.5, anchorY: 0.5, scale: 0, tint: null }); // false
+   * transformComplete({ anchorX: 0.5, anchorY: 0.5, scale: 0, tint: null, facing: 0 }); // false
    * ```
    */
   function transformComplete(s: TransformState): boolean {
-    return Number.isFinite(s.anchorX) && Number.isFinite(s.anchorY) && Number.isFinite(s.scale) && s.scale > 0;
+    return Number.isFinite(s.anchorX) && Number.isFinite(s.anchorY) && Number.isFinite(s.scale) && s.scale > 0 && Number.isFinite(s.facing);
   }
   /**
    * Projects a transform state into the object spread into an image/animated visual literal:
@@ -169,15 +172,17 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * buildTransform({ anchorX: 0.5, anchorY: 0.5, scale: 2, tint: null }); // { transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } }
+   * buildTransform({ anchorX: 0.5, anchorY: 0.5, scale: 2, tint: null, facing: 0 }); // { transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } }
    * ```
    */
   function buildTransform(s: TransformState): {
     /** The authored framing; absent for the default. */
     transform?: VisualTransform;
   } {
-    if (s.anchorX === 0.5 && s.anchorY === 0.5 && s.scale === 1 && s.tint === null) return {};
-    return { transform: { anchor: { x: s.anchorX, y: s.anchorY }, scale: s.scale, ...(s.tint === null ? {} : { tint: s.tint }) } };
+    if (s.anchorX === 0.5 && s.anchorY === 0.5 && s.scale === 1 && s.tint === null && s.facing === 0) return {};
+    // Normalised into [0, 360), the range the server accepts; a facing of 0 (or any multiple of 360) emits no key.
+    const facing = ((s.facing % 360) + 360) % 360;
+    return { transform: { anchor: { x: s.anchorX, y: s.anchorY }, scale: s.scale, ...(s.tint === null ? {} : { tint: s.tint }), ...(facing === 0 ? {} : { facing }) } };
   }
 
   /** Editor-local state for one row of a `"faces"`-kind visual's face map. */
@@ -583,6 +588,18 @@
       <input type="color" aria-label={t("actors.transformTint")} value={s.tint ?? "#ffffff"} onchange={(e) => (s.tint = e.currentTarget.value)} oninput={(e) => (s.tint = e.currentTarget.value)} />
     </label>
     <button type="button" disabled={s.tint === null} onclick={() => (s.tint = null)}>{t("actors.transformClearTint")}</button>
+    <label>{t("actors.transformFacing")}
+      <select aria-label={t("actors.transformFacing")} value={[0, 90, 180, 270].includes(s.facing) ? String(s.facing) : ""} onchange={(e) => { if (e.currentTarget.value !== "") s.facing = Number(e.currentTarget.value); }}>
+        <option value="0">{t("actors.transformFacingRight")}</option>
+        <option value="90">{t("actors.transformFacingDown")}</option>
+        <option value="180">{t("actors.transformFacingLeft")}</option>
+        <option value="270">{t("actors.transformFacingUp")}</option>
+        <option value="">{t("actors.transformFacingOther")}</option>
+      </select>
+    </label>
+    <label>{t("actors.transformFacingDegrees")}
+      <input type="number" step="any" aria-label={t("actors.transformFacingDegrees")} value={s.facing} onchange={(e) => (s.facing = Number(e.currentTarget.value))} oninput={(e) => (s.facing = Number(e.currentTarget.value))} />
+    </label>
   </details>
 {/snippet}
 

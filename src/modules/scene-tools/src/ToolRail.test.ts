@@ -174,7 +174,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -229,7 +229,7 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: 50, y: 50, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
         }, "tok1"),
       },
     ],
@@ -313,7 +313,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
       }, "tok1"),
     }],
   });
@@ -509,7 +509,7 @@ test("a player who owns the single selected token sees and can use the speak-as-
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "u-self",
@@ -538,7 +538,7 @@ function ownedTokenStore(): DocumentStore {
   const tok = (id: string, scene: string, x: number, y: number, owner: string) => ({
     ...buildTokenDoc(
       "w1", scene,
-      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x, y, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       id,
     ),
     owner,
@@ -590,7 +590,7 @@ test("a non-owner player does not see the speak-as-token button", () => {
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
       "tok1",
     ),
     owner: "someone-else",
@@ -613,7 +613,7 @@ test("no button renders when more than one token is selected, even for a GM", ()
   const documents = new DocumentStore();
   const sceneDoc = buildSceneDoc("w1", {}, "S1");
   documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
-  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false };
+  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
   const tok1 = buildTokenDoc("w1", sceneDoc.id, engine, "tok1");
   const tok2 = buildTokenDoc("w1", sceneDoc.id, engine, "tok2");
   documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: tok1 }, { op: "create" as const, doc: tok2 }] });
@@ -672,7 +672,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null,
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null,
         }, "region-1"),
       },
       {
@@ -889,6 +889,75 @@ test("the wall editor's one-way and limited controls dispatch /engine/direction 
     op: "update", doc_id: wallId,
     changes: [{ path: "/engine/sightTier", old: null, new: "limited" }],
   });
+});
+
+test("the wall editor's proximity controls write the whole /engine/proximity tier with raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+  const wallId = docs.query("wall")[0].id;
+  const path = "/engine/proximity";
+  let seq = 10;
+  /** Applies an update to the store and lets the editor re-render before the next event. */
+  const store = async (old: unknown, value: unknown): Promise<void> => {
+    docs.applyCommand({
+      seq: seq++, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: wallId, changes: [{ path, old, new: value }] }],
+    });
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  const tier = { within: 1, senses: ["sight"], soundGain: null };
+
+  // No tier: the toggle is off and the tier controls are absent. Enabling writes the default
+  // tier with a null pre-image.
+  expect((screen.getByTestId("wall-proximity") as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByTestId("wall-proximity-within")).toBeNull();
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: null, new: tier }] });
+  await store(null, tier);
+
+  // The only checked sense cannot be unchecked; the gain slider needs the sound sense.
+  expect((screen.getByTestId("wall-proximity-sight") as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByTestId("wall-proximity-gain")).toBeNull();
+
+  // The distance writes the whole tier; invalid input writes nothing.
+  const count = dispatched.length;
+  const within = screen.getByTestId("wall-proximity-within") as HTMLInputElement;
+  for (const bad of ["", "0", "-2", "abc", "1001"]) await fireEvent.change(within, { target: { value: bad } });
+  expect(dispatched.length).toBe(count);
+  await fireEvent.change(within, { target: { value: "3" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: tier, new: { ...tier, within: 3 } }],
+  });
+
+  // Adding sound reveals the gain slider; the gain writes into the same tier.
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  const withSound = { ...tier, senses: ["sight", "sound"] };
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: withSound }] });
+  await store(tier, withSound);
+  await fireEvent.change(screen.getByTestId("wall-proximity-gain"), { target: { value: "0.4" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId, changes: [{ path, old: withSound, new: { ...withSound, soundGain: 0.4 } }],
+  });
+  await store(withSound, { ...withSound, soundGain: 0.4 });
+
+  // Removing sound clears the gain in the same write (the server rejects a gain without sound).
+  await fireEvent.click(screen.getByTestId("wall-proximity-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path, old: { ...withSound, soundGain: 0.4 }, new: tier }],
+  });
+  await store({ ...withSound, soundGain: 0.4 }, tier);
+
+  // The toggle off removes the tier, carrying the stored tier as old.
+  await fireEvent.click(screen.getByTestId("wall-proximity"));
+  expect(dispatched.at(-1)![0]).toEqual({ op: "update", doc_id: wallId, changes: [{ path, old: tier, new: null }] });
 });
 
 test("Escape clears the open editor", async () => {

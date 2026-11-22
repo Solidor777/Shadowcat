@@ -180,6 +180,9 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
             }
             Segment::Image { alt, .. } => push_text(&mut out, alt),
             Segment::TableDraw(draw) => push_table_draw_text(&mut out, draw),
+            Segment::Secret { content, .. } => {
+                push_text(&mut out, &segments_search_text(content));
+            }
         }
     }
     out

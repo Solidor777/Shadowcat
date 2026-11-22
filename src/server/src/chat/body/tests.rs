@@ -48,6 +48,7 @@ async fn text_only_body_matches_sanitize_byte_identically() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let (got, _image_urls) = compose_message("hello world", deps, ScanMode::Execute)
         .await
@@ -65,6 +66,7 @@ async fn inline_roll_executes_under_execute_mode() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let (got, _image_urls) = compose_message("roll [[1d6]] now", deps, ScanMode::Execute)
         .await
@@ -85,6 +87,7 @@ async fn inline_roll_refused_under_no_execute_mode() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message("roll [[1d6]] now", deps, ScanMode::NoExecute)
         .await
@@ -102,6 +105,7 @@ async fn button_span_validates_without_rolling() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let (got, _image_urls) = compose_message("[[roll:1d20|Attack]]", deps, ScanMode::NoExecute)
         .await
@@ -126,6 +130,7 @@ async fn doc_link_span_stores_target_and_label() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let id = "00000000-0000-0000-0000-000000000001";
     let (got, _image_urls) =
@@ -154,6 +159,7 @@ async fn a_scan_error_surfaces_as_compose_error_roll() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message("[[unterminated", deps, ScanMode::NoExecute)
         .await
@@ -179,6 +185,7 @@ async fn asset_span_stores_an_image_segment_when_images_are_enabled() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let (got, _image_urls) = compose_message(
         &format!("[[asset:{asset_id}|a map]]"),
@@ -207,6 +214,7 @@ async fn asset_span_with_no_alt_stores_empty_alt() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let (got, _image_urls) =
         compose_message(&format!("[[asset:{asset_id}]]"), deps, ScanMode::NoExecute)
@@ -232,6 +240,7 @@ async fn asset_span_is_refused_when_images_are_disabled() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message(
         &format!("[[asset:{asset_id}|a map]]"),
@@ -259,6 +268,7 @@ async fn asset_span_referencing_a_foreign_world_asset_is_unknown() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message(
         &format!("[[asset:{asset_id}|a map]]"),
@@ -280,6 +290,7 @@ async fn asset_span_referencing_a_nonexistent_asset_is_unknown() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message(
         &format!("[[asset:{}|a map]]", Uuid::new_v4()),
@@ -301,6 +312,7 @@ async fn asset_span_with_a_malformed_id_is_malformed() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let err = compose_message("[[asset:not-a-uuid|a map]]", deps, ScanMode::NoExecute)
         .await
@@ -322,6 +334,7 @@ async fn asset_span_with_over_long_alt_is_refused() {
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let long_alt = "a".repeat(crate::chat::MAX_IMAGE_ALT_CHARS + 1);
     let err = compose_message(
@@ -484,6 +497,7 @@ async fn markdown_image_urls_are_collected_from_a_text_chunk_alongside_a_doc_lin
         channel: "general",
         actor_owner: None,
         policy: &policy,
+        author: Uuid::nil(),
     };
     let id = "00000000-0000-0000-0000-000000000001";
     let (_got, image_urls) = compose_message(

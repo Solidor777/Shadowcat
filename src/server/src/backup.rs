@@ -308,30 +308,25 @@ pub async fn create_backup(
 ///
 /// Stage-then-swap: every fallible copy lands in a sibling staging path first
 /// — `<db_path>.restore-tmp` for the db, `<assets_dir>.restore-tmp` for the
-/// assets tree — and the real destination is only ever touched by `rename`,
-/// never by an in-place write. `std::fs::rename` atomically replaces an
-/// existing FILE on all three target OSes, so the db swap is a single rename.
-/// A directory rename is NOT a replace on any of the three OSes when the
-/// destination is non-empty, so the assets swap is two renames: the old
-/// `assets_dir` is first renamed out of the way to `<assets_dir>.restore-old`,
-/// then the staged tree is renamed into `assets_dir`, then the old tree is
-/// removed. Net effect: a failure at any point leaves `assets_dir` either
-/// fully pre-restore (old content, never touched) or fully post-restore
-/// (staged content already swapped in) — never a partial mix. Worst case on a
-/// crash between the two renames: the old tree is parked at
-/// `<assets_dir>.restore-old` rather than deleted; the next restore attempt
-/// clears it (see the pre-clear below), so no manual recovery step is
-/// required, though the parked directory is recoverable by hand if needed. Every staging
-/// leftover and the replaced assets tree move into `trash` rather than being removed.
+/// assets tree — before any live path is touched, and the real destinations are
+/// only ever touched by `rename`, never by an in-place write. A directory
+/// rename is NOT a replace on any of the three OSes when the destination is
+/// non-empty, so the assets swap is two renames: the old `assets_dir` moves to
+/// `<assets_dir>.restore-old`, then the staged tree moves into `assets_dir`.
+/// The db swap comes last: `std::fs::rename` atomically replaces an existing
+/// FILE on all three target OSes (and fails, leaving the destination alone,
+/// when it is a directory), so it is a single all-or-nothing step.
 ///
-/// The db swap and the assets swap are two INDEPENDENT atomic operations, not
-/// one joint transaction across both artifacts: the db rename completes in
-/// full before the assets copy/swap begins. A crash in that window leaves a
-/// new db paired with the old (or, mid-assets-swap, momentarily absent)
-/// assets directory; recovery is re-running `restore_backup` with `force`
-/// (the db swap already completed, so `db_path` now exists and a
-/// force-less retry would refuse), which re-copies the db and completes the
-/// assets swap, leaving both artifacts consistent.
+/// On return the live database and assets are either both the backup's or both
+/// what they were: a failure in the copies leaves both untouched, and a failure
+/// in the db rename moves the new assets tree aside and the old one back in. The
+/// replaced assets tree is only moved into `trash` after the db rename
+/// succeeded; every staging leftover also moves into `trash` rather than being
+/// removed. The undo is two renames of directories the restore itself just
+/// moved on the same filesystem, so it relies on nothing the forward swap did
+/// not. Only a crash (not an error) between the final renames can leave
+/// `<assets_dir>.restore-old` parked; the next restore attempt clears it, and
+/// recovery is re-running `restore_backup` with `force`.
 ///
 /// # Examples
 ///
@@ -400,9 +395,6 @@ pub async fn restore_backup(
         tokio::fs::create_dir_all(parent).await?;
     }
     let db_stage = db_path.with_extension("restore-tmp");
-    tokio::fs::copy(&backup_db, &db_stage).await?;
-    tokio::fs::rename(&db_stage, db_path).await?;
-
     let assets_name = assets_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -422,17 +414,82 @@ pub async fn restore_backup(
     if tokio::fs::metadata(&assets_old).await.is_ok() {
         trash.discard(&assets_old).await?;
     }
-    let backup_assets = backup_dir.join("assets");
-    copy_dir_recursive(&backup_assets, &assets_stage).await?;
-    if tokio::fs::metadata(assets_dir).await.is_ok() {
-        tokio::fs::rename(assets_dir, &assets_old).await?;
+    if tokio::fs::metadata(&db_stage).await.is_ok() {
+        trash.discard(&db_stage).await?;
     }
-    tokio::fs::rename(&assets_stage, assets_dir).await?;
-    if tokio::fs::metadata(&assets_old).await.is_ok() {
+
+    // Every fallible copy happens before any live path is touched.
+    let staged = stage_restore_copies(backup_dir, &backup_db, &db_stage, &assets_stage).await;
+    if let Err(e) = staged {
+        discard_staged(trash, &[&db_stage, &assets_stage]).await;
+        return Err(e);
+    }
+
+    let had_assets = tokio::fs::metadata(assets_dir).await.is_ok();
+    if had_assets {
+        if let Err(e) = tokio::fs::rename(assets_dir, &assets_old).await {
+            discard_staged(trash, &[&db_stage, &assets_stage]).await;
+            return Err(e.into());
+        }
+    }
+    if let Err(e) = tokio::fs::rename(&assets_stage, assets_dir).await {
+        if had_assets {
+            let _ = tokio::fs::rename(&assets_old, assets_dir).await;
+        }
+        discard_staged(trash, &[&db_stage, &assets_stage]).await;
+        return Err(e.into());
+    }
+    // The database rename is the last, single, atomic step: if it fails the live database is
+    // untouched, and the assets swap above is undone by moving the new tree back out of the way
+    // and the old one back in.
+    if let Err(e) = tokio::fs::rename(&db_stage, db_path).await {
+        let _ = tokio::fs::rename(assets_dir, &assets_stage).await;
+        if had_assets {
+            let _ = tokio::fs::rename(&assets_old, assets_dir).await;
+        }
+        discard_staged(trash, &[&db_stage, &assets_stage]).await;
+        return Err(e.into());
+    }
+    if had_assets {
         trash.discard(&assets_old).await?;
     }
 
     Ok(())
+}
+
+/// Copies the backup's database to `db_stage` and its assets tree to `assets_stage`; touches no
+/// live path.
+///
+/// # Examples
+///
+/// ```text
+/// stage_restore_copies(&backup_dir, &backup_dir.join("world.db"), &db_stage, &assets_stage).await?;
+/// ```
+async fn stage_restore_copies(
+    backup_dir: &Path,
+    backup_db: &Path,
+    db_stage: &Path,
+    assets_stage: &Path,
+) -> Result<(), BackupError> {
+    tokio::fs::copy(backup_db, db_stage).await?;
+    copy_dir_recursive(&backup_dir.join("assets"), assets_stage).await?;
+    Ok(())
+}
+
+/// Moves each existing staging path into `trash`; a path that is absent or cannot be moved is
+/// skipped, because this runs on a restore that is already failing and must report that error.
+///
+/// # Examples
+///
+/// ```text
+/// discard_staged(&trash, &[&db_stage, &assets_stage]).await;
+/// ```
+async fn discard_staged(trash: &Trash, paths: &[&Path]) {
+    for path in paths {
+        if tokio::fs::metadata(path).await.is_ok() {
+            let _ = trash.discard(path).await;
+        }
+    }
 }
 
 /// The file name of the failed-restore marker, written beside the database file when a staged

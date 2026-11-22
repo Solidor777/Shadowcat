@@ -226,7 +226,7 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "emote", 
+user: string, } | { "type": "modules_changed" } | { "type": "emote", 
 /**
  * Scene the token stands on.
  */

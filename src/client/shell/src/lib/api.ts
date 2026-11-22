@@ -1,6 +1,5 @@
 import type { TlsStatus, WorldEntry } from "@shadowcat/types";
 import { ServerConfigSchema, type WireDocument } from "@shadowcat/core";
-import type { PersistedTheme } from "@shadowcat/ui-kit";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -163,7 +162,7 @@ export function listWorlds(): Promise<WorldEntry[]> {
  * per-recipient filtered, plus the room's `current_seq` at read time. Hand-typed (rather than
  * the ts-rs-generated `WorldSnapshot`, whose `seq: bigint` reflects the Rust `i64` field, not
  * the JSON number `fetch` actually parses it into) to match this module's other hand-written
- * response shapes (`Me`, `UiState`). */
+ * response shapes (`Me`). */
 export interface WorldSnapshotResponse {
   /** Every visible document, per-recipient filtered. */
   documents: WireDocument[];
@@ -185,136 +184,7 @@ export function getWorldSnapshot(worldId: string): Promise<WorldSnapshotResponse
   return getJson<WorldSnapshotResponse>(`/api/worlds/${encodeURIComponent(worldId)}/snapshot`);
 }
 
-/** Per-user UI session state. The server stores this opaquely (object + size cap);
- * the client owns the structure. */
-export interface UiState {
-  /** Account-wide settings, independent of any world. */
-  global: {
-    /** The active i18n locale, applied by `loadSessionState` on load and persisted
-     * whenever the `i18n` singleton's locale changes. */
-    locale: string;
-    /** The most recently entered world id, or `null`. Seeds `App.boot()`'s
-     * non-route load only — a world route always wins (see `resolveBootWorld`). */
-    lastWorld: string | null;
-    /** The account's theme preference, in the ui-kit `PersistedTheme` shape
-     * (`ThemeController.serialize`'s output). Optional: blobs written before
-     * the field existed simply omit it. The server stores it opaquely —
-     * validation happens in `ThemeController.load`, which `loadSessionState`
-     * passes the value through. */
-    theme?: PersistedTheme;
-    /** The account's keybinding overrides, keyed `"<moduleId>:<bindingId>"`; `null` marks an
-     * explicitly unbound binding. Optional: blobs written before the field existed omit it. The
-     * server stores it opaquely — `KeybindingsController.loadOverrides` canonicalizes it. */
-    keybindings?: Record<string, string | null>;
-  };
-  /** Per-world settings, keyed by world id. */
-  worlds: Record<
-    string,
-    {
-      /** Opaque blob owned by `@shadowcat/module-panels`' persistence codec
-       * (encodeLayout/decodeLayout) — the shell never inspects its shape. */
-      panelLayout?: unknown;
-      /** Opaque blob owned by the chat module's per-channel last-read-marker
-       * tracking (unread tab badge) — the shell only stores it. */
-      chatRead?: unknown;
-      /** The composer's recalled sent-text history, oldest first (`pushChatHistory` in
-       * `@shadowcat/core` bounds it by entry count and serialized size). Per account, never
-       * transmitted to other users. */
-      chatHistory?: string[];
-      /** GM's last-chosen level id per scene, keyed by scene id. Absent scene key = follow the
-       * default (first/lowest level); never set for a player, who instead follows their primary
-       * token's level. */
-      viewedLevel?: Record<string, string>;
-    }
-  >;
-}
-
-/** The `UiState` shape for an account with no persisted blob yet.
- * @returns A fresh `UiState`: locale `"en"`, no `lastWorld`, no per-world
- *   entries.
- * @example
- * ```
- * const empty = defaultUiState();
- * ```
- */
-function defaultUiState(): UiState {
-  return { global: { locale: "en", lastWorld: null }, worlds: {} };
-}
-
-/** Fetches the caller's UI-state blob, filling in defaults for any field the
- * server omits (a brand-new account, or a blob written before a field
- * existed).
- * @returns The caller's `UiState`, with `global` defaults applied field-by-
- *   field and `worlds` defaulted to `{}` if absent.
- * @example
- * ```
- * const ui = await getUiState();
- * ```
- */
-export async function getUiState(): Promise<UiState> {
-  const raw = await getJson<Partial<UiState>>("/api/me/ui-state");
-  const def = defaultUiState();
-  return {
-    global: { ...def.global, ...(raw.global ?? {}) },
-    worlds: raw.worlds ?? {},
-  };
-}
-
-/** Partial UI-state write, at leaf-key granularity — **the single
- * client-side statement of the merge rule** (mirrors
- * `SqliteRepository::merge_ui_state`'s doc comment server-side). Only the
- * individual fields/keys present are written: each present `global.<field>`
- * (e.g. `locale`, `lastWorld`) replaces just that field server-side; each
- * present `worlds.<id>.<key>` (e.g. `panelLayout`, `chatRead`) replaces just
- * that key within `worlds.<id>` — never the whole slice, and never the whole
- * `worlds.<id>` object unless every key happens to be present. A present
- * value still replaces its leaf wholesale (a `panelLayout`/`chatRead` blob is
- * opaque and is never itself deep-merged). Absent fields/keys are untouched.
- * A `null` value for a whole `worlds.<id>` entry instead REMOVES that entry
- * server-side (`merge_one_level`'s whole-key-removal branch) — distinct from
- * a `null` leaf value nested inside a per-world object, which removes just
- * that one leaf key. Sending only changed leaves is the concurrency control —
- * concurrent sessions of one account (two tabs, or two independent module
- * owners of the same world's slice) contend only on the individual
- * fields/keys both actually write. */
-export interface UiStatePatch {
-  /** Dirty `global` fields only; absent fields are untouched server-side. */
-  global?: Partial<UiState["global"]>;
-  /** Dirty per-world keys only, keyed by world id; absent keys/worlds are
-   * untouched server-side. A `null` value for a world id removes that
-   * world's ENTIRE entry server-side (`merge_one_level`'s whole-key-removal
-   * branch) — distinct from a per-leaf-key `null` inside an object value,
-   * which removes just that one key. */
-  worlds?: Record<string, Partial<UiState["worlds"][string]> | null>;
-}
-
-/** Writes a partial UI-state patch (see `UiStatePatch` for the merge rule).
- * Throws on a non-2xx response.
- * @param patch - The leaf fields/keys to write; anything absent is untouched
- *   server-side.
- * @param opts - Write options.
- * @param opts.keepalive - When true, sets `fetch`'s `keepalive` flag so the
- *   request can outlive a page unload — used by `flushOnUnload`.
- * @example
- * ```
- * await putUiState({ global: { locale: "fr" } });
- * ```
- */
-export async function putUiState(
-  patch: UiStatePatch,
-  opts: {
-    /** See the `@param opts.keepalive` doc above. */
-    keepalive?: boolean;
-  } = {},
-): Promise<void> {
-  // `keepalive` lets the request outlive a page unload (the patch is within
-  // the server's 64KB merged cap, under keepalive's body limit).
-  const res = await fetch("/api/me/ui-state", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(patch),
-    keepalive: opts.keepalive,
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`PUT /api/me/ui-state → ${res.status}`);
-}
+/** Per-user UI session state and its REST wrappers live in `@shadowcat/core`; re-exported so the
+ * shell's own import sites keep one path. */
+export { getUiState, putUiState, defaultUiState } from "@shadowcat/core";
+export type { UiState, UiStatePatch } from "@shadowcat/core";

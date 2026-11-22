@@ -698,6 +698,7 @@ export class ToolController {
       triggers: $state.snapshot(this.regionTriggers),
       elevation: this.ctx.viewedLevelBand?.() ?? null,
       ambient_override: regionAmbientOverride(this),
+      occludes: null,
     };
     const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
     if (this.regionSecret) setRegionVisibility(doc, true);
@@ -793,7 +794,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null, lock_rotation: false }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null, lock_rotation: false, identity_hidden: false }),
         },
       ]);
       return true;
@@ -1098,6 +1099,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
             triggers: $state.snapshot(controller.regionTriggers),
             elevation: ctx.viewedLevelBand?.() ?? null,
             ambient_override: regionAmbientOverride(controller),
+            occludes: null,
           };
           const doc = buildRegionDoc(ctx.world, scene.id, engine);
           if (controller.regionSecret) setRegionVisibility(doc, true);

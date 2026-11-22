@@ -24,6 +24,7 @@ import type { TokenVisual } from "./TokenVisual";
  *     face: None,
  *     elevation: None,
  *     lock_rotation: false,
+ *     identity_hidden: false,
  * };
  * assert_eq!(token.w, 50.0);
  * ```
@@ -82,4 +83,15 @@ elevation: number | null,
  * says. Per-token presentation state like `elevation`, so linked and instanced tokens
  * carry it identically (it is not an `overrides` field).
  */
-lock_rotation: boolean, };
+lock_rotation: boolean, 
+/**
+ * Secret-identity mode: when true, every recipient who is neither the token's effective
+ * owner nor a GM receives the token without its presented identity (`/name`,
+ * `/engine/visual`, `/engine/overrides/visual`, `/engine/overrides/name`,
+ * `/engine/overrides/disposition` and `/engine/actor_id`, so the linked actor's own
+ * visual, faction and disposition cannot be joined back). `permission::own_overrides`
+ * synthesizes that set from this one flag, so it cannot apply to some readers and not
+ * others. Writing it is GM-only (`permission::identity_hidden_touched`): it changes what
+ * every other viewer perceives.
+ */
+identity_hidden: boolean, };

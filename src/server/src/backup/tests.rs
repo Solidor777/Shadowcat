@@ -1,5 +1,6 @@
 use super::*;
 use sqlx::Row;
+use std::path::PathBuf;
 
 /// A minimal seeded db: one table, one known row — deliberately independent
 /// of the application schema/migrations, since `create_backup`'s `VACUUM INTO`
@@ -700,4 +701,135 @@ async fn apply_pending_restore_success_clears_an_earlier_failed_marker() {
         .unwrap();
 
     assert!(!db_path.with_file_name(RESTORE_FAILED_FILE).exists());
+}
+
+/// A live db (`val = 'live'`) with live assets (`live.png`), and a backup of a db holding
+/// `val = 'hello'` with assets (`backed.png`). Returns `(tmp, db_path, assets_dir, backup_dir)`.
+async fn live_and_backup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let source_assets = tmp.path().join("source_assets");
+    tokio::fs::create_dir_all(&source_assets).await.unwrap();
+    tokio::fs::write(source_assets.join("backed.png"), b"BACKED")
+        .await
+        .unwrap();
+    let backup_dir = tmp.path().join("backups").join("backup-1");
+    create_backup(
+        &db_path,
+        &source_assets,
+        &backup_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
+    let url = format!("sqlite://{}", db_path.to_string_lossy());
+    let pool = crate::db::connect_pool(&url).await.unwrap();
+    sqlx::query("UPDATE t SET val = 'live' WHERE id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let assets_dir = tmp.path().join("assets");
+    tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+    tokio::fs::write(assets_dir.join("live.png"), b"LIVE")
+        .await
+        .unwrap();
+    (tmp, db_path, assets_dir, backup_dir)
+}
+
+/// A restore whose assets copy fails leaves the live database and assets exactly as they were.
+/// The backup's `assets` entry is a file, so reading it as a directory fails. Fails if the
+/// database swap runs before the assets copy has succeeded (the live db would read `hello`).
+#[tokio::test]
+async fn restore_failing_on_the_assets_copy_leaves_the_live_pair_untouched() {
+    let (tmp, db_path, assets_dir, backup_dir) = live_and_backup().await;
+    tokio::fs::rename(backup_dir.join("assets"), tmp.path().join("assets-aside"))
+        .await
+        .unwrap();
+    tokio::fs::write(backup_dir.join("assets"), b"not a directory")
+        .await
+        .unwrap();
+
+    let result = restore_backup(
+        &backup_dir,
+        &db_path,
+        &assets_dir,
+        true,
+        &test_trash(tmp.path()),
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert_eq!(read_val(&db_path).await, "live");
+    assert!(assets_dir.join("live.png").exists());
+    assert!(!assets_dir.join("backed.png").exists());
+    assert!(!tmp.path().join("assets.restore-tmp").exists());
+    assert!(!db_path.with_extension("restore-tmp").exists());
+}
+
+/// A staged restore whose assets copy fails still writes `restore-failed.json` with the error,
+/// clears the pending marker and leaves the live database as it was. Fails if the failure path
+/// skips the failed marker or the database was swapped before the copy failed.
+#[tokio::test]
+async fn staged_restore_failing_on_the_assets_copy_records_the_failure() {
+    let (tmp, db_path, assets_dir, backup_dir) = live_and_backup().await;
+    tokio::fs::rename(backup_dir.join("assets"), tmp.path().join("assets-aside"))
+        .await
+        .unwrap();
+    tokio::fs::write(backup_dir.join("assets"), b"not a directory")
+        .await
+        .unwrap();
+    stage_restore(&db_path, "backup-1");
+
+    let outcome = apply_pending_restore(
+        &db_path,
+        &assets_dir,
+        &tmp.path().join("backups"),
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(outcome, PendingRestore::Failed(_)));
+    assert_eq!(read_val(&db_path).await, "live");
+    assert!(assets_dir.join("live.png").exists());
+    assert!(!catalog::restore_pending_path(&db_path).exists());
+    let failed: RestoreFailed = serde_json::from_slice(
+        &std::fs::read(db_path.with_file_name(RESTORE_FAILED_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(failed.id, "backup-1");
+    assert!(!failed.error.is_empty());
+}
+
+/// A restore whose database swap fails after the assets were swapped puts the old assets back.
+/// The live database path is a directory, so renaming the staged file over it fails. Fails if the
+/// assets swap is not rolled back (the live assets would hold `backed.png`).
+#[tokio::test]
+async fn restore_failing_on_the_database_swap_puts_the_old_assets_back() {
+    let (tmp, db_path, assets_dir, backup_dir) = live_and_backup().await;
+    tokio::fs::rename(&db_path, tmp.path().join("shadowcat.db.aside"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(&db_path).await.unwrap();
+
+    let result = restore_backup(
+        &backup_dir,
+        &db_path,
+        &assets_dir,
+        true,
+        &test_trash(tmp.path()),
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert!(db_path.is_dir());
+    assert!(assets_dir.join("live.png").exists());
+    assert!(!assets_dir.join("backed.png").exists());
+    assert!(!tmp.path().join("assets.restore-tmp").exists());
+    assert!(!tmp.path().join("assets.restore-old").exists());
+    assert!(!db_path.with_extension("restore-tmp").exists());
 }

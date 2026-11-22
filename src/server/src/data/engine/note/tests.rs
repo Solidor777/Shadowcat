@@ -411,3 +411,156 @@ async fn an_update_whose_derived_body_exceeds_the_size_cap_is_rejected() {
     let engine: NoteEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     assert_eq!(engine.source, "hello");
 }
+
+#[tokio::test]
+async fn a_gm_secret_in_a_note_stamps_server_derived_overrides_over_client_ones() {
+    use crate::data::command::{FieldChange, Operation, WriteOrigin};
+    use crate::data::document::{Visibility, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let mut doc = note_doc(world_id, None, "a [[secret:gm|hidden]] b");
+    let doc_id = doc.id;
+    // A client cannot widen or pre-seed the derived keys.
+    doc.permissions
+        .property_overrides
+        .insert("/engine/source".to_string(), Visibility::All);
+    doc.permissions
+        .property_overrides
+        .insert("/engine/body/9/content".to_string(), Visibility::All);
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Create { doc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    let o = &stored.permissions.property_overrides;
+    assert_eq!(o.get("/engine/source"), Some(&Visibility::OwnerOrGm));
+    assert_eq!(o.get("/engine/body/1/content"), Some(&Visibility::GmOnly));
+    assert!(
+        !o.contains_key("/engine/body/9/content"),
+        "a client key under the body is dropped"
+    );
+
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Update {
+            doc_id,
+            changes: vec![FieldChange {
+                path: "/engine/source".to_string(),
+                old: serde_json::json!("a [[secret:gm|hidden]] b"),
+                new: serde_json::json!("plain"),
+                remove: false,
+            }],
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    assert!(
+        stored.permissions.property_overrides.is_empty(),
+        "removing the secret drops the derived overrides"
+    );
+}
+
+// Fails if a note's `/engine/source` override reverts to `GmOnly` (the owner's copy loses
+// `source`) or widens to `All` (a stranger's copy gains it), or if the secret's rendered
+// content stops being `GmOnly` (the owner's copy gains the hidden text in `body`).
+#[tokio::test]
+async fn a_notes_owner_reads_its_source_but_not_the_gm_secret_in_its_body() {
+    use crate::data::command::{Operation, WriteOrigin};
+    use crate::data::document::{WorldCapDefaults, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::data::permission::{filter_command, load_current_docs};
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let mut ids = Vec::new();
+    for name in ["owner", "stranger"] {
+        let id = repo
+            .create_user(name, None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, id, WorldRole::Player)
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let (owner, stranger) = (ids[0], ids[1]);
+
+    let mut doc = note_doc(world_id, None, "pub [[secret:gm|vault code 1234]] end");
+    doc.owner = Some(owner);
+    doc.permissions.default = crate::data::document::DocRole::Observer;
+    let doc_id = doc.id;
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let stored_cmd = repo
+        .apply_intent(
+            &gm_ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let current = load_current_docs(&repo, &stored_cmd.command).await;
+
+    let delivered = |who: Uuid, role: WorldRole| {
+        let ctx = PermissionContext {
+            user_id: who,
+            world_role: role,
+        };
+        let ops = filter_command(
+            &stored_cmd.command,
+            &stored_cmd.snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        )
+        .ops;
+        ops.into_iter()
+            .find_map(|op| match op {
+                Operation::Create { doc } if doc.id == doc_id => doc.engine,
+                _ => None,
+            })
+            .expect("the note arrives as a Create")
+    };
+
+    let owner_copy = delivered(owner, WorldRole::Player);
+    assert_eq!(
+        owner_copy["source"], "pub [[secret:gm|vault code 1234]] end",
+        "the owner reads its own source"
+    );
+    assert!(
+        !owner_copy["body"].to_string().contains("1234"),
+        "the rendered secret stays GM-only for the owner: {owner_copy}"
+    );
+
+    let gm_copy = delivered(gm, WorldRole::Gm);
+    assert!(gm_copy["source"].as_str().unwrap().contains("1234"));
+    assert!(gm_copy["body"].to_string().contains("1234"));
+
+    let stranger_copy = delivered(stranger, WorldRole::Player);
+    assert!(
+        stranger_copy.get("source").is_none(),
+        "a non-owner player gets no source"
+    );
+    assert!(!stranger_copy.to_string().contains("1234"));
+}

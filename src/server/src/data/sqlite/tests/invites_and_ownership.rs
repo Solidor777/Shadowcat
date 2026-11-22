@@ -976,3 +976,217 @@ async fn carried_light_authoring_is_gm_only() {
         "a granted player's actor light write must still be refused, got {denied_actor:?}"
     );
 }
+
+#[tokio::test]
+async fn identity_hidden_authoring_is_gm_only() {
+    use crate::data::command::FieldChange;
+    use crate::data::document::{DocRole, WorldCapDefaults};
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let player = PermissionContext {
+        user_id: p1,
+        world_role: WorldRole::Player,
+    };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let write = |ctx: PermissionContext,
+                 path: &'static str,
+                 old: serde_json::Value,
+                 new: serde_json::Value,
+                 ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: path.into(),
+                        old,
+                        new,
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+
+    // The owner holds WRITE_FIELDS on the token, yet the flag decides what every other viewer
+    // perceives, so the direct write is refused.
+    let denied = write(
+        player,
+        "/engine/identity_hidden",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's identity_hidden write must be refused, got {denied:?}"
+    );
+
+    // Non-vacuity: the same owner may write the sibling disposition override.
+    write(
+        player,
+        "/engine/overrides/disposition",
+        serde_json::json!(null),
+        serde_json::json!("friendly"),
+        3,
+    )
+    .await
+    .expect("a player's disposition override stays legal");
+
+    // An ancestor write is value-aware: echoing the stored `/engine` is legal, flipping the
+    // flag through it is not.
+    let engine = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap();
+    write(player, "/engine", engine.clone(), engine.clone(), 4)
+        .await
+        .expect("an ancestor write that leaves the flag alone stays legal");
+    let engine = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap();
+    let mut flipped = engine.clone();
+    flipped["identity_hidden"] = serde_json::json!(true);
+    let denied_ancestor = write(player, "/engine", engine, flipped, 5).await;
+    assert!(
+        matches!(denied_ancestor, Err(DataError::Forbidden)),
+        "an ancestor write flipping the flag must be refused, got {denied_ancestor:?}"
+    );
+
+    // A player who may create tokens can create an ordinary one but not one already hidden.
+    let mut wd = WorldCapDefaults::default();
+    wd.role_caps
+        .by_type
+        .entry("token".into())
+        .or_default()
+        .entry(WorldRole::Player)
+        .or_default()
+        .insert("core:create".into());
+    r.set_world_cap_defaults(w, &wd).await.unwrap();
+    let mut plain = owned_token_doc(w, None);
+    plain.id = crate::test_ids::test_uuid(7001);
+    plain.permissions.users.insert(p1, DocRole::Owner);
+    r.apply_intent(
+        &player,
+        w,
+        vec![Operation::Create { doc: plain }],
+        6,
+        WriteOrigin::Client,
+    )
+    .await
+    .expect("a player may create an ordinary token");
+    let mut hidden = owned_token_doc(w, None);
+    hidden.id = crate::test_ids::test_uuid(7002);
+    hidden.permissions.users.insert(p1, DocRole::Owner);
+    hidden.engine.as_mut().unwrap()["identity_hidden"] = serde_json::json!(true);
+    let denied_create = r
+        .apply_intent(
+            &player,
+            w,
+            vec![Operation::Create {
+                doc: hidden.clone(),
+            }],
+            7,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied_create, Err(DataError::Forbidden)),
+        "a player may not create a secret-identity token, got {denied_create:?}"
+    );
+
+    // The GM may set the flag on an existing token and create a hidden one.
+    write(
+        gm_ctx,
+        "/engine/identity_hidden",
+        serde_json::json!(false),
+        serde_json::json!(true),
+        8,
+    )
+    .await
+    .expect("the GM may enable secret identity");
+    let stored = r.get_document(token.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.engine.unwrap()["identity_hidden"],
+        serde_json::json!(true)
+    );
+    gm_create(&r, gm, w, vec![hidden], 9).await;
+}
+
+#[tokio::test]
+async fn a_player_cannot_store_an_embedded_pointer_override_that_only_a_gm_can() {
+    use crate::data::command::FieldChange;
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    r.add_member(w, p1, WorldRole::Player).await.unwrap();
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let write = |ctx: PermissionContext, ts: i64| {
+        let r = &r;
+        let id = token.id;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/embedded/actor/0/name": "gm_only" }),
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+    // The token's owner holds WRITE_FIELDS but not EDIT_PERMISSIONS, so the pointer the widened
+    // classifier now accepts is still not theirs to store.
+    let denied = write(
+        PermissionContext {
+            user_id: p1,
+            world_role: WorldRole::Player,
+        },
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's embedded-pointer override write must be refused, got {denied:?}"
+    );
+    write(
+        PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        },
+        3,
+    )
+    .await
+    .expect("the GM may store an embedded-pointer override");
+}

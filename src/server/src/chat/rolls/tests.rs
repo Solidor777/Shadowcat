@@ -171,10 +171,10 @@ fn split_roll_flavor_splits_at_the_first_pipe_only() {
     assert_eq!(split_roll_flavor("1d20+5"), ("1d20+5", None));
     assert_eq!(
         split_roll_flavor("1d20+5 | Attack roll"),
-        ("1d20+5 ", Some("Attack roll"))
+        ("1d20+5", Some("Attack roll"))
     );
-    assert_eq!(split_roll_flavor("1d20 | a | b"), ("1d20 ", Some("a | b")));
-    assert_eq!(split_roll_flavor("1d20 |   "), ("1d20 ", None));
+    assert_eq!(split_roll_flavor("1d20 | a | b"), ("1d20", Some("a | b")));
+    assert_eq!(split_roll_flavor("1d20 |   "), ("1d20", None));
 }
 
 #[test]

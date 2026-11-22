@@ -625,6 +625,143 @@ pub fn carried_light_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bo
         .any(|p| doc_json.pointer(p).is_some_and(|v| !v.is_null()))
 }
 
+/// The pointer of a token's secret-identity flag (`TokenEngine::identity_hidden`). The one
+/// symbol the write gate (`identity_hidden_touched`, `identity_hidden_in_body`) and the egress
+/// synthesis (`identity_hidden_pointers`) both read.
+const IDENTITY_HIDDEN_POINTER: &str = "/engine/identity_hidden";
+
+/// Whether a JSON value reads as an enabled secret-identity flag: absent, `null` and `false`
+/// are the same "not hidden" state.
+fn identity_flag_on(value: Option<&serde_json::Value>) -> bool {
+    value.and_then(serde_json::Value::as_bool).unwrap_or(false)
+}
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a token whose current JSON is
+/// `whole` sets, changes or removes the secret-identity flag. A DIRECT write at the flag's
+/// pointer always counts; an ANCESTOR write (`/engine`) counts only when the flag's effective
+/// value (absent reads as `false`) differs. Only `token` documents carry the flag.
+///
+/// This exists because the flag decides what every OTHER viewer perceives of the token (see
+/// `identity_hidden_pointers`), so it is a GM-only write exactly like a carried emission
+/// (`carried_light_touched`): the owner's `WRITE_FIELDS` floor must not reach it.
+/// `apply_intent` refuses such writes from non-GMs.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::identity_hidden_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "x": 0.0, "identity_hidden": false } });
+/// assert!(identity_hidden_touched("token", "/engine/identity_hidden", false, &tok, &serde_json::json!(true)));
+/// // An ancestor write counts only when the flag's value changes.
+/// assert!(!identity_hidden_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0, "identity_hidden": false})));
+/// assert!(identity_hidden_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0, "identity_hidden": true})));
+/// // Other doc_types never count.
+/// assert!(!identity_hidden_touched("actor", "/engine/identity_hidden", false, &tok, &serde_json::json!(true)));
+/// ```
+pub fn identity_hidden_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    if doc_type != TOKEN_DOC_TYPE {
+        return false;
+    }
+    if path == IDENTITY_HIDDEN_POINTER {
+        return true;
+    }
+    let e = IDENTITY_HIDDEN_POINTER;
+    if e.len() > path.len() && e.starts_with(path) && e.as_bytes()[path.len()] == b'/' {
+        let old_on = identity_flag_on(whole.pointer(e));
+        let new_on = !remove && identity_flag_on(new.pointer(&e[path.len()..]));
+        return old_on != new_on;
+    }
+    false
+}
+
+/// Whether a document BODY being created carries an enabled secret-identity flag
+/// (`apply_intent`'s Create arm — Create writes the whole body at once, so there is no field
+/// path to classify). Complements `identity_hidden_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::identity_hidden_in_body;
+///
+/// let on = serde_json::json!({ "engine": { "identity_hidden": true } });
+/// let off = serde_json::json!({ "engine": { "identity_hidden": false } });
+/// assert!(identity_hidden_in_body("token", &on));
+/// assert!(!identity_hidden_in_body("token", &off));
+/// assert!(!identity_hidden_in_body("actor", &on));
+/// ```
+pub fn identity_hidden_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    doc_type == TOKEN_DOC_TYPE && identity_flag_on(doc_json.pointer(IDENTITY_HIDDEN_POINTER))
+}
+
+/// The pointers a secret-identity token withholds from every recipient below `OwnerOrGm`: the
+/// envelope `name`, the token's own `visual`, the override fields that carry a presented
+/// identity (`visual`, `name`, `disposition`), and `actor_id` — a linked token's visual,
+/// faction border and disposition all resolve through that link, and a token document has no
+/// `faction` field of its own, so withholding the link is what closes the border signal. Every
+/// entry is a `redaction_target`-classified pointer (`/name` a `Band`, the rest `Within`).
+const IDENTITY_HIDDEN_POINTERS: [&str; 6] = [
+    "/name",
+    "/engine/visual",
+    "/engine/overrides/visual",
+    "/engine/overrides/name",
+    "/engine/overrides/disposition",
+    "/engine/actor_id",
+];
+
+/// The embedded collection an instanced token's actor copy lives in (`Document::embedded` key).
+const EMBEDDED_ACTOR_COLLECTION: &str = "actor";
+
+/// The pointers, relative to one embedded actor copy, that name what the copy is: the envelope
+/// `name`, the engine's `displayName` (the non-secret fallback label, which still names the
+/// creature), `visual` and `faction` (the border colour). `identity_hidden_pointers` prefixes
+/// each with `/embedded/actor/<i>` for every copy of a secret-identity token. The copy's other
+/// engine fields (size, shape, conditions, light, vision, movement) stay: footprint, rendering
+/// and the movement gate read them for every viewer and none of them names the creature.
+const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
+    "/name",
+    "/engine/displayName",
+    "/engine/visual",
+    "/engine/faction",
+];
+
+/// The `OwnerOrGm` entries a secret-identity token adds to its own redaction policy, empty for
+/// every other document: its own `IDENTITY_HIDDEN_POINTERS` plus the identity pointers of each
+/// embedded actor copy of an instanced token (`IDENTITY_HIDDEN_COPY_POINTERS`) — the copy
+/// carries the same name, visual and faction the token's `actor_id` link would resolve to, so
+/// withholding only the link would leave an instanced token fully identified. Called by
+/// `own_overrides`, the one function every egress and merge path reaches a document's own
+/// hidden set through, so no call site can miss it. Reads the raw `engine` JSON rather than
+/// deserializing a `TokenEngine`: `own_overrides` runs for every `doc_type` and must not
+/// assume one document's shape.
+fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
+    let active = doc.doc_type == TOKEN_DOC_TYPE
+        && identity_flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
+    let copies = if active {
+        doc.embedded
+            .get(EMBEDDED_ACTOR_COLLECTION)
+            .map_or(0, Vec::len)
+    } else {
+        0
+    };
+    let own = IDENTITY_HIDDEN_POINTERS
+        .iter()
+        .filter(move |_| active)
+        .map(|p| (*p).to_string());
+    let copy_identity = (0..copies).flat_map(|i| {
+        IDENTITY_HIDDEN_COPY_POINTERS
+            .iter()
+            .map(move |p| format!("/embedded/{EMBEDDED_ACTOR_COLLECTION}/{i}{p}"))
+    });
+    own.chain(copy_identity).map(|p| (p, Visibility::OwnerOrGm))
+}
+
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
 ///
 /// # Examples
@@ -689,6 +826,14 @@ pub enum RedactionTarget {
 /// `validation::validate_property_overrides`, the write-side chokepoint that already calls
 /// this function — no client-writable path can ever store an override that would corrupt a
 /// `base` snapshot's own shape at egress.
+///
+/// A pointer may lead with one or more `/embedded/<coll>/<idx>` hops, each addressing a child
+/// document: the pointer classifies as the residual does inside that child (a child's `/name`
+/// is a `Band`, its `/system/hp` is `Within`). A hop needs a collection, a NUMERIC index and a
+/// residual, so a pointer naming the whole map, a collection or a whole child, or a residual
+/// that names a structural envelope field of the child, is refused. `redact_pointers` nulls a
+/// `Band` at the hop's path and strips a `Within` there, so an embedded pointer is removed by
+/// the same step as a top-level one.
 /// # Examples
 ///
 /// ```
@@ -699,9 +844,26 @@ pub enum RedactionTarget {
 /// assert_eq!(redaction_target("/permissions/default"), None);
 /// assert_eq!(redaction_target("/base/system/hp"), Some(RedactionTarget::Within));
 /// assert_eq!(redaction_target("/base/embedded"), None);
+/// assert_eq!(redaction_target("/embedded/actor/0/name"), Some(RedactionTarget::Band));
+/// assert_eq!(redaction_target("/embedded/actor/0/engine/faction"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/embedded/actor/0"), None);
 /// ```
 pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
     let rest = pointer.strip_prefix('/')?;
+    if let Some(hop) = rest.strip_prefix("embedded/") {
+        // One `/embedded/<coll>/<idx>` hop addresses a child document inside this one: the
+        // pointer is classified by what it names INSIDE that child, recursively, so a child's
+        // own `/name` is a `Band` and a path into its bands is `Within`. A pointer naming the
+        // whole map, a whole collection or a whole child (a hop missing its collection,
+        // its numeric index or its residual) fails here, as does a residual that names a
+        // structural envelope field of the child.
+        let (collection, after_collection) = hop.split_once('/')?;
+        let (index, residual) = after_collection.split_once('/')?;
+        if collection.is_empty() || residual.is_empty() || index.parse::<usize>().is_err() {
+            return None;
+        }
+        return redaction_target(&format!("/{residual}"));
+    }
     for band in REDACTABLE_BANDS {
         if rest == band {
             return Some(RedactionTarget::Band);
@@ -1307,6 +1469,13 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
         })
         .collect::<Result<_, _>>()?;
     let hidden = hidden_own_pointers(doc, access)?;
+    for tier in out.permissions.property_overrides.values_mut() {
+        if let Visibility::Recipients { recipients } = tier {
+            if !access.user_id.is_some_and(|u| recipients.contains(&u)) {
+                recipients.clear();
+            }
+        }
+    }
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     redact_pointers(&mut whole, &hidden)?;
     serde_json::from_value(whole).map_err(|_| RedactionError {
@@ -1330,7 +1499,7 @@ pub(crate) fn redact_pointers(
     for pointer in hidden {
         match redaction_target(pointer) {
             Some(RedactionTarget::Band) => {
-                if let Some(f) = whole.get_mut(&pointer[1..]) {
+                if let Some(f) = whole.pointer_mut(pointer) {
                     *f = serde_json::Value::Null;
                 }
             }
@@ -1348,7 +1517,8 @@ pub(crate) fn redact_pointers(
 /// Every `(pointer, tier)` pair of `doc`'s OWN redaction policy at THIS level, pointers
 /// relative to `doc`'s own root: its `property_overrides`, each classified via
 /// `redaction_target` (fail closed on an unclassifiable pointer), the hardcoded `/base`
-/// entry, and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
+/// entry, the secret-identity set of a token whose `identity_hidden` flag is on
+/// (`identity_hidden_pointers`), and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
 /// through the live children — this is the one per-document statement of "what this
 /// document hides", which `collect_overrides` walks positionally through embedded descendants
 /// and `filter_properties`/`hidden_own_pointers` read at a single level.
@@ -1388,6 +1558,10 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
         out.push((p.clone(), v.clone()));
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
+    // Both synthesized and author-set entries for one pointer stay in `out`:
+    // `hidden_from_overrides` hides a pointer when ANY entry's tier is unseen, so the stricter
+    // tier wins without a merge step.
+    out.extend(identity_hidden_pointers(doc));
     if let Some(base) = &doc.base {
         let stored: StoredBase =
             serde_json::from_value(base.clone()).map_err(|_| RedactionError {
@@ -1968,6 +2142,7 @@ pub fn filter_command<'a>(
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
+                        .map(|ch| scrub_recipient_lists(ch, access_current.user_id))
                         .collect();
                     // Retraction: use this command's OWN commit-time hidden set, filtered
                     // through THIS recipient's commit-time access only — never the union, and
@@ -2019,6 +2194,44 @@ fn delete_stub(doc: &Document) -> Document {
         system: serde_json::Value::Object(Default::default()),
         ..doc.clone()
     }
+}
+
+/// Empty every `Visibility::Recipients` list in a permission-writing `FieldChange` that the
+/// viewer is not on, in both `old` and `new`. A `property_overrides` value of that tier names
+/// the users a field is for, so a copy of the write that reaches anyone else must not carry the
+/// ids; `filter_properties` applies the same rule to a whole document's own overrides, so a
+/// Create and an Update disclose the same thing. The key stays, since the tier it sits under
+/// still resolves to "not this viewer". A change whose path does not touch `permissions`
+/// is returned unchanged.
+fn scrub_recipient_lists(mut ch: FieldChange, viewer: Option<Uuid>) -> FieldChange {
+    /// Clears the `recipients` array of every object in `value` that has one and does not list
+    /// `viewer`. An object is a `Visibility::Recipients` value exactly when its only key is
+    /// `recipients`, the untagged wire form.
+    fn walk(value: &mut serde_json::Value, viewer: Option<Uuid>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.len() == 1 {
+                    if let Some(serde_json::Value::Array(list)) = map.get_mut("recipients") {
+                        let listed = viewer.is_some_and(|u| {
+                            list.iter().any(|v| v.as_str() == Some(&u.to_string()))
+                        });
+                        if !listed {
+                            list.clear();
+                        }
+                        return;
+                    }
+                }
+                map.values_mut().for_each(|v| walk(v, viewer));
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(|v| walk(v, viewer)),
+            _ => {}
+        }
+    }
+    if touches_permissions(&ch.path) {
+        walk(&mut ch.old, viewer);
+        walk(&mut ch.new, viewer);
+    }
+    ch
 }
 
 /// Redact one `FieldChange` for a recipient who cannot see GM-only properties,

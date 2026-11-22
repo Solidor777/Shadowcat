@@ -1065,6 +1065,12 @@ pub struct SceneEcs {
     /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
     /// doesn't linger indefinitely.
     engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
+    /// Per-region memo of the sense-occluder outline (`regions::occluder_outline`), keyed on the
+    /// region document's id. The three wall collectors run on every vision, light and sound
+    /// computation, so the outline is derived once and reused while the entry's shape, cell size
+    /// and grid kind still match (`regions::OccluderCacheEntry`). `Mutex`, never locked across an
+    /// `.await`, matching `engine_cache`.
+    occluder_cache: std::sync::Mutex<HashMap<Uuid, regions::OccluderCacheEntry>>,
     /// EPHEMERAL token→region membership table: token id → the set of
     /// trigger-bearing region ids the token currently OCCUPIES — the
     /// authoritative `trigger_regions` identity rows intersecting the firing
@@ -1379,6 +1385,7 @@ impl SceneEcs {
             region_membership: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
             engine_cache: std::sync::Mutex::new(HashMap::new()),
+            occluder_cache: std::sync::Mutex::new(HashMap::new()),
             visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             visible_cells_recompute_count: std::sync::atomic::AtomicU64::new(0),
@@ -1673,6 +1680,7 @@ impl SceneEcs {
             Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => *doc_id,
         };
         self.engine_cache.lock().unwrap().remove(&touched_id);
+        self.occluder_cache.lock().unwrap().remove(&touched_id);
 
         // Determine whether this op can affect any cached navmesh's geometry (a `wall` doc's
         // blocksMove/seg fields, or a `scene` doc's bounds) BEFORE applying it — an Update needs

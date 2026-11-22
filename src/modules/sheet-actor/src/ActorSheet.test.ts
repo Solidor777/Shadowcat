@@ -54,6 +54,18 @@ describe("module-sheet-actor registration", () => {
   });
 });
 
+describe("ActorSheet effects", () => {
+  it("lists the actor's effects with their origin", () => {
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" } });
+    const effect = envelope("w1", "effect", null, {}, "eff-1", { active: true, transfer: false, duration: null, origin: { label: "Aldric" } }, "Bless");
+    const actor = documents.get("a1")!;
+    documents.applyCommand({ seq: 2, world_id: "w1", author: "u", ts: 0, ops: [{ op: "delete", doc: actor }, { op: "create", doc: { ...actor, embedded: { effect: [effect] } } }] });
+    const context = setAppContextForTest({ documents, canEdit: () => true, t: (k, p) => (p ? k + ":" + p.origin : k) });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect(getByTestId("effects-list:eff-1").textContent).toContain("effects.origin:Aldric");
+  });
+});
+
 describe("ActorSheet edits", () => {
   it("edits the name with the real pre-image", async () => {
     const calls: unknown[] = [];

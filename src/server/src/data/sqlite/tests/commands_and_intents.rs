@@ -2501,6 +2501,54 @@ async fn create_rejects_a_second_singleton_doc_of_the_same_type() {
     );
 }
 
+/// `module-settings` is capped at one document per world by the create gate: a second
+/// client-issued Create conflicts. The gate reads `world_seed::CONFIG_SINGLETON_DOC_TYPES`, so a
+/// doc_type seeded but missing from the gate cannot exist; this pins the new entry through both.
+#[tokio::test]
+async fn create_rejects_a_second_module_settings_doc() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    assert!(crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.contains(&"module-settings"));
+
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: singleton_test_doc(1, w.id, "module-settings"),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, w.id, "module-settings"),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Conflict(_)),
+        "a second module-settings doc in the same world must be rejected, got {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn create_allows_singleton_doc_types_in_different_worlds() {
     use crate::data::membership::PermissionContext;

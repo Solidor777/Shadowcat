@@ -1838,6 +1838,22 @@ describe("WsClient", () => {
     );
     expect(received).toEqual([{ scene: "scene-1", user: "u1", level: "l1" }]);
   });
+
+  it("a modules_changed server frame invokes onModulesChanged once", async () => {
+    let onMessage: (d: string) => void = () => {};
+    let calls = 0;
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onModulesChanged: () => (calls += 1) },
+    });
+    await client.start();
+    onMessage(JSON.stringify({ type: "modules_changed" }));
+    expect(calls).toBe(1);
+  });
 });
 
 describe("WsClient VFX frames", () => {

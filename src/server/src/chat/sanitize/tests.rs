@@ -61,10 +61,11 @@ fn render(segs: &[Segment]) -> String {
             | Segment::OEmbed(_)
             | Segment::DocLink { .. }
             | Segment::Image { .. }
-            | Segment::TableDraw(_) => {
+            | Segment::TableDraw(_)
+            | Segment::Secret { .. } => {
                 unreachable!(
-                    "sanitize() never produces roll, preview, oembed, doc-link, image, or \
-                     table-draw segments"
+                    "sanitize() never produces roll, preview, oembed, doc-link, image, \
+                     table-draw, or secret segments"
                 )
             }
         })

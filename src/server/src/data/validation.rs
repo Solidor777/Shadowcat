@@ -264,6 +264,9 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// ```
 pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     doc.engine = engine::normalize_engine_opt(&doc.doc_type, doc.engine.as_ref())?;
+    if doc.doc_type == engine::NOTE_DOC_TYPE {
+        stamp_note_secret_overrides(doc)?;
+    }
     if let Some(mut base) = doc.base.take() {
         // `doc.base` is detached for the walk so the live tree can be read
         // for embedded-child correlation while the snapshot is mutated.
@@ -275,6 +278,26 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
             validate_engine_tree(child)?;
         }
     }
+    Ok(())
+}
+
+/// Rewrites the override keys a note's secret blocks own. A note's `body` is server-derived, so
+/// the property overrides that hide its `Segment::Secret` content are server-derived too: every
+/// stored `/engine/source` and `/engine/body`-rooted key is dropped (whatever a client wrote
+/// there is untrusted) and replaced by `NoteEngine::secret_property_overrides` of the freshly
+/// normalized engine band. Runs on every Create and Update post-image through
+/// `validate_engine_tree`, so the stored set always matches the stored body.
+fn stamp_note_secret_overrides(doc: &mut Document) -> Result<(), DataError> {
+    let Some(engine_value) = &doc.engine else {
+        return Ok(());
+    };
+    let note: engine::note::NoteEngine = serde_json::from_value(engine_value.clone())
+        .map_err(|e| DataError::BadEngine(format!("note: {e}")))?;
+    let overrides = &mut doc.permissions.property_overrides;
+    overrides.retain(|path, _| {
+        path != "/engine/source" && path != "/engine/body" && !path.starts_with("/engine/body/")
+    });
+    overrides.extend(note.secret_property_overrides());
     Ok(())
 }
 

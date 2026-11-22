@@ -226,6 +226,27 @@ Three things this snippet does right — copy all three:
 3. **`ctx.canEdit` is advisory.** It mirrors the server's write check so you can
    hide dead controls; the server re-checks every write regardless.
 
+## Persisting module settings
+
+`ctx.settings` stores a module's own settings in two scopes. The module never
+passes its id; every call is scoped to the module that received the context.
+
+- **World scope** — `getWorld()` / `setWorld(patch)`. The data lives in the world's
+  `module-settings` document (the module's slice of its `system` band) and is shared
+  by every player in the world. `setWorld` merges the patch as one Update with one
+  field change per top-level key, so keys the patch does not name are untouched. It
+  is an ordinary optimistic write: only a user with write access to that document
+  (the GM by default) succeeds, and a write the server refuses rolls back like any
+  other rejected intent. The returned promise settles when the intent is sent, not
+  when the server replies.
+- **Account scope** — `getUser()` / `setUser(patch)`. The data lives in the signed-in
+  user's account-wide UI state and follows them across worlds and devices.
+  `setUser` merges the patch (a `null` value removes that key) and resolves once the
+  server accepts it. `getUser()` is a snapshot read when the session started, updated
+  by this module's own `setUser` calls.
+
+Values are opaque JSON; the engine never interprets them.
+
 ## Install, enable, dev loop
 
 **Install** (production): build, then copy `dist/index.js` + `module.json` (plus

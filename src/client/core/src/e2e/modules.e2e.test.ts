@@ -152,4 +152,49 @@ describe("module toolchain e2e", () => {
     );
     expect(badEnable.status).toBe(422);
   });
+
+  it("an enabled-set change reaches every connected session as modules_changed, and a rejected one reaches none", async () => {
+    const cookie = await login(server.baseUrl, "gm", "pw");
+    const { world } = server.fixture;
+    const counts = [0, 0];
+    let welcomed = 0;
+    const clients = counts.map(
+      (_, i) =>
+        new WsClient({
+          world: "w1",
+          connect: nodeConnect(server.wsUrl, world, cookie),
+          handlers: {
+            onCommand: () => {},
+            onReject: () => {},
+            onWelcome: () => {
+              welcomed += 1;
+            },
+            onModulesChanged: () => {
+              counts[i] += 1;
+            },
+          },
+        }),
+    );
+    await Promise.all(clients.map((c) => c.start()));
+    const url = `${server.baseUrl}/api/worlds/${world}/enabled-modules`;
+    const put = (body: unknown) =>
+      fetch(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+
+    // Both sockets must be registered with the room before the PUT, or the frame has no
+    // receiver; each socket's first `welcome` marks that.
+    for (let i = 0; i < 100 && welcomed < 2; i++) await sleep(50);
+    expect(welcomed).toBe(2);
+    expect((await put([{ id: "not-a-real-module", validators_enabled: false }])).status).toBe(422);
+    await sleep(300);
+    expect(counts).toEqual([0, 0]);
+
+    expect((await put([{ id: "fixture-mod", validators_enabled: false }])).status).toBe(204);
+    for (let i = 0; i < 50 && (counts[0] === 0 || counts[1] === 0); i++) await sleep(100);
+    clients.forEach((c) => c.stop());
+    expect(counts).toEqual([1, 1]);
+  });
 });

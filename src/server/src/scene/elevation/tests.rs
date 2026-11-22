@@ -331,6 +331,159 @@ fn a_tier_naming_only_light_opens_only_the_light_collector() {
     assert_eq!(ecs.sound_wall_entries(scene)[0].seg.open_within, None);
 }
 
+/// A scene (id 10, 100-unit square grid) with one region over the 2 x 2 cells `[0, 200]²`,
+/// carrying `extra` merged into its engine body (`occludes`, `elevation`, `enabled`, ...).
+/// Returns the ECS and the scene id.
+fn scene_with_occluding_region(extra: serde_json::Value) -> (SceneEcs, Uuid) {
+    let (docs, scene_id) = occluding_region_docs(extra);
+    (SceneEcs::from_documents(docs, 0), scene_id)
+}
+
+/// The scene and region documents `scene_with_occluding_region` hydrates, plus the scene id.
+fn occluding_region_docs(extra: serde_json::Value) -> (Vec<crate::data::document::Document>, Uuid) {
+    let (ecs, scene_id) = scene_with_door_walls(&[]);
+    let scene = ecs
+        .world
+        .query::<&SceneEntity>()
+        .iter()
+        .find(|e| e.doc.doc_type == "scene")
+        .map(|e| e.doc.clone())
+        .unwrap();
+    let mut region = crate::data::document::tests::world_scoped_doc(
+        crate::test_ids::test_uuid(9),
+        crate::test_ids::test_uuid(40),
+        "region",
+    );
+    region.parent_id = Some(scene_id);
+    let mut body = serde_json::json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 200.0, 200.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+    });
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    region.engine = Some(body);
+    (vec![scene, region], scene_id)
+}
+
+/// The unordered rounded endpoint pairs of `entries`' segments.
+fn entry_segments(entries: &[WallEntry]) -> std::collections::BTreeSet<[i64; 4]> {
+    entries
+        .iter()
+        .map(|w| {
+            let (a, b) = (w.seg.a, w.seg.b);
+            let (p, q) = if (a.0, a.1) <= (b.0, b.1) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            [p.0 as i64, p.1 as i64, q.0 as i64, q.1 as i64]
+        })
+        .collect()
+}
+
+#[test]
+fn a_region_occludes_only_the_senses_its_flags_name() {
+    let (ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": false, "sound": true } }),
+    );
+    let sight = ecs.sight_wall_entries(scene);
+    assert_eq!(sight.len(), 4, "the 2 x 2 block merges to its four sides");
+    assert!(ecs.light_wall_entries(scene).is_empty());
+    assert_eq!(
+        entry_segments(&sight),
+        entry_segments(&ecs.sound_wall_entries(scene)),
+        "sight and sound read one outline for the same region"
+    );
+    for w in &sight {
+        assert_eq!(w.seg.one_way, None);
+        assert!(!w.seg.limited);
+        assert_eq!(w.seg.open_within, None);
+    }
+}
+
+#[test]
+fn a_region_without_occludes_or_disabled_adds_no_walls() {
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({}));
+    assert!(ecs.sight_wall_entries(scene).is_empty());
+    assert!(ecs.light_wall_entries(scene).is_empty());
+    assert!(ecs.sound_wall_entries(scene).is_empty());
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({
+        "enabled": false,
+        "occludes": { "sight": true, "light": true, "sound": true },
+    }));
+    assert!(ecs.sight_wall_entries(scene).is_empty());
+}
+
+#[test]
+fn a_region_occluder_never_reaches_the_movement_collector() {
+    let (ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": true, "sound": true } }),
+    );
+    assert!(!ecs.sight_wall_entries(scene).is_empty());
+    assert!(ecs.move_wall_entries(scene, None).is_empty());
+}
+
+#[test]
+fn a_region_occluder_honours_its_elevation_band() {
+    let (ecs, scene) = scene_with_occluding_region(serde_json::json!({
+        "occludes": { "sight": true, "light": false, "sound": false },
+        "elevation": { "bottom": 10.0, "top": 20.0 },
+    }));
+    let entries = ecs.sight_wall_entries(scene);
+    assert_eq!(entries.len(), 4);
+    assert!(
+        walls_at_elevation(&entries, 0.0).is_empty(),
+        "a source on another level is not occluded"
+    );
+    assert_eq!(walls_at_elevation(&entries, 15.0).len(), 4);
+}
+
+#[test]
+fn a_hidden_region_still_occludes_for_every_viewer() {
+    // The collector reads the permission-blind view: the region's `gm_only` engine band does
+    // not remove its walls.
+    let (mut docs, scene) = occluding_region_docs(
+        serde_json::json!({ "occludes": { "sight": true, "light": false, "sound": false } }),
+    );
+    docs[1]
+        .permissions
+        .property_overrides
+        .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+    let ecs = SceneEcs::from_documents(docs, 0);
+    assert_eq!(ecs.sight_wall_entries(scene).len(), 4);
+}
+
+#[test]
+fn the_outline_memo_is_reused_and_follows_a_shape_edit() {
+    let (mut ecs, scene) = scene_with_occluding_region(
+        serde_json::json!({ "occludes": { "sight": true, "light": true, "sound": true } }),
+    );
+    let first = entry_segments(&ecs.sight_wall_entries(scene));
+    assert_eq!(ecs.occluder_cache.lock().unwrap().len(), 1);
+    assert_eq!(entry_segments(&ecs.light_wall_entries(scene)), first);
+    assert_eq!(
+        ecs.occluder_cache.lock().unwrap().len(),
+        1,
+        "every sense reads the one memo entry"
+    );
+    ecs.apply_op(&crate::data::command::Operation::Update {
+        doc_id: crate::test_ids::test_uuid(40),
+        changes: vec![crate::data::command::FieldChange {
+            remove: false,
+            path: "/engine/shape/points".into(),
+            old: serde_json::json!(0),
+            new: serde_json::json!([0.0, 0.0, 400.0, 200.0]),
+        }],
+    });
+    let edited = entry_segments(&ecs.sight_wall_entries(scene));
+    assert_ne!(
+        edited, first,
+        "a shape edit must not serve the stale outline"
+    );
+    assert!(edited.contains(&[0, 0, 400, 0]));
+}
+
 #[test]
 fn elevation_or_ground_defaults_and_clamps() {
     assert_eq!(elevation_or_ground(None), GROUND);

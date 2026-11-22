@@ -487,7 +487,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok-1");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-1");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
@@ -514,7 +514,7 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
   session.leave(); // tears down the socket → no transport
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok-x");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-x");
   expect(session.dispatchIntent([{ op: "create", doc }])).toBe(false);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
@@ -578,7 +578,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 
   // Transport drops but the client stays running → reconnecting.
   handlers.onClose();
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false }, "tok-off");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "tok-off");
   session.dispatchIntent([{ op: "create", doc }]);
   // Predicted immediately, but NOT transmitted while offline.
   expect(capturedClient!.get("tok-off")).toBeTruthy();
@@ -628,7 +628,7 @@ test("canEdit: effective token ownership (inherited from the linked actor) unloc
   const linked = buildTokenDoc(
     "w1",
     "s1",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null, lock_rotation: false },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
     "tok-linked",
   );
   session.dispatchIntent([
@@ -1178,7 +1178,7 @@ test("viewedLevel: a player tracks their primary token's elevation, no explicit 
       "s0",
     ),
   }]);
-  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false }, "tok1");
+  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false, identity_hidden: false }, "tok1");
   token.owner = "u1";
   session.dispatchIntent([{ op: "create", doc: token }]);
   expect(session.viewedLevel).toBe("l1");
@@ -1922,6 +1922,63 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
   const after = await registerCallsOf(FIXTURE_A_URL);
   expect(after).toBe(before); // no spurious re-register
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1); // no duplicate
+});
+
+test("a modules_changed frame reconciles the session against the freshly fetched enabled set", async () => {
+  const core = await import("@shadowcat/core");
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ]);
+  push({ type: "modules_changed" });
+
+  await vi.waitFor(() =>
+    expect(session.contributions.contributionsFor(MARKER_CONTRACT).map((c) => c.id)).toEqual([
+      "ext-module-a-marker",
+    ]),
+  );
+});
+
+test("two overlapping reconcileInstalledModules calls load a newly-enabled module exactly once", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+  const installed = [
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ];
+  const before = await registerCallsOf(FIXTURE_A_URL);
+  for (let i = 0; i < 2; i++) {
+    vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
+    vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
+  }
+
+  // The saving GM's post-save call and the modules_changed broadcast's call start together.
+  await Promise.all([session.reconcileInstalledModules(), session.reconcileInstalledModules()]);
+
+  expect(await registerCallsOf(FIXTURE_A_URL)).toBe(before + 1);
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
+  // A second concurrent load of the same module would report a load failure for it.
+  expect(session.moduleStatus.has("ext-a-folder")).toBe(false);
 });
 
 test("reconcileInstalledModules leaves a module present in BOTH the old and new enabled set untouched", async () => {
