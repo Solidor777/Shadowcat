@@ -5,7 +5,8 @@
 // genuinely game-system-owned shapes (`item`) and client-only resolution helpers are defined here.
 export type { WireDocument } from "./wire";
 import { randomUuid } from "./uuid";
-import type { WireDocument } from "./wire";
+import type { WireDocument, WireOperation } from "./wire";
+import { DEFAULT_CONE_ANGLE_DEGREES, conePoints, linePoints, squarePoints } from "./geometry";
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
 import type {
@@ -1222,6 +1223,128 @@ export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDoc
     property_overrides: overrides,
   };
   return doc;
+}
+
+// --- Template to region conversion ---
+
+/** Why a template cannot become a region: `"zero_width_line"` is a `"line"` with an absent or
+ * non-positive `width` (a zero-width polygon covers no cell centre, so the region would never
+ * contain anything); `"unknown_shape"` is a `kind` no region geometry matches. */
+export type TemplateRegionRefusal = "zero_width_line" | "unknown_shape";
+
+/** Result of {@link templateToRegionShape}: the region geometry covering exactly what the
+ * template draws, or the reason there is none. */
+export type TemplateRegionShapeResult = TemplateRegionShape | TemplateRegionRefused;
+
+/** A successful {@link templateToRegionShape}. */
+export interface TemplateRegionShape {
+  /** Discriminant: the conversion succeeded. */
+  ok: true;
+  /** The region geometry covering the template's area. */
+  shape: RegionShape;
+}
+
+/** A template conversion that has no region equivalent. */
+export interface TemplateRegionRefused {
+  /** Discriminant: the conversion was refused. */
+  ok: false;
+  /** Why the template cannot become a region. */
+  reason: TemplateRegionRefusal;
+}
+
+/** Result of {@link buildRegionFromTemplate}: the new region document plus the one-batch
+ * operation list (create the region, delete the template), or the refusal reason. */
+export type TemplateRegionBatchResult = TemplateRegionBatch | TemplateRegionRefused;
+
+/** A successful {@link buildRegionFromTemplate}. */
+export interface TemplateRegionBatch {
+  /** Discriminant: the conversion succeeded. */
+  ok: true;
+  /** The region document the batch creates. */
+  region: WireDocument;
+  /** The batch: create the region, then delete the template (full pre-image). */
+  ops: WireOperation[];
+}
+
+/**
+ * Converts a template's shape to the region geometry covering the same area. A circle becomes
+ * an exact region `circle` (`[x, y, size]`, no polygon approximation). A cone, rect or thick line
+ * becomes a region `polygon` of the SAME points the render layer draws (`conePoints`,
+ * `squarePoints`, `linePoints` from the shared tessellation module), so the region covers exactly
+ * the cells the template showed. A line whose `width` is absent or not positive is refused:
+ * its polygon is a bare segment that covers no cell centre.
+ * @param shape The template's `engine.shape`.
+ * @returns The region shape, or a refusal reason.
+ * @example
+ * ```ts
+ * import { templateToRegionShape } from "@shadowcat/core";
+ *
+ * const result = templateToRegionShape({ kind: "circle", x: 100, y: 200, size: 50, direction: 0, angle: null, width: null });
+ * result.ok && result.shape.kind; // "circle"
+ * ```
+ */
+export function templateToRegionShape(shape: TemplateShape): TemplateRegionShapeResult {
+  const { kind, x, y, size, direction, angle, width } = shape;
+  switch (kind) {
+    case "circle":
+      return { ok: true, shape: { kind: "circle", points: [x, y, size] } };
+    case "cone":
+      return { ok: true, shape: { kind: "polygon", points: conePoints(x, y, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES) } };
+    case "rect":
+      return { ok: true, shape: { kind: "polygon", points: squarePoints(x, y, size, direction, width ?? size) } };
+    case "line":
+      if (!(width != null && width > 0)) return { ok: false, reason: "zero_width_line" };
+      return { ok: true, shape: { kind: "polygon", points: linePoints(x, y, size, direction, width) } };
+    default:
+      return { ok: false, reason: "unknown_shape" };
+  }
+}
+
+/**
+ * Builds the batch that turns a template into a region: create a region parented to the
+ * template's scene with the template's area and elevation band, and delete the template. The
+ * region is a plain terrain region (cost 1, no triggers) with the world-default visibility; the
+ * GM then adds behavior and triggers in the region editor. The template's color is not carried.
+ * The delete op carries the full template as its pre-image.
+ * @param worldId The owning world's id.
+ * @param template The `template` document to convert.
+ * @param id An explicit region id, or `undefined` to generate one.
+ * @returns The region and the `[create, delete]` ops, or a refusal reason.
+ * @example
+ * ```ts
+ * import { buildRegionFromTemplate, buildSceneEntityDoc } from "@shadowcat/core";
+ *
+ * const template = buildSceneEntityDoc("world-1", "scene-1", "template", {
+ *   shape: { kind: "circle", x: 100, y: 100, size: 50, direction: 0, angle: null, width: null },
+ *   color: "#3388ff", elevation: null,
+ * });
+ * const batch = buildRegionFromTemplate("world-1", template);
+ * batch.ok && batch.ops.length; // 2
+ * ```
+ */
+export function buildRegionFromTemplate(worldId: string, template: WireDocument, id?: string): TemplateRegionBatchResult {
+  const engine = template.engine as TemplateEngine;
+  const converted = templateToRegionShape(engine.shape);
+  if (!converted.ok) return converted;
+  const regionEngine: RegionEngine = {
+    shape: converted.shape,
+    behavior: "terrain",
+    cost: 1,
+    cost_by_tag: {},
+    enabled: true,
+    triggers: [],
+    elevation: engine.elevation ?? null,
+    ambient_override: null,
+  };
+  const region = buildRegionDoc(worldId, template.parent_id as string, regionEngine, id);
+  return {
+    ok: true,
+    region,
+    ops: [
+      { op: "create", doc: region },
+      { op: "delete", doc: template },
+    ],
+  };
 }
 
 // --- Combat documents ---

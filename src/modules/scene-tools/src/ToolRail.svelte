@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -1114,6 +1114,21 @@
             onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
+        <!-- Conversion needs both create (region) and delete (template) rights; a shape with no
+             region equivalent shows its reason as text, since a tooltip is unreachable on touch. -->
+        {#if ctx.canCreate("region") && ctx.canDelete(editingDoc)}
+          {@const conversion = templateToRegionShape(eng.shape)}
+          <button
+            type="button"
+            class="tool"
+            data-testid="template-make-region"
+            disabled={!conversion.ok}
+            onclick={() => controller.convertTemplateToRegion(editingDoc)}
+          >{t("tools.templateMakeRegion")}</button>
+          {#if !conversion.ok}
+            <span data-testid="template-make-region-reason">{t(conversion.reason === "zero_width_line" ? "tools.templateMakeRegionZeroWidth" : "tools.templateMakeRegionUnknownShape")}</span>
+          {/if}
+        {/if}
         <button type="button" class="tool" data-testid="template-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
