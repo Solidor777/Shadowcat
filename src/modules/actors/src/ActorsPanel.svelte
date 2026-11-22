@@ -1,13 +1,15 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type FacingVision, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
   import TokenLightControl from "./TokenLightControl.svelte";
   import TokenVisionControl from "./TokenVisionControl.svelte";
+  import TokenFacingVisionControl from "./TokenFacingVisionControl.svelte";
+  import FacingVisionControl from "./FacingVisionControl.svelte";
   import TokenMovementControl from "./TokenMovementControl.svelte";
   import TokenDispositionControl from "./TokenDispositionControl.svelte";
   import TokenIdentityHiddenControl from "./TokenIdentityHiddenControl.svelte";
@@ -104,6 +106,9 @@
   /** The create form's pending vision-mode assignments (empty = the new actor has no senses).
    * Read via `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingVision = $state<VisionAssignment[]>([]);
+  /** The create form's pending facing-limited field of view (`null` = the new actor sees all
+   * round). Read via `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingFacing = $state<FacingVision | null>(null);
   /** The create form's pending carried light (`null` = the new actor emits nothing). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingLight = $state<LightEmission | null>(null);
@@ -147,7 +152,8 @@
    * the movement-tag override control (`TokenMovementControl`), the disposition override control
    * (`TokenDispositionControl`), the GM-only secret-identity toggle
    * (`TokenIdentityHiddenControl`), the elevation control
-   * (`TokenElevationControl`), the rotation-lock control (`TokenRotationLockControl`), and the per-token emission/visual override controls
+   * (`TokenElevationControl`), the rotation-lock control (`TokenRotationLockControl`), the
+   * facing-vision control (`TokenFacingVisionControl`), and the per-token emission/visual override controls
    * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
@@ -262,6 +268,35 @@
    */
   function commitVision(a: WireDocument, next: VisionAssignment[]): void {
     ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/vision", old: visionOf(a), value: next.length > 0 ? next : null }])]);
+  }
+
+  /** The actor row's raw stored facing-limited field of view (`engine.facing_vision`), or `null`
+   * when the key is absent. This RAW read is the OCC pre-image for `commitFacing`'s update.
+   * @param a The actor document to read.
+   * @returns The raw stored value, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row facing-vision editor
+   * declare const a: WireDocument;
+   * facingOf(a); // a.engine.facing_vision ?? null
+   * ```
+   */
+  const facingOf = (a: WireDocument): FacingVision | null =>
+    (a.engine as ActorEngine | undefined)?.facing_vision ?? null;
+
+  /** Dispatch a whole-payload `/engine/facing_vision` update on actor `a` (the value is one
+   * nested object). `old` is the raw stored value.
+   * @param a The actor document.
+   * @param next The new value, or `null` to clear it (the actor sees all round again).
+   * @example
+   * ```
+   * // private helper; wired to the per-row facing-vision editor's onCommit
+   * declare const a: WireDocument;
+   * commitFacing(a, { arc: 90, near: 0 });
+   * ```
+   */
+  function commitFacing(a: WireDocument, next: FacingVision | null): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/facing_vision", old: facingOf(a), value: next }])]);
   }
 
   /** The actor row's raw stored movement-type tags (`engine.movement`), or `null` when the key
@@ -392,6 +427,7 @@
       aura: $state.snapshot(pendingAura),
       sound: $state.snapshot(pendingSound),
       vfx: $state.snapshot(pendingVfx),
+      ...(pendingFacing ? { facing_vision: $state.snapshot(pendingFacing) } : {}),
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -404,6 +440,7 @@
     sizeW = 1;
     sizeH = 1;
     pendingVision = [];
+    pendingFacing = null;
     pendingLight = null;
     pendingMovement = [];
     pendingAura = null;
@@ -422,6 +459,7 @@
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
   <TokenVisionControl tokenId={selectedTokenId} />
+  <TokenFacingVisionControl tokenId={selectedTokenId} />
   <TokenMovementControl tokenId={selectedTokenId} />
   <TokenDispositionControl tokenId={selectedTokenId} />
   <TokenIdentityHiddenControl tokenId={selectedTokenId} />
@@ -509,6 +547,12 @@
             <span>{t("actors.visionModes")}</span>
             <VisionAssignmentsEditor value={visionOf(a) ?? []} modes={visionModes} onCommit={(next) => commitVision(a, next)} />
           </div>
+          <!-- Per-row facing-vision editor; commits whole-payload /engine/facing_vision updates
+               with the raw stored value as the OCC pre-image. -->
+          <div class="facing-edit" aria-label={t("actors.facingVision")}>
+            <span>{t("actors.facingVision")}</span>
+            <FacingVisionControl value={facingOf(a)} onCommit={(next) => commitFacing(a, next)} />
+          </div>
           <!-- Per-row movement-tag editor; commits whole-payload /engine/movement updates with
                the raw stored list as the OCC pre-image. -->
           <div class="movement-edit" aria-label={t("actors.movementTags")}>
@@ -582,6 +626,10 @@
     <div class="vision-edit">
       <span>{t("actors.visionModes")}</span>
       <VisionAssignmentsEditor value={pendingVision} modes={visionModes} onCommit={(next) => (pendingVision = next)} />
+    </div>
+    <div class="facing-edit">
+      <span>{t("actors.facingVision")}</span>
+      <FacingVisionControl value={pendingFacing} onCommit={(next) => (pendingFacing = next)} />
     </div>
     <div class="movement-edit">
       <span>{t("actors.movementTags")}</span>
@@ -678,7 +726,8 @@
     flex-direction: column;
     gap: var(--space-1);
   }
-  .vision-edit {
+  .vision-edit,
+  .facing-edit {
     display: flex;
     flex-direction: column;
     gap: 2px;
