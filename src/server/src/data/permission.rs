@@ -1307,6 +1307,13 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
         })
         .collect::<Result<_, _>>()?;
     let hidden = hidden_own_pointers(doc, access)?;
+    for tier in out.permissions.property_overrides.values_mut() {
+        if let Visibility::Recipients { recipients } = tier {
+            if !access.user_id.is_some_and(|u| recipients.contains(&u)) {
+                recipients.clear();
+            }
+        }
+    }
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     redact_pointers(&mut whole, &hidden)?;
     serde_json::from_value(whole).map_err(|_| RedactionError {
@@ -1968,6 +1975,7 @@ pub fn filter_command<'a>(
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
+                        .map(|ch| scrub_recipient_lists(ch, access_current.user_id))
                         .collect();
                     // Retraction: use this command's OWN commit-time hidden set, filtered
                     // through THIS recipient's commit-time access only — never the union, and
@@ -2019,6 +2027,44 @@ fn delete_stub(doc: &Document) -> Document {
         system: serde_json::Value::Object(Default::default()),
         ..doc.clone()
     }
+}
+
+/// Empty every `Visibility::Recipients` list in a permission-writing `FieldChange` that the
+/// viewer is not on, in both `old` and `new`. A `property_overrides` value of that tier names
+/// the users a field is for, so a copy of the write that reaches anyone else must not carry the
+/// ids; `filter_properties` applies the same rule to a whole document's own overrides, so a
+/// Create and an Update disclose the same thing. The key stays, since the tier it sits under
+/// still resolves to "not this viewer". A change whose path does not touch `permissions`
+/// is returned unchanged.
+fn scrub_recipient_lists(mut ch: FieldChange, viewer: Option<Uuid>) -> FieldChange {
+    /// Clears the `recipients` array of every object in `value` that has one and does not list
+    /// `viewer`. An object is a `Visibility::Recipients` value exactly when its only key is
+    /// `recipients`, the untagged wire form.
+    fn walk(value: &mut serde_json::Value, viewer: Option<Uuid>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.len() == 1 {
+                    if let Some(serde_json::Value::Array(list)) = map.get_mut("recipients") {
+                        let listed = viewer.is_some_and(|u| {
+                            list.iter().any(|v| v.as_str() == Some(&u.to_string()))
+                        });
+                        if !listed {
+                            list.clear();
+                        }
+                        return;
+                    }
+                }
+                map.values_mut().for_each(|v| walk(v, viewer));
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(|v| walk(v, viewer)),
+            _ => {}
+        }
+    }
+    if touches_permissions(&ch.path) {
+        walk(&mut ch.old, viewer);
+        walk(&mut ch.new, viewer);
+    }
+    ch
 }
 
 /// Redact one `FieldChange` for a recipient who cannot see GM-only properties,

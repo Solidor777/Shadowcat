@@ -59,6 +59,11 @@ pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
 /// Cap on non-text chunks (`Inline`/`Button`/`DocLink`/`Image`) `scan_body_capped` may extract
 /// from one message body.
 pub(crate) const MAX_INLINE_ROLLS: usize = 8;
+/// Deepest `[[secret:...]]` nesting a body may carry: a secret inside a secret inside a secret,
+/// counted from the outermost span as depth 1. A deeper span is refused
+/// (`RollError::SecretTooDeep`), bounding the composer's recursion the way
+/// `tables::MAX_DRAW_DEPTH` bounds a table draw's.
+pub(crate) const MAX_SECRET_DEPTH: usize = 8;
 
 /// One scanned chunk of a message body: literal text between spans, an
 /// inline roll to execute, a button to validate-and-store, or a doc/token
@@ -100,6 +105,45 @@ pub(crate) enum BodyChunk<'a> {
         /// Trimmed alt text, or `None`.
         alt: Option<&'a str>,
     },
+    /// A `[[secret:<spec>|<inner>]]` span: `inner` is itself a body, composed recursively and
+    /// stored under the visibility `spec` names. `spec` is the trimmed text before the first `|`
+    /// (see `parse_secret_spec`); `inner` is everything after it, untrimmed.
+    Secret {
+        /// Who may read `inner`: `gm` or a list of `@username` words.
+        spec: &'a str,
+        /// The body the span hides, scanned again by the composer.
+        inner: &'a str,
+    },
+}
+
+/// Who a `[[secret:...]]` span's spec names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SecretSpec<'a> {
+    /// Every current GM (`Visibility::GmOnly`).
+    Gm,
+    /// The listed usernames, without their `@` (`Visibility::Recipients`).
+    Users(Vec<&'a str>),
+}
+
+/// Parses a secret span's audience selector: the word `gm`, or one or more whitespace-separated `@username`
+/// words (the same raw-username grammar `/w` uses). Anything else, including an empty spec or a
+/// bare `@`, is `RollError::MalformedSecret`.
+pub(crate) fn parse_secret_spec(spec: &str) -> Result<SecretSpec<'_>, RollError> {
+    let spec = spec.trim();
+    if spec == "gm" {
+        return Ok(SecretSpec::Gm);
+    }
+    let mut names = Vec::new();
+    for word in spec.split_whitespace() {
+        match word.strip_prefix('@') {
+            Some(name) if !name.is_empty() => names.push(name),
+            _ => return Err(RollError::MalformedSecret),
+        }
+    }
+    if names.is_empty() {
+        return Err(RollError::MalformedSecret);
+    }
+    Ok(SecretSpec::Users(names))
 }
 
 /// Balanced span scanner. A span opens at `[[` and closes at the first `]]`
@@ -303,6 +347,13 @@ fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
         let asset_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedAssetSpan)?;
         return Ok(Some(BodyChunk::Image { asset_id, alt }));
     }
+    if let Some(rest) = content.strip_prefix("secret:") {
+        let (spec, inner) = rest.split_once('|').ok_or(RollError::MalformedSecret)?;
+        return Ok(Some(BodyChunk::Secret {
+            spec: spec.trim(),
+            inner,
+        }));
+    }
     Ok(None)
 }
 
@@ -379,6 +430,18 @@ pub enum RollError {
         /// The group's ceiling.
         max: i32,
     },
+    /// A `[[secret:...]]` span has no `|`, or its spec is neither `gm` nor a list of `@username`
+    /// words.
+    MalformedSecret,
+    /// `[[secret:...]]` spans nest deeper than `MAX_SECRET_DEPTH`.
+    SecretTooDeep,
+    /// A body with no sender and no member lookup (a note) carries a `[[secret:@user ...|...]]`
+    /// span; only `[[secret:gm|...]]` can be resolved there.
+    SecretRequiresGm,
+    /// A `[[secret:@user ...|...]]` span names a username that is not a member of the world.
+    UnknownSecretRecipient,
+    /// A `[[secret:@user ...|...]]` span names more than `super::MAX_WHISPER_RECIPIENTS` users.
+    TooManySecretRecipients,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -448,6 +511,27 @@ impl std::fmt::Display for RollError {
             RollError::InvalidClamp { min, max } => write!(
                 f,
                 "that die's floor (mn{min}) is above its ceiling (mx{max})"
+            ),
+            RollError::MalformedSecret => write!(
+                f,
+                "a secret must read [[secret:gm|text]] or [[secret:@name|text]]"
+            ),
+            RollError::SecretTooDeep => {
+                write!(f, "secrets are nested more than {MAX_SECRET_DEPTH} deep")
+            }
+            RollError::SecretRequiresGm => {
+                write!(
+                    f,
+                    "a secret here can only be addressed to the GM ([[secret:gm|...]])"
+                )
+            }
+            RollError::UnknownSecretRecipient => {
+                write!(f, "a secret names someone who is not in this world")
+            }
+            RollError::TooManySecretRecipients => write!(
+                f,
+                "a secret names more than {} people",
+                super::MAX_WHISPER_RECIPIENTS
             ),
         }
     }

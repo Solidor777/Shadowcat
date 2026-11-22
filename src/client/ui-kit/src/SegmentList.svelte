@@ -293,6 +293,16 @@
         <div class="table-draw-no-row">{t("chat.table.noRow")}</div>
       {/if}
     </div>
+  {:else if s.kind === "secret"}
+    <!-- Server-redacted block. A copy whose recipient the server excluded arrives with no
+    content; it renders nothing, so a stripped secret leaves no placeholder. Content that did
+    arrive renders through this SAME component, inside a labelled frame. -->
+    {#if s.content.length > 0}
+      <span class="secret" data-testid="secret-segment">
+        <span class="secret-label">{t("chat.secret.label")}</span>
+        <SegmentList segments={s.content} {channel} />
+      </span>
+    {/if}
   {/if}
 {/each}
 
@@ -301,6 +311,20 @@
     // Preserves author-typed newlines in a plain-text segment; without this a multi-line
     // message collapses to one visual line despite the \n surviving in the DOM text node.
     white-space: pre-wrap;
+  }
+  .secret {
+    // Frames a block only some readers receive, so it reads apart from public text.
+    display: inline-block;
+    border: 1px dashed currentColor;
+    border-radius: var(--radius-1, 4px);
+    padding: 0 var(--space-1);
+  }
+  .secret-label {
+    // Small caps-style badge naming the block as restricted.
+    font-size: 0.75em;
+    text-transform: uppercase;
+    opacity: 0.7;
+    margin-inline-end: var(--space-1);
   }
   .roll-flavor {
     // Caption beside the roll; plain escaped text, dimmed so the roll result stays primary.

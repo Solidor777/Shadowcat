@@ -510,3 +510,23 @@ describe("SegmentList — table_draw", () => {
     expect(drawTable).toHaveBeenCalledWith({ tableId: "t1", channel: "ic" });
   });
 });
+
+describe("SegmentList — secret", () => {
+  it("renders the content a recipient received inside a labelled frame", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "secret", visibility: "gm_only", content: [{ kind: "text", text: "the vault" }] }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    const el = container.querySelector("[data-testid=secret-segment]");
+    expect(el?.textContent).toContain("the vault");
+    expect(el?.textContent).toContain("chat.secret.label");
+  });
+
+  it("renders nothing for a secret the server stripped", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [{ kind: "secret", content: [] }], channel: "general" },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector("[data-testid=secret-segment]")).toBeNull();
+  });
+});
