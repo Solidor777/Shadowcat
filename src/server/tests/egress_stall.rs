@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use shadowcat::http::conn_serve::{egress_tick, ConnLimits, StallCuts, ABORT_WAIT};
+use shadowcat_test_support::acceptance::{progress_bytes_per_window, Acceptances};
 use shadowcat_test_support::egress::{first_close, wait_until_flat, EgressServer, Protocol};
 use shadowcat_test_support::measure::record_cut_overshoot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -120,91 +121,38 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
     assert_eq!(drain.aborted, 0, "{drain:?}");
 }
 
-/// How many multiples of `ConnLimits::egress_floor` per window the progressing reader takes. The
-/// connection unit reads the bytes the socket ACCEPTS, and over loopback they arrive in lumps: 100
-/// to 260 KB on Windows (the peer's receive-window step, plus a whole queued write accepted at
-/// once) and 0.9 to 1.1 MB on Linux (the autotuned send buffer; the `egress_measure` program's
-/// `h1-progress` and `socket-grants` subcommands print the lumps). A reader taking fewer bytes per
-/// window than a lump holds sees no acceptance for whole windows and is cut, at every window
-/// length measured (1, 3, 10 and 60 s), because the lump is a count of bytes and the floor is a
-/// count of bytes per window. At this multiple the reader takes 8 MiB per window, about eight
-/// Linux lumps, so a lump lands every eighth of a window; `LUMP_GAP_BOUND` asserts that premise.
-/// The multiple states a property of the loopback and the measure, not a promise of the unit at
-/// lower rates.
-const PROGRESS_FLOORS_PER_WINDOW: usize = 512;
-
-/// The fewest multiples of `ConnLimits::egress_floor` per window the reader must actually have
-/// taken, over each of two windows, for a pass to mean progress was made: 1 MiB a window, about one
-/// Linux lump. It is below `PROGRESS_FLOORS_PER_WINDOW` because the reader takes what the socket
-/// has accepted, and on Windows the accepted lumps hold the read under the requested rate.
-const MIN_FLOORS_PER_WINDOW_READ: usize = 64;
-
-/// The longest gap between two socket acceptances the progressing reader may see before the
-/// control stops meaning anything: half a window. A gap of a whole window with fewer than the
-/// floor accepted is what the connection unit cuts, so a gap this long is the premise failing,
-/// not the unit.
-const LUMP_GAP_BOUND: Duration = Duration::from_millis(500);
-
-/// What the progressing reader saw when the connection ended: the bytes it had read and, for
-/// each sample at which the socket had accepted more, when (milliseconds since the request) and
-/// how many bytes. The grants are the figure the connection unit judges, so a cut that follows a
-/// gap in them is the unit reading the socket's lumps, not the reader stalling.
-fn evidence(read: usize, grants: &[(u128, u64)]) -> String {
-    format!("read {read} B; socket accepted (ms, B) {grants:?}")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
     let server = serve().await;
     let mut peer = request(&server).await;
-    let per_window = PROGRESS_FLOORS_PER_WINDOW * ConnLimits::default().egress_floor;
     let step = Duration::from_millis(100);
-    let chunk = per_window / (WINDOW.as_millis() / step.as_millis()) as usize;
+    let chunk = progress_bytes_per_window() / (WINDOW.as_millis() / step.as_millis()) as usize;
     let mut buf = vec![0u8; chunk];
     let start = Instant::now();
     let mut read = 0usize;
-    let mut grants: Vec<(u128, u64)> = Vec::new();
-    let mut last = 0u64;
+    let mut acceptances = Acceptances::new();
     while start.elapsed() < WINDOW * 3 {
         tokio::time::sleep(step).await;
-        let accepted = server.writes.accepted.load(Ordering::Relaxed);
-        if accepted != last {
-            grants.push((start.elapsed().as_millis(), accepted - last));
-            last = accepted;
-        }
+        acceptances.sample(server.writes.accepted.load(Ordering::Relaxed));
         let n = peer.read(&mut buf).await.unwrap_or_else(|e| {
-            panic!("the connection was cut ({e}): {}", evidence(read, &grants))
+            panic!(
+                "the connection was cut ({e}): {}",
+                acceptances.evidence(read)
+            )
         });
         assert!(
             n > 0,
             "the connection ended after {:?}: {}",
             start.elapsed(),
-            evidence(read, &grants)
+            acceptances.evidence(read)
         );
         read += n;
     }
-    let least = 2 * MIN_FLOORS_PER_WINDOW_READ * ConnLimits::default().egress_floor;
-    assert!(
-        read >= least,
-        "the reader took {read} B, under the {least} B the control needs to mean anything"
-    );
-    // The first grant is the buffer filling before the reader paces it, so the gaps start at the
-    // second.
-    let widest_gap = grants
-        .windows(2)
-        .skip(1)
-        .map(|pair| pair[1].0 - pair[0].0)
-        .max()
-        .unwrap_or(0);
-    assert!(
-        widest_gap < LUMP_GAP_BOUND.as_millis(),
-        "the socket went {widest_gap} ms between acceptances, too long for the control to mean anything: {}",
-        evidence(read, &grants)
-    );
+    acceptances.assert_premise(read);
     assert!(
         server.closed.lock().unwrap().is_empty(),
         "the server ended a connection that was making progress: {}",
-        evidence(read, &grants)
+        acceptances.evidence(read)
     );
     // Still being produced, not merely buffered.
     assert!(server.produced.load(Ordering::SeqCst) > read);
