@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -457,9 +457,33 @@ function resolveFace(
   return visual.faces[names[0]];
 }
 
-/** Structural validity of an `"animated"` `RenderVisual`: a finite positive `fps`, and either a
+/** Structural validity of an optional `VisualTransform` on an `"image"`/`"animated"` visual: absent
+ * (`undefined`/`null`) is valid; present needs finite `anchor.x`/`anchor.y`, a finite positive
+ * `scale`, and a `#rrggbb` string `tint` when set. A hand-edited or legacy document can carry a
+ * value the type system forbids, so the check mirrors the server's `VisualTransform::validate`
+ * and fails the whole visual closed. Not exported (folded into `resolveTokenVisual`'s public
+ * surface).
+ * @param t The transform to validate, or absent.
+ * @returns `true` iff `t` is absent or well-formed.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see resolveTokenVisual for the public entry point)
+ * isValidTransform({ anchor: { x: 0.5, y: 0.5 }, scale: 1, tint: "#ffffff" });
+ * ```
+ */
+function isValidTransform(t: VisualTransform | null | undefined): boolean {
+  if (t === undefined || t === null) return true;
+  if (typeof t !== "object" || !t.anchor || typeof t.anchor !== "object") return false;
+  if (!Number.isFinite(t.anchor.x) || !Number.isFinite(t.anchor.y)) return false;
+  if (!Number.isFinite(t.scale) || t.scale <= 0) return false;
+  if (t.tint === undefined || t.tint === null) return true;
+  return typeof t.tint === "string" && /^#[0-9a-fA-F]{6}$/.test(t.tint);
+}
+
+/** Structural validity of an `"animated"` `RenderVisual`: a finite positive `fps`, either a
  * non-empty `frames` array (`"frames"` source) or positive-integer `rows`/`cols` (`"sheet"`
- * source). Not exported (folded into `resolveTokenVisual`'s public surface).
+ * source), and a well-formed optional `transform` (`isValidTransform`). Not exported (folded into
+ * `resolveTokenVisual`'s public surface).
  * @param v The animated visual to validate.
  * @returns `true` iff `v` is structurally playable.
  * @example
@@ -469,6 +493,7 @@ function resolveFace(
  * ```
  */
 function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` to its `"animated"` union member. */ kind: "animated" }>): boolean {
+  if (!isValidTransform(v.transform)) return false;
   if (!Number.isFinite(v.fps) || v.fps <= 0) return false;
   if (v.source.type === "frames") return v.source.frames.length > 0;
   return Number.isInteger(v.source.rows) && v.source.rows > 0 && Number.isInteger(v.source.cols) && v.source.cols > 0;
@@ -489,7 +514,7 @@ function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` t
  */
 function isValidGeneratedArt(art: RenderVisual | undefined): boolean {
   if (!art) return false;
-  if (art.kind === "image") return true;
+  if (art.kind === "image") return isValidTransform(art.transform);
   if (art.kind === "animated") return isValidAnimated(art);
   return false;
 }
@@ -523,7 +548,7 @@ export function resolveTokenVisual(
   if (!visual) return null;
   const resolved = visual.kind === "faces" ? resolveFace(visual, eng?.face, actor?.conditions ?? []) : visual;
   if (!resolved) return null;
-  if (resolved.kind === "image") return resolved;
+  if (resolved.kind === "image") return isValidTransform(resolved.transform) ? resolved : null;
   if (resolved.kind === "animated") return isValidAnimated(resolved) ? resolved : null;
   if (resolved.kind !== "generated") return null;
   if (resolved.crop !== "circle" && resolved.crop !== "square") return null;

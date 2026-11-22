@@ -1,7 +1,7 @@
 import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Spritesheet, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
 import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource, VfxNodeSpec } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource, ResolvedArtVisual, VfxNodeSpec } from "./types";
 import { computeAnimatedFrame, computeVfxFrame } from "./token-animation";
 import { vfxAnchorZIndex } from "./vfx-view";
 import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
@@ -924,13 +924,12 @@ export class PixiBackend implements DisplayBackend {
    */
   private updateTokenVisual(id: string, node: TokenNode, tokenSpec: TokenNodeSpec): void {
     const key = visualSourceKey(tokenSpec.visual);
-    node.visual.width = tokenSpec.w;
-    node.visual.height = tokenSpec.h;
-    if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
-    node.sourceKey = key;
     // A generated visual's drawable payload is its `art`; the frame around it is
     // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
     const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    this.frameTokenArt(node, art, tokenSpec);
+    if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
+    node.sourceKey = key;
     if (art.kind === "image") {
       if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
       node.anim = null;
@@ -969,8 +968,34 @@ export class PixiBackend implements DisplayBackend {
         // load completion, so each is already evictable — nothing further to do here.
       });
     }
-    node.visual.width = tokenSpec.w;
-    node.visual.height = tokenSpec.h;
+    // The branch above may have swapped `node.visual` for a fresh sprite, which starts at the
+    // default framing.
+    this.frameTokenArt(node, art, tokenSpec);
+  }
+
+  /** Apply a token's art framing to `node.visual`: the sprite is sized to the token extent times
+   * the authored `transform.scale`, anchored at `(transform.anchorX, transform.anchorY)`, and
+   * multiply-tinted by `transform.tint`. An art without a transform gets the default centered
+   * anchor, unit scale and white (identity) tint. Uses Pixi's native `anchor`/`width`/`height`/
+   * `tint` sprite properties; the static tint composes independently of the dynamic `TokenFx`
+   * filter chain, which applies on top.
+   * @param node The token render node whose `visual` sprite to frame.
+   * @param art The resolved art (`tokenSpec.visual`, or a generated visual's `art`).
+   * @param tokenSpec The resolved token spec; only `.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.frameTokenArt(node, { kind: "image", url: "https://example.test/token.png" }, tokenSpec);
+   * ```
+   */
+  private frameTokenArt(node: TokenNode, art: ResolvedArtVisual, tokenSpec: TokenNodeSpec): void {
+    const transform = art.transform;
+    node.visual.anchor.set(transform?.anchorX ?? 0.5, transform?.anchorY ?? 0.5);
+    node.visual.width = tokenSpec.w * (transform?.scale ?? 1);
+    node.visual.height = tokenSpec.h * (transform?.scale ?? 1);
+    node.visual.tint = transform?.tint ?? 0xffffff;
   }
 
   /** Create a node's generated-visual frame (`TokenNode.generated`) on first use: the

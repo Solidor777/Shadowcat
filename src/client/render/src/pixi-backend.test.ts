@@ -3,7 +3,7 @@ import { AnimatedSprite, Assets, Container, Graphics, Text, Texture } from "pixi
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
-import type { TokenNodeSpec, VisibilityInput } from "./types";
+import type { ResolvedArtVisual, TokenNodeSpec, VisibilityInput } from "./types";
 import type { TextureCacheManager } from "./texture-cache";
 
 vi.mock("pixi.js", async (importActual) => {
@@ -162,7 +162,7 @@ interface TokenNodeLike {
   /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order + fx slot. */
   visualContainer: Container;
   /** Mirror of `TokenNode.visual` — read to assert mask assignment. */
-  visual: { mask: unknown };
+  visual: { mask: unknown; anchor: { x: number; y: number }; width: number; height: number; tint: number };
   /** Mirror of `TokenNode.generated` — read to assert frame lifetime. */
   generated: { background: GraphicsInstructionLog; mask: GraphicsInstructionLog; ring: GraphicsInstructionLog } | null;
   /** Mirror of `TokenNode.aura` — read to assert the disc's draw + lifetime. */
@@ -179,6 +179,8 @@ interface TokenNodeLike {
 interface PixiBackendTokenInternals {
   /** Mirror of the private `PixiBackend.createTokenNode`. */
   createTokenNode(id: string): TokenNodeLike;
+  /** Mirror of the private `PixiBackend.frameTokenArt`. */
+  frameTokenArt(node: TokenNodeLike, art: ResolvedArtVisual, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenGeneratedFrame`. */
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenAura`. */
@@ -241,6 +243,38 @@ describe("PixiBackend.setVisibilityBlend", () => {
     // content-blind cache would report far fewer than 2*pairCount; a never-caching one would
     // report 2*pairCount*ticksPerPair (60).
     expect(renderCalls.count).toBe(2 * pairCount);
+  });
+});
+
+describe("PixiBackend.frameTokenArt", () => {
+  const spec: TokenNodeSpec = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false, visual: { kind: "image", url: "u" } };
+
+  test("an art without a transform is centered, sized to the token extent and untinted", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.5, 0.5]);
+    expect([node.visual.width, node.visual.height]).toEqual([100, 50]);
+    expect(node.visual.tint).toBe(0xffffff);
+  });
+
+  test("a transform sets the anchor, multiplies the extent by its scale and tints the sprite", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.25, anchorY: 1, scale: 2, tint: 0xff8800 } }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.25, 1]);
+    expect([node.visual.width, node.visual.height]).toEqual([200, 100]);
+    expect(node.visual.tint).toBe(0xff8800);
+  });
+
+  test("re-framing an untransformed art restores the defaults", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0, anchorY: 0, scale: 3, tint: 0x00ff00 } }, spec);
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.5, 0.5]);
+    expect([node.visual.width, node.visual.height]).toEqual([100, 50]);
+    expect(node.visual.tint).toBe(0xffffff);
   });
 });
 

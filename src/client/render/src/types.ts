@@ -147,6 +147,20 @@ export interface VfxNodeSpec {
   tint?: number;
 }
 
+/** An authored art transform, already resolved for the backend: anchor and scale are the raw
+ * authored numbers, the tint is packed `0xRRGGBB` (the backend never parses colors). Absent on a
+ * `ResolvedArtVisual` means the centered, unscaled, untinted default. */
+export interface ResolvedArtTransform {
+  /** Horizontal anchor as a fraction of the art's box; `0.5` is centered. */
+  anchorX: number;
+  /** Vertical anchor as a fraction of the art's box; `0.5` is centered. */
+  anchorY: number;
+  /** Multiplier on the art's drawn size against the token's box. */
+  scale: number;
+  /** Multiply tint, packed `0xRRGGBB`; absent for none. */
+  tint?: number;
+}
+
 /** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
  * both a `TokenNodeSpec.visual` arm in its own right and the `art` payload of a resolved
  * `"generated"` visual (whose frame composes around exactly these two drawable kinds). */
@@ -156,6 +170,8 @@ export type ResolvedArtVisual =
       kind: "image";
       /** Resolved image serve URL (already asset-id-resolved). */
       url: string;
+      /** Authored anchor/scale/tint of the art; absent for the default framing. */
+      transform?: ResolvedArtTransform;
     }
   | {
       /** Discriminant: a tick-driven animated visual. */
@@ -168,6 +184,8 @@ export type ResolvedArtVisual =
       /** `true` wraps at the end of the sequence; `false` holds the final frame — see
        * `computeAnimatedFrame`. */
       loop: boolean;
+      /** Authored anchor/scale/tint of the art; absent for the default framing. */
+      transform?: ResolvedArtTransform;
     };
 
 /** One built-in per-token art effect, applied to the token's visual by the backend (composed

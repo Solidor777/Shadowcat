@@ -1,7 +1,7 @@
 import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS, levelOf } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, VisualTransform, FootprintLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, TokenTransform } from "./types";
+import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, ResolvedArtTransform, TokenTransform } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
@@ -527,9 +527,32 @@ export class TokenView {
    * ```
    */
   private resolveArtVisual(art: Extract<RenderVisual, { /** Narrows `RenderVisual` to its drawable (non-`"generated"`) union members. */ kind: "image" | "animated" }>): ResolvedArtVisual {
+    // The key is omitted (not set to `undefined`) for an untransformed visual, so its spec is
+    // identical to one built before transforms existed.
+    const transform = art.transform ? { transform: this.resolveTransform(art.transform) } : {};
     return art.kind === "image"
-      ? { kind: "image", url: this.assets.url(art.asset) }
-      : { kind: "animated", source: this.resolveSource(art.source), fps: art.fps, loop: art.loop };
+      ? { kind: "image", url: this.assets.url(art.asset), ...transform }
+      : { kind: "animated", source: this.resolveSource(art.source), fps: art.fps, loop: art.loop, ...transform };
+  }
+
+  /** Resolve an authored `VisualTransform` into the backend's `ResolvedArtTransform`: the tint is
+   * packed to `0xRRGGBB` via `parseColor` like every other color this module resolves, so the
+   * backend never parses colors.
+   * @param transform The authored anchor/scale/tint, already validated by `resolveTokenVisual`.
+   * @returns The same framing with the tint packed (absent when the author set none).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.resolveTransform({ anchor: { x: 0.5, y: 0.5 }, scale: 1, tint: "#ff8800" });
+   * ```
+   */
+  private resolveTransform(transform: VisualTransform): ResolvedArtTransform {
+    return {
+      anchorX: transform.anchor.x,
+      anchorY: transform.anchor.y,
+      scale: transform.scale,
+      ...(transform.tint ? { tint: parseColor(transform.tint) } : {}),
+    };
   }
 
   /** Project a `token` doc into a renderable `TokenNodeSpec`: resolves the effective actor

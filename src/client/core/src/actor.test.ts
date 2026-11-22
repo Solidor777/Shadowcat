@@ -4,7 +4,7 @@ import type { WireDocument } from "./wire";
 import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, buildFactionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
 import { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
-import type { TokenVisual } from "./scene-docs";
+import type { RenderVisual, TokenVisual } from "./scene-docs";
 
 const NAME = "Goblin";
 const eng: ActorEngine = {
@@ -434,6 +434,44 @@ describe("resolveTokenVisual", () => {
     const actor = actorWith({ kind: "animated", source: { type: "frames", frames: [] }, fps: 8, loop: true });
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("passes a well-formed transform through on an image, an animated visual and generated art", () => {
+    const transform = { anchor: { x: -0.25, y: 1.5 }, scale: 2, tint: "#ffcc88" };
+    const image: TokenVisual = { kind: "image", asset: "a1", transform };
+    const animated: TokenVisual = { kind: "animated", source: { type: "frames", frames: ["a1"] }, fps: 8, loop: true, transform };
+    const generated: TokenVisual = { kind: "generated", art: image as RenderVisual, crop: "circle", border: null, background: null };
+    for (const visual of [image, animated, generated]) {
+      const actor = actorWith(visual);
+      const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+      expect(resolveTokenVisual(token, storeWith(actor))).toEqual(visual);
+    }
+  });
+
+  describe("fails closed on a malformed transform", () => {
+    const good = { anchor: { x: 0.5, y: 0.5 }, scale: 1 };
+    const malformed: [string, unknown][] = [
+      ["non-finite anchor x", { ...good, anchor: { x: Number.NaN, y: 0.5 } }],
+      ["non-finite anchor y", { ...good, anchor: { x: 0.5, y: Infinity } }],
+      ["missing anchor", { scale: 1 }],
+      ["zero scale", { ...good, scale: 0 }],
+      ["negative scale", { ...good, scale: -2 }],
+      ["non-finite scale", { ...good, scale: Number.NaN }],
+      ["non-string tint", { ...good, tint: 0xff0000 }],
+      ["malformed tint", { ...good, tint: "ff0000" }],
+    ];
+    for (const [label, transform] of malformed) {
+      it(`${label}, on an image, an animated visual and generated art`, () => {
+        const image = { kind: "image", asset: "a1", transform } as unknown as TokenVisual;
+        const animated = { kind: "animated", source: { type: "frames", frames: ["a1"] }, fps: 8, loop: true, transform } as unknown as TokenVisual;
+        const generated = { kind: "generated", art: image, crop: "circle", border: null, background: null } as unknown as TokenVisual;
+        for (const visual of [image, animated, generated]) {
+          const actor = actorWith(visual);
+          const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+          expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+        }
+      });
+    }
   });
 
   it("accepts a generated visual with image art", () => {
