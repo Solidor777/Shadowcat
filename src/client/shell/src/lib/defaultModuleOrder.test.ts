@@ -87,7 +87,8 @@ describe("ducking contributes a settings section, not a panel", () => {
 
   it("registers exactly one shadowcat.settings-section entry and no shadowcat.panel entry", () => {
     const contributions = new ContributionRegistry();
-    const ctx = { contributions, hooks: { on: () => () => {} } } as never;
+    const keybindings = { register: () => () => {}, bindingsFor: () => [] };
+    const ctx = { contributions, hooks: { on: () => () => {} }, keybindings } as never;
     ducking.register(ctx);
     expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
     expect(contributions.contributionsFor(SETTINGS_SECTION_CONTRACT)).toHaveLength(1);

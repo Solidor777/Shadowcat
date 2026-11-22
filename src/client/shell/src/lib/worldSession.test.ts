@@ -2501,13 +2501,13 @@ describe("WorldSession.audio", () => {
           scene: "scene-1",
           listener: "tok-1",
           spatial: true,
-          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true }],
         },
         {
           scene: "scene-2",
           listener: "tok-2",
           spatial: true,
-          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, muffled: false, loop: false }],
         },
       ],
     };
@@ -2542,7 +2542,7 @@ describe("WorldSession.audio", () => {
         scene: "scene-1",
         listener: "tok-1",
         spatial: true,
-        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, muffled: false, loop: true }],
       }),
     );
     expect(applyAudibility).not.toHaveBeenCalledWith(
@@ -2585,7 +2585,7 @@ describe("WorldSession.audio", () => {
       scene: "scene-2",
       listener: "tok-2",
       spatial: true,
-      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, muffled: false, loop: false }],
     });
     session.leave();
   });
