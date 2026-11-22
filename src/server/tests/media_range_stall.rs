@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ use shadowcat::config::Config;
 use shadowcat::data::asset::{Asset, AssetMeta};
 use shadowcat::http::assets::permits::StreamedFilePermits;
 use shadowcat::http::conn_serve::{ConnLimits, DrainReport, StallCuts, ABORT_WAIT};
+use shadowcat_test_support::acceptance::{progress_bytes_per_window, Acceptances};
 use shadowcat_test_support::egress::{EgressServer, Protocol};
 use shadowcat_test_support::h2_session::{login, seeded_state};
 use shadowcat_test_support::tls::H2Client;
@@ -733,16 +735,18 @@ per_protocol!(
     }
 );
 
-/// How many `EGRESS_CHUNK_BYTES` per window the progressing reader takes; the same margin the
-/// connection-unit controls use, so the loopback's lumpy acceptance does not read as a stall.
-const PROGRESS_CHUNKS_PER_WINDOW: usize = 64;
+/// The windows of reading the keeps-reading control covers.
+const PROGRESS_WINDOWS: usize = 3;
 
 per_protocol!(
     a_reader_that_keeps_reading_a_compressed_response_is_not_cut_across_three_windows,
     protocol,
     async move {
         let mut media = Media::start(protocol, 4).await;
-        let text = incompressible_text(12 * 1024 * 1024);
+        let per_window = progress_bytes_per_window();
+        // The text gzips to about three quarters of its size; twice the bytes the reader takes
+        // over the run leaves the body longer than the run whatever the compression ratio.
+        let text = incompressible_text(2 * PROGRESS_WINDOWS * per_window);
         let id = media.seed("text/plain", &[("", &text)]).await;
         let mut reply = media
             .get(
@@ -751,28 +755,35 @@ per_protocol!(
             )
             .await;
         assert_eq!(reply.status(), 200, "{protocol:?}");
-        let per_window =
-            PROGRESS_CHUNKS_PER_WINDOW * shadowcat::http::conn_serve::EGRESS_CHUNK_BYTES;
         let mut read = 0usize;
+        let mut acceptances = Acceptances::new();
         let start = Instant::now();
-        while start.elapsed() < WINDOW * 3 {
+        while start.elapsed() < WINDOW * PROGRESS_WINDOWS as u32 {
             let chunk = reply
                 .read_some()
                 .await
-                .expect("a reader above the floor was cut")
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{protocol:?}: a reader above the floor was cut: {}",
+                        acceptances.evidence(read)
+                    )
+                })
                 .expect("the body is far longer than three windows of reading");
             read += chunk.len();
+            acceptances.sample(media.server.writes.accepted.load(Ordering::Relaxed));
             // Paced to `per_window` bytes per window.
             let due = start + Duration::from_secs_f64(read as f64 / per_window as f64);
             tokio::time::sleep_until(due).await;
         }
-        assert!(
-            read > 2 * per_window,
-            "{protocol:?}: read only {read} bytes"
-        );
+        acceptances.assert_premise(read);
         drop(reply);
         let drain = media.finish().await;
-        assert_eq!(drain.stall_cuts, StallCuts::default(), "{protocol:?}");
+        assert_eq!(
+            drain.stall_cuts,
+            StallCuts::default(),
+            "{protocol:?}: {}",
+            acceptances.evidence(read)
+        );
     }
 );
 

@@ -347,9 +347,9 @@ async fn an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_connection_cut() {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
+    use shadowcat_test_support::egress::EventTimes;
     use tokio::io::AsyncWriteExt;
 
     let server = serve().await;
@@ -357,12 +357,12 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
     let mut peer = raw_h2_request(server.addr, "/endless").await;
     // From here the peer reads nothing, and sends a PING about every 10 ms: the server answers
     // each with an acknowledgement it cannot deliver. Acknowledgements are not response bytes.
-    let sent = Arc::new(AtomicU64::new(0));
-    let counter = sent.clone();
+    let sent = Arc::new(EventTimes::default());
+    let times = sent.clone();
     let flood = tokio::spawn(async move {
         let ping = ping_frame();
         while peer.write_all(&ping).await.is_ok() {
-            counter.fetch_add(1, Ordering::SeqCst);
+            times.note();
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
@@ -371,10 +371,11 @@ async fn a_ping_flood_from_a_peer_that_stops_reading_does_not_postpone_the_conne
     let closed_at = first_close(&server.closed, Duration::from_secs(20))
         .await
         .expect("a ping flood kept a connection whose peer stopped reading alive");
-    assert!(
-        sent.load(Ordering::SeqCst) >= 50,
-        "only {} pings were sent, too few for the control to mean anything",
-        sent.load(Ordering::SeqCst)
+    sent.assert_no_gap_reaches(
+        started,
+        closed_at,
+        FLOOD_GAP_BOUND,
+        "the ping flood before the connection cut",
     );
     assert!(
         closed_at >= started + WINDOW,
@@ -803,6 +804,13 @@ async fn a_zombie_is_cut_while_a_sibling_stream_carries_steady_data_and_a_tunnel
     assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
 }
 
+/// The longest gap between two PINGs (or two acknowledgements) a ping-flood control may see over
+/// the interval it covers: half a window. A cut is postponed only by an acknowledgement that
+/// arrives before the window ends, so a flood whose gaps stay under half a window would have
+/// postponed it at least once; a count of PINGs would say less, since it falls with how late the
+/// scheduler runs the flood's 10 ms timer.
+const FLOOD_GAP_BOUND: Duration = Duration::from_millis(500);
+
 /// A raw peer that requests `path` behind a `SMALL_WINDOW` stream window, never returns credit and
 /// floods PINGs about every 10 ms: the server answers each with an acknowledgement, which is
 /// liveness the peer can advertise without draining anything.
@@ -811,7 +819,7 @@ async fn ping_flooded_peer(
     path: &str,
 ) -> (
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<std::sync::atomic::AtomicU64>,
+    std::sync::Arc<shadowcat_test_support::egress::EventTimes>,
     std::sync::Arc<shadowcat_test_support::egress::RawSeen>,
 ) {
     RawPeer::get(server.addr, path, SMALL_WINDOW)
@@ -821,8 +829,6 @@ async fn ping_flooded_peer(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_ping_flood_does_not_postpone_the_cut_of_a_zombie_connection() {
-    use std::sync::atomic::Ordering;
-
     let server = serve().await;
     let (flood, sent, seen) = ping_flooded_peer(&server, "/scripted?sizes=8192&end=final").await;
     let dropped_at = first_body_drop(&server).await;
@@ -830,12 +836,11 @@ async fn a_ping_flood_does_not_postpone_the_cut_of_a_zombie_connection() {
         .await
         .expect("a ping flood kept a zombie connection alive");
     assert_tail_cut_timing(cut_at, dropped_at, WINDOW, "a zombie under a ping flood");
-    assert!(
-        seen.pongs.load(Ordering::SeqCst) >= 50 && sent.load(Ordering::SeqCst) >= 50,
-        "{} pings sent, {} acknowledged: too few for the control to mean anything",
-        sent.load(Ordering::SeqCst),
-        seen.pongs.load(Ordering::SeqCst)
-    );
+    // The tail's window runs from the body's drop to the cut; an acknowledgement inside it that
+    // counted as progress would have postponed the cut.
+    sent.assert_no_gap_reaches(dropped_at, cut_at, FLOOD_GAP_BOUND, "pings sent");
+    seen.pongs
+        .assert_no_gap_reaches(dropped_at, cut_at, FLOOD_GAP_BOUND, "pings acknowledged");
     flood.abort();
     let drain = server.finish().await;
     assert_eq!(drain.stall_cuts, only_ended_unflushed(1), "{drain:?}");
@@ -855,10 +860,10 @@ async fn a_ping_flood_does_not_postpone_the_cut_of_a_stream_waiting_at_zero_cred
         !seen.closed.load(Ordering::SeqCst),
         "the connection was cut"
     );
-    assert!(
-        seen.pongs.load(Ordering::SeqCst) >= 50 && sent.load(Ordering::SeqCst) >= 50,
-        "too few pings for the control to mean anything"
-    );
+    let ended = Instant::now();
+    sent.assert_no_gap_reaches(started, ended, FLOOD_GAP_BOUND, "pings sent");
+    seen.pongs
+        .assert_no_gap_reaches(started, ended, FLOOD_GAP_BOUND, "pings acknowledged");
     flood.abort();
     let drain = server.finish().await;
     assert_eq!(

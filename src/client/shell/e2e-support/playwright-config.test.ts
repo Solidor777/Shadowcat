@@ -114,6 +114,17 @@ describe("playwright.config LAN address handling", () => {
     }
   });
 
+  it("pipes the standard output of exactly the servers that run the short egress window, so the server's cut line reaches the test output", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const servers = [config.webServer ?? []].flat();
+    const windowed = servers.filter((s) => s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
+    expect(windowed.length).toBeGreaterThan(0);
+    for (const server of windowed) expect(server.stdout, String(server.env?.SHADOWCAT_BIND)).toBe("pipe");
+    for (const server of servers.filter((s) => !windowed.includes(s))) {
+      expect(server.stdout, String(server.env?.SHADOWCAT_BIND)).toBeUndefined();
+    }
+  });
+
   it("points every long-audio project at the long-audio server's port and no other project at it", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const server = [config.webServer ?? []]

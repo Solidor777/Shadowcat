@@ -14,6 +14,7 @@
 
 /// The HTTP/2 implementation the client helpers use, re-exported so tests name one version.
 pub use h2;
+pub mod acceptance;
 pub mod egress;
 pub mod h2_session;
 pub mod h2c;
