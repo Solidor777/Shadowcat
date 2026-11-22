@@ -61,6 +61,36 @@ fn a_failed_rename_moves_the_temporary_file_to_the_trash() {
     assert_trashed(&trash, "key.pem.tmp");
 }
 
+/// The temporary file of a failed write holds the complete key when the final rename fails, and
+/// the trash must still receive zero bytes. Moving the file without truncating it first leaves
+/// `size_bytes` at the key's length; replacing the move with an outright removal leaves no entry.
+#[test]
+fn the_trashed_temporary_key_file_holds_no_key_bytes() {
+    let base = tempfile::tempdir().unwrap();
+    let key = base.path().join("key.pem");
+    std::fs::create_dir_all(key.join("inner")).unwrap();
+    std::fs::write(key.join("inner").join("f"), b"x").unwrap();
+    let trash = kept_trash(base.path());
+    assert!(write_private(&key, b"SECRET KEY BYTES", &trash).is_err());
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].size_bytes, 0, "the trashed file is empty");
+}
+
+/// A temporary file that cannot be truncated stays in the key directory and never enters the
+/// trash. Moving it regardless would carry its bytes into the trash; a directory stands in for a
+/// file the OS refuses to open for writing.
+#[test]
+fn a_temporary_file_that_cannot_be_emptied_is_not_trashed() {
+    let base = tempfile::tempdir().unwrap();
+    let tmp = base.path().join("key.pem.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let trash = kept_trash(base.path());
+    discard_failed_temp(&tmp, &trash);
+    assert!(tmp.exists());
+    assert!(trash.list().unwrap().is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn an_existing_directory_keeps_its_permissions() {
