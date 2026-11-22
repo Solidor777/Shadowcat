@@ -295,7 +295,7 @@ impl Repository for StubRepo {
     async fn list_members(
         &self,
         _world: Uuid,
-    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    ) -> Result<Vec<crate::data::repository::WorldMemberRow>, DataError> {
         unimplemented!()
     }
     async fn reset_validator_fault_streak(&self, _world: Uuid, _module: &str) {

@@ -274,8 +274,8 @@ pub async fn seed_author(repo: &dyn Repository, world_id: Uuid) -> Option<Permis
     };
     members
         .into_iter()
-        .filter(|(_, _, role)| *role == WorldRole::Gm)
-        .map(|(id, _, _)| id)
+        .filter(|m| m.role == WorldRole::Gm)
+        .map(|m| m.user)
         .min()
         .map(|user_id| PermissionContext {
             user_id,

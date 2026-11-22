@@ -510,6 +510,13 @@ export interface WsClientHandlers {
    * every connection in the room, the saving GM's own included. The handler re-runs the
    * session's module reconcile, which is idempotent when nothing differs. */
   onModulesChanged?(): void;
+  /** A member's live-connection count crossed 0->1 or 1->0 (carries no seq); delivered to every
+   * connection in the room, the member's own included. Transitions only: no snapshot frame
+   * exists, so a member who was already online before this client connected has no entry until
+   * their next transition.
+   * @param user The member whose presence changed.
+   * @param online `true` when the member's first connection opened, `false` when the last closed. */
+  onPresence?(user: string, online: boolean): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -1482,6 +1489,9 @@ export class WsClient {
         break;
       case "modules_changed":
         this.safeEmit(() => this.opts.handlers.onModulesChanged?.());
+        break;
+      case "presence":
+        this.safeEmit(() => this.opts.handlers.onPresence?.(msg.user, msg.online));
         break;
       case "scrolling_text":
         this.safeEmit(() =>

@@ -216,6 +216,32 @@ describe("MessageCard — header", () => {
     expect(container.querySelector(".author")?.textContent).toBe("Alice");
   });
 
+  it("colours the author name with the author's account colour, and only that author's", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const profiles = new Map([
+      ["u1", { colour: "#336699", pronouns: null, avatar: null }],
+      ["u2", { colour: "#ff0000", pronouns: null, avatar: null }],
+    ]);
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        members: new Map([["u1", "Alice"]]),
+        memberProfiles: profiles,
+      }),
+    });
+    expect((container.querySelector(".author") as HTMLElement).style.color).toBe("rgb(51, 102, 153)");
+  });
+
+  it("leaves the author name uncoloured when the author has no colour", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), members: new Map([["u1", "Alice"]]) }),
+    });
+    expect((container.querySelector(".author") as HTMLElement).style.color).toBe("");
+  });
+
   it("falls back to a short id when the author is not in ctx.members", () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "unregistered-user-uuid" }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });

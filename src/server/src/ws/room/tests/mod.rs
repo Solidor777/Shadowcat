@@ -195,7 +195,10 @@ impl Repository for DeleteMidHydration<'_> {
     async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
         self.inner.reset_validator_fault_streak(world, module).await;
     }
-    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+    async fn list_members(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::data::repository::WorldMemberRow>, DataError> {
         self.inner.list_members(world).await
     }
     async fn search(
@@ -3564,6 +3567,7 @@ mod door_toggle;
 mod movement_budget;
 
 mod mover_light;
+mod presence;
 mod region_triggers;
 
 // ---------- Room::disable_faulting_validator_locked ----------

@@ -1,5 +1,5 @@
 //! This module defines `Repository`, the storage trait the HTTP and WebSocket layers use, and
-//! `LinkPreviewCacheRow`.
+//! the row types `LinkPreviewCacheRow` and `WorldMemberRow`.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -44,6 +44,42 @@ pub struct LinkPreviewCacheRow {
     pub image_asset_id: Option<Uuid>,
     /// When this row was last (re-)fetched, Unix epoch milliseconds.
     pub fetched_at_ms: i64,
+}
+
+/// One row of `Repository::list_members`: the repository-layer projection the roster route's
+/// wire shape is built from.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::repository::WorldMemberRow;
+///
+/// let row = WorldMemberRow {
+///     user: uuid::Uuid::nil(),
+///     username: "MOCK_USER".into(),
+///     role: WorldRole::Player,
+///     colour: Some("#336699".into()),
+///     pronouns: None,
+///     has_avatar: false,
+/// };
+/// assert_eq!(row.colour.as_deref(), Some("#336699"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorldMemberRow {
+    /// Member's user id.
+    pub user: Uuid,
+    /// Member's username.
+    pub username: String,
+    /// Member's world role.
+    pub role: WorldRole,
+    /// Account colour accent as `#rrggbb`, or `None` when unset.
+    pub colour: Option<String>,
+    /// Account pronouns, or `None` when unset.
+    pub pronouns: Option<String>,
+    /// Whether the account has an avatar. The bytes are fetched separately by the avatar route,
+    /// never carried in a roster listing.
+    pub has_avatar: bool,
 }
 
 /// Storage contract. `SqliteRepository` is the production implementation.
@@ -671,9 +707,9 @@ pub trait Repository: Send + Sync {
         entries: &[crate::modules::WorldModuleEntry],
     ) -> Result<(), DataError>;
 
-    /// A world's member list as `(user_id, username, role)` triples, ordered by
-    /// username (case-insensitive) — the membership read `world_seed::seed_author`
-    /// and the member-listing route share.
+    /// A world's member list as `WorldMemberRow`s, ordered by username
+    /// (case-insensitive) — the membership read `world_seed::seed_author` and the
+    /// member-listing route share.
     ///
     /// # Examples
     ///
@@ -688,7 +724,7 @@ pub trait Repository: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError>;
+    async fn list_members(&self, world: Uuid) -> Result<Vec<WorldMemberRow>, DataError>;
 
     /// Resets `module`'s consecutive sandbox-validator fault counter for `world` to zero —
     /// called by `Room::disable_faulting_validator_locked` once it finishes disabling a

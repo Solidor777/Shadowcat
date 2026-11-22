@@ -25,6 +25,67 @@ test("renders a badge per world member (available to every role)", () => {
   expect(screen.getByTestId("presence-u2").getAttribute("title")).toBe("Bo");
 });
 
+test("a member with no presence entry is unknown: no state class, no state suffix", () => {
+  const members = new Map([["u1", "Ada"]]);
+  render(Presence, { context: setAppContextForTest({ members }) });
+  const dot = screen.getByTestId("presence-dot-u1");
+  expect(dot.classList.contains("online")).toBe(false);
+  expect(dot.classList.contains("offline")).toBe(false);
+  expect(screen.getByTestId("presence-u1").getAttribute("aria-label")).toBe("Ada");
+});
+
+test("the dot follows live presence transitions and the label names the state", async () => {
+  const members = new Map([["u1", "Ada"]]);
+  const presence = new SvelteMap<string, boolean>();
+  render(Presence, { context: setAppContextForTest({ members, presence }) });
+
+  presence.set("u1", true);
+  await tick();
+  expect(screen.getByTestId("presence-dot-u1").classList.contains("online")).toBe(true);
+  expect(screen.getByTestId("presence-u1").getAttribute("aria-label")).toBe("Ada (topbar.online)");
+
+  presence.set("u1", false);
+  await tick();
+  const dot = screen.getByTestId("presence-dot-u1");
+  expect(dot.classList.contains("online")).toBe(false);
+  expect(dot.classList.contains("offline")).toBe(true);
+  expect(screen.getByTestId("presence-u1").getAttribute("aria-label")).toBe("Ada (topbar.offline)");
+});
+
+test("a member with a colour renders that badge background and a legible glyph colour", () => {
+  const members = new Map([
+    ["u1", "Ada"],
+    ["u2", "Bo"],
+  ]);
+  const memberProfiles = new Map([
+    ["u1", { colour: "#ffee00", pronouns: null, avatar: null }],
+    ["u2", { colour: "#101040", pronouns: null, avatar: null }],
+  ]);
+  render(Presence, { context: setAppContextForTest({ members, memberProfiles }) });
+  const light = screen.getByTestId("presence-u1");
+  expect(light.style.background).toBe("rgb(255, 238, 0)");
+  expect(light.style.color).toBe("rgb(0, 0, 0)");
+  const dark = screen.getByTestId("presence-u2");
+  expect(dark.style.background).toBe("rgb(16, 16, 64)");
+  expect(dark.style.color).toBe("rgb(255, 255, 255)");
+});
+
+test("a member with an avatar renders the image instead of the initial glyph", () => {
+  const members = new Map([
+    ["u1", "Ada"],
+    ["u2", "Bo"],
+  ]);
+  const memberProfiles = new Map([["u1", { colour: null, pronouns: null, avatar: "/api/a.png" }]]);
+  render(Presence, { context: setAppContextForTest({ members, memberProfiles }) });
+  const img = screen.getByTestId("presence-avatar-u1");
+  expect(img.getAttribute("src")).toBe("/api/a.png");
+  expect(screen.getByTestId("presence-u1").textContent?.trim()).toBe("");
+  // A member with no profile keeps the initial glyph and no inline colour.
+  expect(screen.queryByTestId("presence-avatar-u2")).toBeNull();
+  expect(screen.getByTestId("presence-u2").textContent?.trim()).toBe("B");
+  expect(screen.getByTestId("presence-u2").style.background).toBe("");
+});
+
 test("renders an empty roster group when there are no members", () => {
   render(Presence, { context: setAppContextForTest({ members: new Map() }) });
   expect(screen.getByTestId("presence").children.length).toBe(0);

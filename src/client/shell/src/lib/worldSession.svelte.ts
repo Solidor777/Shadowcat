@@ -70,6 +70,7 @@ import {
   listInstalledModules,
   getEnabledModules,
   listWorldMembers,
+  avatarUrl,
   AUDIO_STATE_DOC_TYPE,
   PLAYLIST_DOC_TYPE,
   resolveNextTrackAsset,
@@ -86,7 +87,7 @@ import {
 } from "@shadowcat/core";
 import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
-import type { HooksEmitApi } from "@shadowcat/ui-kit";
+import type { HooksEmitApi, MemberProfile } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -373,6 +374,14 @@ export class WorldSession {
    * so the reference captured into AppContext at mount stays valid and consumers
    * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
+  /** userId → display profile (colour, pronouns, avatar URL) from the same roster read as
+   * `members`; only members with something set have an entry. Mutated in place like `members`. */
+  readonly memberProfiles = new SvelteMap<string, MemberProfile>();
+  /** userId → whether that member currently has a live connection, set from the server's
+   * `presence` transition frames. Mutated in place like `members`, so the reference captured
+   * into AppContext at mount stays valid. Not reset on reconnect and never seeded from a
+   * snapshot (the server sends none): an absent key means unknown, not offline. */
+  readonly presence = new SvelteMap<string, boolean>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
    * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
@@ -1695,6 +1704,7 @@ export class WorldSession {
         onModulesChanged: () => {
           void this.reconcileInstalledModules();
         },
+        onPresence: (user, online) => this.presence.set(user, online),
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {
@@ -1875,7 +1885,18 @@ export class WorldSession {
         // Mutate in place (not reassign) so the AppContext-captured reference
         // stays valid; reconnect re-populates the same Map.
         this.members.clear();
-        for (const m of list) this.members.set(m.user, m.username);
+        this.memberProfiles.clear();
+        for (const m of list) {
+          this.members.set(m.user, m.username);
+          const avatar = avatarUrl(w.world, m.user, m.has_avatar);
+          if (m.colour || m.pronouns || avatar) {
+            this.memberProfiles.set(m.user, {
+              colour: m.colour ?? null,
+              pronouns: m.pronouns ?? null,
+              avatar,
+            });
+          }
+        }
       } catch (e) {
         this.#logger.warn("member list fetch failed", e);
       }

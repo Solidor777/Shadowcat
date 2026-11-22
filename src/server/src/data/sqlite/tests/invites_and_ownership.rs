@@ -91,7 +91,7 @@ async fn revoke_invite_is_scoped_to_its_world() {
 #[tokio::test]
 async fn consume_invite_never_changes_a_role_already_held() {
     let (r, world, invite, _, _) = invite_fixture(WorldRole::Spectator).await;
-    let gm = r.list_members(world).await.unwrap()[0].0;
+    let gm = r.list_members(world).await.unwrap()[0].user;
     assert_eq!(r.member_role(world, gm).await.unwrap(), Some(WorldRole::Gm));
 
     let seated = r.consume_invite(invite, gm, 20).await.unwrap().unwrap();

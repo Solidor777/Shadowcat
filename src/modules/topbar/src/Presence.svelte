@@ -11,7 +11,47 @@
   // updates DO land (the map is mutated in place, never reassigned), so this
   // badge list repaints once a reconnect's fetch resolves; it does not
   // repaint the instant a seat is actually granted.
-  const roster = $derived([...ctx.members.entries()].map(([id, name]) => ({ id, name })));
+  //
+  // `ctx.presence` overlays a live online/offline dot on each badge. A member with no entry
+  // there is unknown (online before this client connected, no transition seen since), so the
+  // badge carries neither state class and no suffix.
+  const roster = $derived(
+    [...ctx.members.entries()].map(([id, name]) => {
+      const online = ctx.presence.get(id);
+      const state = online === undefined ? "" : online ? t("topbar.online") : t("topbar.offline");
+      const profile = ctx.memberProfiles.get(id);
+      const colour = profile?.colour ?? null;
+      return {
+        id,
+        name,
+        online,
+        colour,
+        avatar: profile?.avatar ?? null,
+        label: state ? `${name} (${state})` : name,
+      };
+    }),
+  );
+
+  /**
+   * Readable glyph colour for a badge filled with `hex`: black on a light fill, white on a dark
+   * one, by the WCAG relative-luminance threshold (sRGB channels linearized, 0.179 is where black
+   * and white text have equal contrast). Source: WCAG 2.x relative luminance definition.
+   * @param hex A `#rrggbb` fill colour.
+   * @returns `"#000000"` or `"#ffffff"`.
+   * @example
+   * ```
+   * // private function; not part of the public API — picks the glyph colour for a coloured badge
+   * glyphOn("#336699");
+   * ```
+   */
+  function glyphOn(hex: string): string {
+    const lin = (i: number): number => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = 0.2126 * lin(1) + 0.7152 * lin(3) + 0.0722 * lin(5);
+    return luminance > 0.179 ? "#000000" : "#ffffff";
+  }
 
   /**
    * Single-character badge glyph for a member name: the trimmed name's first
@@ -34,8 +74,19 @@
     <span
       class="sc-presence-badge"
       title={m.name}
-      aria-label={m.name}
-      data-testid="presence-{m.id}">{initial(m.name)}</span>
+      aria-label={m.label}
+      style:background={m.colour ?? undefined}
+      style:color={m.colour ? glyphOn(m.colour) : undefined}
+      data-testid="presence-{m.id}">{#if m.avatar}<img
+          class="sc-presence-avatar"
+          src={m.avatar}
+          alt=""
+          data-testid="presence-avatar-{m.id}" />{:else}{initial(m.name)}{/if}<span
+        class="sc-presence-dot"
+        class:online={m.online === true}
+        class:offline={m.online === false}
+        aria-hidden="true"
+        data-testid="presence-dot-{m.id}"></span></span>
   {/each}
 </div>
 
@@ -59,5 +110,31 @@
     font-size: 0.75rem;
     line-height: 1;
     flex: 0 0 auto;
+    position: relative;
+  }
+  .sc-presence-avatar {
+    width: 100%;
+    height: 100%;
+    border-radius: 999px;
+    object-fit: cover;
+  }
+  // The dot paints only when the member's state is known (`.online` or `.offline`).
+  .sc-presence-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--surface-overlay);
+    display: none;
+    &.online {
+      display: block;
+      background: var(--success);
+    }
+    &.offline {
+      display: block;
+      background: var(--text-muted);
+    }
   }
 </style>

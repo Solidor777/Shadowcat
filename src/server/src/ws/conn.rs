@@ -584,6 +584,13 @@ async fn handle_socket(
     room.stats.connections.fetch_add(1, Ordering::AcqRel);
     tracing::info!(world = %world_id, user = %user_id, "ws connected");
     let (rx, current_seq) = room.subscribe();
+    // Subscribed before the announce so the opening connection receives its own online frame.
+    if room.presence_connect(user_id) {
+        room.broadcast_aux(ServerMsg::Presence {
+            user: user_id,
+            online: true,
+        });
+    }
     let (sink, mut stream) = socket.split();
     let (etx, erx) = mpsc::channel::<Egress>(64);
 
@@ -1409,6 +1416,12 @@ async fn handle_socket(
 
     egress.abort();
     room.stats.connections.fetch_sub(1, Ordering::AcqRel);
+    if room.presence_disconnect(user_id) {
+        room.broadcast_aux(ServerMsg::Presence {
+            user: user_id,
+            online: false,
+        });
+    }
     state.ws.rooms.reap_if_empty(world_id);
     tracing::info!(world = %world_id, user = %user_id, "ws disconnected");
 }

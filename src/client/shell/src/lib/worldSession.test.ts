@@ -545,6 +545,43 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   expect(captured.get("u9")).toBe("Zara");
 });
 
+test("a Welcome fills memberProfiles in place from the roster, with the world-scoped avatar URL", async () => {
+  vi.mocked(listWorldMembers).mockResolvedValueOnce([
+    { user: "u9", username: "Zara", role: "player", colour: "#336699", pronouns: "she/her", has_avatar: true },
+    { user: "u8", username: "Bo", role: "player", colour: null, pronouns: null, has_avatar: false },
+  ]);
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.memberProfiles;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(true));
+  expect(session.memberProfiles.get("u9")).toEqual({
+    colour: "#336699",
+    pronouns: "she/her",
+    avatar: `/api/worlds/${welcomeFrame.world}/members/u9/avatar`,
+  });
+  // A member with nothing set has no entry; the map is mutated in place.
+  expect(session.memberProfiles.has("u8")).toBe(false);
+  expect(session.memberProfiles).toBe(captured);
+});
+
+test("presence frames update the reactive presence map in place (stable reference)", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.presence;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.presence.has("u9")).toBe(false);
+
+  push({ type: "presence", user: "u9", online: true });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(true));
+  push({ type: "presence", user: "u9", online: false });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
+  expect(session.presence).toBe(captured);
+});
+
 test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {
   vi.mocked(listWorldMembers).mockResolvedValueOnce([
     { user: "u9", username: "Zara", role: "player" },
