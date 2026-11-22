@@ -297,7 +297,7 @@ it("per-token override replaces actor vision modes", () => {
 });
 
 describe("EffectiveActor.light", () => {
-  const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+  const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
 
   it("resolves a linked token's carried light from the actor", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, light: torch }, "act1");

@@ -384,7 +384,7 @@ test("a GM click on a light marker selects it for editing; a wall click selects 
         doc: buildLightDoc("w1", "s1", {
           x: 500, y: 500,
           elevation: null,
-          emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+          emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
         }, "light-1"),
       },
       {

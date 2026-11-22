@@ -172,7 +172,7 @@ describe("ActorSheet carried light", () => {
             {
               path: "/engine/light",
               old: null,
-              new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+              new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
             },
           ],
         },
@@ -182,7 +182,7 @@ describe("ActorSheet carried light", () => {
 
   it("the field editor edits an existing emission through setEngine (whole-payload write)", async () => {
     const calls: unknown[] = [];
-    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
     const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, light: torch });
     const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });

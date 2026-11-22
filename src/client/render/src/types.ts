@@ -389,6 +389,11 @@ export interface MoveLightSample {
   intensity: number;
   /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
   falloff: "linear" | "quadratic" | "none";
+  /** Cone width in degrees; absent for a radial light. */
+  angle?: number;
+  /** Effective cone direction in degrees at this sample (`0` = +x, growing toward +y); present
+   * exactly when `angle` is. */
+  rotation?: number;
   /** The light's occluded illumination polygon(s), each a list of `[x,y]` scene-coord
    * vertices — NOT clipped to the viewer's sight; the sweep intersects them itself. */
   polygons: [number, number][][];

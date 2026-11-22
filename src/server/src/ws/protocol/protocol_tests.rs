@@ -357,6 +357,8 @@ fn move_stream_round_trips_and_is_tagged() {
         intensity: 0.8,
         falloff: crate::data::engine::FalloffCurve::Quadratic,
         color: 0xFFD9A0,
+        angle: Some(90.0),
+        rotation: Some(45.0),
         polygons: vec![vec![[-600.0, -600.0], [600.0, -600.0], [600.0, 600.0]]],
     }]);
     let msg = ServerMsg::MoveStream {

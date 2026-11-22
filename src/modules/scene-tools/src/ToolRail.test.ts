@@ -659,7 +659,7 @@ function editorStore(): DocumentStore {
         doc: buildLightDoc("w1", "s1", {
           x: 200, y: 200,
           elevation: null,
-          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
         }, "light-1"),
       },
       {
@@ -716,7 +716,7 @@ test("clicking a light with the light tool opens the editor; edits dispatch whol
   tool.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
   expect(await screen.findByTestId("light-editor")).toBeTruthy();
 
-  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true };
+  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false };
 
   // Intensity edit: one `/engine/emission` write carrying the whole payload.
   await fireEvent.change(screen.getByTestId("emission-intensity"), { target: { value: "0.5" } });

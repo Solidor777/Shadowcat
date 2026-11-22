@@ -597,6 +597,10 @@ fn light_position_and_elevation_must_be_finite() {
             dim_radius: 2.0,
             falloff: None,
             enabled: true,
+            active_below_env: None,
+            angle: None,
+            rotation: 0.0,
+            follow_token_rotation: false,
         },
     };
     assert!(ok.validate().is_ok());
@@ -627,11 +631,84 @@ fn light_emission_rejects_a_malformed_color() {
             dim_radius: 2.0,
             falloff: None,
             enabled: true,
+            active_below_env: None,
+            angle: None,
+            rotation: 0.0,
+            follow_token_rotation: false,
         },
     };
     assert!(bad.validate().is_err());
     bad.emission.color = "#ffffff".into();
     assert!(bad.validate().is_ok());
+}
+
+/// A valid light body with the three new optional fields supplied, for the validate cases below.
+fn light_body(extra: serde_json::Value) -> serde_json::Value {
+    let mut emission = json!({
+        "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+        "enabled": true
+    });
+    for (k, v) in extra.as_object().expect("extra is an object") {
+        emission[k] = v.clone();
+    }
+    json!({ "x": 0.0, "y": 0.0, "emission": emission })
+}
+
+#[test]
+fn light_emission_validate_rejects_out_of_range_active_below_env() {
+    for ok in [0.0, 0.5, 1.0] {
+        let v = light_body(json!({ "activeBelowEnv": ok }));
+        assert!(validate_engine("light", Some(&v)).is_ok(), "{ok}");
+    }
+    for bad in [-0.01, 1.01] {
+        let v = light_body(json!({ "activeBelowEnv": bad }));
+        assert!(validate_engine("light", Some(&v)).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn light_emission_validate_rejects_zero_angle_and_angle_over_360() {
+    for ok in [0.1, 90.0, 360.0] {
+        let v = light_body(json!({ "angle": ok }));
+        assert!(validate_engine("light", Some(&v)).is_ok(), "{ok}");
+    }
+    for bad in [0.0, -10.0, 360.5] {
+        let v = light_body(json!({ "angle": bad }));
+        assert!(validate_engine("light", Some(&v)).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn light_emission_validate_rejects_non_finite_rotation() {
+    let ok = LightEmission {
+        color: "#ffffff".into(),
+        intensity: 1.0,
+        bright_radius: 1.0,
+        dim_radius: 2.0,
+        falloff: None,
+        enabled: true,
+        active_below_env: None,
+        angle: Some(90.0),
+        rotation: -720.0,
+        follow_token_rotation: false,
+    };
+    assert!(ok.validate().is_ok(), "any finite rotation is legal");
+    let mut bad = ok.clone();
+    bad.rotation = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok;
+    bad.active_below_env = Some(f64::NAN);
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn light_emission_without_the_new_fields_deserializes_as_a_radial_always_on_light() {
+    let v = light_body(json!({}));
+    let l: LightEngine = serde_json::from_value(v).expect("old shape parses");
+    assert_eq!(l.emission.active_below_env, None);
+    assert_eq!(l.emission.angle, None);
+    assert_eq!(l.emission.rotation, 0.0);
+    assert!(!l.emission.follow_token_rotation);
 }
 
 #[test]

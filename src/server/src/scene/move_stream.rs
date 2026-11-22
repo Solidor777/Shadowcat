@@ -67,6 +67,10 @@ pub(crate) struct LightSamplePt {
     pub falloff: crate::scene::lighting::Falloff,
     /// Packed `0xRRGGBB` light color.
     pub color: u32,
+    /// Cone width in degrees; `None` for a radial light.
+    pub angle: Option<f64>,
+    /// Effective cone direction in degrees at this instant; `Some` exactly when `angle` is.
+    pub rotation: Option<f64>,
     /// Illumination polygon(s) at this instant, scene coords.
     pub polygons: Vec<Vec<crate::scene::vision::P>>,
 }

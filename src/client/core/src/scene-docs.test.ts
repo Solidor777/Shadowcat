@@ -422,7 +422,7 @@ it("builds a light doc parented to its scene", () => {
     x: 10,
     y: 20,
     elevation: null,
-    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true, rotation: 0, followTokenRotation: false },
   });
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");

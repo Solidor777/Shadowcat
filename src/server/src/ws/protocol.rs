@@ -905,6 +905,8 @@ pub struct VisionSample {
 ///     intensity: 1.0,
 ///     falloff: FalloffCurve::Linear,
 ///     color: 0xffcc00,
+///     angle: None,
+///     rotation: None,
 ///     polygons: vec![],
 /// };
 /// let json = serde_json::to_value(&sample).unwrap();
@@ -927,6 +929,17 @@ pub struct LightSample {
     pub falloff: crate::data::engine::FalloffCurve,
     /// Packed `0xRRGGBB` light color.
     pub color: u32,
+    /// Cone width in degrees (`LightEmission.angle`); absent for a radial light.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub angle: Option<f64>,
+    /// Effective cone direction in degrees at this instant — present exactly when `angle` is,
+    /// so a sample is self-describing: for a token-following cone it already holds the
+    /// bearer's rotation plus the authored offset. Refines how an already-admitted glow is
+    /// shaped; it never changes whether the glow is admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rotation: Option<f64>,
     /// The light's `blocksLight`-occluded illumination polygon(s) at this instant (scene
     /// coords), each an ordered list of [x, y] vertices.
     pub polygons: Vec<Vec<[f64; 2]>>,

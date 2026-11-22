@@ -7,7 +7,7 @@ function lightDoc(id: string, x: number, y: number, over: Record<string, unknown
     x,
     y,
     elevation,
-    emission: { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, ...over },
+    emission: { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, rotation: 0, followTokenRotation: false, ...over },
   }, id);
   return doc;
 }

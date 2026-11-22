@@ -1121,7 +1121,10 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  *
  * const engine: LightEngine = {
  *   x: 0, y: 0, elevation: null,
- *   emission: { color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+ *   emission: {
+ *     color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true,
+ *     rotation: 0, followTokenRotation: false,
+ *   },
  * };
  * const light = buildLightDoc("world-1", "scene-1", engine);
  * light.doc_type; // "light"
@@ -1143,6 +1146,8 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
   dimRadius: 6,
   falloff: null,
   enabled: true,
+  rotation: 0,
+  followTokenRotation: false,
 });
 
 // --- Region doc type ---

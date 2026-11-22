@@ -692,6 +692,11 @@ impl RecipientSight {
                 dim_radius: cells(sample.dim),
                 falloff: emitters::field_falloff(Some(sample.falloff)),
                 enabled: true,
+                // A sample exists only while the light's darkness window is open, so the
+                // composed light is unconditionally active.
+                active_below_env: None,
+                angle: sample.angle,
+                rotation: sample.rotation.unwrap_or(0.0),
             },
             // The sample's own occluder; a sample carrying none composes as an unoccluded light,
             // exactly as `cell_illumination` reads an empty occluder for a committed light.

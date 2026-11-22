@@ -66,6 +66,9 @@ pub enum Falloff {
 ///     dim_radius: 3.0,
 ///     falloff: Falloff::Linear,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
 /// };
 /// assert!(torch.enabled);
 /// assert!(torch.bright_radius < torch.dim_radius);
@@ -89,6 +92,51 @@ pub struct Light {
     pub falloff: Falloff,
     /// Disabled lights contribute nothing (kept for cache-key stability).
     pub enabled: bool,
+    /// Darkness-activation threshold: the light contributes only while the scene's
+    /// environment intensity is at or below it (`cell_illumination_from`'s guard). `None` =
+    /// always active.
+    pub active_below_env: Option<f64>,
+    /// Cone width in degrees; `None` = full circle (`cone_admits` skips its test).
+    pub angle: Option<f64>,
+    /// EFFECTIVE cone bisector direction in degrees (`0` = +x, growing toward +y). A
+    /// token-following cone already holds the carrier's rotation plus the authored offset
+    /// (resolved by `emitters::emission_to_light`), so the field never reads a token.
+    pub rotation: f64,
+}
+
+impl Light {
+    /// Whether the darkness window admits this light at `env_intensity`: always for an absent
+    /// `active_below_env`, else `env_intensity <= threshold` (the threshold itself counts as dark
+    /// enough). THE one window predicate: `cell_illumination_from` and
+    /// `SceneEcs::mover_light_inputs` both read it, so the committed field and a carried-light
+    /// timeline cannot disagree about whether the light is on. A NaN threshold or intensity
+    /// reads as off (fail closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::lighting::{Falloff, Light};
+    ///
+    /// let night_lamp = Light {
+    ///     pos: (0.0, 0.0),
+    ///     elevation: 0.0,
+    ///     color: 0xffffff,
+    ///     intensity: 1.0,
+    ///     bright_radius: 1.0,
+    ///     dim_radius: 3.0,
+    ///     falloff: Falloff::Linear,
+    ///     enabled: true,
+    ///     active_below_env: Some(0.3),
+    ///     angle: None,
+    ///     rotation: 0.0,
+    /// };
+    /// assert!(night_lamp.active_at_env(0.3));
+    /// assert!(!night_lamp.active_at_env(0.31));
+    /// ```
+    pub fn active_at_env(&self, env_intensity: f64) -> bool {
+        self.active_below_env
+            .is_none_or(|threshold| env_intensity <= threshold)
+    }
 }
 
 /// Illumination this light contributes at distance `dist_cells` (in CELLS), BEFORE occlusion.
@@ -116,6 +164,9 @@ pub struct Light {
 ///     dim_radius: 3.0,
 ///     falloff: Falloff::Linear,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
 /// };
 /// assert_eq!(light_illumination(&torch, 0.5), 1.0);
 /// assert_eq!(light_illumination(&torch, 10.0), 0.0);
@@ -396,6 +447,9 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 /// hex. CALLER PRECONDITION: it must be positive — a non-positive value is a caller error; the
 /// upstream caller guards it (a release-build fallback avoids division-by-zero but the value is wrong).
 /// `env_intensity` must be finite; the document→settings resolver clamps it to `[0,1]`.
+/// A source whose `active_below_env` threshold is below `env_intensity` is skipped before its
+/// reach is evaluated (the threshold itself counts as dark enough: `env_intensity <= threshold`
+/// is active).
 /// Per-source fail-closed directions are preserved under composition: a disabled/non-finite/
 /// occluded source contributes exactly 0, and a zero-contributor cell is dark with tint
 /// `0x000000`.
@@ -419,6 +473,9 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 ///     dim_radius: 3.0,
 ///     falloff: Falloff::Linear,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
 /// };
 /// let lit = cell_illumination((0.0, 0.0), 0.0, 0, &[torch], &[], &[], 1.0);
 /// assert_eq!(lit.level, 1.0);
@@ -445,9 +502,55 @@ pub fn cell_illumination(
     )
 }
 
+/// Whether `center` lies inside `light`'s angular arc. A radial light (`angle: None`) admits
+/// every point; a cone admits a point whose bearing from `light.pos` (`atan2(dy, dx)` in
+/// degrees, `0` = +x, growing toward +y) is within `angle / 2` of `light.rotation`, edges
+/// inclusive. The bearing is measured FROM the light TO the point (the opposite direction lights
+/// the opposite arc). A point exactly at the light's own position has no bearing and is
+/// admitted. A non-finite `angle` or `rotation` admits nothing (fail closed). The angular cull
+/// narrows what a cell receives and never widens it; the occlusion polygon stays full-circle.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{cone_admits, Falloff, Light};
+///
+/// let lamp = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xffffff,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+///     active_below_env: None,
+///     angle: Some(90.0),
+///     rotation: 0.0,
+/// };
+/// assert!(cone_admits(&lamp, (2.0, 0.0)));
+/// assert!(!cone_admits(&lamp, (-2.0, 0.0)));
+/// ```
+pub fn cone_admits(light: &Light, center: P) -> bool {
+    let Some(angle) = light.angle else {
+        return true;
+    };
+    if !angle.is_finite() || !light.rotation.is_finite() {
+        return false;
+    }
+    let (dx, dy) = (center.0 - light.pos.0, center.1 - light.pos.1);
+    if dx == 0.0 && dy == 0.0 {
+        return true;
+    }
+    let bearing = dy.atan2(dx).to_degrees();
+    // Signed shortest angular difference folded into [-180, 180).
+    let diff = (bearing - light.rotation + 180.0).rem_euclid(360.0) - 180.0;
+    diff.abs() <= angle / 2.0
+}
+
 /// One source's contribution at `center` BEFORE composition: `0.0` when the source's own
-/// occluder polygon (`occluder`, non-empty) excludes the center, else `light_illumination` at
-/// the center's distance in cells. THE per-source reach rule — `cell_illumination_from` sums
+/// occluder polygon (`occluder`, non-empty) excludes the center, or `center` is outside the
+/// light's cone (`cone_admits`), else `light_illumination` at the center's distance in cells. THE per-source reach rule — `cell_illumination_from` sums
 /// it over every source and the egress clip's `glow_reaches` reads it for a carried-light
 /// sample's own light (`InstantSight::light_reaches`), so "does this light reach this cell" is
 /// answered once. An empty occluder means "no occluder computed" and never occludes. A
@@ -468,12 +571,18 @@ pub fn cell_illumination(
 ///     dim_radius: 3.0,
 ///     falloff: Falloff::Linear,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
 /// };
 /// // No occluder polygon: the light reaches its center unobstructed.
 /// assert_eq!(source_level(&torch, &[], (0.0, 0.0), 1.0), 1.0);
 /// ```
 pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_cell: f64) -> f64 {
     if !occluder.is_empty() && !point_in_poly(occluder, center) {
+        return 0.0;
+    }
+    if !cone_admits(light, center) {
         return 0.0;
     }
     let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
@@ -511,6 +620,9 @@ pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_ce
 ///     dim_radius: 3.0,
 ///     falloff: Falloff::Linear,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
 /// };
 /// let sources = [(&torch, &[][..])];
 /// let lit = cell_illumination_from((0.0, 0.0), 0.0, 0, sources, &[], 1.0);
@@ -538,6 +650,12 @@ pub fn cell_illumination_from<'a>(
         add_tint(&mut tint_sum, env_color, level);
     }
     for (light, poly) in sources {
+        // The darkness window runs BEFORE `source_level`, so a suppressed light is dropped
+        // exactly as a disabled one is: no reach test, no tint. The environment ambient term
+        // above is never gated by it.
+        if !light.active_at_env(env_intensity) {
+            continue;
+        }
         let level = source_level(light, poly, center, world_units_per_cell);
         if level > 0.0 {
             total += level;

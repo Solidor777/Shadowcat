@@ -84,6 +84,9 @@ impl MoverLightInputs {
             intensity: light.intensity,
             falloff: light.falloff,
             color: light.color,
+            angle: light.angle,
+            // The effective rotation rides only with a cone: a radial light has no direction.
+            rotation: light.angle.map(|_| light.rotation),
             polygons: vec![light_polygon(
                 pos,
                 &self.walls,
@@ -115,18 +118,44 @@ pub(crate) fn wire_falloff(falloff: Falloff) -> eng::FalloffCurve {
     }
 }
 
+/// The cone direction an emission uses at read time: the authored `rotation`, plus the carrying
+/// token's `TokenEngine::rotation` when `follow_token_rotation` is set and a carrier exists
+/// (`carrier_rotation` is `None` for a standalone light, where the flag is inert). Derived on
+/// every read and never written back to a document.
+///
+/// # Examples
+///
+/// ```text
+/// effective_rotation(em /* rotation 10, follow */, Some(90.0)) == 100.0
+/// ```
+fn effective_rotation(em: &eng::LightEmission, carrier_rotation: Option<f64>) -> f64 {
+    match carrier_rotation {
+        Some(token_rotation) if em.follow_token_rotation => token_rotation + em.rotation,
+        _ => em.rotation,
+    }
+}
+
 /// Convert an engine-band emission payload at world position `pos` into the lighting field's
 /// `Light`. `None` when the emission is disabled (the suppress path for a carried emission, the
 /// on/off switch for a standalone light). `falloff` absent ⇒ linear (the read-side default);
 /// intensity is clamped to `[0, 1]`. `elevation` is the emitter's height above the ground plane
 /// (the standalone light's own, or the carrying token's) — read through
-/// `elevation::elevation_or_ground` by the caller.
-fn emission_to_light(pos: (f64, f64), elevation: f64, em: &eng::LightEmission) -> Option<Light> {
+/// `elevation::elevation_or_ground` by the caller. `carrier_rotation` is the carrying token's
+/// `TokenEngine::rotation` (`None` for a standalone light).
+fn emission_to_light(
+    pos: (f64, f64),
+    elevation: f64,
+    carrier_rotation: Option<f64>,
+    em: &eng::LightEmission,
+) -> Option<Light> {
     if !em.enabled {
         return None;
     }
     let falloff = field_falloff(em.falloff.as_ref().map(|f| f.curve));
     Some(Light {
+        active_below_env: em.active_below_env,
+        angle: em.angle,
+        rotation: effective_rotation(em, carrier_rotation),
         pos,
         elevation,
         color: parse_hex_color(&em.color),
@@ -189,11 +218,12 @@ impl SceneEcs {
         token: Uuid,
         cell: f64,
     ) -> Option<MoverLightInputs> {
-        if self.resolve_scene(scene).all_bright() {
+        let settings = self.resolve_scene(scene);
+        if settings.all_bright() {
             return None;
         }
         let &e = self.index.get(&token)?;
-        let (emission, elev) = {
+        let (emission, elev, rotation) = {
             let tok = self.world.get::<&SceneEntity>(e).ok()?;
             if tok.doc.doc_type != "token" || tok.doc.parent_id != Some(scene) {
                 return None;
@@ -202,10 +232,16 @@ impl SceneEcs {
             (
                 self.token_light_emission(&tok.doc)?,
                 elevation::elevation_or_ground(t.elevation),
+                t.rotation,
             )
         };
         // The position is per sample; the template light carries every other field.
-        let light = emission_to_light((0.0, 0.0), elev, &emission)?;
+        let light = emission_to_light((0.0, 0.0), elev, Some(rotation), &emission)?;
+        // A light the darkness window suppresses contributes to no cell, so it has no timeline —
+        // the same `env_intensity` comparison `cell_illumination_from` makes.
+        if !light.active_at_env(settings.env_intensity) {
+            return None;
+        }
         Some(MoverLightInputs {
             light,
             walls: elevation::walls_at_elevation(&self.light_wall_entries(scene), elev),
@@ -248,6 +284,7 @@ impl SceneEcs {
                     if let Some(l) = emission_to_light(
                         (le.x, le.y),
                         elevation::elevation_or_ground(le.elevation),
+                        None,
                         &le.emission,
                     ) {
                         out.push(l);
@@ -266,7 +303,7 @@ impl SceneEcs {
                     let (pos, elev) = ((t.x, t.y), elevation::elevation_or_ground(t.elevation));
                     if let Some(l) = self
                         .token_light_emission(&e.doc)
-                        .and_then(|em| emission_to_light(pos, elev, &em))
+                        .and_then(|em| emission_to_light(pos, elev, Some(t.rotation), &em))
                     {
                         out.push(l);
                     }
@@ -290,6 +327,13 @@ impl SceneEcs {
                 .then(a.intensity.total_cmp(&b.intensity))
                 .then(a.bright_radius.total_cmp(&b.bright_radius))
                 .then(a.dim_radius.total_cmp(&b.dim_radius))
+                .then(a.angle.unwrap_or(-1.0).total_cmp(&b.angle.unwrap_or(-1.0)))
+                .then(a.rotation.total_cmp(&b.rotation))
+                .then(
+                    a.active_below_env
+                        .unwrap_or(-1.0)
+                        .total_cmp(&b.active_below_env.unwrap_or(-1.0)),
+                )
         });
         out
     }

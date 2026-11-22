@@ -786,6 +786,10 @@ impl Default for AnimationSettings {
 ///         dim_radius: 10.0,
 ///         falloff: None,
 ///         enabled: true,
+///         active_below_env: None,
+///         angle: None,
+///         rotation: 0.0,
+///         follow_token_rotation: false,
 ///     },
 /// };
 /// assert_eq!(light.emission.bright_radius, 5.0);
@@ -825,6 +829,10 @@ pub struct LightEngine {
 ///     dim_radius: 8.0,
 ///     falloff: None,
 ///     enabled: true,
+///     active_below_env: None,
+///     angle: None,
+///     rotation: 0.0,
+///     follow_token_rotation: false,
 /// };
 /// assert!(emission.enabled);
 /// ```
@@ -846,6 +854,27 @@ pub struct LightEmission {
     /// GM toggle; a disabled emission contributes nothing (the suppress path
     /// for a carried emission, the on/off switch for a standalone light).
     pub enabled: bool,
+    /// Darkness-activation threshold: the light contributes only while the scene's
+    /// `settings.env_intensity` is at or below this value (`0.0..=1.0`). Absent = always active.
+    /// Gates placed and carried lights only; the environment ambient term is never suppressed.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub active_below_env: Option<f64>,
+    /// Full arc width of a cone light, degrees (`(0, 360]`). Absent = the full-circle radial
+    /// light.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub angle: Option<f64>,
+    /// Direction of the cone's bisector, degrees: `0` points along +x and the angle grows toward
+    /// +y (clockwise on a y-down canvas, the `TokenEngine::rotation` convention). Any finite
+    /// value is legal; readers normalise. Meaningful only when `angle` is set.
+    #[serde(default)]
+    pub rotation: f64,
+    /// When true and the emission is carried by a token, the effective cone direction is the
+    /// carrying token's `TokenEngine::rotation` plus `rotation`, resolved at each read. Inert on
+    /// a standalone `light` document (no token to follow).
+    #[serde(default)]
+    pub follow_token_rotation: bool,
 }
 
 impl LightEmission {
@@ -855,7 +884,10 @@ impl LightEmission {
     /// `scene::pathfinding::MAX_FOOTPRINT_CELLS` — the bound the aura and the
     /// footprint already share — so no authored glow can reach a scan bound
     /// the egress clip would otherwise have to fail closed on
-    /// (`ws::move_clip::glow_reaches`).
+    /// (`ws::move_clip::glow_reaches`). `active_below_env`, when present, is finite and in
+    /// `0..=1` (refused rather than clamped: a stored out-of-range threshold has no sensible
+    /// read-side meaning). `rotation` is finite; `angle`, when present, is finite and in
+    /// `(0, 360]` (a zero-width cone lights nothing and is refused as an authoring mistake).
     ///
     /// # Examples
     ///
@@ -877,6 +909,19 @@ impl LightEmission {
             }
             if r > cap {
                 return Err(format!("{name} exceeds {cap}"));
+            }
+        }
+        if let Some(threshold) = self.active_below_env {
+            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                return Err("activeBelowEnv must be finite and in 0..=1".to_string());
+            }
+        }
+        if !self.rotation.is_finite() {
+            return Err("rotation must be finite".to_string());
+        }
+        if let Some(angle) = self.angle {
+            if !angle.is_finite() || angle <= 0.0 || angle > 360.0 {
+                return Err("angle must be finite and in (0, 360]".to_string());
             }
         }
         Ok(())
