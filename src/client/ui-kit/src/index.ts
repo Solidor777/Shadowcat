@@ -48,6 +48,15 @@ export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
 export { default as TagChips } from "./TagChips.svelte";
+export { default as DocFolderTree } from "./DocFolderTree.svelte";
+export {
+  typedFolderChildren,
+  typedFolderSiblings,
+  appendTypedFolderSortKey,
+  buildTypedFolderDoc,
+  isDescendantOrSelf,
+} from "./folderTree";
+export type { FolderTreeLabels, FolderDeleteChoice } from "./folderTree";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";

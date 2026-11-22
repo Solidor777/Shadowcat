@@ -65,6 +65,26 @@ test("shift-click extends a contiguous range from the last anchor", async () => 
   expect(cb).toHaveBeenLastCalledWith(["a1", "a2", "a3"]);
 });
 
+test("a tile's star reports its asset, marks favorites, and does not select the tile", async () => {
+  const onToggleFavorite = vi.fn();
+  const onSelectionChange = vi.fn();
+  render(AssetGrid, {
+    props: { items: ITEMS, selected: [], favorites: ["a2"], onToggleFavorite, onSelectionChange },
+    context: setAppContextForTest(),
+  });
+  const stars = screen.getAllByTestId("asset-favorite");
+  expect(stars[1].getAttribute("aria-pressed")).toBe("true");
+  expect(stars[0].getAttribute("aria-pressed")).toBe("false");
+  await fireEvent.click(stars[0]);
+  expect(onToggleFavorite).toHaveBeenCalledWith("a1");
+  expect(onSelectionChange).not.toHaveBeenCalled();
+});
+
+test("no star is drawn without a toggle handler", () => {
+  grid();
+  expect(screen.queryByTestId("asset-favorite")).toBeNull();
+});
+
 /** A drop target occupying the 100x100 square at `left`. */
 function dropTarget(id: string, left: number) {
   const rect = { left, top: 0, width: 100, height: 100, right: left + 100, bottom: 100, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
