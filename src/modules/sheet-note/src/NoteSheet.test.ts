@@ -122,6 +122,29 @@ describe("NoteSheet draft-base edit flow", () => {
   });
 });
 
+describe("NoteSheet per-user sharing", () => {
+  it("shares the note with one member through the permissions editor", async () => {
+    const calls: unknown[] = [];
+    const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({
+      documents, members: new Map([["u-p", "Pia"]]), dispatchIntent: (ops) => calls.push(ops), canEdit: () => true,
+    });
+    const { getByTestId, getAllByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    expect(getByTestId("permissions-editor")).toBeTruthy();
+    await fireEvent.click(getAllByTestId("user-multi-select-option")[0]);
+    expect(calls).toEqual([[{ op: "update", doc_id: "n1", changes: [{ path: "/permissions/users/u-p", old: null, new: "observer" }] }]]);
+  });
+
+  it("hides the permissions editor from a viewer who may not write permissions", () => {
+    const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => false });
+    const { queryByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    expect(queryByTestId("permissions-editor")).toBeNull();
+  });
+});
+
 describe("NoteSheet heading table of contents", () => {
   const SOURCE = "# Intro\ntext\n## Details\n[jump](#details)";
   const HTML = '<h1>Intro</h1><p>text</p><h2>Details</h2><p><a href="#details">jump</a></p>';

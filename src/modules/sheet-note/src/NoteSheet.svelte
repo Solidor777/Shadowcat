@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
+  import { getAppContext, setField, SegmentList, PermissionsEditor } from "@shadowcat/ui-kit";
   import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
   import { collectHeadings, findAnchor, type TocEntry } from "./note-toc";
 
@@ -313,6 +313,8 @@
           <option value="observer">{t("sheetNote.visibilityShared")}</option>
         </select></label>
     {/if}
+
+    <PermissionsEditor {docId} />
 
     {#if mediaAssetId !== null && mediaUrl !== null}
       <div class="media" data-testid="note-media" data-media-kind={pageKind.kind}>
