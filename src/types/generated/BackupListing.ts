@@ -33,7 +33,7 @@ policy: BackupRetention,
 /**
  * The directory the backups live in, so the admin sees where the files are.
  */
-root: string,
+root: string, 
 /**
  * Why the last staged restore was not applied at startup; `None` when no failure marker
  * exists (it is removed by the next successful restore).

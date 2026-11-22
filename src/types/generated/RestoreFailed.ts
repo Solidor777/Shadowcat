@@ -14,15 +14,15 @@
  * assert_eq!(serde_json::from_str::<RestoreFailed>(&json).unwrap(), marker);
  * ```
  */
-export type RestoreFailed = {
+export type RestoreFailed = { 
 /**
  * The requested backup directory name; empty when the pending marker itself was unreadable.
  */
-id: string,
+id: string, 
 /**
  * When the restore was requested, Unix epoch milliseconds; `0` when unreadable.
  */
-requested_at_ms: bigint,
+requested_at_ms: bigint, 
 /**
  * The error text that stopped the restore.
  */
