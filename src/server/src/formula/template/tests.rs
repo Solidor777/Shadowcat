@@ -116,6 +116,69 @@ fn the_dice_operator_keeps_the_authors_case_when_a_count_is_synthesized() {
 }
 
 #[test]
+fn an_identifier_before_the_dice_operator_substitutes_as_a_bare_count() {
+    assert_eq!(
+        resolve_notation_template("prof d6", &constant(Ok(3.0))),
+        Ok("3 d6".to_string())
+    );
+    assert_eq!(
+        resolve_notation_template("prof \t D + str", &constant(Ok(3.0))),
+        Ok("3 \t D + 3[str]".to_string())
+    );
+}
+
+#[test]
+fn an_identifier_not_before_the_dice_operator_stays_labeled() {
+    // A modifier keyword that merely starts with `d` is not the operator.
+    assert_eq!(
+        resolve_notation_template("4d6 dl", &constant(Ok(3.0))),
+        Ok("4d6 dl".to_string())
+    );
+    assert_eq!(
+        resolve_notation_template("str dl", &constant(Ok(3.0))),
+        Ok("3[str] dl".to_string())
+    );
+    assert_eq!(
+        resolve_notation_template("1d20 + str", &constant(Ok(3.0))),
+        Ok("1d20 + 3[str]".to_string())
+    );
+}
+
+#[test]
+fn a_trailing_identifier_does_not_peek_past_the_end() {
+    assert_eq!(
+        resolve_notation_template("1d20 + str", &constant(Ok(3.0))),
+        Ok("1d20 + 3[str]".to_string())
+    );
+    assert_eq!(
+        resolve_notation_template("1d20 + str  ", &constant(Ok(3.0))),
+        Ok("1d20 + 3[str]  ".to_string())
+    );
+}
+
+#[test]
+fn a_bare_count_that_is_not_a_non_negative_integer_is_an_error() {
+    assert_eq!(
+        resolve_notation_template("prof d6", &constant(Ok(2.5))),
+        Err(FormulaError::new(
+            FormulaErrorKind::Type,
+            "'prof' = 2.5: roll templates require integers (use floor/round in the stat formula)"
+        ))
+    );
+    assert_eq!(
+        resolve_notation_template("prof d6", &constant(Ok(-2.0))),
+        Err(FormulaError::new(
+            FormulaErrorKind::Type,
+            "'prof' = -2: a dice count cannot be negative"
+        ))
+    );
+    assert_eq!(
+        resolve_notation_template("prof d6", &constant(Ok(0.0))),
+        Ok("0 d6".to_string())
+    );
+}
+
+#[test]
 fn no_panic_on_empty_or_unclaimable_input() {
     assert_eq!(
         resolve_notation_template("", &constant(Ok(0.0))),

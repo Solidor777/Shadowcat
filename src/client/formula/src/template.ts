@@ -218,30 +218,129 @@ function claimAt(src: string, at: number): Claim | FormulaError {
   return { kind: "literal", text: src[at] };
 }
 
+/** Whether the next claim after spaces and tabs, starting at `from`, is the dice operator.
+ * The dice notation lexer skips spaces and tabs, so `prof d6` reads as a count of `prof`
+ * before the operator. An identifier span absorbs adjacent word characters, so an identifier
+ * is never directly adjacent to the operator and the skip is the only way the two meet. A
+ * scan error at the peeked position reads as "not the operator": the main scan reaches that
+ * position itself and reports it.
+ * @param src The template source text.
+ * @param from Index just past the identifier claim.
+ * @returns `true` when the peeked claim is the dice operator keyword.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * diceOperatorFollows("prof d6", 4); // true
+ * ```
+ */
+function diceOperatorFollows(src: string, from: number): boolean {
+  let at = from;
+  while (src[at] === " " || src[at] === "\t") at++;
+  if (at >= src.length) return false;
+  const next = claimAt(src, at);
+  return "kind" in next && next.kind === "keyword" && next.text.toLowerCase() === DICE_OPERATOR;
+}
+
 /** Turns a `Claim` into the text it contributes to the rewritten notation. The ONLY stage
  * that reads the scan's carried state or calls the consumer's resolver; recognition does
  * neither.
  * @param claim The winning claim at the current position.
- * @param prevWasInt Whether the immediately preceding claim was an integer run — read only
- * by the dice-operator normalization, and passed explicitly rather than reached for.
+ * @param countPrecedes Whether an integer run or a bare-count identifier is already the count
+ * of a following dice operator — read only by the dice-operator normalization, and passed
+ * explicitly rather than reached for.
+ * @param bareCount Whether this identifier sits in a dice count position and emits an
+ * unlabeled integer.
  * @param resolve Consumer callback resolving a dotted ref path to a `FormulaValue`.
  * @returns The emitted text, or a `FormulaError` from identifier resolution.
  * @example
  * ```
  * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
- * emitClaim({ kind: "keyword", text: "d" }, false, () => 0); // "1d"
+ * emitClaim({ kind: "keyword", text: "d" }, false, false, () => 0); // "1d"
  * ```
  */
 function emitClaim(
   claim: Claim,
-  prevWasInt: boolean,
+  countPrecedes: boolean,
+  bareCount: boolean,
   resolve: (path: string[]) => FormulaValue,
 ): string | FormulaError {
-  if (claim.kind === "identifier") return substituteIdentifier(claim.text, resolve);
-  if (claim.kind === "keyword" && claim.text.toLowerCase() === DICE_OPERATOR && !prevWasInt) {
+  if (claim.kind === "identifier") {
+    return bareCount
+      ? substituteBareCount(claim.text, resolve)
+      : substituteIdentifier(claim.text, resolve);
+  }
+  if (claim.kind === "keyword" && claim.text.toLowerCase() === DICE_OPERATOR && !countPrecedes) {
     return `1${claim.text}`;
   }
   return claim.text;
+}
+
+/** Resolves a `.`-joined identifier path to the integer a roll template requires.
+ * INVARIANT: never throws — resolver faults propagate as FormulaErrors.
+ * @param originalText The dotted identifier as it appeared in the template (e.g. `"hp.max"`).
+ * @param resolve Consumer callback resolving the dotted path to a `FormulaValue`. May throw;
+ * a thrown value is caught and converted to `"resolver-error"` rather than propagating.
+ * @returns The integer, or a `FormulaError`: `"resolver-error"`, `"type"` for a non-integer,
+ * `"cap"` for a magnitude past `I32_MAX`, or any well-formed error the resolver returned.
+ * The cap is a MAGNITUDE test, asymmetric about zero: the most negative representable i32
+ * (-2147483648) exceeds `I32_MAX` in magnitude and is rejected even though an i32 holds it.
+ * Deliberate — do not "fix" it into a symmetric range check.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * resolveInteger("hp.max", () => 10); // 10
+ * ```
+ */
+function resolveInteger(
+  originalText: string,
+  resolve: (path: string[]) => FormulaValue,
+): number | FormulaError {
+  const path = originalText.split(".");
+  // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
+  // guaranteed to honor the `FormulaValue` contract (same boundary `evaluate`'s `ref`
+  // case and the `evalNode` callback already cross via this shared helper).
+  const value = validateResolverOutput(callResolver(path, resolve));
+  if (isFormulaError(value)) return value;
+  if (!Number.isInteger(value)) {
+    return {
+      error: "type",
+      detail: `'${originalText}' = ${value}: roll templates require integers (use floor/round in the stat formula)`,
+    };
+  }
+  if (Math.abs(value) > I32_MAX) {
+    return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
+  }
+  return value;
+}
+
+/** Resolves an identifier in a dice count position to a BARE integer (`prof d6` → `3 d6`).
+ * Substituting before the dice parser runs leaves ordinary dice notation, so the server's
+ * `MAX_ROLL_DICE` walk over the parsed groups bounds the count exactly as it bounds a typed
+ * one; a count evaluated at roll time could not be capped before rolling. No label is emitted
+ * because the dice grammar accepts none between count and operator.
+ * @param originalText The dotted identifier as it appeared in the template.
+ * @param resolve Consumer callback resolving the dotted path to a `FormulaValue`.
+ * @returns The bare integer text, or a `FormulaError` — `resolveInteger`'s, plus `"type"` for
+ * a negative value (no die count below zero). Zero is a legal empty group.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * substituteBareCount("prof", () => 3); // "3"
+ * ```
+ */
+function substituteBareCount(
+  originalText: string,
+  resolve: (path: string[]) => FormulaValue,
+): string | FormulaError {
+  const value = resolveInteger(originalText, resolve);
+  if (typeof value !== "number") return value;
+  if (value < 0) {
+    return {
+      error: "type",
+      detail: `'${originalText}' = ${value}: a dice count cannot be negative`,
+    };
+  }
+  return `${value}`;
 }
 
 /** Resolves a `.`-joined identifier path (e.g. "hp.max") to a labeled substitution.
@@ -269,25 +368,8 @@ function substituteIdentifier(
   originalText: string,
   resolve: (path: string[]) => FormulaValue,
 ): string | FormulaError {
-  const path = originalText.split(".");
-  // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
-  // guaranteed to honor the `FormulaValue` contract (same boundary `evaluate`'s `ref`
-  // case and the `evalNode` callback already cross via this shared helper).
-  const value = validateResolverOutput(callResolver(path, resolve));
-  if (isFormulaError(value)) return value;
-  if (!Number.isInteger(value)) {
-    return {
-      error: "type",
-      detail: `'${originalText}' = ${value}: roll templates require integers (use floor/round in the stat formula)`,
-    };
-  }
-  // The cap is a MAGNITUDE test rather than a range test, so it is asymmetric about zero:
-  // the most negative representable i32 (-2147483648) exceeds `I32_MAX` in magnitude and is
-  // rejected as a cap error even though an i32 holds it. Deliberate — do not "fix" it into
-  // a symmetric range check.
-  if (Math.abs(value) > I32_MAX) {
-    return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
-  }
+  const value = resolveInteger(originalText, resolve);
+  if (typeof value !== "number") return value;
   // A negative value emits the same labeled shape as a positive one, prefixed with a unary
   // minus, so the server parses `Expr::Neg` wrapping a labeled `Const` rather than two
   // unlabeled `Const`s: `collect_labeled_consts` recurses through `Expr::Neg` with a sign
@@ -427,7 +509,9 @@ export function checkNotationKey(key: string): NotationKeyCheck {
  * here first buys nothing and forfeits the server's fresher, authoritative read.
  *
  * `emitClaim` is not a pass-through for the non-identifier branch: it may prepend a synthesized
- * count. Every identifier substitution is labeled, positive or negative.
+ * count. Every identifier substitution is labeled, positive or negative, except an identifier
+ * followed (after any spaces or tabs) by the dice operator: that is a dice count and
+ * substitutes as a bare integer (`prof d6` → `3 d6`), which must be non-negative.
  *
  * Which recognizer claims a position is what decides whether an author's stat key survives as
  * a reference at all. How a key that loses ends is enumerated on `NotationKeyCheck`, so a
@@ -462,15 +546,22 @@ export function resolveNotationTemplate(
   let i = 0;
   // The scan's only carried state: whether the immediately preceding claim was an integer run.
   let prevWasInt = false;
+  // Whether a bare-count identifier still waits for its dice operator across the spaces and
+  // tabs the dice lexer skips.
+  let barePending = false;
 
   while (i < src.length) {
     const claim = claimAt(src, i);
     if (!("kind" in claim)) return claim;
-    const emitted = emitClaim(claim, prevWasInt, resolve);
+    const bareCount =
+      claim.kind === "identifier" && diceOperatorFollows(src, i + claim.text.length);
+    const emitted = emitClaim(claim, prevWasInt || barePending, bareCount, resolve);
     if (typeof emitted !== "string") return emitted;
     out += emitted;
     i += claim.text.length;
     prevWasInt = claim.kind === "integer";
+    const isBlank = claim.kind === "literal" && (claim.text === " " || claim.text === "\t");
+    barePending = bareCount || (barePending && isBlank);
   }
 
   return { notation: out };

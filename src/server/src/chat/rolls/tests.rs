@@ -400,6 +400,24 @@ fn validate_formula_rejects_the_same_way_execute_roll_would() {
 }
 
 #[test]
+fn a_reference_in_a_dice_count_position_is_capped_like_a_typed_count() {
+    // The reference substitutes BEFORE parsing, so the rewritten text is plain
+    // dice notation and `validate_pre_roll` sees the real count. A count
+    // evaluated at roll time would skip this check.
+    let rewrite = |n: f64| {
+        crate::formula::resolve_notation_template("prof d6", &move |_: &[String]| Ok(n))
+            .expect("rewrite")
+    };
+    let over = notation::parse(&rewrite(101.0), total_ctx()).expect("parse");
+    assert!(matches!(
+        validate_pre_roll(&over),
+        Err(RollError::TooManyDice(101))
+    ));
+    let at_limit = notation::parse(&rewrite(100.0), total_ctx()).expect("parse");
+    assert!(validate_pre_roll(&at_limit).is_ok());
+}
+
+#[test]
 fn dice_nested_inside_a_call_argument_still_counts_toward_max_roll_dice() {
     // `walk_groups` must recurse into `Expr::Call`'s args -- otherwise a dice group
     // wrapped in floor/ceil/round/abs/min/max would bypass MAX_ROLL_DICE entirely.

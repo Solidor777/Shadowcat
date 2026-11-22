@@ -517,9 +517,10 @@ fn resolve_roll_notation(formula: &str, host: Option<&Document>) -> Result<Strin
 /// validate a `[[roll:...]]` button at ingest so a stored button is never
 /// structurally broken. A button is a template by nature — its references are
 /// per-clicker — so validation substitutes a placeholder zero for every
-/// identifier (a substituted reference is always a labeled constant factor,
-/// never a dice count, so the placeholder cannot change the shape being
-/// checked); value-dependent failures surface per clicker at click time.
+/// identifier (a reference in a dice count position becomes a bare zero count,
+/// so the dice cap cannot be checked against its real value here);
+/// value-dependent failures, including a count past `MAX_ROLL_DICE`, surface
+/// per clicker at click time.
 pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), RollError> {
     let notation = crate::formula::resolve_notation_template(formula, &|_: &[String]| Ok(0.0))
         .map_err(RollError::Reference)?;
