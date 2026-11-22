@@ -49,6 +49,7 @@ fn message_doc(world: Uuid, author: Uuid) -> Document {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     )

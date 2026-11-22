@@ -1,6 +1,9 @@
 <script lang="ts">
+  import type { Component } from "svelte";
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, SegmentList, confirmDialog } from "@shadowcat/ui-kit";
   import {
+    CHAT_CARD_EXTENSION_CONTRACT,
     parseMessageEngine,
     isKnownSegment,
     resolveTokenActor,
@@ -31,6 +34,33 @@
   // doc_type or ANY schema-mismatched `engine` body, so a malformed/
   // foreign-shaped body renders nothing rather than a partially-broken card.
   const sys = $derived(parseMessageEngine(message));
+
+  // Bridges the framework-neutral registry's subscribe/snapshot to Svelte's reactivity, the
+  // same pattern `Settings.svelte` uses for its contributed sections.
+  const subscribeExtensions = createSubscriber((update) => {
+    const off = ctx.contributions.subscribe(update);
+    return () => off();
+  });
+
+  // Extensions render in descending `priority`; equal priorities fall back to the registering
+  // module id, then the contribution id — the `pickSheet` tie-break, so the order does not
+  // depend on module load order. A provider whose `match` returns false for this message's
+  // `system` is skipped; a provider without `match` renders for every message.
+  const extensions = $derived.by(() => {
+    subscribeExtensions();
+    if (!sys) return [];
+    const engine = sys;
+    return ctx.contributions
+      .entriesFor(CHAT_CARD_EXTENSION_CONTRACT)
+      .filter((e) => e.contribution.chatCardExtension && (!e.contribution.chatCardExtension.match || e.contribution.chatCardExtension.match(message.system, engine)))
+      .sort((a, b) => {
+        const pa = a.contribution.chatCardExtension!.priority;
+        const pb = b.contribution.chatCardExtension!.priority;
+        if (pb !== pa) return pb > pa ? 1 : -1;
+        return (a.module ?? a.contribution.id).localeCompare(b.module ?? b.contribution.id) || a.contribution.id.localeCompare(b.contribution.id);
+      })
+      .map((e) => e.contribution);
+  });
 
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
 
@@ -442,6 +472,13 @@
           </p>
         {/if}
       </div>
+
+      {#each extensions as extension (extension.id)}
+        {@const ExtensionComponent = extension.component as Component<Record<string, unknown>>}
+        <div class="card-extension">
+          <ExtensionComponent {...(extension.props ?? {})} system={message.system} message={sys} />
+        </div>
+      {/each}
 
       {#if canModerate}
         <div class="actions">

@@ -315,6 +315,7 @@ pub(crate) async fn handle_draw_table(
             kind: MessageKind::Roll,
             content,
             source: None,
+            system: None,
         },
         now,
     );

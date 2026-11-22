@@ -165,6 +165,7 @@ async fn player_may_create_message_but_not_other_types() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -189,6 +190,7 @@ async fn player_may_create_message_but_not_other_types() {
             kind: crate::chat::MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         2,
     );
@@ -241,6 +243,7 @@ async fn spectator_may_not_create_message() {
             kind: crate::chat::MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         1,
     );
@@ -294,6 +297,7 @@ async fn player_may_not_forge_message_owner_via_baseline_exemption() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -345,6 +349,7 @@ async fn player_may_not_update_own_message() {
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );
@@ -421,6 +426,7 @@ async fn seed_owned_message() -> (
             kind: crate::chat::MessageKind::Normal,
             content: crate::chat::plain_text_content("hi"),
             source: None,
+            system: None,
         },
         1,
     );

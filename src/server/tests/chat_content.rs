@@ -226,6 +226,7 @@ impl Fixture {
             content.into(),
             None,
             Audience::Public,
+            None,
         )
         .await
         .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -270,6 +271,7 @@ async fn owner_can_edit_and_content_resanitizes() {
         "first".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -326,6 +328,7 @@ async fn non_owner_non_gm_cannot_edit() {
         "hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -383,6 +386,7 @@ async fn cannot_edit_already_deleted_message() {
         "secret".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -448,6 +452,7 @@ async fn gm_can_edit_players_message() {
         "hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -509,6 +514,7 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
         Audience::Whisper {
             recipients: vec![f.bob_id],
         },
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -569,6 +575,7 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
         "hi".into(),
         None,
         Audience::GmOnly,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -625,6 +632,7 @@ async fn edit_cannot_retarget_audience() {
         "hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -840,6 +848,7 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
         "secret".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -883,6 +892,7 @@ async fn non_owner_non_gm_cannot_delete() {
         "hi".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -923,6 +933,7 @@ async fn repeated_delete_of_same_message_is_rate_limited() {
         "secret".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -968,6 +979,7 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
         "secret".into(),
         None,
         Audience::Public,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -1020,6 +1032,7 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
         Audience::Whisper {
             recipients: vec![f.bob_id],
         },
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -1063,6 +1076,7 @@ async fn gm_can_delete_gm_only_message_not_individually_listed() {
         "hi".into(),
         None,
         Audience::GmOnly,
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -1118,6 +1132,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         Audience::Whisper {
             recipients: vec![recipient],
         },
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -1192,6 +1207,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
         Audience::Whisper {
             recipients: vec![recipient],
         },
+        None,
     )
     .await
     .map(|opt| opt.expect("a plain message is not a /fx command"))
@@ -1365,6 +1381,7 @@ fn client_forged_system_kind_create_and_delete_still_blocked_at_ingress() {
             kind: MessageKind::Normal,
             content: vec![],
             source: None,
+            system: None,
         },
         0,
     );

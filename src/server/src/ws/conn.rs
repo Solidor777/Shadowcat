@@ -1022,7 +1022,7 @@ async fn handle_socket(
                                         }
                                     }
                                 }
-                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
+                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience, system }) => {
                                     // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
                                     // the message doc, and publish. Success is confirmed by the broadcast
                                     // echo of the authored Event (like Intent). On rejection, a
@@ -1047,6 +1047,7 @@ async fn handle_socket(
             content,
             actor_owner,
             audience,
+            system,
         )
                                     .await
                                     {

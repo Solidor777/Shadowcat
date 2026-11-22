@@ -959,6 +959,18 @@ describe("SendMessageSchema", () => {
     });
     expect(parsed.audience).toEqual({ kind: "gm_only" });
   });
+
+  it("carries an opaque system payload and treats it as optional", () => {
+    const base = {
+      type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
+      channel: "all",
+      content: "hi",
+      actor_owner: null,
+    };
+    expect(SendMessageSchema.parse({ ...base, system: { a: [1] } }).system).toEqual({ a: [1] });
+    expect(SendMessageSchema.parse(base).system).toBeUndefined();
+  });
 });
 
 describe("PathfindSchema", () => {

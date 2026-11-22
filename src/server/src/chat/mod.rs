@@ -1,8 +1,9 @@
 //! This module is the chat domain: the server-authoritative message model and ingest.
 //!
 //! Messages are ordinary sequenced `Document`s with a typed, ingress-validated `engine` body (this
-//! module's `MessageEngine`); `system` stays reserved-empty (`{}`) for message docs. The server
-//! alone authors and revises them; a client never builds or mutates one directly.
+//! module's `MessageEngine`); `system` is an opaque, module-owned payload a `SendMessage` may carry
+//! (`{}` when absent). The server alone authors and revises them; a client never builds or mutates
+//! one directly.
 //!
 //! `handle_send_message` Creates a `message` doc. `handle_edit_message`, `handle_delete_message`
 //! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment each Update one.
@@ -804,6 +805,7 @@ pub struct MessageEngine {
 ///     kind: MessageKind::Normal,
 ///     content: vec![Segment::Text { text: "hi".to_string() }],
 ///     source: Some("hi".to_string()),
+///     system: None,
 /// };
 /// assert_eq!(draft.channel, "general");
 /// ```
@@ -824,6 +826,9 @@ pub struct MessageDraft {
     pub content: Vec<Segment>,
     /// Raw author input kept for client edit-prefill (see `MessageEngine::source`).
     pub source: Option<String>,
+    /// Opaque module-owned payload stored verbatim as the document's `system` band; `None`
+    /// stores `{}`. Never inspected or branched on by the server.
+    pub system: Option<serde_json::Value>,
 }
 
 /// Server-construct a message `Document`. INVARIANT: only the server calls
@@ -858,6 +863,7 @@ pub struct MessageDraft {
 ///         kind: MessageKind::Normal,
 ///         content: vec![Segment::Text { text: "hi".to_string() }],
 ///         source: Some("hi".to_string()),
+///         system: None,
 ///     },
 ///     0,
 /// );
@@ -872,6 +878,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
         kind,
         content,
         source,
+        system,
     } = draft;
     let (default, gm_role, mut users) = match &audience {
         Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
@@ -920,11 +927,13 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
         embedded: BTreeMap::new(),
         parent_id: None,
         // `message` is engine-defined (`data::engine::is_engine_doc_type`):
-        // the real content lives in `engine` only; `system` stays
-        // reserved-empty (`{}`) for message docs — there is no game-system
-        // data on a chat message.
+        // the real content lives in `engine`; `system` is an opaque,
+        // module-owned, unvalidated payload (`{}` when the send carried none),
+        // size-capped by the same `validate_system_size` every document's
+        // `system` band passes, and readable by exactly the audience that reads
+        // `engine` (it rides the message's own `PermissionSet`).
         engine: Some(engine_json),
-        system: serde_json::json!({}),
+        system: system.unwrap_or_else(|| serde_json::json!({})),
         created_at: now,
         updated_at: now,
     }
@@ -956,6 +965,7 @@ fn build_system_error_notice(
                 text: text.to_string(),
             }],
             source: None,
+            system: None,
         },
         now,
     )
@@ -1389,6 +1399,7 @@ pub struct MessageRequestCtx<'a> {
 ///     "hello world".to_string(),
 ///     None,
 ///     Audience::Public,
+///     None,
 /// )
 /// .await
 /// .unwrap()
@@ -1403,6 +1414,7 @@ pub async fn handle_send_message(
     content: String,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
+    system: Option<serde_json::Value>,
 ) -> Result<Option<(Command, Vec<PendingEnrichment>)>, SendMessageError> {
     let MessageRequestCtx {
         room,
@@ -1667,6 +1679,7 @@ pub async fn handle_send_message(
             kind: parsed.kind,
             content: content_segments,
             source,
+            system,
         },
         now,
     );
@@ -1767,6 +1780,7 @@ pub async fn handle_send_message(
 ///     "hello world".to_string(),
 ///     None,
 ///     Audience::Public,
+///     None,
 /// )
 /// .await
 /// .unwrap()
@@ -1995,6 +2009,7 @@ pub async fn handle_edit_message(
 ///         kind: MessageKind::Normal,
 ///         content: vec![Segment::Text { text: "hi".to_string() }],
 ///         source: None,
+///         system: None,
 ///     },
 ///     0,
 /// );
@@ -2019,7 +2034,8 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 /// Server-authoritative message soft-delete: owner-or-GM only, a pure
 /// tombstone — no command parsing or sanitization runs. Clears `content` and
 /// sets `deleted_at`; `channel`/`user_owner`/`actor_owner`/`audience`/`kind`/
-/// `edited_at` are left untouched. Like `handle_edit_message`, the write is
+/// `edited_at` are left untouched. A non-empty `system` payload is reset to
+/// `{}` in the same `Operation::Update`. Like `handle_edit_message`, the write is
 /// an `Operation::Update` on `/engine` under `WriteOrigin::ServerMessageRevision`
 /// (not a hard `Operation::Delete`) — the doc stays in the sequenced log, so
 /// resync and per-recipient redaction both continue to apply to it unchanged.
@@ -2087,6 +2103,7 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 ///     "hello world".to_string(),
 ///     None,
 ///     Audience::Public,
+///     None,
 /// )
 /// .await
 /// .unwrap()
@@ -2136,14 +2153,25 @@ pub async fn handle_delete_message(
     let new_engine = serde_json::to_value(&sys)
         .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
 
+    let mut changes = vec![FieldChange {
+        remove: false,
+        path: "/engine".into(),
+        old: cur.engine.unwrap_or_default(),
+        new: new_engine,
+    }];
+    // A module payload retained on a deleted message leaks through the envelope exactly as a
+    // retained `source` would, so the tombstone clears it with the same Update.
+    if cur.system != serde_json::json!({}) {
+        changes.push(FieldChange {
+            remove: false,
+            path: "/system".into(),
+            old: cur.system,
+            new: serde_json::json!({}),
+        });
+    }
     let op = Operation::Update {
         doc_id: message_id,
-        changes: vec![FieldChange {
-            remove: false,
-            path: "/engine".into(),
-            old: cur.engine.unwrap_or_default(),
-            new: new_engine,
-        }],
+        changes,
     };
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
         .await
@@ -2413,3 +2441,6 @@ mod tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;
+
+#[cfg(test)]
+mod system_payload;

@@ -432,6 +432,11 @@ export interface ChatSendOptions {
   actorOwner?: WireActorOwnerRef | null;
   /** Recipient scoping; defaults to `{ kind: "public" }`. */
   audience?: WireAudience;
+  /** Opaque module-owned payload stored verbatim as the message document's `system` band and
+   * rendered by `CHAT_CARD_EXTENSION_CONTRACT` contributions. The server never inspects it; it
+   * is size-capped like every document's `system` band and readable by exactly the message's
+   * audience. Omitted from the frame when absent. */
+  system?: unknown;
 }
 
 /** Options for `WsClient.drawTable`. */
@@ -1932,6 +1937,7 @@ export class WsClient {
       content: opts.content,
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
+      ...(opts.system !== undefined ? { system: opts.system } : {}),
     });
     return p;
   }

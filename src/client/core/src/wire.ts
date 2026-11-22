@@ -2131,6 +2131,7 @@ export const SendMessageSchema = z.object({
   content: z.string(),
   actor_owner: ActorOwnerRefSchema.nullable(),
   audience: AudienceSchema.default({ kind: "public" }),
+  system: z.unknown().optional(),
 });
 
 /**
