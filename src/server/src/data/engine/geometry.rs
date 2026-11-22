@@ -1115,6 +1115,18 @@ impl RegionEngine {
                     .to_string(),
             );
         }
+        // A non-finite coordinate poisons rasterization and the occluder outline's bounding
+        // fallback, so it is refused at ingress alongside the structural check above.
+        let parts: Vec<&RegionShape> = match &self.shape {
+            RegionGeometry::Single(s) => vec![s],
+            RegionGeometry::Compound(parts) => parts.iter().map(|p| &p.shape).collect(),
+        };
+        if parts
+            .iter()
+            .any(|s| s.points.iter().any(|v| !v.is_finite()))
+        {
+            return Err("shape coordinates must be finite".to_string());
+        }
         if let Some(occ) = &self.occludes {
             if !(occ.sight || occ.light || occ.sound) {
                 return Err("occludes must flag at least one of sight, light or sound".to_string());
