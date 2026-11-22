@@ -716,6 +716,8 @@ export const en: Messages = {
   "sheetNote.children": "Child notes",
   "sheetNote.newChild": "New child note",
   "sheetNote.upTo": "Up to",
+  "sheetNote.changeMedia": "Change media",
+  "sheetNote.mediaMissing": "This page's media could not be loaded.",
   "sheetTable.title": "Table",
   "sheetTable.description": "Description",
   "sheetTable.draw": "Draw",

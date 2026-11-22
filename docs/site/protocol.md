@@ -193,7 +193,9 @@ a correlated `chat_error`, never a hard `reject`.
 ## Notes
 
 A `note` document (`NoteEngine`: author `source` markdown, a server-derived
-`body`, sibling `sort`) is authored/edited like any other document — plain
+`body`, sibling `sort`, and a page `kind` of `text`, `image`, `pdf` or `video`
+whose media kinds carry an `asset_id` shown above the caption, which is the
+`source`) is authored/edited like any other document — plain
 `Create`/`Update` through the generic engine-ingress gate, no dedicated wire
 frame. `body` is unconditionally overwritten on every Create/Update
 post-image: the server renders `source` through the same span grammar and

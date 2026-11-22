@@ -200,6 +200,7 @@ export type { TableRow } from "./generated/engine/TableRow";
 export type { RowRange } from "./generated/engine/RowRange";
 export type { TableEntry } from "./generated/engine/TableEntry";
 export type { NoteEngine } from "./generated/engine/NoteEngine";
+export type { NotePageKind } from "./generated/engine/NotePageKind";
 export type { DocLinkTarget } from "./generated/engine/DocLinkTarget";
 export type { AudioChannel } from "./generated/engine/AudioChannel";
 export type { PlaylistTrack } from "./generated/engine/PlaylistTrack";

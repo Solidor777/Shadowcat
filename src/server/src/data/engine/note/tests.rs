@@ -16,6 +16,7 @@ fn a_note_with_plain_source_is_accepted() {
         source: "hello".into(),
         body: vec![],
         sort: 0,
+        kind: NotePageKind::Text,
     };
     assert!(note.validate().is_ok());
 }
@@ -26,6 +27,7 @@ fn over_cap_source_is_rejected_by_validate() {
         source: "a".repeat(MAX_NOTE_SOURCE_CHARS + 1),
         body: vec![],
         sort: 0,
+        kind: NotePageKind::Text,
     };
     assert!(note.validate().is_err());
 }
@@ -161,6 +163,65 @@ fn deny_unknown_fields_rejects_an_extra_key() {
 fn validate_engine_rejects_a_note_body_on_a_non_engine_doc_type() {
     let body = note_body("hello", serde_json::json!([]));
     assert!(crate::data::engine::validate_engine("item", Some(&body)).is_err());
+}
+
+fn stored_with_kind(kind: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "source": "caption", "body": [], "sort": 0, "kind": kind })
+}
+
+#[test]
+fn a_note_stored_without_kind_reads_as_text() {
+    let legacy = note_body("hello", serde_json::json!([]));
+    let typed: NoteEngine = serde_json::from_value(legacy).unwrap();
+    assert_eq!(typed.kind, NotePageKind::Text);
+}
+
+#[test]
+fn every_page_kind_round_trips_through_ingress() {
+    let asset_id = Uuid::new_v4();
+    for (tag, expected) in [
+        ("text", NotePageKind::Text),
+        ("image", NotePageKind::Image { asset_id }),
+        ("pdf", NotePageKind::Pdf { asset_id }),
+        ("video", NotePageKind::Video { asset_id }),
+    ] {
+        let kind = if tag == "text" {
+            serde_json::json!({ "kind": tag })
+        } else {
+            serde_json::json!({ "kind": tag, "asset_id": asset_id })
+        };
+        let normalized = crate::data::engine::normalize_engine_opt(
+            NOTE_DOC_TYPE,
+            Some(&stored_with_kind(kind.clone())),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(normalized["kind"], kind, "{tag} survives ingress unchanged");
+        let typed: NoteEngine = serde_json::from_value(normalized).unwrap();
+        assert_eq!(typed.kind, expected);
+    }
+}
+
+#[test]
+fn a_media_kind_without_an_asset_id_is_a_bad_engine() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "image" }));
+    assert!(crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body)).is_err());
+}
+
+#[test]
+fn an_unknown_page_kind_is_a_bad_engine() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "audio" }));
+    assert!(crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body)).is_err());
+}
+
+#[test]
+fn a_media_kind_keeps_its_caption_derived_from_source() {
+    let body = stored_with_kind(serde_json::json!({ "kind": "image", "asset_id": Uuid::new_v4() }));
+    let normalized = crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body))
+        .unwrap()
+        .unwrap();
+    let typed: NoteEngine = serde_json::from_value(normalized).unwrap();
+    assert!(matches!(typed.body.as_slice(), [Segment::Html { .. }]));
 }
 
 #[test]

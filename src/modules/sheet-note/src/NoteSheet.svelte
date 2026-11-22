@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
-  import { getPointer, firstChannel, parseNoteBody, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
+  import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
 
   // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
@@ -64,9 +64,23 @@
     return firstChannel(ctx.documents);
   });
   const body = $derived.by(() => (doc ? parseNoteBody(doc) : null));
+  const kindPath = $derived(`${enginePrefix}/kind`);
+  const pageKind = $derived.by(() => (doc ? parseNotePageKind(doc) : ({ kind: "text" } as const)));
+  /** The media asset id of an image/pdf/video page, or `null` for a text page. */
+  const mediaAssetId = $derived(pageKind.kind === "text" ? null : pageKind.asset_id);
+  /** The serve URL for the media asset; the resolver's placeholder when the asset was deleted. */
+  const mediaUrl = $derived(mediaAssetId === null ? null : ctx.assets.url(mediaAssetId));
+  /** Set by the media element's error event; reset whenever the asset id changes. */
+  let mediaErrored = $state(false);
+  let erroredFor = $state<string | null>(null);
+  /** True when the media cannot be shown: the resolver gave its placeholder, or the element failed to load. */
+  const mediaFailed = $derived(
+    mediaUrl === ctx.assets.placeholder() || (mediaErrored && erroredFor === mediaAssetId),
+  );
 
   const canEditVisibility = $derived(!!doc && ctx.canEdit(doc, "/permissions/default"));
   const canEditSource = $derived(!!doc && ctx.canEdit(doc, sourcePath));
+  const canEditKind = $derived(!!doc && ctx.canEdit(doc, kindPath));
 
   /** The children of this note (`parent_id === docId`), ordered by `(engine.sort, created_at)`. */
   const children = $derived.by((): NoteChildSummary[] => {
@@ -186,6 +200,34 @@
     setField(ctx, docId, sortPath, sort, value);
   }
 
+  /** Records that the media element for the current asset failed to load.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the media element's error event
+   * markMediaErrored();
+   * ```
+   */
+  function markMediaErrored(): void {
+    mediaErrored = true;
+    erroredFor = mediaAssetId;
+  }
+
+  /** Opens the shared asset picker and swaps the page's media asset, keeping its kind. Cancel
+   * writes nothing. The picker's `kind` filter is `image` for an image page and `other` for a
+   * PDF or video page.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the "Change media" button
+   * void changeMedia();
+   * ```
+   */
+  async function changeMedia(): Promise<void> {
+    if (!doc || pageKind.kind === "text") return;
+    const picked = await ctx.pickAsset({ kind: pageKind.kind === "image" ? "image" : "other" });
+    if (!picked) return;
+    setField(ctx, docId, kindPath, pageKind, { kind: pageKind.kind, asset_id: picked });
+  }
+
   /** Creates a new child note under this one and opens it.
    * @example
    * ```
@@ -219,6 +261,25 @@
           <option value="none">{t("sheetNote.visibilityPrivate")}</option>
           <option value="observer">{t("sheetNote.visibilityShared")}</option>
         </select></label>
+    {/if}
+
+    {#if mediaAssetId !== null && mediaUrl !== null}
+      <div class="media" data-testid="note-media" data-media-kind={pageKind.kind}>
+        {#if mediaFailed}
+          <p class="media-missing" data-testid="note-media-missing">{t("sheetNote.mediaMissing")}</p>
+        {:else if pageKind.kind === "image"}
+          <img src={mediaUrl} alt={name ?? ""} onerror={markMediaErrored} />
+        {:else if pageKind.kind === "pdf"}
+          <embed type="application/pdf" src={mediaUrl} title={name ?? t("sheetNote.title")} />
+        {:else}
+          <video src={mediaUrl} controls preload="metadata" onerror={markMediaErrored}>
+            <track kind="captions" />
+          </video>
+        {/if}
+        {#if canEditKind}
+          <button type="button" data-testid="note-change-media" onclick={() => void changeMedia()}>{t("sheetNote.changeMedia")}</button>
+        {/if}
+      </div>
     {/if}
 
     <fieldset class="body" disabled={(channel ?? "") === ""} data-testid="note-body">
@@ -284,6 +345,11 @@
   .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   label { display: flex; flex-direction: column; gap: 2px; }
   .body { border: 1px solid var(--border); border-radius: var(--radius-1); padding: var(--space-1); }
+  .media { display: flex; flex-direction: column; gap: var(--space-1); }
+  .media img, .media video { max-width: 100%; height: auto; }
+  .media embed { width: 100%; min-height: 60vh; }
+  .media button { min-height: 44px; }
+  .media-missing { opacity: 0.7; font-style: italic; }
   .unrenderable, .missing { opacity: 0.7; font-style: italic; }
   .changed-remotely { color: var(--warning, #b45309); }
   .editor-actions { display: flex; gap: var(--space-1); }
