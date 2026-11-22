@@ -18,6 +18,7 @@ import type { EffectEngine } from "./EffectEngine";
  *         transfer: false,
  *         duration: None,
  *         lifecycle: None,
+ *         origin: None,
  *     },
  * };
  * assert_eq!(snapshot.path, "/embedded/effect/0");

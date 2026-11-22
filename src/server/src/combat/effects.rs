@@ -15,7 +15,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::data::command::{FieldChange, Operation};
-use crate::data::document::Document;
+use crate::data::document::{DocRole, Document};
 use crate::data::engine::combat::{
     CombatantKind, DurationUnit, EffectEngine, EffectLifecycleDefaults, ExpiryPoint,
 };
@@ -44,11 +44,15 @@ use super::{CombatError, CombatSnapshot, Combatant};
 ///         transfer: false,
 ///         duration: None,
 ///         lifecycle: None,
+///         origin: None,
 ///     },
+///     name: Some("Bless".to_string()),
+///     default_readable: true,
 /// };
 /// assert_eq!(effect_ref.path, "/embedded/effect/0");
 /// assert!(effect_ref.engine.active);
 /// ```
+#[derive(Debug, Clone)]
 pub struct EffectRef {
     /// The document that embeds the effect (an actor or a token).
     pub host: Uuid,
@@ -56,6 +60,11 @@ pub struct EffectRef {
     pub path: String,
     /// The effect's engine band, as read from `host` at collection time.
     pub engine: EffectEngine,
+    /// The effect document's own name, for the expiry note.
+    pub name: Option<String>,
+    /// Whether the effect document's `permissions.default` grants any access (is not
+    /// `DocRole::None`). A per-user grant on an otherwise unreadable effect does not set it.
+    pub default_readable: bool,
 }
 
 /// Which anchor values a walk admits. The two axes an effect carries are
@@ -109,6 +118,8 @@ fn walk_effect_collection(
             host,
             path: format!("{prefix}/{i}"),
             engine,
+            name: doc.name.clone(),
+            default_readable: doc.permissions.default != DocRole::None,
         });
     }
 }
@@ -231,6 +242,7 @@ fn walk_any_host(
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -450,6 +462,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -616,6 +629,7 @@ fn active_refs(refs: &[EffectRef]) -> impl Iterator<Item = &EffectRef> {
 ///             transfer: false,
 ///             duration: None,
 ///             lifecycle: None,
+///             origin: None,
 ///         })
 ///         .unwrap(),
 ///     ),
@@ -687,6 +701,16 @@ fn flags_for(
     }
 }
 
+/// What one `tick` or `expire_by_policy` sweep produced.
+pub(crate) struct EffectSweep {
+    /// The host `Update`s that write the sweep.
+    pub(crate) ops: Vec<Operation>,
+    /// One detail line per skipped effect whose formulas failed to evaluate.
+    pub(crate) failures: Vec<String>,
+    /// The refs this sweep switched to `active = false`, for the expiry note.
+    pub(crate) expired: Vec<EffectRef>,
+}
+
 /// Decrements `Duration.remaining` by one for every ref in `refs` that is
 /// still `active`, whose evaluated lifecycle `on_advance` is set, and whose
 /// `expires`/`unit` match `boundary`/`unit` exactly. A `remaining` of `None`
@@ -705,9 +729,10 @@ pub(crate) fn tick(
     boundary: ExpiryPoint,
     unit: DurationUnit,
     defaults: &EffectLifecycleDefaults,
-) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
+) -> Result<EffectSweep, CombatError> {
     let mut ops = Vec::new();
     let mut failures = Vec::new();
+    let mut expired = Vec::new();
     for r in active_refs(refs) {
         let Some(duration) = &r.engine.duration else {
             continue;
@@ -746,13 +771,18 @@ pub(crate) fn tick(
                 "/engine/active",
                 json!(false),
             )?);
+            expired.push(r.clone());
         }
         ops.push(Operation::Update {
             doc_id: r.host,
             changes,
         });
     }
-    Ok((ops, failures))
+    Ok(EffectSweep {
+        ops,
+        failures,
+        expired,
+    })
 }
 
 /// Sets `active = false` for every ref in `refs` that is currently `active`
@@ -766,9 +796,10 @@ pub(crate) fn expire_by_policy(
     refs: &[EffectRef],
     pick: fn(&LifecycleFlags) -> bool,
     defaults: &EffectLifecycleDefaults,
-) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
+) -> Result<EffectSweep, CombatError> {
     let mut ops = Vec::new();
     let mut failures = Vec::new();
+    let mut expired = Vec::new();
     for r in active_refs(refs) {
         let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
         let Some(flags) = flags_for(r, host, defaults, &mut failures) else {
@@ -782,6 +813,11 @@ pub(crate) fn expire_by_policy(
             doc_id: r.host,
             changes: vec![change],
         });
+        expired.push(r.clone());
     }
-    Ok((ops, failures))
+    Ok(EffectSweep {
+        ops,
+        failures,
+        expired,
+    })
 }
