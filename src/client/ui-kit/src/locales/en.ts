@@ -673,6 +673,7 @@ export const en: Messages = {
   "chat.docLink.unknownToken": "Unknown token",
   "chat.table.draw": "Draw",
   "chat.table.noRow": "No matching row",
+  "chat.secret.label": "Secret",
   "chat.table.nested": "Nested draw",
   "notifications.dismiss": "Dismiss",
   "panels.minimize": "Minimize",

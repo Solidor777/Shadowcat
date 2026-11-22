@@ -9,6 +9,7 @@ import { z } from "zod";
 import {
   ActorOwnerRefSchema,
   AudienceSchema,
+  VisibilitySchema,
   type WireActorOwnerRef,
   type WireAudience,
   type WireDocument,
@@ -463,7 +464,21 @@ export type ChatSegment =
       /** Alt text, plain data (never markup) — may be empty. */
       alt: string;
     }
-  | TableDrawSegment;
+  | TableDrawSegment
+  | SecretSegment;
+
+/** A server-redacted block. Mirrors `chat::Segment::Secret`. Declared as its own named type
+ * (not a `ChatSegment` union member inline) because it recurses through `content`. The server
+ * strips `content` from every copy whose recipient `visibility` excludes; a stripped segment
+ * therefore arrives with `content` absent, and a reader treats that as empty. */
+export type SecretSegment = {
+  /** Discriminant. */
+  kind: "secret";
+  /** Who the server delivers `content` to. */
+  visibility: z.infer<typeof VisibilitySchema>;
+  /** The hidden segments; empty when the server withheld them from this recipient. */
+  content: (ChatSegment | UnknownSegment)[];
+};
 
 /** A completed roll: the formula plus its full deterministic outcome. Mirrors
  * `chat::Segment::RollEmbed`. Declared as its own named type (rather than a `ChatSegment`
@@ -563,6 +578,16 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
   }),
 );
 
+/** Validator for a `SecretSegment`; `z.lazy` since it recurses through `content`. `content`
+ * defaults to empty because the server removes the key from a copy the recipient may not read. */
+const secretSegmentSchemaImpl: z.ZodType<SecretSegment, z.ZodTypeDef, unknown> = z.lazy(() =>
+  z.object({
+    kind: z.literal("secret"),
+    visibility: VisibilitySchema,
+    content: SegmentListSchema.default([]),
+  }),
+);
+
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const rollEmbedSegmentSchemaImpl = z.object({
   kind: z.literal("roll_embed"),
@@ -614,6 +639,7 @@ const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
 export const chatSegmentSchemaImpl = z.union([
   nonRecursiveChatSegmentSchemaImpl,
   tableDrawSegmentSchemaImpl,
+  secretSegmentSchemaImpl,
 ]);
 /** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
  * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
@@ -649,7 +675,8 @@ const UnknownSegmentSchema = z
       s.kind !== "oembed" &&
       s.kind !== "doc_link" &&
       s.kind !== "image" &&
-      s.kind !== "table_draw",
+      s.kind !== "table_draw" &&
+      s.kind !== "secret",
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
@@ -664,7 +691,7 @@ export const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegm
  * every known `kind` string, so a malformed known-kind segment fails the
  * whole message rather than being misclassified as trustworthy here.
  * @param s The parsed segment (known or opaque forward-compat).
- * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`/`table_draw`.
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`/`table_draw`/`secret`.
  * @example
  * ```ts
  * import { isKnownSegment } from "@shadowcat/core";
@@ -682,7 +709,8 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
     s.kind === "oembed" ||
     s.kind === "doc_link" ||
     s.kind === "image" ||
-    s.kind === "table_draw"
+    s.kind === "table_draw" ||
+    s.kind === "secret"
   );
 }
 
