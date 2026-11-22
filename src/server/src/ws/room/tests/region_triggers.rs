@@ -2249,3 +2249,172 @@ async fn rewind_re_arms_the_turn_round_trigger_dedup_for_the_re_crossed_boundary
         "the re-crossed round-1 turn_end re-fired after the rewind cleared the dedup entry"
     );
 }
+
+/// Applies the batch the client's template-to-region conversion builds (create the region,
+/// delete the template with its stored pre-image), then lets a token step into the region once
+/// the GM has added an enter trigger. `template_shape` is the template's `engine.shape` and
+/// `region_shape` the region `engine.shape` the client derives from it.
+///
+/// Returns the enter-notice texts committed after the walk.
+async fn convert_template_then_enter(
+    template_shape: serde_json::Value,
+    region_shape: serde_json::Value,
+) -> Vec<String> {
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let (template_id, region_id) = (
+        crate::test_ids::test_uuid(0x7C01),
+        crate::test_ids::test_uuid(0x7C02),
+    );
+
+    let mut template = wdoc(h.world_id, template_id, "template");
+    template.parent_id = Some(h.scene_id);
+    template.owner = Some(h.gm.user_id);
+    template.permissions.default = DocRole::Observer;
+    template.engine = Some(json!({
+        "shape": template_shape,
+        "color": "#3388ff",
+        "elevation": null,
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: template }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    // The client deletes with the copy in its store: the full stored document.
+    let stored_template = h.repo.get_document(template_id).await.unwrap().unwrap();
+
+    // The region body exactly as the client's conversion emits it.
+    let region_engine = json!({
+        "shape": region_shape,
+        "behavior": "terrain",
+        "cost": 1,
+        "cost_by_tag": {},
+        "enabled": true,
+        "triggers": [],
+        "elevation": null,
+        "ambient_override": null,
+    });
+    let typed: crate::data::engine::RegionEngine =
+        serde_json::from_value(region_engine.clone()).expect("the converted body deserializes");
+    typed
+        .validate()
+        .expect("RegionEngine::validate accepts the converted region");
+
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.permissions.default = DocRole::Observer;
+    region.engine = Some(region_engine);
+
+    let seq_before = h.room.current_seq();
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![
+                Operation::Create { doc: region },
+                Operation::Delete {
+                    doc: stored_template,
+                },
+            ],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("the create-plus-delete conversion batch commits");
+    assert_eq!(
+        h.room.current_seq(),
+        seq_before + 1,
+        "the conversion is ONE committed batch"
+    );
+    assert!(
+        h.repo.get_document(template_id).await.unwrap().is_none(),
+        "the template is gone"
+    );
+    let stored_region = h.repo.get_document(region_id).await.unwrap().unwrap();
+    assert_eq!(stored_region.parent_id, Some(h.scene_id));
+    assert!(
+        region_notices(&h).await.is_empty(),
+        "a converted region carries no triggers, so nothing fires"
+    );
+
+    // The GM adds the enter trigger the region editor would author.
+    let stored_triggers = stored_region.engine.unwrap()["triggers"].clone();
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: region_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/triggers".into(),
+                    old: stored_triggers,
+                    new: json!([
+                        { "on": "enter", "effect": { "type": "chat_notice", "text": "converted-enter", "audience": "public" } },
+                    ]),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+    region_notices(&h).await.iter().map(notice_text).collect()
+}
+
+/// A cone template becomes a polygon region (the points `conePoints` yields for apex
+/// (110, 50), size 100, direction 0, default 60 degree aperture) that validates and fires its
+/// enter trigger exactly once for a token stepping into cell (1, 0).
+///
+/// Fails when the conversion batch omits the template delete (the "template is gone" assertion),
+/// when the polygon is malformed, e.g. under three vertices (`validate` rejects it), or when the
+/// converted points stop covering cell (1, 0)'s center (no notice fires).
+#[tokio::test]
+async fn a_converted_cone_region_validates_and_fires_its_enter_trigger_once() {
+    let texts = convert_template_then_enter(
+        json!({ "kind": "cone", "x": 110, "y": 50, "size": 100, "direction": 0, "angle": null, "width": null }),
+        json!({ "kind": "polygon", "points": [110, 50, 196.60254037844388, 7.105427357601002e-15, 196.60254037844388, 100] }),
+    )
+    .await;
+    assert_eq!(texts, vec!["converted-enter".to_string()]);
+}
+
+/// A thick-line template becomes a polygon region (the four corners `linePoints` yields for
+/// origin (110, 50), length 100, direction 0, width 40) that validates and fires once.
+///
+/// Fails under the same changes as the cone case, and when the line's width is dropped so the
+/// polygon degenerates to a bare segment (it covers no cell center, so no notice fires).
+#[tokio::test]
+async fn a_converted_thick_line_region_validates_and_fires_its_enter_trigger_once() {
+    let texts = convert_template_then_enter(
+        json!({ "kind": "line", "x": 110, "y": 50, "size": 100, "direction": 0, "angle": null, "width": 40 }),
+        json!({ "kind": "polygon", "points": [110, 70, 210, 70, 210, 30, 110, 30] }),
+    )
+    .await;
+    assert_eq!(texts, vec!["converted-enter".to_string()]);
+}
+
+/// A circle template becomes an exact region `circle` (`[x, y, radius]`) that validates and
+/// fires once.
+///
+/// Fails under the same changes as the cone case, and when the circle points carry a diameter or
+/// a different center than the template (the cell center at (150, 50) falls outside, so no
+/// notice fires).
+#[tokio::test]
+async fn a_converted_circle_region_validates_and_fires_its_enter_trigger_once() {
+    let texts = convert_template_then_enter(
+        json!({ "kind": "circle", "x": 150, "y": 50, "size": 30, "direction": 0, "angle": null, "width": null }),
+        json!({ "kind": "circle", "points": [150, 50, 30] }),
+    )
+    .await;
+    assert_eq!(texts, vec!["converted-enter".to_string()]);
+}
