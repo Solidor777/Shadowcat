@@ -255,8 +255,10 @@ export interface TokenNodeSpec {
          * background fill, ringed by an optional decorative border. */
         kind: "generated";
         /** The art being framed — never itself `"generated"` (`resolveTokenVisual` fails closed
-         * on nesting before a spec reaches the backend). */
-        art: ResolvedArtVisual;
+         * on nesting before a spec reaches the backend). Absent for a frame-only composition
+         * (the generic hidden-identity silhouette): the backend draws the background, ring and
+         * border and loads no texture. */
+        art?: ResolvedArtVisual;
         /** The shape `art` is cropped to: the inscribed ellipse of the token extent
          * (`"circle"`), or the extent rect (`"square"`). */
         crop: "circle" | "square";

@@ -1,7 +1,7 @@
 import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
-import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
+import type { WireDocument, WireOperation, FootprintLookup, TokenVisual, TokenEngine, ActorEngine } from "@shadowcat/core";
 import type { TokenNodeSpec } from "./types";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
@@ -488,6 +488,59 @@ test("a token whose visual fails to resolve (empty faces) is skipped, not crashe
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   expect(() => new TokenView(store, new AssetResolver(), backend).reconcile()).not.toThrow();
   expect(backend.tokens.has("tok1")).toBe(false);
+});
+
+describe("a token whose identity the server withheld", () => {
+  const SILHOUETTE = { kind: "generated", crop: "circle", background: { color: 0x6b6b6b }, border: { color: 0x2b2b2b, width: 0.06 } };
+  const registry = buildFactionRegistryDoc("w1", { f1: { name: "F1", color: "#ff0000", stance: "hostile", movement: [] } }, "reg1");
+  const actor = buildActorDoc(
+    "w1",
+    "Cultist",
+    { displayName: "Cultist", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+    "act1",
+  );
+
+  it("a linked token with no actor link or visual draws the generic silhouette and no faction border", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
+    // The wire shape a non-owner receives: the link and the visual keys are gone.
+    const engine = token.engine as Partial<TokenEngine>;
+    delete engine.actor_id;
+    delete engine.visual;
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+    new TokenView(store, new AssetResolver(), backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual(SILHOUETTE);
+    expect(spec.borderColor).toBeNull();
+  });
+
+  it("an instanced token whose copy lost its visual and faction draws the silhouette with no border", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    const copyEngine = token.embedded!.actor![0].engine as Partial<ActorEngine>;
+    delete copyEngine.visual;
+    delete copyEngine.faction;
+    delete copyEngine.displayName;
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: token }]));
+    new TokenView(store, new AssetResolver(), backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual(SILHOUETTE);
+    expect(spec.borderColor).toBeNull();
+  });
+
+  it("the same token for its owner (link and visual intact) still draws its real art and border", () => {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+    new TokenView(store, assets, backend).reconcile();
+    const spec = backend.tokens.get("tok1")!;
+    expect(spec.visual).toEqual({ kind: "image", url: assets.url("actorimg") });
+    expect(spec.borderColor).toBe(0xff0000);
+  });
 });
 
 test("tick() forwards dtMs to the backend's tickTokenAnimations", () => {

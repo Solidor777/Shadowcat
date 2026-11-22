@@ -9,6 +9,8 @@
   import TokenLightControl from "./TokenLightControl.svelte";
   import TokenVisionControl from "./TokenVisionControl.svelte";
   import TokenMovementControl from "./TokenMovementControl.svelte";
+  import TokenDispositionControl from "./TokenDispositionControl.svelte";
+  import TokenIdentityHiddenControl from "./TokenIdentityHiddenControl.svelte";
   import TokenElevationControl from "./TokenElevationControl.svelte";
   import TokenRotationLockControl from "./TokenRotationLockControl.svelte";
   import TokenEmissionControl from "./TokenEmissionControl.svelte";
@@ -142,7 +144,9 @@
    * face-swap palette (`FaceSwapPalette`), the ownership override control
    * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), the carried-light
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
-   * the movement-tag override control (`TokenMovementControl`), the elevation control
+   * the movement-tag override control (`TokenMovementControl`), the disposition override control
+   * (`TokenDispositionControl`), the GM-only secret-identity toggle
+   * (`TokenIdentityHiddenControl`), the elevation control
    * (`TokenElevationControl`), the rotation-lock control (`TokenRotationLockControl`), and the per-token emission/visual override controls
    * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
@@ -419,6 +423,8 @@
   <TokenLightControl tokenId={selectedTokenId} />
   <TokenVisionControl tokenId={selectedTokenId} />
   <TokenMovementControl tokenId={selectedTokenId} />
+  <TokenDispositionControl tokenId={selectedTokenId} />
+  <TokenIdentityHiddenControl tokenId={selectedTokenId} />
   <TokenEmissionControl tokenId={selectedTokenId} />
   <TokenVisualControl tokenId={selectedTokenId} />
   <input

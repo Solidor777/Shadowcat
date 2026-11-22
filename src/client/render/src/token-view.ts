@@ -31,6 +31,19 @@ const SELECTION_HIGHLIGHT_STRENGTH = 0.4;
  * reads as context rather than as an actionable piece on the currently-viewed one. */
 const GHOST_FX: TokenFx[] = [{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }];
 
+/** The built-in silhouette a token draws when it carries no visual at all: a neutral grey disc
+ * with a darker ring, frame-only (no art, so no asset is fetched). A token whose identity the
+ * server withholds from this recipient (secret-identity mode strips `visual` and the actor link)
+ * arrives with no visual; drawing nothing would make its absence from the canvas, beside a
+ * still-delivered position, an identity tell of its own. The art is a client constant, so it
+ * discloses nothing server-side. */
+const GENERIC_HIDDEN_TOKEN_VISUAL: TokenNodeSpec["visual"] = {
+  kind: "generated",
+  crop: "circle",
+  background: { color: 0x6b6b6b },
+  border: { color: 0x2b2b2b, width: 0.06 },
+};
+
 /** Parse a condition-fx css color to packed `0xRRGGBB`, failing closed to `null` on anything
  * that isn't exactly `#rrggbb` — ingress (`Condition::validate`) enforces that shape, and a
  * hand-crafted/stale doc must resolve to "no effect", never to a default that grants one
@@ -250,7 +263,7 @@ export class TokenView {
   hasAnimatedVisual(): boolean {
     for (const spec of this.specs.values()) {
       if (spec.visual.kind === "animated") return true;
-      if (spec.visual.kind === "generated" && spec.visual.art.kind === "animated") return true;
+      if (spec.visual.kind === "generated" && spec.visual.art?.kind === "animated") return true;
     }
     return false;
   }
@@ -582,9 +595,14 @@ export class TokenView {
     if (!s) return null;
     const eff = resolveTokenActor(doc, this.store);
     const visual = resolveTokenVisual(doc, this.store, eff);
-    if (!visual) return null;
+    // A token with no visual at all (none authored, or withheld from this recipient) draws the
+    // generic silhouette; a MALFORMED visual still fails closed to no node.
+    const noVisualAtAll = !(eff?.visual ?? s.visual);
+    if (!visual && !noVisualAtAll) return null;
     let resolvedVisual: TokenNodeSpec["visual"];
-    if (visual.kind === "generated") {
+    if (!visual) {
+      resolvedVisual = GENERIC_HIDDEN_TOKEN_VISUAL;
+    } else if (visual.kind === "generated") {
       // `resolveTokenVisual` already fails closed on a nested `generated`; the re-check here
       // narrows `art` for the type system (a garbled doc casting past the guard can still
       // carry one, and the backend must never resolve asset ids for a shape it cannot draw).

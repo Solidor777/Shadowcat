@@ -238,7 +238,7 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   if (v.kind === "animated") return `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
   // A generated visual's identity is its frame (crop/border/background) plus its art's own key
   // (one recursion level — `art` is never itself `"generated"`).
-  return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+  return `generated:${v.art ? visualSourceKey(v.art) : "frame-only"}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
 }
 
 /** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
@@ -928,6 +928,17 @@ export class PixiBackend implements DisplayBackend {
     // A generated visual's drawable payload is its `art`; the frame around it is
     // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
     const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    if (art === undefined) {
+      // Frame-only composition: no texture to load. The sprite is emptied so a prior image or
+      // animation does not show through the frame, and its cache references are released.
+      if (node.sourceKey === key) return;
+      node.sourceKey = key;
+      if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
+      node.anim = null;
+      node.visual.texture = Texture.EMPTY;
+      this.applyNodeTextures(node, []);
+      return;
+    }
     this.frameTokenArt(node, art, tokenSpec);
     if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
     node.sourceKey = key;
