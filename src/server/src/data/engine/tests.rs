@@ -1159,6 +1159,7 @@ fn engine_literal_defaults_match_client_default() {
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
             "fogPooling": "individual",
+            "autoRotateTokens": false,
         })
     );
     assert_eq!(
