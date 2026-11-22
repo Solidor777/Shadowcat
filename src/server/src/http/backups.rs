@@ -20,7 +20,7 @@ use crate::backup::catalog::{
     list_backups, prune, resolve_backup, restore_pending_path, BackupEntry, BackupRetention,
     RestorePending,
 };
-use crate::backup::{BackupError, BackupKind, BackupManifest};
+use crate::backup::{BackupError, BackupKind, BackupManifest, RestoreFailed, RESTORE_FAILED_FILE};
 use crate::http::error::AppError;
 use crate::http::AppState;
 
@@ -36,6 +36,7 @@ use crate::http::AppState;
 ///     entries: Vec::new(),
 ///     policy: BackupRetention::default(),
 ///     root: "backups".into(),
+///     restore_failed: None,
 /// };
 /// assert_eq!(serde_json::to_value(&listing).unwrap()["root"], "backups");
 /// ```
@@ -48,6 +49,9 @@ pub struct BackupListing {
     pub policy: BackupRetention,
     /// The directory the backups live in, so the admin sees where the files are.
     pub root: String,
+    /// Why the last staged restore was not applied at startup; `None` when no failure marker
+    /// exists (it is removed by the next successful restore).
+    pub restore_failed: Option<RestoreFailed>,
 }
 
 /// `POST /api/admin/backups/prune` response.
@@ -301,15 +305,22 @@ pub async fn list(
     _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<BackupListing>, AppError> {
-    let (_, root) = backup_paths(&state)?;
+    let (db_path, root) = backup_paths(&state)?;
     let listing_root = root.clone();
     let entries = tokio::task::spawn_blocking(move || list_backups(&listing_root))
         .await
         .map_err(|_| AppError::Internal)?;
+    // The marker is written by `apply_pending_restore` beside the database file. An absent or
+    // unparsable marker reads as no failure: the list must still render.
+    let restore_failed = tokio::fs::read(db_path.with_file_name(RESTORE_FAILED_FILE))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<RestoreFailed>(&bytes).ok());
     Ok(Json(BackupListing {
         entries,
         policy: BackupRetention::from_config(&state.config),
         root: root.to_string_lossy().into_owned(),
+        restore_failed,
     }))
 }
 
