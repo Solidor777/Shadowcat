@@ -27,7 +27,8 @@ use crate::data::engine::{
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
     cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
-    declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
+    declared_caps_for_path, identity_hidden_in_body, identity_hidden_touched,
+    required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
@@ -680,6 +681,18 @@ where
         );
         return Err(DataError::Forbidden);
     }
+    // The secret-identity flag is a GM-only write on Create too: the body is checked directly
+    // because Create carries no field path (`identity_hidden_in_body`).
+    if !origin.skips_capability_gates()
+        && ctx.world_role != WorldRole::Gm
+        && identity_hidden_in_body(&doc.doc_type, &doc_json)
+    {
+        tracing::debug!(
+            user = %ctx.user_id, doc_type = %doc.doc_type,
+            "create denied: secret-identity authoring is GM-only"
+        );
+        return Err(DataError::Forbidden);
+    }
     Ok(access)
 }
 
@@ -805,7 +818,8 @@ const SMR_READERSHIP_PATHS: [&str; 3] = [
 /// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
 /// (`declared_caps_for_path`), and the carried-light GM gate
-/// (`carried_light_touched`) for one `FieldChange`. Pure: every input was resolved
+/// (`carried_light_touched`) and secret-identity GM gate (`identity_hidden_touched`) for one
+/// `FieldChange`. Pure: every input was resolved
 /// by `authorize_update_access` (or the validation pass's own load), so the in-transaction
 /// arm and the pre-transaction validator screen apply the identical decision.
 fn authorize_update_change(
@@ -903,6 +917,19 @@ fn authorize_update_change(
         tracing::debug!(
             user = %ctx.user_id, path = %ch.path,
             "intent denied: carried-light authoring is GM-only"
+        );
+        return Err(DataError::Forbidden);
+    }
+    // The secret-identity flag is GM-only and value-aware too
+    // (`permission::identity_hidden_touched`): it decides what every other viewer
+    // perceives of the token, so the owner's `WRITE_FIELDS` floor does not reach it.
+    if !origin.skips_capability_gates()
+        && ctx.world_role != WorldRole::Gm
+        && identity_hidden_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
+    {
+        tracing::debug!(
+            user = %ctx.user_id, path = %ch.path,
+            "intent denied: secret-identity authoring is GM-only"
         );
         return Err(DataError::Forbidden);
     }

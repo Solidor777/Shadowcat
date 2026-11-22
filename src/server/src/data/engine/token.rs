@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::registries::FactionStance;
 use crate::data::engine::scene::LightEmission;
 
 /// A token's transform + visual (exported to the client as `TokenEngine`). `(x,y)`
@@ -37,6 +38,7 @@ use crate::data::engine::scene::LightEmission;
 ///     face: None,
 ///     elevation: None,
 ///     lock_rotation: false,
+///     identity_hidden: false,
 /// };
 /// assert_eq!(token.w, 50.0);
 /// ```
@@ -82,6 +84,16 @@ pub struct TokenEngine {
     /// carry it identically (it is not an `overrides` field).
     #[serde(default)]
     pub lock_rotation: bool,
+    /// Secret-identity mode: when true, every recipient who is neither the token's effective
+    /// owner nor a GM receives the token without its presented identity (`/name`,
+    /// `/engine/visual`, `/engine/overrides/visual`, `/engine/overrides/name`,
+    /// `/engine/overrides/disposition` and `/engine/actor_id`, so the linked actor's own
+    /// visual, faction and disposition cannot be joined back). `permission::own_overrides`
+    /// synthesizes that set from this one flag, so it cannot apply to some readers and not
+    /// others. Writing it is GM-only (`permission::identity_hidden_touched`): it changes what
+    /// every other viewer perceives.
+    #[serde(default)]
+    pub identity_hidden: bool,
 }
 
 impl TokenEngine {
@@ -341,6 +353,7 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 ///     aura: None,
 ///     sound: None,
 ///     vfx: None,
+///     disposition: None,
 /// };
 /// assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
 /// ```
@@ -396,6 +409,11 @@ pub struct TokenOverrides {
     /// present (wholesale, never merged).
     #[serde(default)]
     pub vfx: Option<VfxEmission>,
+    /// Per-token disposition override (friendly/neutral/hostile), independent of the linked
+    /// faction's `Faction.stance`. Precedence: this value, else the faction's stance, else
+    /// neutral. Reuses `FactionStance`, the one three-value stance enum.
+    #[serde(default)]
+    pub disposition: Option<FactionStance>,
 }
 
 impl TokenOverrides {

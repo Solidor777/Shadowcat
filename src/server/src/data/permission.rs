@@ -625,6 +625,110 @@ pub fn carried_light_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bo
         .any(|p| doc_json.pointer(p).is_some_and(|v| !v.is_null()))
 }
 
+/// The pointer of a token's secret-identity flag (`TokenEngine::identity_hidden`). The one
+/// symbol the write gate (`identity_hidden_touched`, `identity_hidden_in_body`) and the egress
+/// synthesis (`identity_hidden_pointers`) both read.
+const IDENTITY_HIDDEN_POINTER: &str = "/engine/identity_hidden";
+
+/// Whether a JSON value reads as an enabled secret-identity flag: absent, `null` and `false`
+/// are the same "not hidden" state.
+fn identity_flag_on(value: Option<&serde_json::Value>) -> bool {
+    value.and_then(serde_json::Value::as_bool).unwrap_or(false)
+}
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a token whose current JSON is
+/// `whole` sets, changes or removes the secret-identity flag. A DIRECT write at the flag's
+/// pointer always counts; an ANCESTOR write (`/engine`) counts only when the flag's effective
+/// value (absent reads as `false`) differs. Only `token` documents carry the flag.
+///
+/// This exists because the flag decides what every OTHER viewer perceives of the token (see
+/// `identity_hidden_pointers`), so it is a GM-only write exactly like a carried emission
+/// (`carried_light_touched`): the owner's `WRITE_FIELDS` floor must not reach it.
+/// `apply_intent` refuses such writes from non-GMs.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::identity_hidden_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "x": 0.0, "identity_hidden": false } });
+/// assert!(identity_hidden_touched("token", "/engine/identity_hidden", false, &tok, &serde_json::json!(true)));
+/// // An ancestor write counts only when the flag's value changes.
+/// assert!(!identity_hidden_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0, "identity_hidden": false})));
+/// assert!(identity_hidden_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0, "identity_hidden": true})));
+/// // Other doc_types never count.
+/// assert!(!identity_hidden_touched("actor", "/engine/identity_hidden", false, &tok, &serde_json::json!(true)));
+/// ```
+pub fn identity_hidden_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    if doc_type != TOKEN_DOC_TYPE {
+        return false;
+    }
+    if path == IDENTITY_HIDDEN_POINTER {
+        return true;
+    }
+    let e = IDENTITY_HIDDEN_POINTER;
+    if e.len() > path.len() && e.starts_with(path) && e.as_bytes()[path.len()] == b'/' {
+        let old_on = identity_flag_on(whole.pointer(e));
+        let new_on = !remove && identity_flag_on(new.pointer(&e[path.len()..]));
+        return old_on != new_on;
+    }
+    false
+}
+
+/// Whether a document BODY being created carries an enabled secret-identity flag
+/// (`apply_intent`'s Create arm — Create writes the whole body at once, so there is no field
+/// path to classify). Complements `identity_hidden_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::identity_hidden_in_body;
+///
+/// let on = serde_json::json!({ "engine": { "identity_hidden": true } });
+/// let off = serde_json::json!({ "engine": { "identity_hidden": false } });
+/// assert!(identity_hidden_in_body("token", &on));
+/// assert!(!identity_hidden_in_body("token", &off));
+/// assert!(!identity_hidden_in_body("actor", &on));
+/// ```
+pub fn identity_hidden_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    doc_type == TOKEN_DOC_TYPE && identity_flag_on(doc_json.pointer(IDENTITY_HIDDEN_POINTER))
+}
+
+/// The pointers a secret-identity token withholds from every recipient below `OwnerOrGm`: the
+/// envelope `name`, the token's own `visual`, the override fields that carry a presented
+/// identity (`visual`, `name`, `disposition`), and `actor_id` — a linked token's visual,
+/// faction border and disposition all resolve through that link, and a token document has no
+/// `faction` field of its own, so withholding the link is what closes the border signal. Every
+/// entry is a `redaction_target`-classified pointer (`/name` a `Band`, the rest `Within`).
+const IDENTITY_HIDDEN_POINTERS: [&str; 6] = [
+    "/name",
+    "/engine/visual",
+    "/engine/overrides/visual",
+    "/engine/overrides/name",
+    "/engine/overrides/disposition",
+    "/engine/actor_id",
+];
+
+/// The `OwnerOrGm` entries a secret-identity token adds to its own redaction policy, empty for
+/// every other document. Called by `own_overrides`, the one function every egress and merge
+/// path reaches a document's own hidden set through, so no call site can miss it. Reads the
+/// raw `engine` JSON rather than deserializing a `TokenEngine`: `own_overrides` runs for every
+/// `doc_type` and must not assume one document's shape.
+fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
+    let active = doc.doc_type == TOKEN_DOC_TYPE
+        && identity_flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
+    IDENTITY_HIDDEN_POINTERS
+        .iter()
+        .filter(move |_| active)
+        .map(|p| ((*p).to_string(), Visibility::OwnerOrGm))
+}
+
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
 ///
 /// # Examples
@@ -1348,7 +1452,8 @@ pub(crate) fn redact_pointers(
 /// Every `(pointer, tier)` pair of `doc`'s OWN redaction policy at THIS level, pointers
 /// relative to `doc`'s own root: its `property_overrides`, each classified via
 /// `redaction_target` (fail closed on an unclassifiable pointer), the hardcoded `/base`
-/// entry, and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
+/// entry, the secret-identity set of a token whose `identity_hidden` flag is on
+/// (`identity_hidden_pointers`), and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
 /// through the live children — this is the one per-document statement of "what this
 /// document hides", which `collect_overrides` walks positionally through embedded descendants
 /// and `filter_properties`/`hidden_own_pointers` read at a single level.
@@ -1388,6 +1493,10 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
         out.push((p.clone(), v.clone()));
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
+    // Both synthesized and author-set entries for one pointer stay in `out`:
+    // `hidden_from_overrides` hides a pointer when ANY entry's tier is unseen, so the stricter
+    // tier wins without a merge step.
+    out.extend(identity_hidden_pointers(doc));
     if let Some(base) = &doc.base {
         let stored: StoredBase =
             serde_json::from_value(base.clone()).map_err(|_| RedactionError {
