@@ -63,6 +63,7 @@ interface EffectDoc {
  * @example
  * ```ts
  * // private function; not part of the public API — called by listEffects
+ * const actor = undefined as unknown as WireDocument;
  * embeddedEffects(actor);
  * ```
  */
@@ -88,6 +89,7 @@ function embeddedEffects(actor: WireDocument): EffectDoc[] {
  * @example
  * ```ts
  * // private function; not part of the public API — called by listEffects
+ * const token = undefined as unknown as WireDocument;
  * effectBearer(token);
  * ```
  */
