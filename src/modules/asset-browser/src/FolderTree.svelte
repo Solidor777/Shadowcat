@@ -52,8 +52,8 @@
    * @example
    * ```
    * // exported; invoked by AssetBrowser through bind:this
-   * declare const tree: { dropTargets(): DragTarget[] };
-   * tree.dropTargets();
+   * declare const folderTree: { dropTargets(): DragTarget[] };
+   * folderTree.dropTargets();
    * ```
    */
   export function dropTargets(): DragTarget[] {
