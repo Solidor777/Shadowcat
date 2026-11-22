@@ -405,6 +405,34 @@
     editSelected("/engine/elevation", old, next);
   }
 
+  /** The senses a region can occlude, in editor order; each is a `RegionOcclusion` key. */
+  const OCCLUDE_SENSES = ["sight", "light", "sound"] as const;
+  /** The translation key labelling each occlusion checkbox. */
+  const OCCLUDE_LABEL = {
+    sight: "tools.regionOccludesSight",
+    light: "tools.regionOccludesLight",
+    sound: "tools.regionOccludesSound",
+  } as const;
+
+  /** Write one sense flag of the edited region's `/engine/occludes` block, keeping the other
+   * flags. Clearing the last ticked flag writes `null` (an all-false block is rejected by
+   * `RegionEngine::validate`, so "blocks nothing" is stored as absent).
+   * @param eng The edited region's engine body (the raw stored `occludes` is the write's `old`).
+   * @param sense Which sense the checkbox toggles.
+   * @param checked The checkbox's new state.
+   * @example
+   * ```
+   * declare const eng: RegionEngine;
+   * editRegionOcclusion(eng, "sight", true); // fog bank
+   * ```
+   */
+  function editRegionOcclusion(eng: RegionEngine, sense: (typeof OCCLUDE_SENSES)[number], checked: boolean): void {
+    const old = eng.occludes ?? null;
+    const flags = { sight: false, light: false, sound: false, ...old, [sense]: checked };
+    const next = flags.sight || flags.light || flags.sound ? flags : null;
+    editSelected("/engine/occludes", old, next);
+  }
+
   /** Write one end of an edited entity's `/engine/elevation` band, preserving the other end —
    * the shared body behind `editEntityElevation`, the one band editor every band-shaped kind
    * (wall, region, drawing, template) uses: they all carry the identical `Option<ElevationBand>`
@@ -867,6 +895,18 @@
           <input type="number" data-testid="region-ambient-level" aria-label={t("tools.ambientLevel")} min="0" max={controller.regionAmbientMode === "override" ? 1 : undefined} step="0.05" bind:value={controller.regionAmbientLevel} />
         {/if}
         <label>
+          <input type="checkbox" data-testid="region-occludes-sight" bind:checked={controller.regionOccludesSight} />
+          {t("tools.regionOccludesSight")}
+        </label>
+        <label>
+          <input type="checkbox" data-testid="region-occludes-light" bind:checked={controller.regionOccludesLight} />
+          {t("tools.regionOccludesLight")}
+        </label>
+        <label>
+          <input type="checkbox" data-testid="region-occludes-sound" bind:checked={controller.regionOccludesSound} />
+          {t("tools.regionOccludesSound")}
+        </label>
+        <label>
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
@@ -1169,6 +1209,17 @@
             onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
+        {#each OCCLUDE_SENSES as sense (sense)}
+          <label>
+            <input
+              type="checkbox"
+              data-testid={`region-editor-occludes-${sense}`}
+              checked={eng.occludes?.[sense] ?? false}
+              onchange={(e) => editRegionOcclusion(eng, sense, e.currentTarget.checked)}
+            />
+            {t(OCCLUDE_LABEL[sense])}
+          </label>
+        {/each}
         <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {:else if editingDoc && controller.editingEntity?.kind === "drawing"}

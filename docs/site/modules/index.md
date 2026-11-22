@@ -25,6 +25,7 @@ Community modules follow the same model — see
 | [sheet-fallback](/modules/sheet-fallback) | The always-available generic document sheet |
 | [stage](/modules/stage) | The PixiJS scene canvas |
 | [dice-3d](/modules/dice-3d) | 3D dice tumble overlay over the stage |
+| [chat-bubbles](/modules/chat-bubbles) | Auto-fading speech bubble over the speaking token |
 | [scene-tools](/modules/scene-tools) | Scene tool rail: place/select/move/draw/measure/ping/wall/region |
 | [actors](/modules/actors) | Actor browser panel (live search, open sheet) |
 | [factions](/modules/factions) | Faction registry panel |

@@ -9,7 +9,7 @@ import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
 import type { RemoteRulerPath } from "./remote-ruler-view";
 import { TextureCacheManager } from "./texture-cache";
-import { dashSegments } from "./geometry";
+import { dashPath } from "./dash";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -238,7 +238,7 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   if (v.kind === "animated") return `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
   // A generated visual's identity is its frame (crop/border/background) plus its art's own key
   // (one recursion level — `art` is never itself `"generated"`).
-  return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+  return `generated:${v.art ? visualSourceKey(v.art) : "frame-only"}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
 }
 
 /** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
@@ -928,6 +928,17 @@ export class PixiBackend implements DisplayBackend {
     // A generated visual's drawable payload is its `art`; the frame around it is
     // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
     const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    if (art === undefined) {
+      // Frame-only composition: no texture to load. The sprite is emptied so a prior image or
+      // animation does not show through the frame, and its cache references are released.
+      if (node.sourceKey === key) return;
+      node.sourceKey = key;
+      if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
+      node.anim = null;
+      node.visual.texture = Texture.EMPTY;
+      this.applyNodeTextures(node, []);
+      return;
+    }
     this.frameTokenArt(node, art, tokenSpec);
     if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
     node.sourceKey = key;
@@ -2099,34 +2110,21 @@ export class PixiBackend implements DisplayBackend {
  * ```
  */
 function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void {
-  if (tokenSpec.dash && !tokenSpec.closed) paintDashed(g, tokenSpec.points, tokenSpec.dash.on, tokenSpec.dash.off);
-  else paintRing(g, tokenSpec.points, tokenSpec.closed);
+  paintRing(g, tokenSpec.points, tokenSpec.closed);
   // Compound additive rings are always closed fills (a region is always an area).
   for (const ring of tokenSpec.extraParts ?? []) paintRing(g, ring, true);
   if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
-  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
-}
-
-/** Trace an open polyline as dashes: each polyline segment is split by `dashSegments` into
- * its own subpaths, which share the caller's single stroke.
- * @param g The graphics context to trace into.
- * @param p The polyline's flat point list (`[x0, y0, x1, y1, ...]`).
- * @param on Drawn length of each dash, in scene units.
- * @param off Gap length between dashes, in scene units.
- * @example
- * ```
- * // module-private helper; not exported from @shadowcat/render
- * import { Graphics } from "pixi.js";
- * const g = new Graphics();
- * paintDashed(g, [0, 0, 10, 0], 4, 2);
- * ```
- */
-function paintDashed(g: Graphics, p: number[], on: number, off: number): void {
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    for (const [ax, ay, bx, by] of dashSegments(p[i], p[i + 1], p[i + 2], p[i + 3], on, off)) {
-      g.moveTo(ax, ay).lineTo(bx, by);
-    }
-  }
+  const stroke = tokenSpec.stroke;
+  const dash = stroke?.dash;
+  if (stroke && dash) {
+    // Pixi has no dash style: stroke each dash polyline as its own subpath of a fresh path.
+    g.beginPath();
+    const rings = [tokenSpec.points, ...(tokenSpec.extraParts ?? [])];
+    rings.forEach((ring, i) => {
+      for (const d of dashPath(ring, i > 0 || tokenSpec.closed, dash.on, dash.off)) paintRing(g, d, false);
+    });
+    g.stroke({ width: stroke.width, color: stroke.color });
+  } else if (stroke) g.stroke({ width: stroke.width, color: stroke.color });
 }
 
 /** Trace one ring onto `g` without filling or stroking — one shape primitive per ring, so a

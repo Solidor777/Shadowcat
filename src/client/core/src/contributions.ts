@@ -131,6 +131,10 @@ export interface SettingsSectionMeta {
   /** i18n key for the section's heading, resolved by the host (`Settings.svelte`) at render
    * (locale-reactive). */
   labelKey: string;
+  /** When `true`, the host renders the section (heading included) only for a server admin; any
+   * other viewer sees neither. Advisory like every client gate: the section's own routes are
+   * re-checked server-side. */
+  serverAdminOnly?: boolean;
 }
 
 /** Contract id modules contribute a settings section under (`shadowcat.settings-section`,

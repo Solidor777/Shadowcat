@@ -1,6 +1,16 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY, trapFocus } from "@shadowcat/ui-kit";
+  import {
+    getAppContext,
+    escapeCoordinator,
+    ESCAPE_PRIORITY,
+    trapFocus,
+    ContextMenu,
+    createContextMenuTrigger,
+    type ContextMenuItem,
+    type ContextMenuRequest,
+    type ContextMenuTrigger,
+  } from "@shadowcat/ui-kit";
   import {
     deleteAssetFolder,
     buildMoveOp,
@@ -195,6 +205,98 @@
     };
   });
 
+  /** Toggles the inline rename input for a folder; the rename button and the context menu's
+   * Rename item both call this, so the two entry points cannot diverge.
+   * @param f - The folder to rename.
+   * @example
+   * ```
+   * // private function; wired to the rename button and the context menu
+   * declare const f: WireDocument;
+   * toggleRename(f);
+   * ```
+   */
+  function toggleRename(f: WireDocument): void {
+    renamingFor = renamingFor === f.id ? null : f.id;
+    renameDraft = f.name ?? "";
+  }
+
+  /** Toggles a folder's Move-to picker; shared by the move button and the context menu's Move item.
+   * @param f - The folder to move.
+   * @example
+   * ```
+   * // private function; wired to the move button and the context menu
+   * declare const f: WireDocument;
+   * toggleMovePicker(f);
+   * ```
+   */
+  function toggleMovePicker(f: WireDocument): void {
+    movePickerFor = movePickerFor === f.id ? null : f.id;
+  }
+
+  /** Opens a folder's delete dialog; shared by the delete button and the context menu's Delete item.
+   * @param f - The folder to delete.
+   * @example
+   * ```
+   * // private function; wired to the delete button and the context menu
+   * declare const f: WireDocument;
+   * askDelete(f);
+   * ```
+   */
+  function askDelete(f: WireDocument): void {
+    deleteDialogFor = f.id;
+  }
+
+  /** The open context menu's position and items, or null when none is open. */
+  let contextMenu = $state<ContextMenuRequest | null>(null);
+  /** One context-menu trigger per folder id, so a row's hold timer survives re-renders. */
+  const rowTriggers = new Map<string, ContextMenuTrigger>();
+
+  /** The context-menu items for a folder: the same three actions the row's buttons expose.
+   * @param f - The folder the menu opens for.
+   * @returns Rename, Move and Delete, or none when the tree is read-only.
+   * @example
+   * ```
+   * // private function; read by the row's context-menu trigger
+   * declare const f: WireDocument;
+   * contextItems(f);
+   * ```
+   */
+  function contextItems(f: WireDocument): ContextMenuItem[] {
+    if (!mutable) return [];
+    return [
+      { id: "rename", labelKey: "assetBrowser.renameFolder", action: () => toggleRename(f) },
+      { id: "move", labelKey: "assetBrowser.moveFolder", action: () => toggleMovePicker(f) },
+      { id: "delete", labelKey: "assetBrowser.deleteFolder", action: () => askDelete(f) },
+    ];
+  }
+
+  /** The row's context-menu trigger, created once per folder id. An in-progress folder drag
+   * suppresses the menu.
+   * @param f - The folder whose row the trigger serves.
+   * @returns The trigger's handlers.
+   * @example
+   * ```
+   * // private function; spread onto each folder row
+   * declare const f: WireDocument;
+   * triggerFor(f);
+   * ```
+   */
+  function triggerFor(f: WireDocument): ContextMenuTrigger {
+    let trigger = rowTriggers.get(f.id);
+    if (!trigger) {
+      trigger = createContextMenuTrigger({
+        getItems: () => {
+          const current = folders.find((x) => x.id === f.id);
+          return current ? contextItems(current) : [];
+        },
+        onOpen: (request) => (contextMenu = request),
+        canOpen: () => folderDrag.dragging === null,
+      });
+      rowTriggers.set(f.id, trigger);
+    }
+    return trigger;
+  }
+
   /** Commits the create input as a new root-level folder (or under the
    * current selection).
    * @example
@@ -307,6 +409,7 @@
         use:trackRow={f.id}
         role="presentation"
         onkeydown={(e) => onRowKeydown(f, e)}
+        {...triggerFor(f)}
       >
         {#if mutable && ctx.canEdit(f, "/engine/sort")}
           <button
@@ -334,24 +437,21 @@
             class="mini"
             data-testid={"folder-rename-" + f.id}
             title={t("assetBrowser.renameFolder")}
-            onclick={() => {
-              renamingFor = renamingFor === f.id ? null : f.id;
-              renameDraft = f.name ?? "";
-            }}
+            onclick={() => toggleRename(f)}
           >✎</button>
           <button
             type="button"
             class="mini"
             data-testid={"folder-move-" + f.id}
             title={t("assetBrowser.moveFolder")}
-            onclick={() => (movePickerFor = movePickerFor === f.id ? null : f.id)}
+            onclick={() => toggleMovePicker(f)}
           >⇄</button>
           <button
             type="button"
             class="mini"
             data-testid={"folder-delete-" + f.id}
             title={t("assetBrowser.deleteFolder")}
-            onclick={() => (deleteDialogFor = f.id)}
+            onclick={() => askDelete(f)}
           >🗑</button>
         {/if}
       </div>
@@ -423,6 +523,10 @@
     />
   {/if}
 </div>
+
+{#if contextMenu}
+  <ContextMenu items={contextMenu.items} x={contextMenu.x} y={contextMenu.y} onClose={() => (contextMenu = null)} />
+{/if}
 
 <style lang="scss">
   .folder-tree {

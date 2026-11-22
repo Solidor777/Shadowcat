@@ -2,7 +2,7 @@
 // import these seams from here — never from each other (the contract-only
 // element boundary).
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
-export type { AppContext, TFunc, HooksEmitApi } from "./appContext";
+export type { AppContext, TFunc, HooksEmitApi, ProgressNotification } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
 export { t, locale, i18n, plural, compare } from "./i18n.svelte";
 export { notifications, activeNotifications } from "./notifications.svelte";
@@ -13,6 +13,13 @@ export { Dice3DBridge } from "./dice3dInteraction";
 export type { Dice3DHost, Dice3DInteraction } from "./dice3dInteraction";
 export { createMenuKeyboard } from "./MenuKeyboard";
 export type { MenuKeyboard } from "./MenuKeyboard";
+export { default as ContextMenu } from "./ContextMenu.svelte";
+export {
+  createContextMenuTrigger,
+  DEFAULT_CONTEXT_MENU_LONG_PRESS_MS,
+  CONTEXT_MENU_SLOP_PX,
+} from "./contextMenu";
+export type { ContextMenuItem, ContextMenuRequest, ContextMenuTrigger, ContextMenuTriggerOptions } from "./contextMenu";
 export { EscapeCoordinator, escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
 export { trapFocus } from "./focusTrap";
 export { default as DialogHost } from "./DialogHost.svelte";
@@ -26,6 +33,7 @@ export { SceneSelection } from "./sceneSelection.svelte";
 export { SpeakAs } from "./speakAs.svelte";
 export { SpeakAsToken } from "./speakAsToken.svelte";
 export { SnapModePreference } from "./snapModePreference.svelte";
+export { StageView } from "./stageView.svelte";
 export { ShareRulerPreference, shareRulerStorageKey } from "./shareRulerPreference.svelte";
 export type { ShareRulerStorage } from "./shareRulerPreference.svelte";
 export { sizeClass, isCompactViewport } from "./sizeClass.svelte";

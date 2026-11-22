@@ -255,8 +255,10 @@ export interface TokenNodeSpec {
          * background fill, ringed by an optional decorative border. */
         kind: "generated";
         /** The art being framed — never itself `"generated"` (`resolveTokenVisual` fails closed
-         * on nesting before a spec reaches the backend). */
-        art: ResolvedArtVisual;
+         * on nesting before a spec reaches the backend). Absent for a frame-only composition
+         * (the generic hidden-identity silhouette): the backend draws the background, ring and
+         * border and loads no texture. */
+        art?: ResolvedArtVisual;
         /** The shape `art` is cropped to: the inscribed ellipse of the token extent
          * (`"circle"`), or the extent rect (`"square"`). */
         crop: "circle" | "square";
@@ -339,16 +341,16 @@ export interface ShapeNodeSpec {
     color: number;
     /** Stroke width, in scene (px) units. */
     width: number;
+    /** Dash pattern in scene units (`on` drawn, `off` skipped), or absent for a solid stroke. The
+     * pattern runs continuously along the path across vertices, over an open polyline and over a
+     * closed ring (closing edge included) alike. */
+    dash?: {
+      /** Length of each drawn dash, in scene units. */
+      on: number;
+      /** Length of each gap, in scene units. */
+      off: number;
+    };
   } | null;
-  /** Dash pattern for an open polyline's stroke, in scene units: `on` drawn then `off` gap,
-   * restarting at the start of each polyline segment. Absent = a solid stroke. Ignored for a
-   * closed shape. */
-  dash?: {
-    /** Drawn length of one dash. */
-    on: number;
-    /** Gap length between dashes. */
-    off: number;
-  };
   /** Fill styling, or `null` for no fill (also unused when `closed` is `false`). */
   fill: {
     /** Fill color, `0xRRGGBB`. */

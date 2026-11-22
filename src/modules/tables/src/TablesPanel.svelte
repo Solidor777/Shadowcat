@@ -1,6 +1,13 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import {
+    getAppContext,
+    ContextMenu,
+    createContextMenuTrigger,
+    type ContextMenuItem,
+    type ContextMenuRequest,
+    type ContextMenuTrigger,
+  } from "@shadowcat/ui-kit";
   import { TABLE_DOC_TYPE, buildTableDoc, firstChannel, type WireDocument, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -73,6 +80,64 @@
       ctx.notify(String(e instanceof Error ? e.message : e));
     });
   }
+
+  /** Opens a table's sheet; the open button and the context menu's Open item both call this.
+   * @param doc The table to open.
+   * @example
+   * ```
+   * // private function; wired to the open button and the context menu
+   * declare const doc: WireDocument;
+   * openTable(doc);
+   * ```
+   */
+  function openTable(doc: WireDocument): void {
+    ctx.openDocument({ docId: doc.id });
+  }
+
+  /** Deletes a table; the delete button and the context menu's Delete item both call this.
+   * @param doc The table to delete.
+   * @example
+   * ```
+   * // private function; wired to the delete button and the context menu
+   * declare const doc: WireDocument;
+   * deleteTable(doc);
+   * ```
+   */
+  function deleteTable(doc: WireDocument): void {
+    ctx.dispatchIntent([{ op: "delete", doc }]);
+  }
+
+  /** The open context menu's position and items, or null when none is open. */
+  let contextMenu = $state<ContextMenuRequest | null>(null);
+  /** The table whose row the current gesture started on, read by the shared trigger's `getItems`. */
+  let gestureDoc: WireDocument | null = null;
+
+  /** The context-menu items for a table: the actions the row's buttons expose, under the same
+   * gates (no channel disables Draw, `canDelete` gates Delete).
+   * @param doc The table the menu opens for.
+   * @returns Open, Draw, and Delete when permitted.
+   * @example
+   * ```
+   * // private function; read by the shared trigger
+   * declare const doc: WireDocument;
+   * contextItems(doc);
+   * ```
+   */
+  function contextItems(doc: WireDocument): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [
+      { id: "open", labelKey: "tables.open", action: () => openTable(doc) },
+      { id: "draw", labelKey: "tables.draw", action: () => quickDraw(doc), disabled: channel === null },
+    ];
+    if (ctx.canDelete(doc)) items.push({ id: "delete", labelKey: "tables.delete", action: () => deleteTable(doc) });
+    return items;
+  }
+
+  /** The one trigger every row shares; the row records its table in `gestureDoc` before
+   * forwarding a gesture that can open the menu. */
+  const trigger: ContextMenuTrigger = createContextMenuTrigger({
+    getItems: () => (gestureDoc ? contextItems(gestureDoc) : []),
+    onOpen: (request) => (contextMenu = request),
+  });
 </script>
 
 <section class="tables" data-testid="tables-panel">
@@ -90,8 +155,22 @@
   {:else}
     <ul class="list">
       {#each visibleTables as doc (doc.id)}
-        <li data-testid="table-row" data-table-id={doc.id}>
-          <button type="button" data-testid="table-open" data-table-id={doc.id} onclick={() => ctx.openDocument({ docId: doc.id })}>
+        <li
+          data-testid="table-row"
+          data-table-id={doc.id}
+          oncontextmenu={(e) => {
+            gestureDoc = doc;
+            trigger.oncontextmenu(e);
+          }}
+          onpointerdown={(e) => {
+            gestureDoc = doc;
+            trigger.onpointerdown(e);
+          }}
+          onpointerup={trigger.onpointerup}
+          onpointercancel={trigger.onpointercancel}
+          onpointermove={trigger.onpointermove}
+        >
+          <button type="button" data-testid="table-open" data-table-id={doc.id} onclick={() => openTable(doc)}>
             {doc.name ?? t("sheetTable.title")}
           </button>
           <button
@@ -106,7 +185,7 @@
               type="button"
               data-testid="table-delete"
               data-table-id={doc.id}
-              onclick={() => ctx.dispatchIntent([{ op: "delete", doc }])}
+              onclick={() => deleteTable(doc)}
             >{t("tables.delete")}</button>
           {/if}
         </li>
@@ -125,6 +204,10 @@
     </form>
   {/if}
 </section>
+
+{#if contextMenu}
+  <ContextMenu items={contextMenu.items} x={contextMenu.x} y={contextMenu.y} onClose={() => (contextMenu = null)} />
+{/if}
 
 <style lang="scss">
   .tables { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-1); }

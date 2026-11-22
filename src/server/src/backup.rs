@@ -450,8 +450,17 @@ pub async fn restore_backup(
         discard_staged(trash, &[&db_stage, &assets_stage]).await;
         return Err(e.into());
     }
+    // The restore has applied once the database rename succeeds, so a failure to trash the
+    // replaced assets tree is reported as a warning, never as a failed restore. The leftover
+    // `<assets_dir>.restore-old` is cleared by the next restore's staging check.
     if had_assets {
-        trash.discard(&assets_old).await?;
+        if let Err(e) = trash.discard(&assets_old).await {
+            tracing::warn!(
+                path = %assets_old.display(),
+                error = %e,
+                "restore applied, but the replaced assets tree could not be moved to the trash"
+            );
+        }
     }
 
     Ok(())
@@ -508,7 +517,8 @@ pub const RESTORE_FAILED_FILE: &str = "restore-failed.json";
 /// let json = serde_json::to_string(&marker).unwrap();
 /// assert_eq!(serde_json::from_str::<RestoreFailed>(&json).unwrap(), marker);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct RestoreFailed {
     /// The requested backup directory name; empty when the pending marker itself was unreadable.
     pub id: String,

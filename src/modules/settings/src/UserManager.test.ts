@@ -142,4 +142,11 @@ describe("UserManager", () => {
 
     expect(await screen.findByText("settings.users.error")).toBeTruthy();
   });
+
+  it("does not offer Back up now: the backup manager is its one home", async () => {
+    render(UserManager, { context: setAppContextForTest({ serverRole: "admin" }) });
+    await screen.findByText("root-admin");
+    expect(screen.queryByText("settings.users.backupNow")).toBeNull();
+    expect(screen.queryByText("settings.backups.backupNow")).toBeNull();
+  });
 });

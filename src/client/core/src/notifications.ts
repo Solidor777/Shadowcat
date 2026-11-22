@@ -5,6 +5,14 @@
 /** A notification's severity, driving its visual treatment in the host UI. */
 export type NotificationLevel = "info" | "warning" | "error";
 
+/** An in-flight operation's progress, rendered as a bar beneath the message. */
+export interface NotificationProgress {
+  /** Current progress toward `max`; `null` marks an indeterminate operation (no numeric claim). */
+  value: number | null;
+  /** The determinate total `value` counts toward; ignored when `value` is `null`. */
+  max: number;
+}
+
 /** One active notification. */
 export interface Notification {
   /** Unique id, assigned at push time — used to target `dismiss`. */
@@ -25,6 +33,9 @@ export interface Notification {
      * dismisses itself alongside. */
     run: () => void;
   };
+  /** Present while the notification tracks an in-flight operation; the host never auto-dismisses
+   * it and never dismisses it on a row click, so the operation's owner ends it with `dismiss`. */
+  progress?: NotificationProgress;
 }
 
 /** A `subscribe()` callback, invoked with no arguments on any push/dismiss. */
@@ -65,7 +76,8 @@ export class NotificationCenter {
    * @param message The message text (already resolved/interpolated).
    * @param action An optional call-to-action (`{ label, run }`, both
    * pre-resolved) the host renders as a button beside the dismiss control.
-   * @returns The new notification's id, usable with `dismiss`.
+   * @param progress An optional in-flight progress the host renders as a bar; update it with `update`.
+   * @returns The new notification's id, usable with `dismiss` and `update`.
    * @example
    * ```ts
    * import { NotificationCenter } from "@shadowcat/core";
@@ -73,12 +85,24 @@ export class NotificationCenter {
    * const center = new NotificationCenter();
    * const id = center.push("warning", "Some targets were skipped.");
    * center.push("info", "Windows can be restored.", { label: "Reopen", run: () => {} });
+   * center.push("info", "Uploading", undefined, { value: 0, max: 100 });
    * center.dismiss(id);
    * ```
    */
-  push(level: NotificationLevel, message: string, action?: Notification["action"]): string {
+  push(
+    level: NotificationLevel,
+    message: string,
+    action?: Notification["action"],
+    progress?: NotificationProgress,
+  ): string {
     const id = `n${this.#nextId++}`;
-    const notification: Notification = { id, level, message, ...(action ? { action } : {}) };
+    const notification: Notification = {
+      id,
+      level,
+      message,
+      ...(action ? { action } : {}),
+      ...(progress ? { progress } : {}),
+    };
     if (this.#items.length < MAX_VISIBLE_NOTIFICATIONS) {
       // A NEW array, never an in-place push: `items` is read through a reference-equality
       // reactive bridge (`activeNotifications()` in a `$derived`), which observes a changed
@@ -89,6 +113,31 @@ export class NotificationCenter {
     }
     this.#emit();
     return id;
+  }
+
+  /** Replaces a notification's message and/or progress in place, whether it is visible or still
+   * queued; a no-op (no emit) if `id` matches neither. The id and queue position are unchanged,
+   * and the containing array is replaced so a reference-equality reactive read observes it.
+   * @param id The notification id, as returned by `push`.
+   * @param patch The fields to replace; absent fields are kept.
+   * @example
+   * ```ts
+   * import { NotificationCenter } from "@shadowcat/core";
+   *
+   * const center = new NotificationCenter();
+   * const id = center.push("info", "Uploading", undefined, { value: 0, max: 100 });
+   * center.update(id, { progress: { value: 50, max: 100 } });
+   * ```
+   */
+  update(id: string, patch: Partial<Pick<Notification, "message" | "progress">>): void {
+    if (this.#items.some((n) => n.id === id)) {
+      this.#items = this.#items.map((n) => (n.id === id ? { ...n, ...patch } : n));
+    } else if (this.#queue.some((n) => n.id === id)) {
+      this.#queue = this.#queue.map((n) => (n.id === id ? { ...n, ...patch } : n));
+    } else {
+      return;
+    }
+    this.#emit();
   }
 
   /** Removes a notification by id, whether currently visible or still queued; a no-op if `id`

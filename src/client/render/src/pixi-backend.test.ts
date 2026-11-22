@@ -174,6 +174,10 @@ interface TokenNodeLike {
   fx: { matrix: number[]; _destroyed: boolean } | null;
   /** Mirror of `TokenNode.fxKey` — read to assert the rebuild memo. */
   fxKey: string;
+  /** Mirror of `TokenNode.sourceKey` — read to assert the visual-change memo. */
+  sourceKey: string | null;
+  /** Mirror of `TokenNode.anim` — read to assert no animation state survives. */
+  anim: unknown;
 }
 
 interface PixiBackendTokenInternals {
@@ -183,6 +187,8 @@ interface PixiBackendTokenInternals {
   frameTokenArt(node: TokenNodeLike, art: ResolvedArtVisual, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenGeneratedFrame`. */
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
+  /** Mirror of the private `PixiBackend.updateTokenVisual`. */
+  updateTokenVisual(id: string, node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenAura`. */
   updateTokenAura(node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenFx`. */
@@ -207,6 +213,25 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
   const instr = g.context.instructions.find((i) => (i as unknown as { action?: string }).action === action);
   return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
+
+describe("PixiBackend shape stroke dash", () => {
+  /** Draws one open two-point shape through `drawOverlay` and returns its overlay Graphics log. */
+  function overlayLog(dash: { on: number; off: number } | undefined): GraphicsInstructionLog {
+    const backend = headlessBackend();
+    backend.drawOverlay([{ points: [0, 0, 10, 0], closed: false, stroke: { color: 0xff0000, width: 2, ...(dash ? { dash } : {}) }, fill: null }]);
+    return (backend as unknown as { toolOverlay: GraphicsInstructionLog }).toolOverlay;
+  }
+
+  test("a dashed stroke paints one subpath per dash and strokes once", () => {
+    const log = overlayLog({ on: 2, off: 2 });
+    expect(pathActions(log).filter((a) => a === "moveTo")).toHaveLength(3);
+    expect(styleOf(log, "stroke")?.width).toBeCloseTo(2);
+  });
+
+  test("a solid stroke paints a single subpath", () => {
+    expect(pathActions(overlayLog(undefined)).filter((a) => a === "moveTo")).toHaveLength(1);
+  });
+});
 
 describe("PixiBackend.setVisibilityBlend", () => {
   test("reuses both captured RenderTextures across many ticks holding the same (from, to) sample pair — only the blend factor moves", () => {
@@ -367,6 +392,33 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
     // Pixi's mask getter returns `undefined` (not `null`) once the mask effect is removed.
     expect(node.visual.mask).toBeUndefined();
     expect((frame.mask as unknown as { destroyed: boolean }).destroyed).toBe(true);
+  });
+});
+
+describe("PixiBackend.updateTokenVisual with a frame-only generated visual", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+  const frameOnly: TokenNodeSpec["visual"] = { kind: "generated", crop: "circle", background: { color: 0x6b6b6b } };
+
+  test("loads no texture: the sprite is emptied, the memo set, and the frame still draws", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec: TokenNodeSpec = { ...base, visual: frameOnly };
+    backend.updateTokenVisual("t1", node, spec);
+    backend.updateTokenGeneratedFrame(node, spec);
+    expect(node.sourceKey).toContain("frame-only");
+    expect(node.anim).toBeNull();
+    expect((node.visual as unknown as { texture: unknown }).texture).toBe(Texture.EMPTY);
+    expect(styleOf(node.generated!.background, "fill")?.color).toBe(0x6b6b6b);
+  });
+
+  test("swapping an animated visual for the frame-only one drops the animation sprite", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenVisual("t1", node, { ...base, visual: { kind: "animated", source: { type: "frames", urls: [] }, fps: 4, loop: true } });
+    expect(node.visual).toBeInstanceOf(AnimatedSprite);
+    backend.updateTokenVisual("t1", node, { ...base, visual: frameOnly });
+    expect(node.visual).not.toBeInstanceOf(AnimatedSprite);
+    expect(node.anim).toBeNull();
   });
 });
 

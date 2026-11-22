@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
 import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -10,6 +10,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { SnapModePreference } from "./snapModePreference.svelte";
+import type { StageView } from "./stageView.svelte";
 import type { ShareRulerPreference } from "./shareRulerPreference.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 import type { PerformanceController } from "./performance.svelte";
@@ -25,6 +26,17 @@ export type PluralFunc = (key: string, count: number, params?: Record<string, st
 /** Locale-aware string comparator shape, matching `I18n.compare` (framework-neutral; the Svelte
  * adapter supplies a reactive implementation). */
 export type CompareFunc = (a: string, b: string) => number;
+
+/** The handle `AppContext.notifyProgress` returns for one in-flight operation. */
+export interface ProgressNotification {
+  /** The notification's id in the shared notification center. */
+  id: string;
+  /** Replaces the notification's message and/or progress in place; a no-op once dismissed.
+   * @param patch The fields to replace. */
+  update: (patch: Partial<Pick<Notification, "message" | "progress">>) => void;
+  /** Removes the notification; a no-op once removed. */
+  dismiss: () => void;
+}
 
 /** Options for `AppContext.subscribeScene`. Shares its one field's shape with `@shadowcat/shell`'s
  * `SubscribeSceneOpts` by coincidence, not by a package-boundary dependency — check that type too
@@ -192,6 +204,13 @@ export interface AppContext {
    * @param level Severity, driving visual treatment; defaults to `"warning"` (the class of message
    * this channel exists for is more often a warning than a pure info toast). */
   notify: (message: string, level?: NotificationLevel) => void;
+  /** Shows an info-level progress notification and returns the handle that ends it. Writes to the
+   * same notification center as `notify`; the host never auto-dismisses it, so the caller MUST call
+   * `dismiss` when the operation settles (success or failure).
+   * @param message The message text, already resolved/interpolated.
+   * @param progress The starting progress: `{ value, max }` for a determinate bar, or
+   * `{ value: null, max: 0 }` for an operation with no incremental signal. */
+  notifyProgress: (message: string, progress: NotificationProgress) => ProgressNotification;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
   /** Translate a key to the active locale's string. */
@@ -288,6 +307,10 @@ export interface AppContext {
    * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
    * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */
   snapModePreference: SnapModePreference;
+  /** The stage camera as reactive state: a stage overlay projects scene points to the canvas's
+   * pixel space through `sceneToScreen` and re-runs on every pan and zoom. `Stage` writes it
+   * from the render engine's applied transform. See `StageView`. */
+  stageView: StageView;
   /** Whether THIS user broadcasts their measure-tool drags to the other members (the shared
    * live ruler). Client-local and per-user: never a document field and never sent itself —
    * only the ruler's route travels, and only while it is on, plus the one terminating stop

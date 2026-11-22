@@ -146,6 +146,27 @@ describe("Settings contributed sections", () => {
     expect(screen.getByTestId("section-probe")).toBeTruthy();
   });
 
+  it("renders a serverAdminOnly section, heading included, for an admin and neither for anyone else", () => {
+    const contributions = new ContributionRegistry();
+    contributions.contribute({
+      id: "example:admin-settings",
+      contract: SETTINGS_SECTION_CONTRACT,
+      component: SectionProbe,
+      settingsSection: { labelKey: "example.adminTitle", serverAdminOnly: true },
+    });
+    const admin = render(Settings, {
+      context: setAppContextForTest({ role: "player", serverRole: "admin", contributions }),
+    });
+    expect(screen.getByText("example.adminTitle")).toBeTruthy();
+    expect(screen.getByTestId("section-probe")).toBeTruthy();
+    admin.unmount();
+    render(Settings, {
+      context: setAppContextForTest({ role: "gm", serverRole: "user", contributions }),
+    });
+    expect(screen.queryByText("example.adminTitle")).toBeNull();
+    expect(screen.queryByTestId("section-probe")).toBeNull();
+  });
+
   it("renders a registerSetting contribution through the same loop as a hand-built one", async () => {
     const contributions = new ContributionRegistry();
     let on = false;

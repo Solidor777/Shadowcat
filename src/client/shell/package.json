@@ -20,6 +20,7 @@
     "@shadowcat/module-chat": "workspace:*",
     "@shadowcat/module-chat-composer": "workspace:*",
     "@shadowcat/module-chat-card": "workspace:*",
+    "@shadowcat/module-chat-bubbles": "workspace:*",
     "@shadowcat/module-notes": "workspace:*",
     "@shadowcat/module-tables": "workspace:*",
     "@shadowcat/module-conditions": "workspace:*",

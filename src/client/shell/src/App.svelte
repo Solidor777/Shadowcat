@@ -38,6 +38,7 @@
   import { sheetNote } from "@shadowcat/module-sheet-note";
   import { sheetTable } from "@shadowcat/module-sheet-table";
   import { dice3d } from "@shadowcat/module-dice-3d";
+  import { chatBubbles } from "@shadowcat/module-chat-bubbles";
   import { audio } from "@shadowcat/module-audio";
   import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
   import { vfx } from "@shadowcat/module-vfx";
@@ -214,7 +215,7 @@
     const s = new WorldSession({
       selfId,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, chatBubbles, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
       onEvicted: () => navigate({ name: "worlds" }),
       // A refused join (the world is gone, or this user is not a member) is terminal: say why,
       // then leave the world route so the session effect tears the session down.

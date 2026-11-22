@@ -84,7 +84,7 @@ export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
 export { NotificationCenter } from "./notifications";
-export type { NotificationLevel, Notification, NotificationListener } from "./notifications";
+export type { NotificationLevel, Notification, NotificationListener, NotificationProgress } from "./notifications";
 export { OptimisticClient } from "./optimistic";
 export { noticeOncePerGesture } from "./gesture-notice";
 export { WsClient, MergeIntentError, NotConnectedError, RequestTimeoutError, PathfindError } from "./ws-client";
@@ -195,9 +195,23 @@ export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite,
 export type { ServerUser, WorldMember, MintedInvite, InviteEntry, UiState, UiStatePatch } from "./user-rest";
 export { listTrash, emptyTrash, deleteTrashEntry, TrashEntryGoneError } from "./trash-rest";
 export type { TrashEntry, ListTrashOptions, EmptyTrashResult } from "./trash-rest";
+export {
+  adminBackup,
+  listBackups,
+  deleteBackup,
+  restoreBackup,
+  pruneBackups,
+  dismissRestoreFailed,
+} from "./backup-rest";
+export type {
+  BackupManifestView,
+  BackupEntryView,
+  BackupListingView,
+  RestoreFailedView,
+} from "./backup-rest";
 export { fmtBytes } from "./format";
 export { ACTOR_DOC_TYPE, buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, compareScenesByCreation, queryScenesInCreationOrder, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildRegionDoc, setRegionVisibility, templateToRegionShape, buildRegionFromTemplate, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId, COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, COMBATANT_GROUP_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, buildCombatDoc, buildCombatantDoc, buildCombatantGroupDoc, newCombatEngine, ENGINE_COMBAT_DEFAULTS, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, SYSTEM_DEFAULTS_DOC_TYPE, buildSystemDefaultsDoc, resolveSettingProvenance, AUTHOR_CAPS, grantAuthor } from "./scene-docs";
-export type { TemplateRegionRefusal, TemplateRegionShapeResult, TemplateRegionBatchResult, SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, VisualTransform, TransformAnchor, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, FogPooling, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, SceneAmbience, Occlusion, AudioOverlay, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionGeometry, CompoundShapePart, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, PortalTarget, NoticeAudience, AmbientLightMode, AmbientLightOverride, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, DoorState, WallDirection, WallSightTier, WallProximity, WallSense, CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, EffectOrigin, ExpiryNotice, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
+export type { TemplateRegionRefusal, TemplateRegionShapeResult, TemplateRegionBatchResult, SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, VisualTransform, TransformAnchor, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, FogPooling, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, SceneAmbience, Occlusion, AudioOverlay, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionGeometry, CompoundShapePart, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, PortalTarget, NoticeAudience, AmbientLightMode, AmbientLightOverride, RegionOcclusion, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, DoorState, WallDirection, WallSightTier, WallProximity, WallSense, CombatEngine, CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, EffectOrigin, ExpiryNotice, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
 export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";

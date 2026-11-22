@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, StageView, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
   import type { TlsStatus } from "@shadowcat/types";
   import { consoleLogger } from "@shadowcat/core";
@@ -80,6 +80,10 @@
   // Stable per Table, like `speakAs`.
   const snapModePreference = new SnapModePreference();
 
+  // Stage camera mirror: Stage writes the applied transform, stage overlays project scene
+  // points through it. Stable per Table, like `snapModePreference`.
+  const stageView = new StageView();
+
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
   // `session` is fixed per Table (see its capture above).
   const templates = new TemplatesController({
@@ -129,6 +133,14 @@
     canDelete: (doc) => session.canDelete(doc),
     openDocument: (ref) => sheets.openDocument(ref),
     notify: (message, level) => notifications.push(level ?? "warning", message),
+    notifyProgress: (message, progress) => {
+      const id = notifications.push("info", message, undefined, progress);
+      return {
+        id,
+        update: (patch) => notifications.update(id, patch),
+        dismiss: () => notifications.dismiss(id),
+      };
+    },
     members: session.members,
     t,
     plural,
@@ -161,6 +173,7 @@
     speakAsToken,
     speakAs,
     snapModePreference,
+    stageView,
     shareRuler: session.shareRuler,
     sendRulerUpdate: (scene, points, active) => session.sendRulerUpdate(scene, points, active),
     onRuler: (cb) => session.onRuler(cb),

@@ -115,4 +115,13 @@ test("a folder moves under another via the accessible move control", async ({
     "style",
     /padding-left: 0.75rem/,
   );
+
+  // Right-click opens the context menu; its Move item opens the same picker as the Move button.
+  await page.locator(".row", { hasText: "beta" }).click({ button: "right" });
+  await page.getByTestId("context-menu-item-move").click();
+  await page.getByTestId("folder-move-target-root").click();
+  await expect(page.locator(".row", { hasText: "beta" })).toHaveAttribute(
+    "style",
+    /padding-left: 0rem/,
+  );
 });

@@ -11,11 +11,16 @@ enablement.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `settings:panel` | `shadowcat.panel` | `Settings` | order 6, icon 🔧, labelKey `settings.tab`, launcher-closed |
+| `settings:keybindings` | `shadowcat.settings-section` | `KeybindingsSection` | labelKey `settings.keybindings.title` |
+| `settings:backups` | `shadowcat.settings-section` | `BackupManager` | labelKey `settings.backups.title`, `serverAdminOnly` |
 
 ## Components
 
 - `Settings.svelte` — the panel shell.
 - `UserManager.svelte` — admin account management.
+- `BackupManager.svelte` — server-admin backup management, mounted as a
+  settings section (a section with `serverAdminOnly` is rendered, heading
+  included, only for a server admin). See below.
 - `InviteManager.svelte` — world invite codes.
 - `ModuleManager.svelte` — installed community modules: discovery list +
   per-world enable toggles (engine-compat gate surfaced here), plus a second
@@ -43,11 +48,34 @@ stats" toggle (surfaced by the statusbar's `PerfStats`), and a "Reset to auto"
 button. See the [Performance guide](/guides/performance) for what each knob
 costs.
 
+## Backups
+
+`BackupManager.svelte` lists every backup under the server's backups folder,
+newest first: when it was taken, why (manual, before a restore, scheduled),
+size, asset-file count and the server version that wrote it.
+
+- **Back up now** takes a manual backup behind an indeterminate progress
+  notification, then reloads the list. It is the one home of the button.
+- **Restore** asks for confirmation first. The server saves a safety backup of
+  its current state, stages the restore and stops; it does not restart itself.
+  Start it again to apply the restore (see the [hosting guide](/guides/hosting)).
+  If a staged restore could not be applied, a banner on the list names the
+  backup and the error, and the server runs on the data it had.
+- **Delete** moves a backup into the server trash after a confirm dialog.
+- The **retention policy** is read-only here: it is set in the server's
+  configuration (`backup_keep_last`, `backup_keep_days`). **Apply now** runs it
+  immediately; it is disabled when no limit is set.
+
+Scheduled backups are not built; the manager only lists and labels them.
+
 ## Contracts & seams
 
 - **Requires** `shadowcat.panel` (from panels); depends on `core-ui ^0.1.0`.
-- Talks to the account/invite/module HTTP routes; module enablement drives the
-  server's per-world enabled-module set.
+- **Provides** `shadowcat.settings-section`; `SettingsSectionMeta.serverAdminOnly`
+  hides a section and its heading from everyone but a server admin (advisory:
+  the section's own routes are admin-gated server-side).
+- Talks to the account/invite/module/backup HTTP routes; module enablement
+  drives the server's per-world enabled-module set.
 
 ## Pointers
 

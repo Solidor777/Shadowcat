@@ -115,3 +115,51 @@ describe("NotificationCenter items identity", () => {
     expect(center.items).not.toBe(afterPush);
   });
 });
+
+describe("NotificationCenter progress", () => {
+  it("push stores a determinate and an indeterminate progress; omitting it leaves the field absent", () => {
+    const center = new NotificationCenter();
+    const a = center.push("info", "Uploading", undefined, { value: 0, max: 10 });
+    const b = center.push("info", "Working", undefined, { value: null, max: 0 });
+    const c = center.push("info", "Plain");
+    expect(center.items.find((n) => n.id === a)?.progress).toEqual({ value: 0, max: 10 });
+    expect(center.items.find((n) => n.id === b)?.progress).toEqual({ value: null, max: 0 });
+    expect("progress" in center.items.find((n) => n.id === c)!).toBe(false);
+  });
+
+  it("update mutates in place: keeps id and position, replaces the items array, and notifies", () => {
+    const center = new NotificationCenter();
+    center.push("info", "first");
+    const id = center.push("info", "Uploading", undefined, { value: 0, max: 10 });
+    center.push("info", "last");
+    const before = center.items;
+    const listener = vi.fn();
+    center.subscribe(listener);
+    center.update(id, { progress: { value: 4, max: 10 }, message: "Uploading 40%" });
+    expect(center.items).not.toBe(before);
+    expect(center.items.map((n) => n.message)).toEqual(["first", "Uploading 40%", "last"]);
+    expect(center.items[1]).toMatchObject({ id, progress: { value: 4, max: 10 } });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("update on an unknown id is a no-op and does not notify", () => {
+    const center = new NotificationCenter();
+    center.push("info", "x");
+    const listener = vi.fn();
+    center.subscribe(listener);
+    center.update("does-not-exist", { message: "y" });
+    expect(listener).not.toHaveBeenCalled();
+    expect(center.items[0].message).toBe("x");
+  });
+
+  it("update on a queued notification changes the queued entry, leaves the visible array alone, and the entry surfaces updated", () => {
+    const center = new NotificationCenter();
+    const ids = Array.from({ length: MAX_VISIBLE_NOTIFICATIONS }, (_, i) => center.push("info", `n${i}`));
+    const queued = center.push("info", "queued", undefined, { value: 0, max: 5 });
+    const visibleBefore = center.items;
+    center.update(queued, { progress: { value: 3, max: 5 } });
+    expect(center.items).toBe(visibleBefore);
+    center.dismiss(ids[0]);
+    expect(center.items.at(-1)).toMatchObject({ id: queued, progress: { value: 3, max: 5 } });
+  });
+});

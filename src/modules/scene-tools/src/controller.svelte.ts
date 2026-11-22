@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -429,6 +429,12 @@ export class ToolController {
    * (`[0, 1]`) or a non-negative delta for `"darken"`/`"brighten"` — the exact range
    * `RegionEngine::validate` enforces server-side. */
   regionAmbientLevel = $state<number>(0.5);
+  /** Region-tool authored flag: the next region's boundary blocks sight (`RegionOcclusion.sight`). */
+  regionOccludesSight = $state<boolean>(false);
+  /** Region-tool authored flag: the next region's boundary blocks light (`RegionOcclusion.light`). */
+  regionOccludesLight = $state<boolean>(false);
+  /** Region-tool authored flag: the next region's boundary blocks sound (`RegionOcclusion.sound`). */
+  regionOccludesSound = $state<boolean>(false);
   /** The non-token scene entity currently open for editing (a light, wall, region, drawing or
    * template picked with the select or light tool), or `null`. Cleared on every tool switch
    * (`toggle`) and on a GM's empty-canvas click with the select tool; `ToolRail` renders the
@@ -698,7 +704,7 @@ export class ToolController {
       triggers: $state.snapshot(this.regionTriggers),
       elevation: this.ctx.viewedLevelBand?.() ?? null,
       ambient_override: regionAmbientOverride(this),
-      occludes: null,
+      occludes: regionOcclusion(this),
     };
     const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
     if (this.regionSecret) setRegionVisibility(doc, true);
@@ -1099,7 +1105,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
             triggers: $state.snapshot(controller.regionTriggers),
             elevation: ctx.viewedLevelBand?.() ?? null,
             ambient_override: regionAmbientOverride(controller),
-            occludes: null,
+            occludes: regionOcclusion(controller),
           };
           const doc = buildRegionDoc(ctx.world, scene.id, engine);
           if (controller.regionSecret) setRegionVisibility(doc, true);
@@ -1235,6 +1241,23 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
 function regionAmbientOverride(controller: ToolController): AmbientLightOverride | null {
   if (controller.regionBehavior !== "ambient_light") return null;
   return { mode: controller.regionAmbientMode, level: controller.regionAmbientLevel };
+}
+
+/** The `RegionEngine.occludes` body for the region the tool is about to persist: `null` when no
+ * sense is ticked (`RegionEngine::validate` rejects an all-false block, so "ticks nothing" must
+ * persist as absent), otherwise the three flags. Shared by both region-persist call sites
+ * (`makeRegionTool.onPointerUp`, `ToolController.commitRegionParts`).
+ * @param controller Supplies the configured `regionOccludesSight`/`regionOccludesLight`/`regionOccludesSound`.
+ * @returns The occlusion flags to persist, or `null` when none is ticked.
+ * @example
+ * ```
+ * declare const controller: ToolController;
+ * const occludes = regionOcclusion(controller);
+ * ```
+ */
+function regionOcclusion(controller: ToolController): RegionOcclusion | null {
+  const { regionOccludesSight: sight, regionOccludesLight: light, regionOccludesSound: sound } = controller;
+  return sight || light || sound ? { sight, light, sound } : null;
 }
 
 /** Clamps an authored region-cost value to the server's own read-side floor

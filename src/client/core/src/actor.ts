@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, VisualTransform, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission, FactionStance, Faction } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -36,6 +36,12 @@ export interface EffectiveActor {
   /** The assigned faction's id, or `null` for no faction. Resolve the `Faction` record itself via
    * the world's `FactionRegistryEngine`. */
   faction: string | null;
+  /** The token's effective stance toward the party: the per-token `overrides.disposition`, else
+   * the assigned faction record's `stance`, else `"neutral"` (no faction, or a dangling faction
+   * link). Read from the same faction-registry lookup as `movement`, never a second registry
+   * read. For an identity-hidden token a non-owner never receives the override or the faction
+   * link, so this resolves `"neutral"` — indistinguishable from an unfactioned token. */
+  disposition: FactionStance;
   /** Raw effective condition ids (not display entries); resolve badges via `resolveConditions`. */
   conditions: string[];
   /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
@@ -70,18 +76,19 @@ export interface EffectiveActor {
  * @param actorDoc The resolved actor document (linked live, or the token's embedded copy).
  * @param base The actor's `engine` body.
  * @param overrides The token's own override whitelist, if any (absent for an embedded/instanced actor).
- * @param factionMovement The linked faction record's `movement` tags ([] when the actor names no
- * faction or the link dangles); unioned into `movement` unless an override replaces the set.
+ * @param faction The linked faction record (`undefined` when the actor names no faction or the
+ * link dangles): its `movement` tags union into `movement` unless an override replaces the set,
+ * and its `stance` is the `disposition` an override does not replace.
  * @returns The projected `EffectiveActor`.
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenActor for the public entry point)
  * declare const actorDoc: WireDocument;
  * declare const token: WireDocument;
- * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides, []);
+ * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides, undefined);
  * ```
  */
-function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null, factionMovement: string[] = []): EffectiveActor {
+function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null, faction?: Faction): EffectiveActor {
   return {
     name: overrides?.name ?? actorDoc.name,
     displayName: base.displayName,
@@ -89,6 +96,8 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     size: overrides?.size ?? base.size,
     shape: (overrides?.shape ?? base.shape) as "square" | "circle",
     faction: base.faction,
+    // Override, else the faction record's stance, else neutral (an unfactioned token).
+    disposition: overrides?.disposition ?? faction?.stance ?? "neutral",
     // Fail-closed: a missing/redacted actor `conditions` yields no conditions, never a throw in
     // the downstream `for...of` (the single chokepoint protecting every EffectiveActor consumer).
     conditions: base.conditions ?? [],
@@ -97,7 +106,7 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     // Wholesale replacement like `visionModes`; an override with `enabled: false` suppresses.
     light: overrides?.light ?? base.light ?? null,
     // Override replaces the whole resolved set; otherwise actor ∪ faction, deduplicated.
-    movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...factionMovement])],
+    movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...(faction?.movement ?? [])])],
     // Emissions follow the same wholesale-override precedence as visionModes; null when absent.
     aura: overrides?.aura ?? base.aura ?? null,
     sound: overrides?.sound ?? base.sound ?? null,
@@ -148,21 +157,22 @@ export function actorDisplayName(a: { /** The real name, or `null`/absent when u
  */
 export function resolveTokenActor(token: WireDocument, store: ReadableDocuments): EffectiveActor | null {
   const eng = token.engine as TokenEngine | undefined;
-  // The faction-record join for the `movement` union: a dangling faction id (or an absent
-  // registry singleton) contributes no tags — fail-closed, mirroring `resolveConditions`'s
-  // registry lookup. Read once per resolution so both branches below share the one lookup.
+  // The faction-record join for the `movement` union and the `disposition` fallback: a dangling
+  // faction id (or an absent registry singleton) contributes nothing — fail-closed, mirroring
+  // `resolveConditions`'s registry lookup. Read once per resolution so both branches below share
+  // the one lookup.
   const factions = (store.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined)?.factions ?? {};
-  const factionMovement = (faction: string | null): string[] => (faction ? factions[faction]?.movement ?? [] : []);
+  const factionOf = (faction: string | null | undefined): Faction | undefined => (faction ? factions[faction] : undefined);
   if (eng?.actor_id) {
     const actor = store.get(eng.actor_id);
     if (!actor) return null;
     const base = actor.engine as ActorEngine;
-    return project(actor, base, eng.overrides, factionMovement(base.faction));
+    return project(actor, base, eng.overrides, factionOf(base.faction));
   }
   const embedded = token.embedded?.actor?.[0];
   if (embedded) {
     const base = embedded.engine as ActorEngine;
-    return project(embedded, base, undefined, factionMovement(base.faction));
+    return project(embedded, base, undefined, factionOf(base.faction));
   }
   return null;
 }

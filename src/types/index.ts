@@ -66,6 +66,14 @@ export type { TlsStatus } from "./generated/TlsStatus";
 export type { TlsSource } from "./generated/TlsSource";
 export type { TlsAdminStatus } from "./generated/TlsAdminStatus";
 export type { WorldEntry } from "./generated/WorldEntry";
+export type { BackupManifest } from "./generated/BackupManifest";
+export type { BackupKind } from "./generated/BackupKind";
+export type { BackupEntry } from "./generated/BackupEntry";
+export type { BackupListing } from "./generated/BackupListing";
+export type { BackupRetention } from "./generated/BackupRetention";
+export type { RestoreFailed } from "./generated/RestoreFailed";
+export type { RestoreStaged } from "./generated/RestoreStaged";
+export type { PruneResult } from "./generated/PruneResult";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
@@ -151,6 +159,7 @@ export type { PortalTarget } from "./generated/engine/PortalTarget";
 export type { NoticeAudience } from "./generated/engine/NoticeAudience";
 export type { AmbientLightMode } from "./generated/engine/AmbientLightMode";
 export type { AmbientLightOverride } from "./generated/engine/AmbientLightOverride";
+export type { RegionOcclusion } from "./generated/engine/RegionOcclusion";
 export type { DrawingEngine } from "./generated/engine/DrawingEngine";
 export type { DrawingShape } from "./generated/engine/DrawingShape";
 export type { Stroke } from "./generated/engine/Stroke";

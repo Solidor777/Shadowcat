@@ -3115,6 +3115,68 @@ async fn backup_list_returns_newest_first_with_policy_and_root() {
 }
 
 #[tokio::test]
+async fn backup_list_reports_a_failed_restore_marker() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+
+    let none: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(none["restore_failed"].is_null());
+
+    std::fs::write(
+        tmp.path().join("restore-failed.json"),
+        r#"{"id":"backup-7","requested_at_ms":42,"error":"copy failed"}"#,
+    )
+    .unwrap();
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["restore_failed"]["id"], "backup-7");
+    assert_eq!(listing["restore_failed"]["requested_at_ms"], 42);
+    assert_eq!(listing["restore_failed"]["error"], "copy failed");
+
+    // An unparsable marker never breaks the list.
+    std::fs::write(tmp.path().join("restore-failed.json"), "not json").unwrap();
+    let broken: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(broken["restore_failed"].is_null());
+}
+
+#[tokio::test]
+async fn backup_dismissing_the_failed_restore_marker_trashes_it_and_is_idempotent() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let admin = login_server(&state, "root").await;
+    let user = login_server(&state, "pleb").await;
+    let marker = tmp.path().join("restore-failed.json");
+    std::fs::write(
+        &marker,
+        r#"{"id":"backup-7","requested_at_ms":42,"error":"copy failed"}"#,
+    )
+    .unwrap();
+
+    user.delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    assert!(marker.exists(), "a refused dismissal leaves the marker");
+    assert!(state.trash.list().unwrap().is_empty());
+
+    admin
+        .delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(!marker.exists());
+    assert_eq!(state.trash.list().unwrap().len(), 1, "moved, not deleted");
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(listing["restore_failed"].is_null());
+
+    admin
+        .delete("/api/admin/backups/restore-failed")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn delete_moves_the_backup_into_the_trash_and_unknown_ids_are_404() {
     let (mut state, tmp) = file_backed_state().await;
     with_retaining_trash(&mut state, &tmp);
