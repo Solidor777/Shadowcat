@@ -1,8 +1,8 @@
-<script lang="ts">
-  // Generic multi-user picker: one checkbox per world member, returning the selected user ids.
-  // It holds no state of its own, so the caller decides what a selection means (a per-user
-  // permission override list, a recipient list).
-  let { members, selected, label, onchange }: {
+<script module lang="ts">
+  /** Props of `UserMultiSelect`. Exported from the module block so the component's script is a
+   * module: a script with no import or export is global, and its `onchange` prop would then
+   * collide with the global `Window.onchange`. */
+  export interface UserMultiSelectProps {
     /** userId -> display name for every pickable member (`AppContext.members`). */
     members: Map<string, string>;
     /** The currently selected user ids; the checkbox state is derived from this. */
@@ -11,7 +11,14 @@
     label: string;
     /** Called with the full next selection (existing order, a newly checked id appended) when a checkbox toggles. */
     onchange: (next: string[]) => void;
-  } = $props();
+  }
+</script>
+
+<script lang="ts">
+  // Generic multi-user picker: one checkbox per world member, returning the selected user ids.
+  // It holds no state of its own, so the caller decides what a selection means (a per-user
+  // permission override list, a recipient list).
+  let { members, selected, label, onchange }: UserMultiSelectProps = $props();
 
   const selectedSet = $derived(new Set(selected));
   const entries = $derived([...members.entries()]);

@@ -15,7 +15,7 @@ function rowRect(top: number): DOMRect {
 function renderSiblings(sorts: number[], over: Record<string, unknown> = {}, reorderable = true) {
   const docs = sorts.map((sort, i) => buildNoteDoc("w1", "N" + i, "", { id: "n" + i, sort }));
   const dispatched: unknown[][] = [];
-  const context = setAppContextForTest({ dispatchIntent: (ops) => dispatched.push(ops), ...over } as never);
+  const context = setAppContextForTest({ dispatchIntent: (ops: unknown[]) => dispatched.push(ops), ...over } as never);
   const result = render(NoteTree, {
     props: { nodes: docs.map((doc) => ({ doc, children: [] })), allNotes: docs, reorderable },
     context,
