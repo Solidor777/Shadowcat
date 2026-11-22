@@ -206,7 +206,7 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * faceRowToVisual({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState() });
+   * faceRowToVisual({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState(), transform: newTransformState() });
    * ```
    */
   function faceRowToVisual(f: FaceRowState): FaceVisual {
@@ -224,7 +224,7 @@
    * @example
    * ```
    * // private helper; not part of the public API
-   * faceRowComplete({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState() }); // true
+   * faceRowComplete({ name: "front", kind: "image", asset: "a1", anim: newAnimSourceState(), transform: newTransformState() }); // true
    * ```
    */
   function faceRowComplete(f: FaceRowState): boolean {

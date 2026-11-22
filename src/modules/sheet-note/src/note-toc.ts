@@ -40,6 +40,7 @@ function slugify(text: string): string {
  * @returns The headings in document order.
  * @example
  * ```ts
+ * declare const bodyElement: Element;
  * const entries = collectHeadings(bodyElement);
  * ```
  */
@@ -66,6 +67,7 @@ export function collectHeadings(container: Element): TocEntry[] {
  * @returns The element, or `null` when none carries the id.
  * @example
  * ```ts
+ * declare const bodyElement: Element;
  * findAnchor(bodyElement, "intro")?.scrollIntoView();
  * ```
  */

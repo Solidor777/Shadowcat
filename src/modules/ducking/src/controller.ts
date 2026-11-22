@@ -56,7 +56,8 @@ export class DuckSourcesController {
    * @param prefs The preferences snapshot to apply.
    * @example
    * ```
-   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} });
+   * declare const keybindings: KeySourceBindings;
+   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} }, keybindings);
    * controller.applyPreferences(({} as DuckingPreferences));
    * ```
    */
@@ -74,7 +75,8 @@ export class DuckSourcesController {
    * @param osSink The sink for the OS monitor source's demand.
    * @example
    * ```
-   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} });
+   * declare const keybindings: KeySourceBindings;
+   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} }, keybindings);
    * controller.wireToAudioDuck(NULL_SINK, NULL_SINK);
    * ```
    */
@@ -87,7 +89,8 @@ export class DuckSourcesController {
    * Tears down both sources (called from the module's `unregister()`).
    * @example
    * ```
-   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} });
+   * declare const keybindings: KeySourceBindings;
+   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} }, keybindings);
    * controller.dispose();
    * ```
    */
