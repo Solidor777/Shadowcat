@@ -336,6 +336,13 @@ export interface ShapeNodeSpec {
     color: number;
     /** Stroke width, in scene (px) units. */
     width: number;
+    /** Dash pattern in scene units (`on` drawn, `off` skipped), or absent for a solid stroke. */
+    dash?: {
+      /** Length of each drawn dash, in scene units. */
+      on: number;
+      /** Length of each gap, in scene units. */
+      off: number;
+    };
   } | null;
   /** Fill styling, or `null` for no fill (also unused when `closed` is `false`). */
   fill: {

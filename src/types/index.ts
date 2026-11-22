@@ -149,6 +149,7 @@ export type { PortalTarget } from "./generated/engine/PortalTarget";
 export type { NoticeAudience } from "./generated/engine/NoticeAudience";
 export type { AmbientLightMode } from "./generated/engine/AmbientLightMode";
 export type { AmbientLightOverride } from "./generated/engine/AmbientLightOverride";
+export type { RegionOcclusion } from "./generated/engine/RegionOcclusion";
 export type { DrawingEngine } from "./generated/engine/DrawingEngine";
 export type { DrawingShape } from "./generated/engine/DrawingShape";
 export type { Stroke } from "./generated/engine/Stroke";
