@@ -87,6 +87,69 @@ describe("TablesPanel create", () => {
   });
 });
 
+describe("TablesPanel context menu", () => {
+  it("right-click offers Open, Draw and Delete, and each runs the handler its button runs", async () => {
+    const doc = buildTableDoc("w1", "A", engine(), { id: "t1" });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const drawTable = vi.fn(() => Promise.resolve());
+    const opened: unknown[] = [];
+    const dispatched: unknown[] = [];
+    const { getByTestId, queryByTestId } = render(TablesPanel, {
+      context: setAppContextForTest({
+        documents,
+        canDelete: () => true,
+        openDocument: (ref) => opened.push(ref),
+        dispatchIntent: (ops) => dispatched.push(ops),
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
+      }),
+    });
+
+    await fireEvent.contextMenu(getByTestId("table-row"));
+    await fireEvent.click(getByTestId("context-menu-item-open"));
+    expect(queryByTestId("context-menu")).toBeNull();
+    await fireEvent.contextMenu(getByTestId("table-row"));
+    await fireEvent.click(getByTestId("context-menu-item-draw"));
+    await fireEvent.contextMenu(getByTestId("table-row"));
+    await fireEvent.click(getByTestId("context-menu-item-delete"));
+
+    await fireEvent.click(getByTestId("table-open"));
+    await fireEvent.click(getByTestId("table-quick-draw"));
+    await fireEvent.click(getByTestId("table-delete"));
+    expect(opened).toEqual([{ docId: "t1" }, { docId: "t1" }]);
+    expect(drawTable.mock.calls).toEqual([
+      [{ tableId: "t1", channel: "general", count: 1 }],
+      [{ tableId: "t1", channel: "general", count: 1 }],
+    ]);
+    expect(dispatched).toEqual([[{ op: "delete", doc }], [{ op: "delete", doc }]]);
+  });
+
+  it("the menu gates Delete on canDelete and disables Draw with no channel, as the buttons do", async () => {
+    const doc = buildTableDoc("w1", "A", engine(), { id: "t1" });
+    const { getByTestId, queryByTestId } = render(TablesPanel, {
+      context: setAppContextForTest({ documents: storeWith(doc), canDelete: () => false }),
+    });
+
+    await fireEvent.contextMenu(getByTestId("table-row"));
+
+    expect(queryByTestId("context-menu-item-delete")).toBeNull();
+    expect((getByTestId("context-menu-item-draw") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("the menu opens for the row that was clicked, not the first row", async () => {
+    const a = buildTableDoc("w1", "A", engine(), { id: "t1" });
+    const b = buildTableDoc("w1", "B", engine(), { id: "t2" });
+    const opened: unknown[] = [];
+    const { getAllByTestId, getByTestId } = render(TablesPanel, {
+      context: setAppContextForTest({ documents: storeWith(a, b), openDocument: (ref) => opened.push(ref) }),
+    });
+
+    await fireEvent.contextMenu(getAllByTestId("table-row")[1]);
+    await fireEvent.click(getByTestId("context-menu-item-open"));
+
+    expect(opened).toEqual([{ docId: "t2" }]);
+  });
+});
+
 describe("TablesPanel row gating and draw", () => {
   it("shows Delete when the fixture's canDelete returns true, never keyed on raw owner", () => {
     const doc = buildTableDoc("w1", "A", engine(), { id: "t1" }); // no owner stamped
