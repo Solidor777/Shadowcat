@@ -687,5 +687,37 @@ pub(crate) fn execute_move(
     })
 }
 
+/// The `TokenEngine::rotation` that faces a token along the straight line from `start` to
+/// `stop`, degrees normalised to `[0, 360)`. Convention shared with `LightEmission::rotation`:
+/// `0` points along +x and the angle grows toward +y (clockwise on the y-down canvas), so this
+/// is `atan2(dy, dx)` of the displacement and any reader of a token's rotation as a direction
+/// inverts it with `(cos, sin)` of the same angle.
+///
+/// A `start == stop` pair has no direction; it returns `prior_rotation` unchanged so a
+/// degenerate call never snaps a token to an arbitrary heading. `Room::execute_move` reaches
+/// this only after its zero-progress return, so it never passes such a pair.
+///
+/// # Examples
+///
+/// ```text
+/// bearing_degrees((0.0, 0.0), (0.0, 5.0), 10.0)  // 90.0: +y is a quarter turn clockwise
+/// bearing_degrees((1.0, 1.0), (1.0, 1.0), 10.0)  // 10.0: no direction, the prior rotation
+/// ```
+pub(crate) fn bearing_degrees(start: (f64, f64), stop: (f64, f64), prior_rotation: f64) -> f64 {
+    let (dx, dy) = (stop.0 - start.0, stop.1 - start.1);
+    if dx == 0.0 && dy == 0.0 {
+        return prior_rotation;
+    }
+    let degrees = dy.atan2(dx).to_degrees();
+    // `rem_euclid` maps the `(-180, 180]` atan2 range onto `[0, 360)`; it can round a tiny
+    // negative angle up to exactly 360.0, which folds back to 0.
+    let wrapped = degrees.rem_euclid(360.0);
+    if wrapped >= 360.0 {
+        0.0
+    } else {
+        wrapped
+    }
+}
+
 #[cfg(test)]
 mod tests;

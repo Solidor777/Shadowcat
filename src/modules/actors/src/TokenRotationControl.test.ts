@@ -34,7 +34,7 @@ function tokenAt(rotation: number): WireDocument {
     actor_id: null,
     overrides: null,
     face: null,
-    elevation: null,
+    elevation: null, lock_rotation: false,
   };
   return buildTokenDoc("w1", "scene1", engine, "tok1");
 }

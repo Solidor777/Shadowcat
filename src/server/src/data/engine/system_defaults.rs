@@ -62,6 +62,9 @@ pub struct SceneDefaultsOverlay {
     /// Overrides `WorldSceneDefaults.fog_pooling`.
     #[ts(optional = nullable)]
     pub fog_pooling: Option<FogPooling>,
+    /// Overrides `WorldSceneDefaults.auto_rotate_tokens`.
+    #[ts(optional = nullable)]
+    pub auto_rotate_tokens: Option<bool>,
 }
 
 /// `Option`-lifted twin of `Pathfinding`.

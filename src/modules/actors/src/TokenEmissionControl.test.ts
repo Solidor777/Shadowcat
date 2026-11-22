@@ -36,7 +36,7 @@ function tokenEngine(linked: boolean, overrides: TokenEngine["overrides"] = null
     h: 100,
     rotation: 0,
     visual: null,
-    elevation: null,
+    elevation: null, lock_rotation: false,
     actor_id: linked ? "act1" : null,
     overrides,
     face: null,

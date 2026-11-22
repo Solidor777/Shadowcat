@@ -59,4 +59,8 @@ partialCellLeniency?: boolean | null,
 /**
  * Overrides `WorldSceneDefaults.fog_pooling`.
  */
-fogPooling?: FogPooling | null, };
+fogPooling?: FogPooling | null, 
+/**
+ * Overrides `WorldSceneDefaults.auto_rotate_tokens`.
+ */
+autoRotateTokens?: boolean | null, };

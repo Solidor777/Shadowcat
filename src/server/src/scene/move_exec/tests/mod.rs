@@ -3200,4 +3200,5 @@ fn router_preview_never_offers_a_route_the_executor_would_reject_through_a_one_w
     );
 }
 
+mod bearing;
 mod unified_cost;

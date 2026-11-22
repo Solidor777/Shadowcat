@@ -164,6 +164,27 @@ describe("resolveSceneSettings", () => {
     expect(r.movementModel).toBe("continuous");
   });
 
+  it("autoRotateTokens: off by default, world beats the default, scene beats world, null inherits", () => {
+    const bare = resolveSceneSettings(buildSceneDoc("w1", {}, "scene1"), storeWith());
+    expect(bare.autoRotateTokens).toBe(false);
+
+    const ws = buildWorldSettingsDoc("w1", {
+      ...DEFAULT_WORLD_SETTINGS,
+      scene: { ...DEFAULT_WORLD_SETTINGS.scene, autoRotateTokens: true },
+    }, "ws1");
+    expect(resolveSceneSettings(buildSceneDoc("w1", {}, "scene1"), storeWith(ws)).autoRotateTokens).toBe(true);
+
+    const off = buildSceneDoc("w1", {
+      vision: { autoRotateTokens: false, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "scene1");
+    expect(resolveSceneSettings(off, storeWith(ws)).autoRotateTokens).toBe(false);
+
+    const inherit = buildSceneDoc("w1", {
+      vision: { autoRotateTokens: null, losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null },
+    }, "scene1");
+    expect(resolveSceneSettings(inherit, storeWith(ws)).autoRotateTokens).toBe(true);
+  });
+
   it("snapToGrid defaults to true for a grid-stepped scene", () => {
     const scene = buildSceneDoc("w1", {}, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
@@ -254,7 +275,7 @@ it("buildSceneDoc's combat chain is unset by default and persists an authored ov
 });
 
 test("buildTokenDoc parents to the scene and preserves the token engine body", () => {
-  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null };
+  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false };
   const doc = buildTokenDoc("w1", "scene-1", eng);
   expect(doc.doc_type).toBe("token");
   expect(doc.parent_id).toBe("scene-1");

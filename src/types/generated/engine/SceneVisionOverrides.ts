@@ -22,6 +22,7 @@ import type { MovementRestriction } from "./MovementRestriction";
  *     movement_restriction: None,
  *     movement_model: None,
  *     fog_pooling: None,
+ *     auto_rotate_tokens: None,
  * };
  * assert_eq!(overrides.los_restriction, Some(true));
  * ```
@@ -50,4 +51,8 @@ movementModel: MovementModel | null,
 /**
  * Explored-fog pooling override (see `FogPooling`).
  */
-fogPooling: FogPooling | null, };
+fogPooling: FogPooling | null, 
+/**
+ * Auto-rotate-tokens override (see `WorldSceneDefaults.auto_rotate_tokens`).
+ */
+autoRotateTokens?: boolean | null, };

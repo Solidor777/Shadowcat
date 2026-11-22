@@ -195,6 +195,53 @@ fn fog_pooling_resolves_through_system_world_and_scene_layers() {
     );
 }
 
+/// `auto_rotate_tokens` folds through the same per-leaf chain: engine literal (off) <
+/// system-defaults < world-settings < per-scene override, and a scene `null` inherits.
+#[test]
+fn auto_rotate_tokens_resolves_through_system_world_and_scene_layers() {
+    let mut ecs = SceneEcs::new();
+    let scene_id = crate::test_ids::test_uuid(7);
+    let base = json!({ "grid": { "kind": "square", "size": 100 }, "background": null });
+    ecs.insert_scene_for_test(scene_id, base.clone());
+    assert!(
+        !ecs.resolve_scene(scene_id).auto_rotate_tokens,
+        "the engine literal is off"
+    );
+
+    ecs.set_system_defaults_for_test(json!({ "scene": { "autoRotateTokens": true } }));
+    assert!(ecs.resolve_scene(scene_id).auto_rotate_tokens);
+
+    ecs.set_world_settings_for_test(ws_body(&[("/scene/autoRotateTokens", json!(false))]));
+    assert!(
+        !ecs.resolve_scene(scene_id).auto_rotate_tokens,
+        "world-settings beats system-defaults"
+    );
+
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({
+            "grid": { "kind": "square", "size": 100 }, "background": null,
+            "vision": { "autoRotateTokens": true }
+        }),
+    );
+    assert!(
+        ecs.resolve_scene(scene_id).auto_rotate_tokens,
+        "a per-scene override beats world-settings"
+    );
+
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({
+            "grid": { "kind": "square", "size": 100 }, "background": null,
+            "vision": { "autoRotateTokens": null }
+        }),
+    );
+    assert!(
+        !ecs.resolve_scene(scene_id).auto_rotate_tokens,
+        "a null scene override inherits the world value"
+    );
+}
+
 /// `SceneEcs::scene_fog_pooling` is a per-scene MAP of the exact value `resolve_scene` folds —
 /// the map `ws::conn::enrich_vision_explored` reads, captured under the ECS lock.
 #[test]

@@ -36,6 +36,7 @@ use crate::data::engine::scene::LightEmission;
 ///     overrides: None,
 ///     face: None,
 ///     elevation: None,
+///     lock_rotation: false,
 /// };
 /// assert_eq!(token.w, 50.0);
 /// ```
@@ -75,6 +76,12 @@ pub struct TokenEngine {
     /// stored value to ground.
     #[serde(default)]
     pub elevation: Option<f64>,
+    /// When true, a move never auto-rotates this token to face its movement direction (see
+    /// `scene::move_exec::bearing_degrees`), whatever the resolved scene's `auto_rotate_tokens`
+    /// says. Per-token presentation state like `elevation`, so linked and instanced tokens
+    /// carry it identically (it is not an `overrides` field).
+    #[serde(default)]
+    pub lock_rotation: bool,
 }
 
 impl TokenEngine {

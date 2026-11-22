@@ -234,7 +234,7 @@ test("drives the initial reconcile from ctx.viewedSceneId", async () => {
         doc: buildTokenDoc(
           "w1",
           "sB",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t-b",
         ),
       },
@@ -293,7 +293,7 @@ test("exposes the viewed scene's committed token positions as data-token-positio
     doc: buildTokenDoc(
       "w1",
       scene,
-      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
       id,
     ),
   });
@@ -417,7 +417,7 @@ test("exposes each viewed-scene token's resolved visual kind as data-token-visua
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, elevation: null, lock_rotation: false, actor_id: null, overrides: null, face: null },
           "t-gen",
         ),
       },
@@ -426,7 +426,7 @@ test("exposes each viewed-scene token's resolved visual kind as data-token-visua
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, lock_rotation: false, actor_id: null, overrides: null, face: null },
           "t-img",
         ),
       },
@@ -464,7 +464,7 @@ test("re-projects tokens with the selection highlight fx when the token selectio
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, elevation: null, lock_rotation: false, actor_id: null, overrides: null, face: null },
           "t1",
         ),
       },
@@ -594,7 +594,7 @@ test("exposes each viewed-scene token's projected badge chips as data-token-badg
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 3 },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 3, lock_rotation: false },
           "t-a",
         ),
       },
@@ -602,7 +602,7 @@ test("exposes each viewed-scene token's projected badge chips as data-token-badg
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 200, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 200, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t-b",
         ),
       },
@@ -645,7 +645,7 @@ test("exposes the applied vision frame's creature-sense ids as data-perceived-to
         op: "create",
         doc: buildTokenDoc(
           "w1", "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t-a",
         ),
       },
@@ -736,7 +736,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t1",
         ),
       },
@@ -757,7 +757,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t2",
         ),
       },
@@ -812,7 +812,7 @@ test("a viewedLevel context change re-subscribes vision exactly once per genuine
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t1",
         ),
       },
@@ -832,7 +832,7 @@ test("a viewedLevel context change re-subscribes vision exactly once per genuine
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t2",
         ),
       },
@@ -884,7 +884,7 @@ test("data-token-count reflects the level-scoped token count, changing when a to
   );
   const token = buildTokenDoc(
     "w1", "sA",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0, lock_rotation: false },
     "t1",
   );
   store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: scene }, { op: "create", doc: token }] } as never);
@@ -954,7 +954,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t1",
         ),
       },
@@ -974,7 +974,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false },
           "t2",
         ),
       },

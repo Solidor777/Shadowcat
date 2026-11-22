@@ -187,6 +187,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     bounds: (100.0, 100.0),
 ///     grid_kind: GridKind::Square,
 ///     fog_pooling: FogPooling::Individual,
+///     auto_rotate_tokens: false,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -229,6 +230,9 @@ pub struct ResolvedScene {
     /// `eng::FogPooling`). Consulted ONLY by `ws::conn::enrich_vision_explored` via
     /// `scene::explored::explored_fog_key`; the live vision/movement gates never read it.
     pub fog_pooling: eng::FogPooling,
+    /// Whether a completed move rotates the mover to face its movement direction
+    /// (`Room::execute_move`, gated per token by `TokenEngine::lock_rotation`).
+    pub auto_rotate_tokens: bool,
 }
 
 impl ResolvedScene {
@@ -1922,6 +1926,10 @@ impl SceneEcs {
             .and_then(|s| s.fog_pooling)
             .or(sd_scene.and_then(|s| s.fog_pooling))
             .unwrap_or(d.fog_pooling);
+        let d_auto_rotate = ws_scene
+            .and_then(|s| s.auto_rotate_tokens)
+            .or(sd_scene.and_then(|s| s.auto_rotate_tokens))
+            .unwrap_or(d.auto_rotate_tokens);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1950,6 +1958,9 @@ impl SceneEcs {
         let fog_pooling = vision_ov
             .and_then(|v| v.fog_pooling)
             .unwrap_or(d_fog_pooling);
+        let auto_rotate_tokens = vision_ov
+            .and_then(|v| v.auto_rotate_tokens)
+            .unwrap_or(d_auto_rotate);
 
         // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -1975,6 +1986,7 @@ impl SceneEcs {
             bounds,
             grid_kind: grid_kind_from(s),
             fog_pooling,
+            auto_rotate_tokens,
         }
     }
 
@@ -4848,6 +4860,24 @@ impl SceneEcs {
         };
         let eng = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc);
         elevation::elevation_or_ground(eng.and_then(|t| t.elevation))
+    }
+
+    /// A token's stored `(rotation, lock_rotation)` pair, read in one decode of its engine body.
+    /// `Room::execute_move` captures it under the scene read guard it already holds, so the
+    /// rotation pre-image of its auto-rotate `FieldChange` is as fresh as the position
+    /// pre-image. `None` when the token or its engine body is unreadable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.token_rotation_state(uuid::Uuid::new_v4()).is_none());
+    /// ```
+    pub fn token_rotation_state(&self, token: Uuid) -> Option<(f64, bool)> {
+        let &e = self.index.get(&token)?;
+        let ent = self.world.get::<&SceneEntity>(e).ok()?;
+        let t = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc)?;
+        Some((t.rotation, t.lock_rotation))
     }
 }
 
