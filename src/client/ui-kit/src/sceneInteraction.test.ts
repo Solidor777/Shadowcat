@@ -133,6 +133,20 @@ test("setSnapMode forwards to the host (no-op when detached)", () => {
   expect(calls).toEqual(["vertex", "center"]);
 });
 
+test("panToPoint and panToToken forward to the host (no-op when detached)", () => {
+  const bridge = new SceneInteractionBridge();
+  expect(() => bridge.panToPoint(1, 2)).not.toThrow(); // detached: no-op
+  expect(() => bridge.panToToken("tok1")).not.toThrow();
+  const calls: unknown[][] = [];
+  bridge.attach(fakeSceneHost({
+    panToPoint: (x, y, opts) => calls.push(["point", x, y, opts]),
+    panToToken: (id, opts) => calls.push(["token", id, opts]),
+  }));
+  bridge.panToPoint(10, 20, { durationMs: 100 });
+  bridge.panToToken("tok1");
+  expect(calls).toEqual([["point", 10, 20, { durationMs: 100 }], ["token", "tok1", undefined]]);
+});
+
 test("animateSamples forwards moverLight to the host", () => {
   const bridge = new SceneInteractionBridge();
   const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }];

@@ -596,6 +596,83 @@ test("setSnapMode('edge') routes the single snap chokepoint through snapEdge", (
   expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 150, y: 150 }); // back to cell centers
 });
 
+describe("camera pan-to", () => {
+  /** An engine over a 800x600 viewport, with a reduced-motion switch and a token at (1000,500). */
+  function makePanEngine(reducedMotion: boolean) {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion }),
+    });
+    store.applyCommand(tokenCmd(1, "tok1", 1000));
+    engine.setViewport(800, 600);
+    engine.start();
+    return { engine, backend };
+  }
+  /** The scene point at the viewport center, per the camera transform the backend last received. */
+  const centerOf = (backend: MockBackend) => ({
+    x: (400 - backend.camera!.x) / backend.camera!.scale,
+    y: (300 - backend.camera!.y) / backend.camera!.scale,
+  });
+
+  it("panToPoint tweens the camera across ticker frames and lands on the point", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+    engine.panToPoint(2000, 300, { durationMs: 400 });
+    backend.runTicker(200);
+    expect(centerOf(backend).x).toBeCloseTo(1200); // halfway from 400 to 2000, linear
+    backend.runTicker(200);
+    expect(centerOf(backend).x).toBeCloseTo(2000);
+    expect(centerOf(backend).y).toBeCloseTo(300);
+  });
+
+  it("panToPoint reuses the resolved token-move easing: easeInOut trails linear early in the tween", () => {
+    const eased = makePanEngine(false);
+    eased.engine.setAnimation({ speedCellsPerSec: 6, easing: "easeInOut" });
+    eased.engine.panToPoint(2000, 300, { durationMs: 400 });
+    eased.backend.runTicker(100);
+    expect(centerOf(eased.backend).x).toBeGreaterThan(400); // the tween has started
+    expect(centerOf(eased.backend).x).toBeLessThan(400 + 1600 * 0.25);
+  });
+
+  it("panToToken follows the token's live position and ends on it", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+    engine.panToToken("tok1", { durationMs: 400 });
+    backend.runTicker(400);
+    expect(centerOf(backend).x).toBeCloseTo(1000);
+    expect(centerOf(backend).y).toBeCloseTo(0);
+  });
+
+  it("panToToken on an untracked token leaves the camera alone", () => {
+    const { engine, backend } = makePanEngine(false);
+    const before = { ...backend.camera! };
+    engine.panToToken("nobody");
+    backend.runTicker(500);
+    expect(backend.camera).toEqual(before);
+  });
+
+  it("reduced motion snaps the camera immediately, with no ticker frame needed", () => {
+    const { engine, backend } = makePanEngine(true);
+    engine.panToPoint(2000, 300);
+    expect(centerOf(backend).x).toBeCloseTo(2000);
+    expect(centerOf(backend).y).toBeCloseTo(300);
+  });
+
+  it("a user pan mid-tween cancels the pan", () => {
+    const { engine, backend } = makePanEngine(false);
+    engine.panToPoint(2000, 300, { durationMs: 400 });
+    backend.runTicker(100);
+    expect(centerOf(backend).x).toBeGreaterThan(400); // the pan was under way
+    engine.dispatchPointerDown({ x: 0, y: 0 }, { pointerId: 1 } as PointerEvent);
+    engine.dispatchPointerMove({ x: 10, y: 0 }, { pointerId: 1 } as PointerEvent);
+    const held = { ...backend.camera! };
+    backend.runTicker(300);
+    expect(backend.camera).toEqual(held);
+  });
+});
+
 test("the snap mode is orthogonal to setSnapEnabled: a snap-off scene stays identity under vertex mode", () => {
   const { engine } = makeEngine(); // square / 100
   engine.setSnapMode("vertex");

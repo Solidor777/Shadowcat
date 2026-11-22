@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -217,6 +217,39 @@
     if (!tok) return false;
     return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
   });
+
+  /** The viewed scene's tokens this user effectively owns (`ownerFloorApplies`: direct owner, or
+   * the linked actor's owner). The pan-to-owned button's subject and its enablement. */
+  const ownedTokens = $derived.by((): WireDocument[] => {
+    subscribe();
+    const sceneId = ctx.viewedSceneId;
+    if (sceneId === null) return [];
+    return ctx.documents
+      .query("token")
+      .filter((tok) => tok.parent_id === sceneId && ownerFloorApplies(tok, ctx.selfId, ctx.documents));
+  });
+
+  /** Pans the camera to the average position of the user's owned tokens on the viewed scene
+   * (a token's `engine.x`/`engine.y` is its center). A no-op with none; the button is disabled
+   * then.
+   * @example
+   * ```
+   * // wired to the "center on my tokens" button
+   * panToOwnedTokens();
+   * ```
+   */
+  function panToOwnedTokens(): void {
+    const owned = ownedTokens;
+    if (owned.length === 0) return;
+    let x = 0;
+    let y = 0;
+    for (const tok of owned) {
+      const eng = tok.engine as TokenEngine;
+      x += eng.x;
+      y += eng.y;
+    }
+    ctx.scene.panToPoint(x / owned.length, y / owned.length);
+  }
 
   /** Sets the pending speak-as-token selection from the currently selected token (a no-op if
    * none is selected, guarded by `canActAsSelected` at the call site).
@@ -609,6 +642,20 @@
       {t("tools.shareRuler")}
     </button>
   {/if}
+
+  <!-- Camera shortcut for every role: centers on the average position of the viewer's own
+       tokens on the viewed scene; disabled while the viewer owns none there. -->
+  <button
+    type="button"
+    class="tool"
+    disabled={ownedTokens.length === 0}
+    aria-label={t("tools.panToOwnedTokens")}
+    data-testid="pan-to-owned"
+    title={t("tools.panToOwnedTokens")}
+    onclick={panToOwnedTokens}
+  >
+    {t("tools.panToOwnedTokens")}
+  </button>
 
   {#if canActAsSelected}
     <button

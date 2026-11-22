@@ -4,7 +4,7 @@
 // mount; before/after attachment every call no-ops (snap is identity) so a tool
 // component never crashes when no canvas is mounted. Render types are type-only imports
 // (zero runtime dependency on @shadowcat/render here).
-import type { SceneTool, SceneToolHost, SnapMode, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample, EmoteKind } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample, EmoteKind } from "@shadowcat/render";
 
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
@@ -72,6 +72,25 @@ export class SceneInteractionBridge implements SceneInteraction {
    */
   setSnapMode(mode: SnapMode): void {
     this.#host?.setSnapMode(mode);
+  }
+
+  /** Forward to the attached host; a no-op when detached.
+   * @param x - The scene x coordinate to center the camera on.
+   * @param y - The scene y coordinate to center the camera on.
+   * @param opts - Optional tween duration.
+   * @example sceneInteraction.panToPoint(500, 300);
+   */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void {
+    this.#host?.panToPoint(x, y, opts);
+  }
+
+  /** Forward to the attached host; a no-op when detached.
+   * @param tokenId - The token id to center the camera on and follow.
+   * @param opts - Optional tween duration.
+   * @example sceneInteraction.panToToken("tok1");
+   */
+  panToToken(tokenId: string, opts?: PanToOptions): void {
+    this.#host?.panToToken(tokenId, opts);
   }
 
   /** Forward to the attached host; a no-op when detached.

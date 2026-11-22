@@ -444,6 +444,14 @@ export interface LightingInput {
  * happens. */
 export type SnapMode = "center" | "vertex" | "edge";
 
+/** Options for `SceneToolHost.panToPoint` / `panToToken`. The easing curve is the scene's
+ * resolved token-move easing and reduced motion follows the performance budget, so neither is a
+ * per-call choice. */
+export interface PanToOptions {
+  /** Tween length in milliseconds; defaults to the camera's own default. */
+  durationMs?: number;
+}
+
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
  * RenderEngine implements this; a detached bridge no-ops. */
 export interface SceneToolHost {
@@ -470,6 +478,18 @@ export interface SceneToolHost {
    * mode automatically; no per-tool opt-in exists.
    * @param mode The snap-target mode to apply. */
   setSnapMode(mode: SnapMode): void;
+  /** Animate the camera so scene point `(x,y)` is centered in the viewport (snaps instantly
+   * under the reduced-motion budget). A manual pan or zoom cancels it.
+   * @param x The scene x-coordinate to center.
+   * @param y The scene y-coordinate to center.
+   * @param opts Optional tween duration. */
+  panToPoint(x: number, y: number, opts?: PanToOptions): void;
+  /** Animate the camera to center on token `tokenId`, tracking the token's LIVE (tweened)
+   * position each frame so a moving token is followed rather than panned to a stale spot. A
+   * token the view does not track is a no-op.
+   * @param tokenId The token document id to center on.
+   * @param opts Optional tween duration. */
+  panToToken(tokenId: string, opts?: PanToOptions): void;
   /** Mark a token as locally dragging so its sprite snaps to the authoritative
    * transform (no tween lag) while a remote move still tweens; null clears it.
    * @param id The token document id to mark as dragging, or `null` to clear it. */
