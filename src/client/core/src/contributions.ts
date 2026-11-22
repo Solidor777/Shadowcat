@@ -4,6 +4,8 @@
 // DocumentStore — no framework runtime here; `component` is opaque to core.
 
 import type { ChatMessageEngine } from "./chat-docs";
+import { TOUR_CONTRACT, isTourAnchorId, validateTourMeta } from "./tour";
+import type { TourMeta } from "./tour";
 import type { WireDocument } from "./wire";
 
 /** One provider or many for a surface contract. `"singleton"` enforcement (a collision demotes
@@ -254,6 +256,12 @@ export interface Contribution {
   visionTreatment?: VisionTreatmentMeta;
   /** Chat-card extension metadata, present iff `contract` is `CHAT_CARD_EXTENSION_CONTRACT`. */
   chatCardExtension?: ChatCardExtensionMeta;
+  /** Tour definition, present iff `contract` is `TOUR_CONTRACT`; validated by `contribute`. */
+  tour?: TourMeta;
+  /** When set, `<Surface>` wraps this contribution's rendered output in an element carrying
+   * `data-tour="<tourAnchor>"`, so a tour step can target it. Must satisfy `isTourAnchorId`;
+   * `contribute` rejects any other value. */
+  tourAnchor?: string;
   /** How this contribution relates to the host theme: `"host"` (default)
    * consumes the active theme's tokens like every engine surface; `"isolated"`
    * wraps the content in the theme-isolation class, which re-declares every
@@ -301,6 +309,8 @@ export class ContributionRegistry {
    * `entriesFor`'s module-id tie-break) is omitted for a host-registered (non-module)
    * contribution.
    * @returns A dispose function that removes this contribution and notifies subscribers.
+   * @throws When `c.contract` is `TOUR_CONTRACT` and `c.tour` is absent or invalid, or when
+   * `c.tourAnchor` is not a legal anchor id.
    * @example
    * ```ts
    * import { ContributionRegistry } from "@shadowcat/core";
@@ -314,6 +324,10 @@ export class ContributionRegistry {
    * ```
    */
   contribute(c: Contribution, opts: ContributeOptions = {}): () => void {
+    if (c.contract === TOUR_CONTRACT) validateTourMeta(c.tour);
+    if (c.tourAnchor !== undefined && !isTourAnchorId(c.tourAnchor)) {
+      throw new Error(`invalid tour anchor: ${JSON.stringify(c.tourAnchor)}`);
+    }
     const entry: Entry = { c, module: opts.module, seq: this.seqCounter++ };
     this.entries.push(entry);
     this.emit();
