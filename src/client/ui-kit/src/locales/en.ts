@@ -976,6 +976,7 @@ export const en: Messages = {
   "vfx.scale": "Scale",
   "vfx.pickSound": "Pick sound",
   "vfx.clearSound": "Clear sound",
+  "chatBubbles.setting": "Show chat bubbles over speaking tokens",
   "ducking.sectionTitle": "Voice ducking",
   "ducking.masterEnable": "Enable voice ducking",
   "ducking.keySource.title": "Push-to-duck key",
