@@ -275,6 +275,29 @@ describe("Composer — sending", () => {
     expect(send).toHaveBeenCalledWith({ channel: "general", content: "secret", audience: gmAudience });
   });
 
+  it("the roll-mode picker puts the blind command in front of the draft, which then sends verbatim", async () => {
+    const { send } = renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "1d20+5" } });
+    const picker = screen.getByTestId("roll-mode") as HTMLSelectElement;
+    await fireEvent.change(picker, { target: { value: "/blindroll " } });
+    expect(textarea.value).toBe("/blindroll 1d20+5");
+    expect(picker.value).toBe("");
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "/blindroll 1d20+5", audience: publicAudience });
+  });
+
+  it("the roll-mode picker swaps the command a draft already starts with", async () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const picker = screen.getByTestId("roll-mode") as HTMLSelectElement;
+    await fireEvent.input(textarea, { target: { value: "/roll 2d6" } });
+    await fireEvent.change(picker, { target: { value: "/selfroll " } });
+    expect(textarea.value).toBe("/selfroll 2d6");
+    await fireEvent.change(picker, { target: { value: "/blindroll " } });
+    expect(textarea.value).toBe("/blindroll 2d6");
+  });
+
   it("sends a slash-command body verbatim without any client-side parsing", async () => {
     const { send } = renderComposer();
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
