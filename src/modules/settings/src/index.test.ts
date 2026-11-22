@@ -29,6 +29,18 @@ describe("settings module", () => {
     });
   });
 
+  it("contributes the port-forward section as a server-admin-only settings section", () => {
+    const contributions = new ContributionRegistry();
+    settings.register({ contributions } as never);
+    const section = contributions
+      .contributionsFor(SETTINGS_SECTION_CONTRACT)
+      .find((c) => c.id === "settings:port-forward");
+    expect(section?.settingsSection).toEqual({
+      labelKey: "settings.portForward.title",
+      serverAdminOnly: true,
+    });
+  });
+
   it("provides shadowcat.settings-section for other modules to contribute into", () => {
     expect(settings.manifest.provides).toEqual([
       { contract: "shadowcat.settings-section", cardinality: "multi" },

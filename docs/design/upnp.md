@@ -6,8 +6,8 @@ hand. Operator-facing usage belongs in the hosting guide (`docs/site/guides/host
 transport and listener design this builds on is `built-in-https.md`.
 
 **Status.** The protocol codec, discovery and clients, and runtime wiring are built (the `portmap`
-module, the `port_forward` config key, `AppState.portmap`, and `GET`/`PUT /api/admin/portmap`). The
-admin UI is not built (section 10).
+module, the `port_forward` config key, `AppState.portmap`, and `GET`/`PUT /api/admin/portmap`), and
+so is the admin settings section (`PortForwardSection`, section 10).
 
 Binding directives: (1) the feature exists to make self-hosting reachable without manual router
 work; (2) it is OFF by default, because it opens a port to the internet; (3) it never blocks
