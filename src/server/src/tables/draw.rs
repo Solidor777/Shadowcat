@@ -230,7 +230,7 @@ async fn resolve_row_results(
             TableEntry::Doc { target, label } => {
                 content.push(Segment::DocLink {
                     target: target.clone(),
-                    label: label.clone(),
+                    label: Some(label.clone()),
                 });
             }
             TableEntry::Image { asset_id, alt } => {

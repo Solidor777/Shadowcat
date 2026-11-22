@@ -71,6 +71,7 @@ fn a_labeled_roll_span_becomes_a_roll_button_with_a_label() {
         vec![Segment::RollButton {
             formula: "1d6".to_string(),
             label: Some("Luck".to_string()),
+            flavor: None,
         }]
     );
 }
@@ -87,6 +88,7 @@ fn a_bare_inline_span_becomes_a_roll_button_with_no_label() {
         vec![Segment::RollButton {
             formula: "1d6".to_string(),
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -106,7 +108,7 @@ fn a_doc_span_becomes_a_doc_link() {
                 doc_id: id.parse().unwrap(),
                 embedded_path: None,
             },
-            label: "x".to_string(),
+            label: Some("x".to_string()),
         }]
     );
 }

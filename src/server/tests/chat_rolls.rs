@@ -193,6 +193,53 @@ async fn roll_result_message_end_to_end() {
     }
 }
 
+/// `/roll <formula> | <flavor>` stores the trimmed flavor beside the formula; a
+/// roll without a `|` stores `flavor: None`. The stored `source` keeps the whole
+/// command text.
+#[tokio::test]
+async fn roll_flavor_is_split_from_the_formula_at_the_first_pipe() {
+    let f = Fixture::new().await;
+    let cmd = f.send("/roll 1d20+5 | Attack roll").await.unwrap();
+    let sys = f.stored_message_system(&cmd).await;
+    assert_eq!(sys.source, Some("/roll 1d20+5 | Attack roll".into()));
+    match sys.content.as_slice() {
+        [Segment::RollEmbed {
+            formula, flavor, ..
+        }] => {
+            assert_eq!(formula, "1d20+5");
+            assert_eq!(flavor.as_deref(), Some("Attack roll"));
+        }
+        other => panic!("expected one RollEmbed segment, got {other:?}"),
+    }
+
+    let cmd = f.send("/roll 1d20+5").await.unwrap();
+    let sys = f.stored_message_system(&cmd).await;
+    assert!(matches!(
+        sys.content.as_slice(),
+        [Segment::RollEmbed { flavor: None, .. }]
+    ));
+}
+
+/// A `[[doc:<uuid>]]` span with no `|` stores `label: None` for the client to
+/// resolve live; an explicit label is stored verbatim.
+#[tokio::test]
+async fn doc_link_without_a_label_stores_none() {
+    let f = Fixture::new().await;
+    let id = "00000000-0000-0000-0000-000000000001";
+    let cmd = f.send(&format!("[[doc:{id}]]")).await.unwrap();
+    let sys = f.stored_message_system(&cmd).await;
+    assert!(matches!(
+        sys.content.as_slice(),
+        [Segment::DocLink { label: None, .. }]
+    ));
+    let cmd = f.send(&format!("[[doc:{id}|Named]]")).await.unwrap();
+    let sys = f.stored_message_system(&cmd).await;
+    assert!(matches!(
+        sys.content.as_slice(),
+        [Segment::DocLink { label: Some(l), .. }] if l == "Named"
+    ));
+}
+
 /// (b) An inline `[[1d6]]` span inside a `Normal` body interleaves with the
 /// surrounding text in scan order: Text, RollEmbed, Text.
 #[tokio::test]
@@ -227,6 +274,7 @@ async fn roll_button_stored_unexecuted_with_trimmed_formula() {
         vec![Segment::RollButton {
             formula: "1d20".into(),
             label: Some("Attack".into()),
+            flavor: None,
         }]
     );
 }

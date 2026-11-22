@@ -122,6 +122,7 @@ fn scan_button_without_label() {
         vec![BodyChunk::Button {
             formula: "2d6+3",
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -134,8 +135,46 @@ fn scan_button_with_label() {
         vec![BodyChunk::Button {
             formula: "2d6+3",
             label: Some("Attack"),
+            flavor: None,
         }]
     );
+}
+
+#[test]
+fn scan_button_with_label_and_flavor_splits_on_the_second_pipe() {
+    let chunks = scan_body("[[roll:2d6+3|Attack| Swing the axe ]]").unwrap();
+    assert_eq!(
+        chunks,
+        vec![BodyChunk::Button {
+            formula: "2d6+3",
+            label: Some("Attack"),
+            flavor: Some("Swing the axe"),
+        }]
+    );
+}
+
+#[test]
+fn scan_button_with_flavor_but_no_label_keeps_the_flavor() {
+    let chunks = scan_body("[[roll:2d6||Swing]]").unwrap();
+    assert_eq!(
+        chunks,
+        vec![BodyChunk::Button {
+            formula: "2d6",
+            label: None,
+            flavor: Some("Swing"),
+        }]
+    );
+}
+
+#[test]
+fn split_roll_flavor_splits_at_the_first_pipe_only() {
+    assert_eq!(split_roll_flavor("1d20+5"), ("1d20+5", None));
+    assert_eq!(
+        split_roll_flavor("1d20+5 | Attack roll"),
+        ("1d20+5 ", Some("Attack roll"))
+    );
+    assert_eq!(split_roll_flavor("1d20 | a | b"), ("1d20 ", Some("a | b")));
+    assert_eq!(split_roll_flavor("1d20 |   "), ("1d20 ", None));
 }
 
 #[test]
@@ -146,6 +185,7 @@ fn scan_button_with_whitespace_only_label_is_none() {
         vec![BodyChunk::Button {
             formula: "2d6",
             label: None,
+            flavor: None,
         }]
     );
 }
@@ -158,6 +198,7 @@ fn scan_button_empty_formula_parses_then_fails_downstream() {
         vec![BodyChunk::Button {
             formula: "",
             label: None,
+            flavor: None,
         }]
     );
     match validate_formula("", total_ctx()) {
@@ -199,7 +240,7 @@ fn scan_doc_link() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: None,
             },
-            label: "My Document",
+            label: Some("My Document"),
         }]
     );
 }
@@ -215,7 +256,7 @@ fn scan_doc_link_with_embedded_path() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: Some("/embedded/actor/0".into()),
             },
-            label: "My Item",
+            label: Some("My Item"),
         }]
     );
 }
@@ -229,7 +270,7 @@ fn scan_token_link() {
             target: DocLinkTarget::Token {
                 token_id: Uuid::from_u128(2),
             },
-            label: "Goblin",
+            label: Some("Goblin"),
         }]
     );
 }
@@ -246,7 +287,7 @@ fn scan_doc_link_with_surrounding_text() {
                     doc_id: Uuid::from_u128(1),
                     embedded_path: None,
                 },
-                label: "Doc",
+                label: Some("Doc"),
             },
             BodyChunk::Text(" please"),
         ]
@@ -254,10 +295,30 @@ fn scan_doc_link_with_surrounding_text() {
 }
 
 #[test]
-fn scan_doc_link_missing_label_is_malformed() {
+fn scan_doc_link_without_a_pipe_has_no_label() {
     assert_eq!(
-        scan_body("[[doc:00000000-0000-0000-0000-000000000001]]"),
-        Err(RollError::MalformedDocLink)
+        scan_body("[[doc:00000000-0000-0000-0000-000000000001]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id: Uuid::from_u128(1),
+                embedded_path: None,
+            },
+            label: None,
+        }]
+    );
+}
+
+#[test]
+fn scan_doc_link_with_embedded_path_and_no_pipe_has_no_label() {
+    assert_eq!(
+        scan_body("[[doc:00000000-0000-0000-0000-000000000001/embedded/actor/0]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id: Uuid::from_u128(1),
+                embedded_path: Some("/embedded/actor/0".into()),
+            },
+            label: None,
+        }]
     );
 }
 
@@ -278,10 +339,15 @@ fn scan_doc_link_bad_uuid_is_malformed() {
 }
 
 #[test]
-fn scan_token_link_missing_label_is_malformed() {
+fn scan_token_link_without_a_pipe_has_no_label() {
     assert_eq!(
-        scan_body("[[token:00000000-0000-0000-0000-000000000002]]"),
-        Err(RollError::MalformedDocLink)
+        scan_body("[[token:00000000-0000-0000-0000-000000000002]]").unwrap(),
+        vec![BodyChunk::DocLink {
+            target: DocLinkTarget::Token {
+                token_id: Uuid::from_u128(2),
+            },
+            label: None,
+        }]
     );
 }
 
@@ -314,7 +380,7 @@ fn scan_doc_link_label_may_contain_slash_and_pipe() {
                 doc_id: Uuid::from_u128(1),
                 embedded_path: None,
             },
-            label: "A/B|C",
+            label: Some("A/B|C"),
         }]
     );
 }

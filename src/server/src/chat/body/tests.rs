@@ -111,6 +111,7 @@ async fn button_span_validates_without_rolling() {
         vec![Segment::RollButton {
             formula: "1d20".to_string(),
             label: Some("Attack".to_string()),
+            flavor: None,
         }]
     );
 }
@@ -138,7 +139,7 @@ async fn doc_link_span_stores_target_and_label() {
                 doc_id: id.parse().unwrap(),
                 embedded_path: None,
             },
-            label: "My Doc".to_string(),
+            label: Some("My Doc".to_string()),
         }]
     );
 }
@@ -395,6 +396,7 @@ fn compose_static_button_span_becomes_a_labeled_button() {
         vec![Segment::RollButton {
             formula: "1d20".to_string(),
             label: Some("Luck".to_string()),
+            flavor: None,
         }]
     );
 }
@@ -418,7 +420,7 @@ fn compose_static_doc_link_span_passes_through() {
                 doc_id: id.parse().unwrap(),
                 embedded_path: None,
             },
-            label: "My Doc".to_string(),
+            label: Some("My Doc".to_string()),
         }]
     );
 }

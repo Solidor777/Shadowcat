@@ -23,6 +23,7 @@ fn roll_embed_carries_roll_id_spec_raw_and_defaults_recalc_history_to_none() {
         spec: Some(Box::new(spec.clone())),
         raw: Some(Box::new(raw.clone())),
         recalc_history: None,
+        flavor: None,
     };
     let j = serde_json::to_value(&seg).unwrap();
     assert_eq!(
@@ -35,8 +36,45 @@ fn roll_embed_carries_roll_id_spec_raw_and_defaults_recalc_history_to_none() {
         j.get("recalc_history").is_none(),
         "recalc_history: None must not serialize (skip_serializing_if)"
     );
+    assert!(
+        j.get("flavor").is_none(),
+        "flavor: None must not serialize (skip_serializing_if)"
+    );
     let back: Segment = serde_json::from_value(j).unwrap();
     assert_eq!(back, seg);
+}
+
+/// A record stored before `flavor` existed on the roll segments, and before `label` became
+/// optional on `DocLink`, still deserializes: absent `flavor` reads as `None`, and a stored
+/// `DocLink` label reads as `Some`.
+#[test]
+fn legacy_stored_segments_deserialize_with_defaults() {
+    let button: Segment = serde_json::from_value(serde_json::json!({
+        "kind": "roll_button", "formula": "1d20", "label": "Attack"
+    }))
+    .unwrap();
+    assert_eq!(
+        button,
+        Segment::RollButton {
+            formula: "1d20".into(),
+            label: Some("Attack".into()),
+            flavor: None,
+        }
+    );
+    let id = "00000000-0000-0000-0000-000000000001";
+    let link: Segment = serde_json::from_value(serde_json::json!({
+        "kind": "doc_link",
+        "target": { "kind": "token", "token_id": id },
+        "label": "Goblin"
+    }))
+    .unwrap();
+    assert!(matches!(link, Segment::DocLink { label: Some(l), .. } if l == "Goblin"));
+    let unlabeled: Segment = serde_json::from_value(serde_json::json!({
+        "kind": "doc_link",
+        "target": { "kind": "token", "token_id": id }
+    }))
+    .unwrap();
+    assert!(matches!(unlabeled, Segment::DocLink { label: None, .. }));
 }
 
 #[test]
@@ -143,6 +181,7 @@ fn roll_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_onl
                 recalculated_by: crate::test_ids::test_uuid(2),
                 recalculated_at: 100,
             }]),
+            flavor: None,
         },
     ];
 
@@ -205,6 +244,7 @@ fn roll_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
         spec: None,
         raw: None,
         recalc_history: None,
+        flavor: None,
     }];
     assert!(roll_property_overrides(&content).is_empty());
 }
@@ -1179,7 +1219,7 @@ async fn send_message_stores_a_doc_link_segment() {
                     doc_id: target_id,
                     embedded_path: None,
                 },
-                label: "My Doc".into(),
+                label: Some("My Doc".into()),
             },
             Segment::Text {
                 text: " please".into()
@@ -1245,7 +1285,7 @@ async fn send_message_stores_a_token_link_segment() {
         sys.content,
         vec![Segment::DocLink {
             target: DocLinkTarget::Token { token_id },
-            label: "Goblin".into(),
+            label: Some("Goblin".into()),
         }]
     );
 }
@@ -1313,7 +1353,7 @@ async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidate
                 doc_id: nonexistent,
                 embedded_path: None,
             },
-            label: "Ghost Doc".into(),
+            label: Some("Ghost Doc".into()),
         }]
     );
 }
@@ -1952,10 +1992,9 @@ async fn editing_into_a_doc_link_span_stores_the_doc_link_segment() {
 
     let stored = repo.get_document(message_id).await.unwrap().unwrap();
     let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
-    assert!(sys
-        .content
-        .iter()
-        .any(|s| matches!(s, Segment::DocLink { label, .. } if label == "My Doc")));
+    assert!(sys.content.iter().any(
+        |s| matches!(s, Segment::DocLink { label, .. } if label.as_deref() == Some("My Doc"))
+    ));
 }
 
 #[tokio::test]
@@ -2172,7 +2211,7 @@ async fn editing_into_a_roll_button_span_validates_without_rolling() {
     let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     assert!(sys.content.iter().any(|s| matches!(
         s,
-        Segment::RollButton { formula, label }
+        Segment::RollButton { formula, label, .. }
         if formula == "1d20" && label.as_deref() == Some("Attack")
     )));
 }
@@ -2356,10 +2395,9 @@ async fn whisper_edit_body_is_scanned_for_doc_link_spans_like_a_send() {
 
     let stored = repo.get_document(message_id).await.unwrap().unwrap();
     let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
-    assert!(sys
-        .content
-        .iter()
-        .any(|s| matches!(s, Segment::DocLink { label, .. } if label == "the sheet")));
+    assert!(sys.content.iter().any(
+        |s| matches!(s, Segment::DocLink { label, .. } if label.as_deref() == Some("the sheet"))
+    ));
 }
 
 #[tokio::test]
@@ -4121,6 +4159,7 @@ async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
         spec: None,
         raw: None,
         recalc_history: None,
+        flavor: None,
     }];
     let doc = build_message_doc(
         world,
@@ -4260,7 +4299,7 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
             budget_per_min: 30,
         },
         "general".into(),
-        "/roll 1d6".into(),
+        "/roll 1d6 | Fireball".into(),
         None,
         Audience::GmOnly,
         None,
@@ -4315,7 +4354,16 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
     let stored = repo.get_document(doc.id).await.unwrap().unwrap();
     let after: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     match &after.content[0] {
-        Segment::RollEmbed { recalc_history, .. } => {
+        Segment::RollEmbed {
+            recalc_history,
+            flavor,
+            ..
+        } => {
+            assert_eq!(
+                flavor.as_deref(),
+                Some("Fireball"),
+                "a recalculation leaves the flavor untouched"
+            );
             let history = recalc_history.as_ref().unwrap();
             assert_eq!(history.len(), 1);
             assert_eq!(history[0].previous_raw, before_raw);
@@ -4364,6 +4412,7 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
     let seg = &player_sys["content"][0];
     assert_eq!(seg["spec"], serde_json::Value::Null);
     assert_eq!(seg["raw"], serde_json::Value::Null);
+    assert_eq!(seg["flavor"], "Fireball", "flavor is not GM-only");
     let history = seg["recalc_history"].as_array().unwrap();
     assert_eq!(
         history.len(),
