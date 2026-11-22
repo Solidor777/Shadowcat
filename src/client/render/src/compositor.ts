@@ -12,6 +12,7 @@ export class Compositor {
   /**
    * Constructs the compositor bound to a single backend.
    * @param backend The display backend `setVisibility`/`setVisibilityBlend` forward to.
+   * @param onApplied Called after every applied mask (set or blend), once `current()` reflects it.
    * @example
    * ```ts
    * import { Compositor, type DisplayBackend } from "@shadowcat/render";
@@ -20,7 +21,10 @@ export class Compositor {
    * const compositor = new Compositor(backend);
    * ```
    */
-  constructor(private readonly backend: DisplayBackend) {}
+  constructor(
+    private readonly backend: DisplayBackend,
+    private readonly onApplied?: () => void,
+  ) {}
 
   /** Apply a visibility mask: forwards to `backend.setVisibility` and caches it for `current()`.
    * Ends any in-flight `setVisibilityBlend` cross-fade the backend was mid-way through (see
@@ -38,6 +42,7 @@ export class Compositor {
   setVisibility(input: VisibilityInput): void {
     this.last = input;
     this.backend.setVisibility(input);
+    this.onApplied?.();
   }
 
   /** Cross-fade the mask between two consecutive vision samples. `current()`
@@ -64,6 +69,7 @@ export class Compositor {
     this.last = factor < 0.5 ? from : to;
     if (this.backend.setVisibilityBlend) this.backend.setVisibilityBlend(from, to, factor);
     else this.backend.setVisibility(this.last);
+    this.onApplied?.();
   }
 
   /** The last applied visibility — a snapshot of the most recent `setVisibility`/

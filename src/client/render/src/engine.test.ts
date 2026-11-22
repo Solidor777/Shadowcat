@@ -272,6 +272,38 @@ test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle
   expect(modes).toEqual(["all", "masked", "all"]);
 });
 
+test("isTokenRevealed follows the applied fog mask and onVisibilityApplied fires per mask", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  let applied = 0;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    onVisibilityApplied: () => { applied++; },
+  });
+  engine.start();
+  const inside = { x: 150, y: 150 };
+  const outside = { x: 900, y: 900 };
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 });
+  expect(applied).toBe(1);
+  expect(engine.isTokenRevealed("t", outside)).toBe(true);
+  // The GM fog preview paints full fog: nothing is revealed, and the mask change is announced.
+  engine.setFogPreview(true);
+  expect(applied).toBe(2);
+  expect(engine.isTokenRevealed("t", inside)).toBe(false);
+  engine.setFogPreview(false);
+  // A masked frame whose only visible polygon is the square (100,100)-(200,200).
+  onUpdate({
+    payload: { mode: "masked", polygons: [{ scene: "s1", points: [100, 100, 200, 100, 200, 200, 100, 200] }] },
+    computedAtSeq: 1,
+  });
+  expect(backend.visibility!.visible).toHaveLength(1);
+  expect(engine.isTokenRevealed("t", inside)).toBe(true);
+  expect(engine.isTokenRevealed("t", outside)).toBe(false);
+});
+
 test("setViewAsUser re-subscribes vision with as_user and resets the watermark", () => {
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
@@ -674,6 +706,27 @@ describe("camera pan-to", () => {
     expect(centers.at(-1)).toEqual({ x: 400, y: 300 });
     engine.panToPoint(2000, 700);
     expect(centers.at(-1)).toEqual({ x: 2000, y: 700 });
+  });
+
+  it("onTransformApplied reports the applied camera transform on start, after a pan and after a zoom", () => {
+    const transforms: Array<{ x: number; y: number; scale: number }> = [];
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion: true }),
+      onTransformApplied: (t) => transforms.push(t),
+    });
+    engine.setViewport(800, 600);
+    engine.start();
+    expect(transforms.at(-1)).toEqual(backend.camera);
+    engine.panToPoint(2000, 700);
+    expect(transforms.at(-1)).toEqual(backend.camera);
+    expect(transforms.at(-1)?.x).not.toBe(0);
+    engine.camera.zoomAt(2, 0, 0);
+    engine.applyCamera();
+    expect(transforms.at(-1)?.scale).toBe(2);
+    expect(transforms.at(-1)).toEqual(backend.camera);
   });
 
   it("a user pan mid-tween cancels the pan", () => {

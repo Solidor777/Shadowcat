@@ -2,13 +2,14 @@ import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } fr
 import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
+import type { CameraTransform, VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { EasingMode, TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
 import { holdLightingCells, unionLightingInputs } from "./lighting";
 import { Camera, type PanTarget } from "./camera";
 import { Compositor } from "./compositor";
+import { isTokenRevealed } from "./reveal";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
 import { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
@@ -105,6 +106,15 @@ export interface RenderEngineOpts {
    * the viewport center — how a host surfaces where the camera looks, which otherwise exists
    * only as a WebGL transform. */
   onCameraApplied?: (center: Point) => void;
+  /** Called after every camera transform push with the transform just applied
+   * (`screen = scene * scale + offset`) — how a host mirrors the camera into DOM that must stay
+   * anchored to scene points (a stage overlay), since the transform otherwise exists only on the
+   * backend's world container. */
+  onTransformApplied?: (transform: CameraTransform) => void;
+  /** Called after every applied fog mask (a derived frame, the GM fog preview, and each vision
+   * sweep step) — the signal a host re-asks {@link RenderEngine.isTokenRevealed} on, since the
+   * mask exists only as backend state. */
+  onVisibilityApplied?: () => void;
   /** Called on every painted lighting frame (host observability hook) with the frame the
    * backend was handed and whether a carried-light sweep is in flight — so a host can surface
    * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
@@ -437,7 +447,7 @@ export class RenderEngine implements SceneToolHost {
     this.walls = new WallView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.lights = new LightView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
-    this.compositor = new Compositor(this.backend);
+    this.compositor = new Compositor(this.backend, () => this.opts.onVisibilityApplied?.());
     this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
 
@@ -793,6 +803,25 @@ export class RenderEngine implements SceneToolHost {
       this.lighting.setDarkness(eff.visible);
     }
     this.opts.onDerivedApplied?.(eff);
+  }
+
+  /** Whether the fog currently applied reveals a token at `at` — the same mask the canvas paints,
+   * including a vision sweep's progressive polygon and the GM fog preview. DOM drawn near a token
+   * (a chat bubble) gates on this so it never shows a position the canvas hides. Fail-closed:
+   * see `isTokenRevealed`.
+   * @param tokenId The token's document id.
+   * @param at The token's scene-coordinate position.
+   * @returns `true` when a viewer currently sees that position.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.isTokenRevealed("t1", { x: 150, y: 150 });
+   * ```
+   */
+  isTokenRevealed(tokenId: string, at: Point): boolean {
+    return isTokenRevealed(this.compositor.current(), tokenId, at);
   }
 
   /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
@@ -2109,7 +2138,9 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   applyCamera(): void {
-    this.backend.setCameraTransform(this.camera.transform());
+    const transform = this.camera.transform();
+    this.backend.setCameraTransform(transform);
+    this.opts.onTransformApplied?.(transform);
     this.opts.onCameraApplied?.(
       this.camera.screenToScene({ x: this.viewport.width / 2, y: this.viewport.height / 2 }),
     );
