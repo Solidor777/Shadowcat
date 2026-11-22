@@ -183,6 +183,8 @@ export type { ResourceBinding } from "./generated/engine/ResourceBinding";
 export type { Recovery } from "./generated/engine/Recovery";
 export type { Formula } from "./generated/engine/Formula";
 export type { EffectEngine } from "./generated/engine/EffectEngine";
+export type { EffectOrigin } from "./generated/engine/EffectOrigin";
+export type { ExpiryNotice } from "./generated/engine/ExpiryNotice";
 export type { Duration } from "./generated/engine/Duration";
 export type { DurationUnit } from "./generated/engine/DurationUnit";
 export type { ExpiryPoint } from "./generated/engine/ExpiryPoint";

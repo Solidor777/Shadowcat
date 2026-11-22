@@ -98,6 +98,8 @@ import type {
   Recovery,
   Formula,
   EffectEngine,
+  EffectOrigin,
+  ExpiryNotice,
   Duration,
   DurationUnit,
   ExpiryPoint,
@@ -208,6 +210,8 @@ export type {
   Recovery,
   Formula,
   EffectEngine,
+  EffectOrigin,
+  ExpiryNotice,
   Duration,
   DurationUnit,
   ExpiryPoint,
@@ -1261,6 +1265,8 @@ export interface ResolvedCombatDefaults {
   rewindRestore: boolean;
   /** Whether redo-ing past the cursor restores documents from history. */
   forwardRestore: boolean;
+  /** Who reads the chat note posted when effects expire. */
+  expiryNotice: ExpiryNotice;
 }
 
 /** The engine-fallback `CombatDefaults` — `resolve_combat_rules(None, None, None)`'s resolved
@@ -1280,6 +1286,7 @@ export const ENGINE_COMBAT_DEFAULTS: ResolvedCombatDefaults = {
   effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
   rewindRestore: true,
   forwardRestore: false,
+  expiryNotice: "visible",
 };
 
 /** A fresh combat's engine body at `ENGINE_COMBAT_DEFAULTS`, bound to `sceneId`: `active: false`,
@@ -1506,7 +1513,7 @@ export type SettingPath =
   | `scene.${keyof WorldSceneDefaults}`
   | "pathfinding.diagonalRule"
   | `animation.${"speedCellsPerSec" | "easing"}`
-  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl" | "effectCleanup" | "rewindRestore" | "forwardRestore"}`
+  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl" | "effectCleanup" | "rewindRestore" | "forwardRestore" | "expiryNotice"}`
   | `combat.effectLifecycle.${"onCombatEnd" | "onTurnEnd" | "onAdvance"}`;
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers
@@ -1653,6 +1660,8 @@ export function resolveSettingProvenance(
       return resolvePick(combat?.rewindRestore, world?.combat?.rewindRestore, system?.combat?.rewindRestore, ENGINE_COMBAT_DEFAULTS.rewindRestore);
     case "combat.forwardRestore":
       return resolvePick(combat?.forwardRestore, world?.combat?.forwardRestore, system?.combat?.forwardRestore, ENGINE_COMBAT_DEFAULTS.forwardRestore);
+    case "combat.expiryNotice":
+      return resolvePick(combat?.expiryNotice, world?.combat?.expiryNotice, system?.combat?.expiryNotice, ENGINE_COMBAT_DEFAULTS.expiryNotice);
     case "combat.effectLifecycle.onCombatEnd":
       return resolvePick(combat?.effectLifecycle?.onCombatEnd, world?.combat?.effectLifecycle?.onCombatEnd, system?.combat?.effectLifecycle?.onCombatEnd, ENGINE_COMBAT_DEFAULTS.effectLifecycle.onCombatEnd);
     case "combat.effectLifecycle.onTurnEnd":
