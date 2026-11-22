@@ -88,6 +88,28 @@ pub enum TurnControl {
     GmOnly,
 }
 
+/// Who reads the chat note a command posts when effects expire.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::ExpiryNotice;
+///
+/// assert_eq!(ExpiryNotice::default(), ExpiryNotice::Visible);
+/// assert_ne!(ExpiryNotice::Visible, ExpiryNotice::GmOnly);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiryNotice {
+    /// An expired effect everyone can already read is named to every world member; an effect
+    /// only some members can read is named to the GM alone.
+    #[default]
+    Visible,
+    /// Every expired effect is named to the GM alone.
+    GmOnly,
+}
+
 /// The movement rules a running combat snapshots at start (mirrors the
 /// client's `MovementRules`).
 ///
@@ -175,6 +197,10 @@ pub struct CombatDefaults {
     /// Override of `CombatEngine.forward_restore`.
     #[ts(optional = nullable)]
     pub forward_restore: Option<bool>,
+    /// Who reads the chat note posted when effects expire. Read live at each command rather
+    /// than snapshotted at combat start: it is a notification preference, not a clock rule.
+    #[ts(optional = nullable)]
+    pub expiry_notice: Option<ExpiryNotice>,
 }
 
 impl CombatDefaults {
@@ -205,8 +231,8 @@ where
 ///
 /// ```
 /// use shadowcat::data::engine::combat::{
-///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, ResolvedCombatRules,
-///     TurnControl,
+///     EffectLifecycleDefaults, Enforcement, ExpiryNotice, Interpretation, MovementRules,
+///     ResolvedCombatRules, TurnControl,
 /// };
 ///
 /// let rules = ResolvedCombatRules {
@@ -220,6 +246,7 @@ where
 ///     rewind_restore: true,
 ///     forward_restore: false,
 ///     effect_lifecycle: EffectLifecycleDefaults::default(),
+///     expiry_notice: ExpiryNotice::default(),
 /// };
 /// assert_eq!(rules.turn_control, TurnControl::OwnerMayEnd);
 /// assert!(rules.rewind_restore);
@@ -238,6 +265,8 @@ pub struct ResolvedCombatRules {
     pub forward_restore: bool,
     /// Resolved `CombatEngine.effect_lifecycle`.
     pub effect_lifecycle: EffectLifecycleDefaults,
+    /// Resolved `CombatDefaults.expiry_notice`.
+    pub expiry_notice: ExpiryNotice,
 }
 
 /// Resolve the combat rules for a scene: scene overrides beat world overrides
@@ -310,6 +339,11 @@ pub fn resolve_combat_rules(
         on_turn_end: lifecycle_field(|l| l.on_turn_end.clone()),
         on_advance: lifecycle_field(|l| l.on_advance.clone()),
     };
+    let expiry_notice = scene
+        .and_then(|d| d.expiry_notice)
+        .or_else(|| world.and_then(|d| d.expiry_notice))
+        .or_else(|| system.and_then(|d| d.expiry_notice))
+        .unwrap_or_default();
     ResolvedCombatRules {
         movement: MovementRules {
             resource,
@@ -321,6 +355,7 @@ pub fn resolve_combat_rules(
         rewind_restore,
         forward_restore,
         effect_lifecycle,
+        expiry_notice,
     }
 }
 
@@ -955,6 +990,7 @@ impl EffectLifecycleDefaults {
 ///     transfer: false,
 ///     duration: None,
 ///     lifecycle: None,
+///     origin: None,
 /// };
 /// assert!(effect.active);
 /// assert!(!effect.transfer);
@@ -975,12 +1011,75 @@ pub struct EffectEngine {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub lifecycle: Option<EffectLifecycle>,
+    /// Where the effect came from; `None` = unrecorded. Read by the expiry note a command posts
+    /// and by the effects list; redacted exactly with the effect document that carries it.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub origin: Option<EffectOrigin>,
+}
+
+/// Longest `EffectOrigin.label`, in characters.
+pub const MAX_ORIGIN_LABEL_CHARS: usize = 120;
+
+/// Where an effect came from: the document that granted it and/or a display label. At least
+/// one is present. `source` need not resolve: it may name a document since deleted, in which
+/// case display falls back to `label`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::EffectOrigin;
+///
+/// let origin = EffectOrigin {
+///     source: None,
+///     label: Some("Aldric's blessing".to_string()),
+/// };
+/// assert!(origin.validate().is_ok());
+/// assert!(EffectOrigin { source: None, label: None }.validate().is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct EffectOrigin {
+    /// The document the effect came from (an item, actor, region or spell item).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub source: Option<Uuid>,
+    /// Display text naming the origin.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub label: Option<String>,
+}
+
+impl EffectOrigin {
+    /// At least one of `source` and `label` is present, and a present `label` is 1 to
+    /// `MAX_ORIGIN_LABEL_CHARS` characters with no control character.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.source.is_none() && self.label.is_none() {
+            return Err("origin needs a source or a label".into());
+        }
+        if let Some(label) = &self.label {
+            let chars = label.chars().count();
+            if chars == 0 || chars > MAX_ORIGIN_LABEL_CHARS {
+                return Err(format!(
+                    "origin label must be 1 to {MAX_ORIGIN_LABEL_CHARS} characters"
+                ));
+            }
+            if label.chars().any(char::is_control) {
+                return Err("origin label must not contain control characters".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EffectEngine {
     /// A duration's `amount` formula is well-formed, and — when a literal number — `>= 1`;
-    /// every present lifecycle formula is well-formed.
+    /// every present lifecycle formula is well-formed; a present `origin` is valid.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(o) = &self.origin {
+            o.validate()?;
+        }
         if let Some(d) = &self.duration {
             d.amount.validate("duration.amount")?;
             if let Formula::Number(n) = &d.amount {
@@ -1023,6 +1122,7 @@ pub const MAX_TURN_HISTORY: usize = 200;
 ///         transfer: false,
 ///         duration: None,
 ///         lifecycle: None,
+///         origin: None,
 ///     },
 /// };
 /// assert_eq!(snapshot.path, "/embedded/effect/0");

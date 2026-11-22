@@ -185,6 +185,7 @@ fn effect_duration_amount_must_be_positive() {
             expires: ExpiryPoint::TurnEnd,
         }),
         lifecycle: None,
+        origin: None,
     };
     assert!(e.validate().is_err());
 }
@@ -202,6 +203,7 @@ fn effect_duration_amount_text_must_parse() {
             expires: ExpiryPoint::TurnEnd,
         }),
         lifecycle: None,
+        origin: None,
     };
     assert!(with_amount(Formula::Text("1 +".into())).validate().is_err());
     assert!(with_amount(Formula::Text("rounds".into()))
@@ -222,6 +224,7 @@ fn combat_history_validates_every_captured_band() {
             expires: ExpiryPoint::TurnEnd,
         }),
         lifecycle: None,
+        origin: None,
     };
     let history = |engine: EffectEngine, combatant: CombatantEngine| CombatHistoryEngine {
         records: vec![TurnRecord {
@@ -288,6 +291,7 @@ fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
             rewind_restore: true,
             forward_restore: false,
             effect_lifecycle: EffectLifecycleDefaults::default(),
+            expiry_notice: ExpiryNotice::Visible,
         }
     );
     let world = CombatDefaults {
@@ -368,6 +372,125 @@ fn resolve_combat_rules_folds_cleanup_and_restore_flags() {
     };
     let r = resolve_combat_rules(None, Some(&world), None);
     assert!(!r.effect_cleanup && r.forward_restore);
+}
+
+#[test]
+fn expiry_notice_resolves_scene_over_world_over_system_over_visible() {
+    assert_eq!(
+        resolve_combat_rules(None, None, None).expiry_notice,
+        ExpiryNotice::Visible
+    );
+    let gm_only = CombatDefaults {
+        expiry_notice: Some(ExpiryNotice::GmOnly),
+        ..Default::default()
+    };
+    let visible = CombatDefaults {
+        expiry_notice: Some(ExpiryNotice::Visible),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_combat_rules(Some(&gm_only), None, None).expiry_notice,
+        ExpiryNotice::GmOnly,
+        "the system layer applies when nothing above sets it"
+    );
+    assert_eq!(
+        resolve_combat_rules(Some(&gm_only), Some(&visible), None).expiry_notice,
+        ExpiryNotice::Visible,
+        "the world layer beats the system layer"
+    );
+    assert_eq!(
+        resolve_combat_rules(Some(&visible), Some(&visible), Some(&gm_only)).expiry_notice,
+        ExpiryNotice::GmOnly,
+        "the scene layer beats both"
+    );
+}
+
+#[test]
+fn expiry_notice_reads_from_its_camel_case_wire_key() {
+    let d: CombatDefaults = serde_json::from_value(json!({ "expiryNotice": "gm_only" })).unwrap();
+    assert_eq!(d.expiry_notice, Some(ExpiryNotice::GmOnly));
+}
+
+/// An effect body with a given `origin` and nothing else set.
+fn effect_with_origin(origin: Option<EffectOrigin>) -> EffectEngine {
+    EffectEngine {
+        active: true,
+        transfer: false,
+        duration: None,
+        lifecycle: None,
+        origin,
+    }
+}
+
+#[test]
+fn an_effect_body_without_origin_still_deserializes_as_none() {
+    let e: EffectEngine =
+        serde_json::from_value(json!({ "active": true, "transfer": false, "duration": null }))
+            .unwrap();
+    assert_eq!(e.origin, None);
+    assert!(e.validate().is_ok());
+}
+
+#[test]
+fn an_effect_origin_round_trips_and_an_unknown_origin_key_is_refused() {
+    let origin = EffectOrigin {
+        source: Some(crate::test_ids::test_uuid(5)),
+        label: Some("Aldric".into()),
+    };
+    let e = effect_with_origin(Some(origin.clone()));
+    let back: EffectEngine = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+    assert_eq!(back.origin, Some(origin));
+    let bad = serde_json::from_value::<EffectEngine>(json!({
+        "active": true, "origin": { "label": "x", "extra": 1 }
+    }));
+    assert!(
+        bad.is_err(),
+        "deny_unknown_fields reaches the nested origin"
+    );
+}
+
+#[test]
+fn a_turn_history_effect_snapshot_round_trips_its_origin() {
+    let snapshot = EffectSnapshot {
+        host: crate::test_ids::test_uuid(9),
+        path: "/embedded/effect/0".into(),
+        engine: effect_with_origin(Some(EffectOrigin {
+            source: None,
+            label: Some("Aldric".into()),
+        })),
+    };
+    let back: EffectSnapshot =
+        serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+    assert_eq!(back, snapshot);
+}
+
+#[test]
+fn an_effect_origin_needs_a_source_or_a_label_and_bounds_the_label() {
+    let with_label = |label: &str| {
+        effect_with_origin(Some(EffectOrigin {
+            source: None,
+            label: Some(label.into()),
+        }))
+    };
+    assert!(effect_with_origin(Some(EffectOrigin {
+        source: None,
+        label: None
+    }))
+    .validate()
+    .is_err());
+    assert!(with_label("").validate().is_err());
+    assert!(with_label(&"x".repeat(MAX_ORIGIN_LABEL_CHARS))
+        .validate()
+        .is_ok());
+    assert!(with_label(&"x".repeat(MAX_ORIGIN_LABEL_CHARS + 1))
+        .validate()
+        .is_err());
+    assert!(with_label("two\nlines").validate().is_err());
+    let dangling = effect_with_origin(Some(EffectOrigin {
+        source: Some(crate::test_ids::test_uuid(404)),
+        label: None,
+    }));
+    assert!(dangling.validate().is_ok(), "a source need not resolve");
 }
 
 #[test]

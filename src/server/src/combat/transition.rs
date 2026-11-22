@@ -40,8 +40,8 @@ use crate::chat::{build_message_doc, ActorOwnerRef, Audience, MessageDraft, Mess
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::{DocRole, Document};
 use crate::data::engine::combat::{
-    resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryPoint, Formula,
-    Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
+    resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryNotice, ExpiryPoint,
+    Formula, Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
 };
 use crate::data::DataError;
 use crate::dice::{RawRoll, RollOutcome, RollSpec};
@@ -331,6 +331,9 @@ struct Working {
     /// skipped write each); drained into ONE GM-only chat notice by
     /// `flush_eval_notices`.
     eval_failures: Vec<String>,
+    /// Every effect this transition switched off, in expiry order; drained into at most one
+    /// public and one GM-only chat notice by `flush_expiry_notices`.
+    expired: Vec<ExpiredEffect>,
     /// The turn/round boundaries this transition crossed, in crossing order —
     /// the region-trigger firing plan `start_with_trigger_plan`/
     /// `advance_with_trigger_plan` hand the room alongside the ops. Recording
@@ -364,6 +367,7 @@ impl Working {
             registry: snap.registry.clone(),
             ops: Vec::new(),
             eval_failures: Vec::new(),
+            expired: Vec::new(),
             trigger_plan: Vec::new(),
             #[cfg(test)]
             settle_turn_steps: 0,
@@ -596,6 +600,30 @@ impl Working {
         self.ops.extend(eval_notice(failures, world, author, now));
     }
 
+    /// Records `effects` as switched off by combatant `combatant`'s boundary sweep.
+    fn record_expired(&mut self, combatant: Uuid, effects: Vec<EffectRef>) {
+        self.expired.extend(
+            effects
+                .into_iter()
+                .map(|effect| ExpiredEffect { effect, combatant }),
+        );
+    }
+
+    /// Drains `expired` into the expiry notices (`expiry_notices`), or does nothing when no
+    /// effect expired.
+    fn flush_expiry_notices(&mut self, mode: ExpiryNotice, world: Uuid, author: Uuid, now: i64) {
+        let expired = std::mem::take(&mut self.expired);
+        self.ops.extend(expiry_notices(
+            &expired,
+            &self.hosts,
+            &self.combatants,
+            mode,
+            world,
+            author,
+            now,
+        ));
+    }
+
     /// Records one turn-scoped boundary `id` just crossed at the CURRENT
     /// `engine.round` (the round is read at call time, so a boundary run
     /// after `round_wrap`'s commit belongs to the new round — the correct
@@ -660,6 +688,147 @@ fn eval_notice(failures: Vec<String>, world: Uuid, author: Uuid, now: i64) -> Op
     Some(Operation::Create { doc })
 }
 
+/// One effect a command switched off, with the combatant whose boundary sweep did it.
+struct ExpiredEffect {
+    /// The effect as collected before the sweep.
+    effect: EffectRef,
+    /// The combatant whose clock expired it. A hidden one makes the effect GM-only.
+    combatant: Uuid,
+}
+
+/// The expiry-note audience setting for `snap`, resolved through the combat-defaults chain at
+/// the moment of the command (a notification preference, not a rule the combat snapshots).
+fn expiry_mode(snap: &CombatSnapshot) -> ExpiryNotice {
+    resolve_combat_rules(
+        snap.chain.0.as_ref(),
+        snap.chain.1.as_ref(),
+        snap.chain.2.as_ref(),
+    )
+    .expiry_notice
+}
+
+/// The name of the document `id` among `doc` and everything embedded under it, or `None` when
+/// it is absent or unnamed.
+fn embedded_name(doc: &Document, id: Uuid) -> Option<String> {
+    if doc.id == id {
+        return doc.name.clone().filter(|n| !n.is_empty());
+    }
+    doc.embedded
+        .values()
+        .flatten()
+        .find_map(|child| embedded_name(child, id))
+}
+
+/// The display name of an origin's `source` document, looked up among the combat's hosts and
+/// combatants; `None` when it is not among them (deleted, or never part of this combat).
+fn source_name(
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+    id: Uuid,
+) -> Option<String> {
+    hosts
+        .values()
+        .find_map(|h| embedded_name(h, id))
+        .or_else(|| combatants.iter().find_map(|c| embedded_name(&c.doc, id)))
+}
+
+/// Whether the note naming `e` may reach every world member: the effect document, its host
+/// document and the combatant that swept it all grant access by default, and no hidden
+/// combatant stands on the host. Judged on `permissions.default` only, like `is_hidden`, so a
+/// per-user grant on an otherwise unreadable document leaves the effect GM-only: the note
+/// under-discloses and never leaks.
+fn effect_is_public(
+    e: &ExpiredEffect,
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+) -> bool {
+    if !e.effect.default_readable {
+        return false;
+    }
+    let Some(host) = hosts.get(&e.effect.host) else {
+        return false;
+    };
+    if host.permissions.default == DocRole::None {
+        return false;
+    }
+    !combatants.iter().any(|c| {
+        is_hidden(c)
+            && (c.doc.id == e.combatant
+                || matches!(
+                    &c.engine.kind,
+                    CombatantKind::Actor { token_id, actor_id }
+                        if *token_id == Some(host.id) || *actor_id == Some(host.id)
+                ))
+    })
+}
+
+/// The chat notices naming every effect a command expired, as at most TWO `Create` ops: one
+/// public message for the effects `effect_is_public` admits (only under `ExpiryNotice::Visible`)
+/// and one GM-only message for the rest, so a command never floods chat and an effect nobody
+/// else can read is never named to them. Each line reads "Bless on Seraphine (from Aldric)":
+/// the origin is its label, else its source document's name, else omitted. Written in the
+/// command's own ops list, so the note cannot disagree with the expiry.
+fn expiry_notices(
+    expired: &[ExpiredEffect],
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+    mode: ExpiryNotice,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Vec<Operation> {
+    let line = |e: &ExpiredEffect| {
+        let effect = e
+            .effect
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("An effect");
+        let host = hosts
+            .get(&e.effect.host)
+            .and_then(|h| h.name.as_deref())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("an unnamed host");
+        let origin = e.effect.engine.origin.as_ref().and_then(|o| {
+            o.label
+                .clone()
+                .or_else(|| o.source.and_then(|s| source_name(hosts, combatants, s)))
+        });
+        match origin {
+            Some(origin) => format!("{effect} on {host} (from {origin})"),
+            None => format!("{effect} on {host}"),
+        }
+    };
+    let (public, private): (Vec<&ExpiredEffect>, Vec<&ExpiredEffect>) = expired
+        .iter()
+        .partition(|e| mode == ExpiryNotice::Visible && effect_is_public(e, hosts, combatants));
+    [(Audience::Public, public), (Audience::GmOnly, private)]
+        .into_iter()
+        .filter(|(_, group)| !group.is_empty())
+        .map(|(audience, group)| {
+            let lines: Vec<String> = group.into_iter().map(line).collect();
+            Operation::Create {
+                doc: build_message_doc(
+                    world,
+                    author,
+                    MessageDraft {
+                        channel: "combat".to_string(),
+                        actor_owner: None,
+                        audience,
+                        kind: MessageKind::System,
+                        content: vec![Segment::Text {
+                            text: format!("Expired: {}", lines.join("; ")),
+                        }],
+                        source: None,
+                        system: None,
+                    },
+                    now,
+                ),
+            }
+        })
+        .collect()
+}
+
 /// Folds `incoming` into `existing` in place, in favor of `existing`
 /// (called only from `Working::coalesce_updates`, whose own doc comment
 /// carries the full invariant this satisfies): a `FieldChange` at a path
@@ -722,9 +891,10 @@ fn run_boundary(
         .filter(|r| seen.insert((r.host, r.path.clone())))
         .collect();
     let defaults = w.engine.effect_lifecycle.clone();
-    let (tick_ops, mut tick_failures) = tick(&w.hosts, &refs, boundary, unit, &defaults)?;
-    w.eval_failures.append(&mut tick_failures);
-    w.commit_host_ops(tick_ops)?;
+    let mut sweep = tick(&w.hosts, &refs, boundary, unit, &defaults)?;
+    w.eval_failures.append(&mut sweep.failures);
+    w.record_expired(id, sweep.expired);
+    w.commit_host_ops(sweep.ops)?;
     Ok(())
 }
 
@@ -751,10 +921,10 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
             collect_effects(&view, c)
         };
         let defaults = w.engine.effect_lifecycle.clone();
-        let (expire_ops, mut expire_failures) =
-            expire_by_policy(&w.hosts, &refs, |f| f.on_turn_end, &defaults)?;
-        w.eval_failures.append(&mut expire_failures);
-        w.commit_host_ops(expire_ops)?;
+        let mut sweep = expire_by_policy(&w.hosts, &refs, |f| f.on_turn_end, &defaults)?;
+        w.eval_failures.append(&mut sweep.failures);
+        w.record_expired(id, sweep.expired);
+        w.commit_host_ops(sweep.ops)?;
     }
     Ok(())
 }
@@ -1245,6 +1415,7 @@ pub(crate) fn start_with_trigger_plan(
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
     w.flush_eval_notices(world, author, now);
+    w.flush_expiry_notices(expiry_mode(snap), world, author, now);
     w.coalesce_updates(0);
     Ok((w.ops, w.trigger_plan))
 }
@@ -1286,6 +1457,7 @@ fn advance_impl(
     let next_idx = advance_from(&mut w, start_idx, false)?;
     settle_turn(&mut w, snap, next_idx, world, author, now)?;
     w.flush_eval_notices(world, author, now);
+    w.flush_expiry_notices(expiry_mode(snap), world, author, now);
     w.coalesce_updates(0);
     #[cfg(test)]
     let steps = w.settle_turn_steps;
@@ -1773,19 +1945,41 @@ pub fn end(
         // working copy between combatants) — the second would fail its OCC
         // check against the real repository once the first has applied.
         let mut seen = HashSet::new();
-        let refs: Vec<EffectRef> = collect_all_effects(snap)
+        let claimed: Vec<(Uuid, EffectRef)> = collect_all_effects(snap)
             .into_iter()
-            .map(|(_, r)| r)
-            .filter(|r| seen.insert((r.host, r.path.clone())))
+            .filter(|(_, r)| seen.insert((r.host, r.path.clone())))
             .collect();
-        let (expire_ops, failures) = expire_by_policy(
+        let refs: Vec<EffectRef> = claimed.iter().map(|(_, r)| r.clone()).collect();
+        let sweep = expire_by_policy(
             &snap.hosts,
             &refs,
             |f| f.on_combat_end,
             &snap.engine.effect_lifecycle,
         )?;
-        ops.extend(expire_ops);
-        ops.extend(eval_notice(failures, world, author, now));
+        ops.extend(sweep.ops);
+        ops.extend(eval_notice(sweep.failures, world, author, now));
+        let expired: Vec<ExpiredEffect> = sweep
+            .expired
+            .into_iter()
+            .filter_map(|effect| {
+                let (combatant, _) = claimed
+                    .iter()
+                    .find(|(_, r)| r.host == effect.host && r.path == effect.path)?;
+                Some(ExpiredEffect {
+                    combatant: *combatant,
+                    effect,
+                })
+            })
+            .collect();
+        ops.extend(expiry_notices(
+            &expired,
+            &snap.hosts,
+            &snap.combatants,
+            expiry_mode(snap),
+            world,
+            author,
+            now,
+        ));
     }
     ops.push(Operation::Delete {
         doc: snap.combat.clone(),

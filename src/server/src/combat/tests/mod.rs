@@ -162,6 +162,7 @@ pub(super) fn actor_with_effect(
             expires,
         }),
         lifecycle: None,
+        origin: None,
     };
     let mut actor = doc(id, "actor", None, actor_body());
     actor.embedded.insert(
@@ -331,5 +332,6 @@ pub(super) fn engine_of<T: serde::de::DeserializeOwned>(
 }
 
 mod effects;
+mod expiry;
 mod history;
 mod transition;
