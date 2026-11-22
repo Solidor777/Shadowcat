@@ -10,6 +10,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { SnapModePreference } from "./snapModePreference.svelte";
+import type { StageView } from "./stageView.svelte";
 import type { ShareRulerPreference } from "./shareRulerPreference.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 import type { PerformanceController } from "./performance.svelte";
@@ -306,6 +307,10 @@ export interface AppContext {
    * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
    * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */
   snapModePreference: SnapModePreference;
+  /** The stage camera as reactive state: a stage overlay projects scene points to the canvas's
+   * pixel space through `sceneToScreen` and re-runs on every pan and zoom. `Stage` writes it
+   * from the render engine's applied transform. See `StageView`. */
+  stageView: StageView;
   /** Whether THIS user broadcasts their measure-tool drags to the other members (the shared
    * live ruler). Client-local and per-user: never a document field and never sent itself —
    * only the ruler's route travels, and only while it is on, plus the one terminating stop

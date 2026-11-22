@@ -23,6 +23,7 @@ import { sheetItem } from "@shadowcat/module-sheet-item";
 import { sheetNote } from "@shadowcat/module-sheet-note";
 import { sheetTable } from "@shadowcat/module-sheet-table";
 import { dice3d } from "@shadowcat/module-dice-3d";
+import { chatBubbles } from "@shadowcat/module-chat-bubbles";
 import { audio } from "@shadowcat/module-audio";
 import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
 import { vfx } from "@shadowcat/module-vfx";
@@ -93,6 +94,19 @@ describe("ducking contributes a settings section, not a panel", () => {
     expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
     expect(contributions.contributionsFor(SETTINGS_SECTION_CONTRACT)).toHaveLength(1);
     ducking.unregister?.();
+  });
+});
+
+describe("chatBubbles contributes a stage overlay and a setting, not a panel", () => {
+  afterEach(() => localStorage.clear());
+
+  it("registers one shadowcat.stage-overlay and one shadowcat.settings-section contribution and no shadowcat.panel", () => {
+    const contributions = new ContributionRegistry();
+    const ctx = { contributions, hooks: { on: () => () => {} } } as never;
+    chatBubbles.register(ctx);
+    expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
+    expect(contributions.contributionsFor(STAGE_OVERLAY_CONTRACT)).toHaveLength(1);
+    expect(contributions.contributionsFor(SETTINGS_SECTION_CONTRACT)).toHaveLength(1);
   });
 });
 

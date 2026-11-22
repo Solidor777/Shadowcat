@@ -53,6 +53,7 @@ export default defineConfig({
           items: [
             { text: "stage", link: "/modules/stage" },
             { text: "dice-3d", link: "/modules/dice-3d" },
+            { text: "chat-bubbles", link: "/modules/chat-bubbles" },
             { text: "scene-tools", link: "/modules/scene-tools" },
             { text: "actors", link: "/modules/actors" },
             { text: "factions", link: "/modules/factions" },
