@@ -38,7 +38,11 @@ import { z } from "zod";
 const int = z.number().int();
 
 export const DocRoleSchema = z.enum(["owner", "observer", "none"]);
-export const VisibilitySchema = z.enum(["all", "gm_only", "owner_or_gm"]);
+/** Property-tier visibility: three bare-string tiers, or an exact user-id list (`recipients`) that never grants by role. */
+export const VisibilitySchema = z.union([
+  z.enum(["all", "gm_only", "owner_or_gm"]),
+  z.object({ recipients: z.array(z.string()) }),
+]);
 export const WorldRoleSchema = z.enum(["gm", "player", "spectator"]);
 export const RejectReasonSchema = z.enum(["forbidden", "conflict", "invalid"]);
 export const PathErrorReasonSchema = z.enum(["unreachable", "invalid", "exceeded"]);

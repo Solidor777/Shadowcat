@@ -78,6 +78,14 @@ describe("wire drift guard — enums", () => {
       z.infer<typeof VisibilitySchema>
     >().toEqualTypeOf<Ts.Visibility>();
   });
+  it("Visibility parses a recipient list and still rejects unknown tiers", () => {
+    expect(VisibilitySchema.parse({ recipients: ["u1", "u2"] })).toEqual({
+      recipients: ["u1", "u2"],
+    });
+    expect(VisibilitySchema.parse("gm_only")).toBe("gm_only");
+    expect(VisibilitySchema.safeParse("recipients").success).toBe(false);
+    expect(VisibilitySchema.safeParse({ recipients: [1] }).success).toBe(false);
+  });
   it("WorldRole", () => {
     expectTypeOf<
       z.infer<typeof WorldRoleSchema>

@@ -164,6 +164,40 @@ fn name_gm_only_hides_from_public_index_but_gm_index_retains_it() {
 }
 
 #[test]
+fn recipients_tiered_text_is_absent_from_both_index_partitions() {
+    let alice = crate::test_ids::test_uuid(0xA1);
+    let mut d = doc("actor", serde_json::json!({ "note": "MOCK_WHISPER_TEXT" }));
+    d.permissions
+        .property_overrides
+        .insert("/system/note".into(), Visibility::Recipients(vec![alice]));
+
+    let public = index_content_public(&d);
+    assert!(
+        !public.contains("MOCK_WHISPER_TEXT"),
+        "recipient-only text leaked into the shared public index: {public}"
+    );
+    let gm = index_content_gm(&d);
+    assert!(
+        !gm.contains("MOCK_WHISPER_TEXT"),
+        "recipient-only text leaked into the shared GM index: {gm}"
+    );
+    assert!(
+        index_content(&d).contains("MOCK_WHISPER_TEXT"),
+        "negative control: the raw sweep does contain it"
+    );
+}
+
+#[test]
+fn gm_index_keeps_gm_only_text() {
+    let mut d = doc("actor", serde_json::json!({ "note": "MOCK_GM_TEXT" }));
+    d.permissions
+        .property_overrides
+        .insert("/system/note".into(), Visibility::GmOnly);
+    assert!(index_content_gm(&d).contains("MOCK_GM_TEXT"));
+    assert!(!index_content_public(&d).contains("MOCK_GM_TEXT"));
+}
+
+#[test]
 fn engine_leaf_gm_only_hides_from_public_index_but_gm_index_retains_it() {
     // A redacted NESTED engine leaf (not the whole `/engine` band) must
     // still be absent from the public index, while a SIBLING engine leaf

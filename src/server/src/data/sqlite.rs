@@ -740,6 +740,7 @@ where
             all: false,
             see_gm_only: true,
             is_owner: true,
+            user_id: Some(ctx.user_id),
         }
     } else {
         // Effective owner joined from the LIVE linked actor — a linked token's

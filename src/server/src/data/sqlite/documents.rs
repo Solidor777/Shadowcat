@@ -579,7 +579,7 @@ impl SqliteRepository {
         sqlx::query(
             "INSERT INTO documents_fts_gm (content_all, doc_id, world_id, doc_type) VALUES (?, ?, ?, ?)",
         )
-        .bind(crate::data::search::index_content(doc))
+        .bind(crate::data::search::index_content_gm(doc))
         .bind(doc.id.to_string())
         .bind(world_id)
         .bind(&doc.doc_type)

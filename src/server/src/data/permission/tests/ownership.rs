@@ -169,11 +169,11 @@ fn effective_ownership_grants_the_owner_floor_and_the_owner_or_gm_tier() {
          `world_by_role_owner_grants_reach_an_inheriting_owner`"
     );
     assert!(
-        a_player.is_owner && a_player.can_see(Visibility::OwnerOrGm),
+        a_player.is_owner && a_player.can_see(&Visibility::OwnerOrGm),
         "redaction's OwnerOrGm tier admits the same effective owner"
     );
     assert!(
-        !a_player.can_see(Visibility::GmOnly),
+        !a_player.can_see(&Visibility::GmOnly),
         "an owner is not a GM"
     );
 
