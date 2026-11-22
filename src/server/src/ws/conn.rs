@@ -1199,6 +1199,37 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::ReviseAudience {
+                                    request_id,
+                                    message_id,
+                                    audience,
+                                }) => {
+                                    // Same confirm-by-broadcast-echo shape as the other
+                                    // chat mutation frames; a rejection is surfaced to the
+                                    // sender only via a correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_revise_audience(
+                                        crate::chat::RecalcRollRequestCtx {
+                                            room: &room,
+                                            repo: repo.as_ref(),
+                                            ctx: &ctx,
+                                            rate: &message_rate,
+                                            now: now_millis(),
+                                            budget_per_min: MESSAGE_RATE_PER_MIN,
+                                        },
+                                        message_id,
+                                        audience,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "revise audience rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::DrawTable {
                                     request_id,
                                     table_id,

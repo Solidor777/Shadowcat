@@ -6,7 +6,8 @@
 //! one directly.
 //!
 //! `handle_send_message` Creates a `message` doc. `handle_edit_message`, `handle_delete_message`
-//! (a soft tombstone), `handle_recalc_roll` and the post-publish enrichment each Update one.
+//! (a soft tombstone), `handle_recalc_roll`, `handle_revise_audience` and the post-publish
+//! enrichment each Update one.
 //! Three guards reject a client's attempt to author or mutate a message doc. The ingress guard
 //! (`ops_target_message`) rejects a client-authored `message` Create or Delete op at the WS/HTTP
 //! boundary. `apply_intent`'s `Update` branch (`authorize_update_access`) and its `Move` branch
@@ -20,14 +21,16 @@
 //! is the authenticated user. That exemption is sound because the ingress guard keeps a
 //! client-authored message Create from reaching `apply_intent`.
 //!
-//! `WriteOrigin::ServerMessageRevision` is a marker no wire frame can set. It has four producers:
+//! `WriteOrigin::ServerMessageRevision` is a marker no wire frame can set. It has five producers:
 //! `handle_edit_message` and `handle_delete_message`, each after its own owner-or-GM check;
-//! `handle_recalc_roll`, after its own GM-only check (never owner-or-GM; see
-//! `RecalcRollError::Forbidden`); and the post-publish enrichment republish
+//! `handle_recalc_roll` and `handle_revise_audience`, each after its own GM-only check (never
+//! owner-or-GM; see `RecalcRollError::Forbidden`); and the post-publish enrichment republish
 //! (`chat::post_publish::run_pending_enrichments`), after its own tombstone/OCC checks. The origin
 //! is granted a scoped `Access` (`READ`+`WRITE_FIELDS` only), plus an exact-path admission in
-//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a message doc, which
-//! `handle_recalc_roll` needs. No other `/permissions` subpath and no `/embedded` path is admitted.
+//! `data::sqlite::apply_intent` for four `/permissions` paths on a message doc:
+//! `/permissions/property_overrides` (`handle_recalc_roll`) and `/permissions/default`,
+//! `/permissions/gm_role`, `/permissions/users` (`handle_revise_audience`). No other
+//! `/permissions` subpath and no `/embedded` path is admitted.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -834,6 +837,49 @@ pub struct MessageDraft {
     pub system: Option<serde_json::Value>,
 }
 
+/// The ONE decider mapping an `Audience` onto a message's `PermissionSet`
+/// readership fields `(default, gm_role, users)`; `build_message_doc` (create)
+/// and `handle_revise_audience` (revise) both call it, so the two can never
+/// disagree about who reads a message.
+///
+/// `user` is the message's author (`MessageEngine::user_owner`). It is
+/// inserted into `users` as `Owner` LAST, so a `Whisper` that names the author
+/// as their own recipient can never downgrade them to `Observer`, and a
+/// revise can never demote the author below `Owner`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{permissions_for_audience, Audience};
+/// use shadowcat::data::document::DocRole;
+///
+/// let author = uuid::Uuid::new_v4();
+/// let (default, gm_role, users) = permissions_for_audience(author, &Audience::GmOnly);
+/// assert_eq!(default, DocRole::None);
+/// assert_eq!(gm_role, Some(DocRole::Observer));
+/// assert_eq!(users.get(&author), Some(&DocRole::Owner));
+/// ```
+pub fn permissions_for_audience(
+    user: Uuid,
+    audience: &Audience,
+) -> (DocRole, Option<DocRole>, BTreeMap<Uuid, DocRole>) {
+    let (default, gm_role, mut users) = match audience {
+        Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
+        Audience::Whisper { recipients } => {
+            let mut users = BTreeMap::new();
+            for &r in recipients {
+                if r != user {
+                    users.insert(r, DocRole::Observer);
+                }
+            }
+            (DocRole::None, Some(DocRole::None), users)
+        }
+        Audience::GmOnly => (DocRole::None, Some(DocRole::Observer), BTreeMap::new()),
+    };
+    users.insert(user, DocRole::Owner);
+    (default, gm_role, users)
+}
+
 /// Server-construct a message `Document`. INVARIANT: only the server calls
 /// this (via `handle_send_message`); clients never build message docs.
 /// `draft.audience` drives the document's `PermissionSet`:
@@ -883,20 +929,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
         source,
         system,
     } = draft;
-    let (default, gm_role, mut users) = match &audience {
-        Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
-        Audience::Whisper { recipients } => {
-            let mut users = BTreeMap::new();
-            for &r in recipients {
-                if r != user {
-                    users.insert(r, DocRole::Observer);
-                }
-            }
-            (DocRole::None, Some(DocRole::None), users)
-        }
-        Audience::GmOnly => (DocRole::None, Some(DocRole::Observer), BTreeMap::new()),
-    };
-    users.insert(user, DocRole::Owner);
+    let (default, gm_role, users) = permissions_for_audience(user, &audience);
     let engine = MessageEngine {
         channel,
         user_owner: user,
@@ -2234,7 +2267,8 @@ pub async fn handle_delete_message(
         .map_err(SendMessageError::Data)
 }
 
-/// Shared request-scoped dependencies for `handle_recalc_roll`: the same
+/// Shared request-scoped dependencies for the GM moderation handlers
+/// `handle_recalc_roll` and `handle_revise_audience`: the same
 /// room/repo/ctx/rate/now/budget grouping `MessageRequestCtx` uses for
 /// `handle_send_message`/`handle_edit_message`, minus `preview` (recalc never
 /// touches link-preview enrichment) -- kept as its own struct rather than
@@ -2492,11 +2526,205 @@ pub async fn handle_recalc_roll(
         .map_err(RecalcRollError::Data)
 }
 
+/// GM-only audience revision of a stored message (reveal or conceal): rewrites
+/// `MessageEngine::audience` and the readership fields of the message's
+/// `PermissionSet` in ONE `Operation::Update`, so the room's per-recipient
+/// egress re-filters the change and a newly admitted recipient receives the
+/// whole message as a synthesized Create while an excluded one receives a
+/// stub Delete.
+///
+/// Not owner-or-GM (unlike edit/delete): changing who may read a message is
+/// moderation authority, the same GM-only rule `handle_recalc_roll` applies.
+/// `handle_edit_message` still freezes `audience`; this is the one deliberate
+/// door that changes it.
+///
+/// The readership fields come from `permissions_for_audience` (the decider
+/// `build_message_doc` also calls) keyed on the STORED `MessageEngine::user_owner`,
+/// so the author keeps `Owner` through any revision. `roll_property_overrides`
+/// is recomputed from the stored content, as recalc does.
+///
+/// Writes `/engine`, `/permissions/default`, `/permissions/gm_role`,
+/// `/permissions/users` and `/permissions/property_overrides` under
+/// `WriteOrigin::ServerMessageRevision`; `data::sqlite`'s
+/// `authorize_update_change` admits exactly those four `/permissions` paths for
+/// that origin on a message doc and nothing else under `/permissions`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{
+///     build_link_preview_client, handle_revise_audience, handle_send_message, Audience,
+///     LinkPreviewCache, LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter,
+///     RecalcRollRequestCtx,
+/// };
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::missing_config_ops;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+///
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// room.publish(
+///     &repo,
+///     &ctx,
+///     missing_config_ops(&[], world.id, None, 0),
+///     0,
+///     WriteOrigin::ConfigSeed,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let client = build_link_preview_client();
+/// let (sent, _) = handle_send_message(
+///     MessageRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &rate,
+///         vfx_rate: &rate,
+///         preview: LinkPreviewDeps {
+///             client: &client,
+///             cache: &LinkPreviewCache::new(),
+///             rate: &PreviewRateLimiter::new(),
+///         },
+///         now: 0,
+///         budget_per_min: 30,
+///     },
+///     "general".to_string(),
+///     "psst".to_string(),
+///     None,
+///     Audience::GmOnly,
+/// )
+/// .await
+/// .unwrap()
+/// .expect("a plain message is not a /fx command");
+/// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
+///
+/// let revise_rate = PingRateLimiter::new();
+/// let revised = handle_revise_audience(
+///     RecalcRollRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &revise_rate,
+///         now: 1,
+///         budget_per_min: 30,
+///     },
+///     doc.id,
+///     Audience::Public,
+/// )
+/// .await
+/// .unwrap();
+/// let Operation::Update { changes, .. } = &revised.ops[0] else { unreachable!() };
+/// assert_eq!(changes.len(), 5);
+/// # }
+/// ```
+pub async fn handle_revise_audience(
+    req: RecalcRollRequestCtx<'_>,
+    message_id: Uuid,
+    audience: Audience,
+) -> Result<Command, SendMessageError> {
+    let RecalcRollRequestCtx {
+        room,
+        repo,
+        ctx,
+        rate,
+        now,
+        budget_per_min,
+    } = req;
+    if ctx.world_role != WorldRole::Gm {
+        return Err(SendMessageError::Forbidden);
+    }
+    if !rate.check(ctx.user_id, now, budget_per_min) {
+        return Err(SendMessageError::RateLimited);
+    }
+    let cur = repo
+        .get_document(message_id)
+        .await
+        .map_err(SendMessageError::Data)?
+        .ok_or(SendMessageError::NotFound)?;
+    if cur.doc_type != MESSAGE_DOC_TYPE {
+        return Err(SendMessageError::NotFound);
+    }
+    let world_id = match cur.scope {
+        Scope::World { world_id } => world_id,
+        _ => return Err(SendMessageError::NotFound),
+    };
+    let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap_or_default())
+        .map_err(|e| SendMessageError::Data(DataError::OpFailed(e.to_string())))?;
+    // A tombstone's corpse is not revivable: same NotFound the edit path uses.
+    if sys.deleted_at.is_some() {
+        return Err(SendMessageError::NotFound);
+    }
+    validate_audience(repo, world_id, ctx.user_id, &audience).await?;
+
+    let (default, gm_role, users) = permissions_for_audience(sys.user_owner, &audience);
+    let overrides = roll_property_overrides(&sys.content);
+    sys.audience = audience;
+
+    let op_failed =
+        |e: serde_json::Error| SendMessageError::Data(DataError::OpFailed(e.to_string()));
+    let change = |path: &str, old: serde_json::Value, new: serde_json::Value| FieldChange {
+        remove: false,
+        path: path.into(),
+        old,
+        new,
+    };
+    let perms = &cur.permissions;
+    let op = Operation::Update {
+        doc_id: message_id,
+        changes: vec![
+            change(
+                "/engine",
+                cur.engine.clone().unwrap_or_default(),
+                serde_json::to_value(&sys).map_err(op_failed)?,
+            ),
+            change(
+                "/permissions/default",
+                serde_json::to_value(perms.default).map_err(op_failed)?,
+                serde_json::to_value(default).map_err(op_failed)?,
+            ),
+            change(
+                "/permissions/gm_role",
+                serde_json::to_value(perms.gm_role).map_err(op_failed)?,
+                serde_json::to_value(gm_role).map_err(op_failed)?,
+            ),
+            change(
+                "/permissions/users",
+                serde_json::to_value(&perms.users).map_err(op_failed)?,
+                serde_json::to_value(&users).map_err(op_failed)?,
+            ),
+            change(
+                "/permissions/property_overrides",
+                serde_json::to_value(&perms.property_overrides).map_err(op_failed)?,
+                serde_json::to_value(&overrides).map_err(op_failed)?,
+            ),
+        ],
+    };
+    room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
+        .await
+        .map_err(SendMessageError::Data)
+}
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod audience_command_tests;
+
+#[cfg(test)]
+mod revise_audience_tests;
 
 #[cfg(test)]
 mod link_preview_ingest_tests;
