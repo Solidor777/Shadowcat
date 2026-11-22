@@ -162,6 +162,8 @@ fn light(idx: usize, t_ms: f64, pos: [f64; 2], dim: f64) -> LightSample {
         intensity: 1.0,
         falloff: crate::data::engine::FalloffCurve::Linear,
         color: 0xFFCC66,
+        angle: None,
+        rotation: None,
         polygons: vec![vec![
             [pos[0] - dim + i * 1e-6, pos[1] - dim],
             [pos[0] + dim, pos[1] - dim],
@@ -309,6 +311,44 @@ fn a_torch_whose_move_has_not_started_lights_from_its_first_sample() {
     };
     let bystander = vec![pos(0.0, 60.0, 50.0)];
     assert_eq!(clip_samples(&bystander, 1000.0, &inputs), bystander);
+}
+
+#[test]
+fn a_cone_torch_lights_only_the_cells_inside_its_arc_for_the_clip() {
+    // The bearer's torch at (50,60) lights the cell centered (50,50), which lies straight up
+    // (-y, bearing -90) from it. A cone aimed up admits the bystander standing there; the same
+    // cone aimed down does not, so the in-flight sample is judged with the cone the committed
+    // field would apply, not as a full circle.
+    let ecs = fixture(false, None);
+    let torch_token = crate::test_ids::test_uuid(0xC9);
+    let dark = sight(&ecs, &[torch_token]);
+    let torch_positions = vec![pos(0.0, 50.0, 60.0)];
+    let bystander = vec![pos(0.0, 60.0, 50.0)];
+    let admitted_with = |rotation: f64| {
+        let torch = vec![LightSample {
+            angle: Some(40.0),
+            rotation: Some(rotation),
+            ..light(0, 0.0, [50.0, 60.0], 150.0)
+        }];
+        let in_flight = [InFlight {
+            start_server_ms: 1100.0,
+            mover: STRANGER,
+            token: torch_token,
+            mover_elevation: 0.0,
+            positions: &torch_positions,
+            light: Some(&torch),
+        }];
+        let inputs = ClipInputs {
+            sight: &dark,
+            in_flight: &in_flight,
+            target: TARGET,
+            mover_level: String::new(),
+            mover_elevation: 0.0,
+        };
+        clip_samples(&bystander, 1000.0, &inputs) == bystander
+    };
+    assert!(admitted_with(-90.0), "a cone aimed at the cell lights it");
+    assert!(!admitted_with(90.0), "a cone aimed away leaves it dark");
 }
 
 #[test]

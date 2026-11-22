@@ -18,6 +18,8 @@ fn lamp(t_ms: f64, pos: [f64; 2], dim: f64) -> LightSample {
         intensity: 1.0,
         falloff: crate::data::engine::FalloffCurve::Linear,
         color: 0xFFCC66,
+        angle: None,
+        rotation: None,
         polygons: vec![vec![
             [pos[0] - dim, pos[1] - dim],
             [pos[0] + dim, pos[1] - dim],

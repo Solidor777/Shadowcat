@@ -458,6 +458,8 @@ fn wire_move_stream(
                 intensity: ls.intensity,
                 falloff: crate::scene::emitters::wire_falloff(ls.falloff),
                 color: ls.color,
+                angle: ls.angle,
+                rotation: ls.rotation,
                 polygons: ls
                     .polygons
                     .into_iter()
