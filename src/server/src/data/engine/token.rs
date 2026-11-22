@@ -571,6 +571,46 @@ pub enum TokenVisual {
         #[serde(default)]
         background: Option<GeneratedBackground>,
     },
+    /// A pool of candidate images, resolved to one concrete `Image` exactly once, server-side,
+    /// when a token is created (`SqliteRepository::resolve_token_random_variants`), for every
+    /// per-token storage location it appears in (`TokenEngine.visual`, `TokenOverrides.visual`,
+    /// an instanced token's embedded-actor `engine.visual`). A token document never keeps a
+    /// `RandomVariant` past its Create. The one place it persists is a SHARED actor's own
+    /// `ActorEngine.visual`: there it is the template, and each linked token draws independently
+    /// into its own `overrides.visual`.
+    #[serde(rename = "randomVariant")]
+    RandomVariant {
+        /// Candidate pool, scoped to the token's world and to image assets at draw time.
+        filter: TokenArtFilter,
+        /// Used verbatim when `filter` matches no asset, so a token is never left with no visual.
+        /// `TokenVisual::validate` refuses a `RandomVariant` here: `Box<TokenVisual>` does not
+        /// exclude the recursive case at the type level the way `Box<RenderVisual>` does.
+        fallback: Box<TokenVisual>,
+    },
+}
+
+/// The pool specification of `TokenVisual::RandomVariant`: a restricted mirror of
+/// `data::asset::query::AssetFilter` (folder and tags only; a pool is authored, never searched).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TokenArtFilter;
+///
+/// let filter = TokenArtFilter::default();
+/// assert!(filter.folder.is_none() && filter.tags.is_empty());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+pub struct TokenArtFilter {
+    /// Restrict the pool to this `asset_folder`'s subtree (`FolderFilter::In` with
+    /// `recursive: true`); `None` is the whole world (`FolderFilter::Any`).
+    #[ts(optional)]
+    pub folder: Option<Uuid>,
+    /// Every listed tag must be present (explicit or derived), the all-of semantics of
+    /// `AssetFilter.tags`.
+    pub tags: Vec<String>,
 }
 
 impl TokenVisual {
@@ -613,6 +653,12 @@ impl TokenVisual {
                     b.validate().map_err(|m| format!("background: {m}"))?;
                 }
                 Ok(())
+            }
+            TokenVisual::RandomVariant { fallback, .. } => {
+                if matches!(**fallback, TokenVisual::RandomVariant { .. }) {
+                    return Err("a random-variant pool's fallback cannot itself be a pool".into());
+                }
+                fallback.validate().map_err(|m| format!("fallback: {m}"))
             }
         }
     }

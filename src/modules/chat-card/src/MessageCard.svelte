@@ -12,6 +12,7 @@
     numericBounds,
     type ChatSegment,
     type RollEmbedSegment,
+    type RollOutcome,
     type UnknownSegment,
     type WireActorOwnerRef,
     type WireDocument,
@@ -191,12 +192,23 @@
   // known-segment-filtered list — filtering first would let an extra UNKNOWN segment silently
   // vanish and the lone roll_embed still render as a block, contradicting this guard's own
   // "additional/other segments fall back to the pending shell" intent.
-  const rollBlock = $derived.by((): RollEmbedSegment | null => {
+  // A roll_embed the server withheld (no outcome) is not a block: `isWithheldRoll` below renders it.
+  const rollBlock = $derived.by((): (RollEmbedSegment & { /** The formula, present on a block. */ formula: string; /** The outcome, present on a block. */ outcome: RollOutcome }) | null => {
     if (!sys || sys.kind !== "roll") return null;
     if (sys.content.length !== 1) return null;
     const known = sys.content.filter(isKnownSegment);
-    if (known.length === 1 && known[0].kind === "roll_embed") return known[0] as RollEmbedSegment;
+    if (known.length === 1 && known[0].kind === "roll_embed" && known[0].formula !== undefined && known[0].outcome !== undefined) {
+      return known[0] as RollEmbedSegment & { /** The formula, present on a block. */ formula: string; /** The outcome, present on a block. */ outcome: RollOutcome };
+    }
     return null;
+  });
+
+  // A blind roll's card for a reader the server withheld the result from: every raw segment a
+  // known `roll_embed` or `table_draw` with no outcome. The audience gate keeps a malformed
+  // public roll on the pending-shell fallback; `SegmentList` draws the "rolled blind" card.
+  const isWithheldRoll = $derived.by((): boolean => {
+    if (!sys || sys.kind !== "roll" || sys.audience.kind !== "blind" || sys.content.length === 0) return false;
+    return sys.content.every((s) => isKnownSegment(s) && (s.kind === "roll_embed" || s.kind === "table_draw") && s.outcome === undefined);
   });
 
   // A `table_draw` message is ALSO `MessageKind::Roll` (`tables::handle_draw_table` reuses
@@ -259,7 +271,7 @@
   // GM reveal/conceal editor state. Advisory UI only: the server re-authorizes every
   // revision against its own GM-only check in `handle_revise_audience`.
   let revising = $state(false);
-  let reviseKind = $state<"public" | "gm_only" | "whisper">("public");
+  let reviseKind = $state<"public" | "gm_only" | "whisper" | "blind">("public");
   let reviseRecipients = $state<string[]>([]);
   // Members a whisper can name: everyone but the author, who always keeps the message.
   const whisperCandidates = $derived(
@@ -385,6 +397,9 @@
       {#if sys.audience.kind === "gm_only"}
         <span class="chip gm">{t("chat.gmBadge")}</span>
       {/if}
+      {#if sys.audience.kind === "blind" && isGm}
+        <span class="chip blind" data-testid="blind-badge">{t("chat.blind.badge")}</span>
+      {/if}
       {#if sys.kind === "system"}
         <span class="chip system-badge">{t("chat.systemBadge")}</span>
       {/if}
@@ -499,7 +514,7 @@
               </div>
             {/if}
           </div>
-        {:else if isTableDrawContent}
+        {:else if isTableDrawContent || isWithheldRoll}
           <SegmentList segments={sys.content} channel={sys.channel} />
         {:else if sys.kind === "roll"}
           <p class="roll-pending">{t("chat.rollPending", { formula: rollFormula })}</p>
@@ -534,6 +549,7 @@
           <select aria-label={t("chat.revise.audience")} bind:value={reviseKind}>
             <option value="public">{t("chat.revise.public")}</option>
             <option value="gm_only">{t("chat.revise.gmOnly")}</option>
+            <option value="blind">{t("chat.revise.blind")}</option>
             <option value="whisper">{t("chat.revise.whisper")}</option>
           </select>
           {#if reviseKind === "whisper"}

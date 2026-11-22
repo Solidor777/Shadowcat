@@ -146,7 +146,8 @@ impl From<SendMessageError> for DrawTableError {
             | SendMessageError::AudienceLocked
             | SendMessageError::Roll(_)
             | SendMessageError::RollImmutable
-            | SendMessageError::NoReplyTarget => DrawTableError::Forbidden,
+            | SendMessageError::NoReplyTarget
+            | SendMessageError::BlindNeedsRoll => DrawTableError::Forbidden,
         }
     }
 }
@@ -306,7 +307,15 @@ pub(crate) async fn handle_draw_table(
     )
     .await;
 
-    let doc = chat::build_message_doc(
+    let blind = chat::readers_for_audience(
+        repo,
+        room.world_id,
+        ctx.user_id,
+        actor_owner.as_ref(),
+        &audience,
+    )
+    .await?;
+    let doc = chat::build_message_doc_with_readers(
         room.world_id,
         ctx.user_id,
         MessageDraft {
@@ -318,6 +327,7 @@ pub(crate) async fn handle_draw_table(
             source: None,
             system: None,
         },
+        &blind,
         now,
     );
     room.publish(

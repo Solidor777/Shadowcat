@@ -22,7 +22,7 @@ function gmStoreWith(...docs: WireDocument[]) {
 
 /** Full ChatSettingsEngine (every field required-nullable), overridable per test. */
 function chatEngine(over: Partial<ChatSettingsEngine> = {}): ChatSettingsEngine {
-  return { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null, ...over };
+  return { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null, blind_visible_to_players: null, blind_visible_to_actor_owner: null, ...over };
 }
 
 describe("chat settings editor", () => {
@@ -59,6 +59,31 @@ describe("chat settings editor", () => {
 
     const cb = screen.getByLabelText("gameSettings.chat.hyperlinks") as HTMLInputElement;
     expect(cb.checked).toBe(true);
+  });
+
+  it.each([
+    ["blind_visible_to_players", "gameSettings.chat.blindVisibleToPlayers"],
+    ["blind_visible_to_actor_owner", "gameSettings.chat.blindVisibleToActorOwner"],
+  ] as const)("toggling %s dispatches an update carrying the stored (null) pre-image", async (field, label) => {
+    const dispatchIntent = vi.fn();
+    const chat = buildChatSettingsDoc("w1", chatEngine(), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat), dispatchIntent }) });
+
+    const cb = screen.getByLabelText(label) as HTMLInputElement;
+    expect(cb.checked).toBe(false);
+    await fireEvent.change(cb, { target: { checked: true } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "chat1", changes: [{ path: `/engine/${field}`, old: null, new: true }] },
+    ]);
+  });
+
+  it("the two blind toggles reflect their stored values independently", () => {
+    const chat = buildChatSettingsDoc("w1", chatEngine({ blind_visible_to_players: true, blind_visible_to_actor_owner: false }), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat) }) });
+
+    expect((screen.getByLabelText("gameSettings.chat.blindVisibleToPlayers") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("gameSettings.chat.blindVisibleToActorOwner") as HTMLInputElement).checked).toBe(false);
   });
 
   it("toggling images dispatches a JSON-pointer update with the real pre-image", async () => {

@@ -57,6 +57,35 @@ fn gmroll_and_publicroll_are_rolls_with_an_audience() {
 }
 
 #[test]
+fn blindroll_and_selfroll_and_their_aliases_are_rolls_with_an_audience() {
+    for (cmd, intent) in [
+        ("/blindroll 1d20+2", AudienceIntent::Blind),
+        ("/br 1d20+2", AudienceIntent::Blind),
+        ("/selfroll 1d20+2", AudienceIntent::SelfOnly),
+        ("/sr 1d20+2", AudienceIntent::SelfOnly),
+    ] {
+        let p = parse_command(cmd);
+        assert_eq!(p.kind, MessageKind::Roll, "{cmd}");
+        assert_eq!(p.audience_intent, Some(intent), "{cmd}");
+        assert_eq!(p.body, "1d20+2", "{cmd}");
+    }
+}
+
+#[test]
+fn a_blind_or_self_token_needs_its_trailing_space() {
+    for s in [
+        "/blindrolls 1d20",
+        "/brx 1d20",
+        "/selfroller 1d20",
+        "/srx 1d20",
+    ] {
+        let p = parse_command(s);
+        assert!(p.audience_intent.is_none(), "{s}");
+        assert_eq!(p.kind, MessageKind::Normal, "{s}");
+    }
+}
+
+#[test]
 fn gm_players_and_reply_are_normal_text_with_an_audience() {
     for (cmd, intent) in [
         ("/gm psst", AudienceIntent::GmOnly),
@@ -103,6 +132,10 @@ fn no_command_yields_system_never() {
         "/w @a hi",
         "/gmroll 1d4",
         "/publicroll 1d4",
+        "/blindroll 1d4",
+        "/br 1d4",
+        "/selfroll 1d4",
+        "/sr 1d4",
         "/gm x",
         "/players x",
         "/reply x",

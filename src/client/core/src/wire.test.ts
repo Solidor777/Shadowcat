@@ -721,6 +721,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       elevation: null,
       id: "i",
     },
+    present_note: { type: "present_note", note_id: "n", presented_by: "u" },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {
@@ -959,6 +960,18 @@ describe("SendMessageSchema", () => {
       audience: { kind: "gm_only" },
     });
     expect(parsed.audience).toEqual({ kind: "gm_only" });
+  });
+
+  it("parses a blind audience", () => {
+    const parsed = SendMessageSchema.parse({
+      type: "send_message",
+      request_id: "00000000-0000-0000-0000-0000000000aa",
+      channel: "general",
+      content: "/blindroll 1d20",
+      actor_owner: null,
+      audience: { kind: "blind" },
+    });
+    expect(parsed.audience).toEqual({ kind: "blind" });
   });
 
   it("carries an opaque system payload and treats it as optional", () => {

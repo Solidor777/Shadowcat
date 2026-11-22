@@ -57,6 +57,7 @@ import {
   type PathResult,
   type MoveStream,
   type VfxNotice,
+  type PresentNoteNotice,
   type VfxPlayRequest,
   type ResetExploredFogOptions,
   type SubscriptionHandle,
@@ -284,6 +285,8 @@ export class WorldSession {
   #rulerListeners = new Set<(msg: RulerNotice) => void>();
   /** `onVfx` subscriber set. */
   #vfxListeners = new Set<(msg: VfxNotice) => void>();
+  /** `onPresentNote` subscriber set. */
+  #presentNoteListeners = new Set<(msg: PresentNoteNotice) => void>();
   /** `onScrollingText` subscriber set. */
   #scrollingTextListeners = new Set<
     (msg: {
@@ -1171,6 +1174,37 @@ export class WorldSession {
     return () => this.#vfxListeners.delete(cb);
   }
 
+  /** Subscribe to relayed "the GM is presenting this note" signals (incl. our own echo);
+   * returns an unsubscribe.
+   * @param cb Called with each presented note id and the presenting GM.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const off = session.onPresentNote((m) => console.log(m.noteId));
+   * off();
+   * ```
+   */
+  onPresentNote(cb: (msg: PresentNoteNotice) => void): () => void {
+    this.#presentNoteListeners.add(cb);
+    return () => this.#presentNoteListeners.delete(cb);
+  }
+
+  /** GM-only: ask the server to present a shared note to every connected client. Thin
+   * delegate to `WsClient.presentNote`; rejects immediately when there is no live transport.
+   * @param noteId The `note` document to present.
+   * @returns Resolves once accepted; rejects with the server's reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.presentNote("note-1");
+   * ```
+   */
+  presentNote(noteId: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.presentNote(noteId);
+  }
+
   /** Broadcast a one-shot VFX playback request. No-op when disconnected. The server
    * re-authorizes scene readability and world role (spectator refused) and drops an
    * over-reaching send silently, so callers may offer this client-advisory only. The request
@@ -1669,6 +1703,9 @@ export class WorldSession {
           // viewing that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#vfxListeners) cb(msg);
+        },
+        onPresentNote: (msg) => {
+          for (const cb of this.#presentNoteListeners) cb(msg);
         },
       },
     });

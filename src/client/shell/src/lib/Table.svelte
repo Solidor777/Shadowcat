@@ -9,6 +9,7 @@
   import { navigate } from "./route.svelte";
   import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, getChatHistory, pushChatHistory, resetSessionState } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
+  import { createPresentedNoteHandler } from "./presentedNote";
 
   // `PanelHost` binds the real implementation into this bridge at its own
   // mount (later than `Table`'s own init); calls made before that bind are
@@ -107,6 +108,17 @@
     subscribe();
     sheets.restoreFromPersisted(getPanelLayout(session.world!));
   });
+
+  // The GM's "present this note" signal opens the note's sheet for every other client. The
+  // returned unsubscribe is the effect's cleanup.
+  const onPresentNote = createPresentedNoteHandler({
+    documents: session.documents,
+    selfId: session.selfId,
+    openDocument: (ref) => sheets.openDocument(ref),
+    notify: (message, level) => notifications.push(level ?? "warning", message),
+    t,
+  });
+  $effect(() => session.onPresentNote(onPresentNote));
 
   // App renders <Table> only once role+world are set (Welcome received), so these
   // are non-null at init. setContext must run during init, not in markup; the
@@ -208,6 +220,7 @@
     audio: session.audio,
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
+    notes: { present: (noteId) => session.presentNote(noteId) },
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     moduleStatus: session.moduleStatus,

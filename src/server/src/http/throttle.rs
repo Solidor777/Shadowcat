@@ -1,8 +1,8 @@
-//! This module is the shared sliding-window throttle for the two Argon2-verifying auth endpoints
-//! (`/api/login`, `/api/invites/accept`) and for world creation.
+//! This module is the shared sliding-window throttle for the Argon2-verifying auth endpoints
+//! (`/api/login`, `/api/invites/accept`, `/api/account/password`) and for world creation.
 //!
 //! Keys are opaque strings composed by the callers (`login:u:<username>`, `login:ip:<ip>`,
-//! `invite:u:<uuid>`, `invite:ip:<ip>`, `world_create:u:<uuid>`). INVARIANT (no enumeration
+//! `invite:u:<uuid>`, `invite:ip:<ip>`, `password_change:u:<uuid>`, `world_create:u:<uuid>`). INVARIANT (no enumeration
 //! oracle): identity keys count attempts against unknown identities exactly like known ones, and
 //! callers return one uniform 429 — the throttle must never behave differently for an identity
 //! that exists.
@@ -29,6 +29,10 @@ pub const INVITE_PER_MIN_PER_IP: usize = 30;
 /// legitimate interactive use while still bounding a scripted flood to one order of magnitude
 /// per minute.
 pub const WORLD_CREATE_PER_MIN_PER_ACCOUNT: usize = 10;
+/// Per-account change-own-password budget (trailing 60 s). The caller is authenticated, but a
+/// stolen session cookie must not guess the current password at Argon2 speed; every attempt,
+/// successful or not, spends one unit, as in `login`.
+pub const PASSWORD_CHANGE_PER_MIN_PER_ACCOUNT: usize = 10;
 /// Tracked-key capacity. Unauthenticated input mints identity keys, so the map
 /// must be bounded; per-IP budgets cap the mint rate per address, and on
 /// overflow new keys FAIL CLOSED (throttled) rather than evicting live state.

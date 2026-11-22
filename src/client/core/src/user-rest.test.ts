@@ -3,6 +3,8 @@ import {
   listUsers,
   createUser,
   deleteUser,
+  changeOwnPassword,
+  ChangePasswordError,
   listWorldMembers,
   createWorldInvite,
   listWorldInvites,
@@ -42,6 +44,28 @@ test("deleteUser issues DELETE and surfaces the server error body", async () => 
   await expect(deleteUser("u-2")).rejects.toThrow(
     "cannot delete the server's only administrator",
   );
+});
+
+test("changeOwnPassword POSTs both passwords and throws a status-carrying error on refusal", async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  vi.stubGlobal("fetch", fetchMock);
+  await changeOwnPassword("old-pw", "new-password");
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/account/password");
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(init.method).toBe("POST");
+  expect(JSON.parse(init.body as string)).toEqual({
+    current_password: "old-pw",
+    new_password: "new-password",
+  });
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: "unauthorized" }) }),
+  );
+  const err = await changeOwnPassword("bad", "new-password").catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ChangePasswordError);
+  expect((err as ChangePasswordError).status).toBe(401);
+  expect((err as ChangePasswordError).message).toBe("unauthorized");
 });
 
 test("listUsers surfaces the server's reason on the non-admin 403", async () => {

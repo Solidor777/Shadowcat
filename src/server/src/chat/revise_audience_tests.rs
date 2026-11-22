@@ -169,7 +169,8 @@ fn delivers_content(ops: &[Operation], id: Uuid) -> bool {
 fn permissions_for_audience_matches_each_audience_and_keeps_the_author_owner() {
     let author = Uuid::new_v4();
     let other = Uuid::new_v4();
-    let (d, g, u) = permissions_for_audience(author, &Audience::Public);
+    let none = BlindReaders::default();
+    let (d, g, u) = permissions_for_audience(author, &Audience::Public, &none);
     assert_eq!((d, g), (DocRole::Observer, None));
     assert_eq!(u.get(&author), Some(&DocRole::Owner));
 
@@ -178,6 +179,7 @@ fn permissions_for_audience_matches_each_audience_and_keeps_the_author_owner() {
         &Audience::Whisper {
             recipients: vec![other, author],
         },
+        &none,
     );
     assert_eq!((d, g), (DocRole::None, Some(DocRole::None)));
     assert_eq!(u.get(&other), Some(&DocRole::Observer));
@@ -187,7 +189,7 @@ fn permissions_for_audience_matches_each_audience_and_keeps_the_author_owner() {
         "naming the author as a recipient must not demote them"
     );
 
-    let (d, g, u) = permissions_for_audience(author, &Audience::GmOnly);
+    let (d, g, u) = permissions_for_audience(author, &Audience::GmOnly, &none);
     assert_eq!((d, g), (DocRole::None, Some(DocRole::Observer)));
     assert_eq!(u.len(), 1);
 }

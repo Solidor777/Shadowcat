@@ -1856,6 +1856,47 @@ describe("WsClient", () => {
   });
 });
 
+describe("WsClient present_note frames", () => {
+  it("a present_note server frame invokes onPresentNote with camelCase fields", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onPresentNote: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(JSON.stringify({ type: "present_note", note_id: "n1", presented_by: "gm-1" }));
+    await flush();
+    expect(received).toEqual([{ noteId: "n1", presentedBy: "gm-1" }]);
+    client.stop();
+  });
+
+  it("presentNote sends a present_note frame and a chat_error rejects it with the reason", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.presentNote("n1");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "present_note")!);
+    expect(frame).toMatchObject({ type: "present_note", note_id: "n1" });
+    expect(typeof frame.request_id).toBe("string");
+    onMessage(JSON.stringify({ type: "chat_error", request_id: frame.request_id, message: "Share this note with players before presenting it." }));
+    await expect(p).rejects.toThrow(/Share this note/);
+  });
+});
+
 describe("WsClient VFX frames", () => {
   it("a vfx server frame invokes onVfx with every field mapped (incl. duration_ms → durationMs)", async () => {
     let onMessage: (d: string) => void = () => {};

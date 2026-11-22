@@ -806,6 +806,21 @@
         <input type="checkbox" aria-label={ctx.t("gameSettings.chat.images")} checked={chatsys.images ?? false}
           onchange={(e) => set(chatDoc.id, "/engine/images", chatsys.images ?? null, (e.currentTarget as HTMLInputElement).checked)} />
       </label>
+
+      <!-- Blind-roll readership. Both are plain two-state checkboxes: the server resolves an
+           absent value to false (`ChatContentPolicy::blind_visible_to_players` and
+           `blind_visible_to_actor_owner`), and the OCC pre-image carries the raw stored value. -->
+      <label>
+        {ctx.t("gameSettings.chat.blindVisibleToPlayers")}
+        <input type="checkbox" aria-label={ctx.t("gameSettings.chat.blindVisibleToPlayers")} checked={chatsys.blind_visible_to_players ?? false}
+          onchange={(e) => set(chatDoc.id, "/engine/blind_visible_to_players", chatsys.blind_visible_to_players ?? null, (e.currentTarget as HTMLInputElement).checked)} />
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.chat.blindVisibleToActorOwner")}
+        <input type="checkbox" aria-label={ctx.t("gameSettings.chat.blindVisibleToActorOwner")} checked={chatsys.blind_visible_to_actor_owner ?? false}
+          onchange={(e) => set(chatDoc.id, "/engine/blind_visible_to_actor_owner", chatsys.blind_visible_to_actor_owner ?? null, (e.currentTarget as HTMLInputElement).checked)} />
+      </label>
     </fieldset>
   {/if}
 

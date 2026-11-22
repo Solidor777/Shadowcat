@@ -1,9 +1,9 @@
 //! This module parses a message's leading chat command.
 //!
 //! It recognizes `/me`/`/em`/`/emote`, the `/roll`|`/r`|`/NdM` shorthand, the `/ooc` and `/ic`
-//! display kinds, and the audience shortcuts `/w`, `/gm`, `/gmroll`, `/publicroll`, `/players`
-//! and `/reply`. The parser is pure (no repo/async): it only records an `AudienceIntent`; the
-//! async caller (`handle_send_message`) resolves that intent to a concrete `Audience` through
+//! display kinds, and the audience shortcuts `/w`, `/gm`, `/gmroll`, `/publicroll`, `/players`,
+//! `/reply`, `/blindroll`|`/br` and `/selfroll`|`/sr`. The parser is pure (no repo/async): it
+//! only records an `AudienceIntent`; the async caller (`handle_send_message`) resolves that intent to a concrete `Audience` through
 //! `resolve_audience_intent` and re-validates it.
 
 #![deny(missing_docs)]
@@ -29,6 +29,11 @@ pub enum AudienceIntent {
     GmOnly,
     /// `/publicroll`: every member, overriding a non-public frame audience.
     Public,
+    /// `/blindroll`, `/br`: every member holds the roll, but its formula and result reach only
+    /// the GM (`Audience::Blind`).
+    Blind,
+    /// `/selfroll`, `/sr`: only the roller reads it, resolved as a whisper with no recipients.
+    SelfOnly,
     /// `/players`: every current non-GM member, frozen at send time as a whisper roster.
     Players,
     /// `/reply`: whoever whispered the sender most recently.
@@ -103,6 +108,16 @@ pub fn parse_command(raw: &str) -> ParsedCommand {
     }
     if let Some(rest) = trimmed.strip_prefix("/publicroll ") {
         return with_intent(MessageKind::Roll, AudienceIntent::Public, rest);
+    }
+    for tok in ["/blindroll ", "/br "] {
+        if let Some(rest) = trimmed.strip_prefix(tok) {
+            return with_intent(MessageKind::Roll, AudienceIntent::Blind, rest);
+        }
+    }
+    for tok in ["/selfroll ", "/sr "] {
+        if let Some(rest) = trimmed.strip_prefix(tok) {
+            return with_intent(MessageKind::Roll, AudienceIntent::SelfOnly, rest);
+        }
     }
     // Roll: explicit /roll|/r, or /NdM shorthand.
     for tok in ["/roll ", "/r "] {
