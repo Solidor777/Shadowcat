@@ -44,13 +44,14 @@ pub mod transition;
 mod tests;
 
 pub use effects::collect_effects;
-pub use snapshot::{load_snapshot, CombatSnapshot, Combatant};
+pub use snapshot::{load_snapshot, CombatSnapshot, Combatant, CombatantGroup};
 /// Test-only seam onto `transition::advance_with_step_count` — see its own
 /// doc comment.
 #[cfg(test)]
 pub(crate) use transition::advance_with_step_count;
 pub use transition::{
-    advance, end, pause, rebuild_order, resource, rewind, roll, sort, start, ResourceOp, RollPost,
+    advance, end, pause, rebuild_order, resource, rewind, roll, roll_with_groups, sort, start,
+    ResourceOp, RollPost,
 };
 pub(crate) use transition::{
     advance_with_trigger_plan, start_with_trigger_plan, TurnRoundBoundary,
@@ -179,6 +180,7 @@ pub enum CombatError {
 ///     initiative: None,
 ///     tiebreak: 0.0,
 ///     defeated: false,
+///     group: None,
 ///     resources: Default::default(),
 /// };
 /// let combat_engine = CombatEngine {
@@ -488,6 +490,26 @@ fn owns_combatant(
     access.is_owner && access.has(cap::READ) && may_write
 }
 
+/// The combatants a `CombatRoll` entry's id names: the one combatant when the
+/// id is a combatant's, every member of the group when it is a
+/// `combatant-group`'s, and `None` for an id that is neither or a group with no
+/// members. `authorize` and `build_ops` both read the expansion from here so
+/// the combatants checked are exactly the combatants written.
+fn roll_target_combatants(snap: &CombatSnapshot, id: Uuid) -> Option<Vec<&Combatant>> {
+    if let Some(c) = snap.combatants.iter().find(|c| c.doc.id == id) {
+        return Some(vec![c]);
+    }
+    if !snap.groups.iter().any(|g| g.doc.id == id) {
+        return None;
+    }
+    let members: Vec<&Combatant> = snap
+        .combatants
+        .iter()
+        .filter(|c| c.engine.group == Some(id))
+        .collect();
+    (!members.is_empty()).then_some(members)
+}
+
 /// Non-GM authorization scope for a combat intent; a GM may always act.
 /// `CombatAdvance` additionally admits the CURRENT turn's owner when
 /// `turn_control == TurnControl::OwnerMayEnd`. `CombatRoll`/`CombatResource`
@@ -544,12 +566,15 @@ fn authorize(
                 return Err(CombatError::Forbidden);
             }
             for entry in rolls {
-                let c = snap
-                    .combatants
-                    .iter()
-                    .find(|c| c.doc.id == entry.combatant_id)
+                // A group entry stamps its one result on every member, so the
+                // caller must own EVERY member; a group the caller owns only
+                // in part is refused whole rather than rolled for some.
+                let targets = roll_target_combatants(snap, entry.combatant_id)
                     .ok_or(CombatError::NotFound)?;
-                if !owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine) {
+                if !targets
+                    .iter()
+                    .all(|c| owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine))
+                {
                     return Err(CombatError::Forbidden);
                 }
             }
@@ -607,10 +632,16 @@ async fn build_ops(
             // layer — this function — as responsible for that); a
             // duplicate would build two `FieldChange`s against the same
             // combatant from one stale pre-image.
+            // A group entry is checked through its members, so naming a group
+            // and one of its members (or the group twice) is a duplicate too.
             let mut seen = HashSet::new();
             for entry in &rolls {
-                if !seen.insert(entry.combatant_id) {
-                    return Err(CombatError::DuplicateRoll);
+                let targets = roll_target_combatants(snap, entry.combatant_id)
+                    .ok_or(CombatError::NotFound)?;
+                for c in targets {
+                    if !seen.insert(c.doc.id) {
+                        return Err(CombatError::DuplicateRoll);
+                    }
                 }
             }
             // The channel the results post to (and whose dice context they
@@ -620,31 +651,46 @@ async fn build_ops(
             }
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;
             let mut posts = Vec::with_capacity(rolls.len());
+            let mut group_posts = Vec::new();
             for entry in &rolls {
                 // Each entry's references resolve against ITS combatant's
                 // formula host — the token-embedded copy or the linked actor,
                 // the one precedence rule `eval::formula_host` declares. A
                 // combatant with no host resolves every reference as unknown
-                // and the intent refuses with the roll error.
-                let host = snap
+                // and the intent refuses with the roll error. A group entry
+                // rolls ONCE against its first member's host (the group has
+                // none of its own) and the single result goes to every member.
+                let is_group = !snap
                     .combatants
                     .iter()
-                    .find(|c| c.doc.id == entry.combatant_id)
+                    .any(|c| c.doc.id == entry.combatant_id);
+                let host = roll_target_combatants(snap, entry.combatant_id)
+                    .and_then(|targets| targets.first().copied())
                     .and_then(|c| eval::formula_host(&snap.hosts, &c.engine.kind));
                 let (formula, outcome, spec, raw) =
                     crate::chat::rolls::execute_roll(&entry.notation, dice_ctx, host)?;
-                posts.push((
-                    entry.combatant_id,
-                    RollPost {
-                        formula,
-                        outcome,
-                        spec,
-                        raw,
-                    },
-                ));
+                let post = RollPost {
+                    formula,
+                    outcome,
+                    spec,
+                    raw,
+                };
+                if is_group {
+                    group_posts.push((entry.combatant_id, post));
+                } else {
+                    posts.push((entry.combatant_id, post));
+                }
             }
-            roll(snap, &posts, room.world_id, ctx.user_id, &channel, now)
-                .map(|ops| (ops, Vec::new()))
+            roll_with_groups(
+                snap,
+                &posts,
+                &group_posts,
+                room.world_id,
+                ctx.user_id,
+                &channel,
+                now,
+            )
+            .map(|ops| (ops, Vec::new()))
         }
         ClientMsg::CombatResource {
             combatant_id,

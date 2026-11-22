@@ -190,6 +190,7 @@ export type { EffectSnapshot } from "./generated/engine/EffectSnapshot";
 export type { CapturedCombatant } from "./generated/engine/CapturedCombatant";
 export type { TurnRecord } from "./generated/engine/TurnRecord";
 export type { CombatHistoryEngine } from "./generated/engine/CombatHistoryEngine";
+export type { CombatantGroupEngine } from "./generated/engine/CombatantGroupEngine";
 export type { SystemDefaultsEngine } from "./generated/engine/SystemDefaultsEngine";
 export type { SceneDefaultsOverlay } from "./generated/engine/SceneDefaultsOverlay";
 export type { PathfindingOverlay } from "./generated/engine/PathfindingOverlay";

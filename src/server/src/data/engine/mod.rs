@@ -27,10 +27,11 @@ pub use audio::{
 };
 pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
-    CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
-    EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula,
-    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
-    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
+    CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, Duration,
+    DurationUnit, EffectEngine, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot,
+    Enforcement, ExpiryPoint, Formula, Interpretation, MovementRules, Recovery,
+    ResolvedCombatRules, Resource, ResourceBinding, ResourceRegistryEngine, TurnControl,
+    TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
     AmbientLightMode, AmbientLightOverride, CompoundShapePart, DoorState, DrawingEngine,
@@ -85,6 +86,8 @@ pub const LIGHT_GRADATION_DOC_TYPE: &str = "light-gradation";
 pub const COMBAT_DOC_TYPE: &str = "combat";
 /// Doc_type for a combatant: always a child (`parent_id`) of a combat.
 pub const COMBATANT_DOC_TYPE: &str = "combatant";
+/// Doc_type for a combatant group: always a child (`parent_id`) of a combat.
+pub const COMBATANT_GROUP_DOC_TYPE: &str = "combatant-group";
 /// Doc_type for the world's singleton turn-resource registry.
 pub const RESOURCE_REGISTRY_DOC_TYPE: &str = "resource-registry";
 /// Doc_type for an effect (embedded under actors/items, or standalone).
@@ -131,6 +134,7 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "effect",
     "system-defaults",
     "combat-history",
+    "combatant-group",
     "asset_folder",
     "table_folder",
     "table",
@@ -424,6 +428,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("combat-history: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "combatant-group" => {
+            let typed: CombatantGroupEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("combatant-group: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("combatant-group: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
         "table_folder" => round_trip::<table_folder::TableFolderEngine>(v, "table_folder"),
         "table" => {
@@ -611,6 +623,9 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
             .unwrap_or_default(),
         "light-gradation" => typed_or_none::<LightGradationEngine>(engine)
             .map(|g| join_names(g.bands.iter().map(|b| b.name.as_str())))
+            .unwrap_or_default(),
+        "combatant-group" => typed_or_none::<CombatantGroupEngine>(engine)
+            .map(|g| g.name)
             .unwrap_or_default(),
         "token" => typed_or_none::<TokenEngine>(engine)
             .map(|t| t.overrides.and_then(|o| o.name).unwrap_or_default())

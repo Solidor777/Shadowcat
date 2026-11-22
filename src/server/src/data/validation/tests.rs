@@ -995,6 +995,28 @@ fn validate_containment_requires_a_parent_for_combat_history_and_forbids_embeddi
 }
 
 #[test]
+fn combatant_group_doc_must_be_parented_to_a_combat() {
+    let mut group = crate::data::document::tests::sample_doc();
+    group.doc_type = "combatant-group".into();
+    group.engine = crate::data::document::tests::default_test_engine("combatant-group");
+    group.parent_id = None;
+    assert!(validate_containment(&group).is_err());
+    group.parent_id = Some(crate::test_ids::test_uuid(5));
+    assert!(validate_containment(&group).is_ok());
+}
+
+#[test]
+fn combatant_group_doc_cannot_be_embedded() {
+    let mut child = crate::data::document::tests::sample_doc();
+    child.doc_type = "combatant-group".into();
+    child.engine = crate::data::document::tests::default_test_engine("combatant-group");
+    child.parent_id = Some(crate::test_ids::test_uuid(5));
+    let mut parent = crate::data::document::tests::sample_doc();
+    parent.embedded.insert("groups".into(), vec![child]);
+    assert!(validate_containment(&parent).is_err());
+}
+
+#[test]
 fn validate_containment_rejects_combat_combatant_and_note_as_embedded_children() {
     for child_type in ["combat", "combatant", "note"] {
         let mut child = crate::data::document::tests::sample_doc();

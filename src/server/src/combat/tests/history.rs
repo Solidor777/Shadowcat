@@ -66,6 +66,7 @@ fn rebuild(prev: &CombatSnapshot, docs: HashMap<Uuid, Document>) -> CombatSnapsh
         history,
         registry: prev.registry.clone(),
         other_active: Vec::new(),
+        groups: Vec::new(),
         chain: prev.chain.clone(),
     }
 }

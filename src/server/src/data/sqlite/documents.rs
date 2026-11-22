@@ -291,11 +291,14 @@ impl SqliteRepository {
         batch_folders: &std::collections::HashMap<Uuid, Document>,
         batch_combats: &std::collections::HashSet<Uuid>,
     ) -> Result<(), DataError> {
-        if doc.doc_type == COMBATANT_DOC_TYPE || doc.doc_type == COMBAT_HISTORY_DOC_TYPE {
+        if doc.doc_type == COMBATANT_DOC_TYPE
+            || doc.doc_type == COMBAT_HISTORY_DOC_TYPE
+            || doc.doc_type == COMBATANT_GROUP_DOC_TYPE
+        {
             // `validate_containment` already guarantees `parent_id` is
-            // `Some` for a combatant/combat-history document.
+            // `Some` for a combatant/combat-history/combatant-group document.
             let pid = doc.parent_id.expect(
-                "validate_containment requires a combatant/combat-history doc to carry a parent_id",
+                "validate_containment requires a combatant/combat-history/combatant-group doc to carry a parent_id",
             );
             let stored_parent = if batch_combats.contains(&pid) {
                 None

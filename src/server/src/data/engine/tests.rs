@@ -1246,6 +1246,41 @@ fn combat_history_minimal_body_is_valid_and_cursor_is_bounded() {
 }
 
 #[test]
+fn combatant_group_body_needs_a_name_and_a_hex_color() {
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": "#3fb950" }))
+    )
+    .is_ok());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": null }))
+    )
+    .is_ok());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "  ", "color": null }))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": "green" }))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "combatant-group",
+        Some(&json!({ "name": "Rats", "color": null, "extra": 1 }))
+    )
+    .is_err());
+}
+
+#[test]
+fn combatant_group_name_is_searchable() {
+    let v = json!({ "name": "Rat swarm", "color": null });
+    assert_eq!(search_text("combatant-group", &v).unwrap(), "Rat swarm");
+}
+
+#[test]
 fn combat_defaults_accept_cleanup_and_restore_overrides() {
     let v = json!({ "effectCleanup": false, "rewindRestore": false, "forwardRestore": true,
         "effectLifecycle": { "onCombatEnd": 0, "onTurnEnd": "fleeting", "onAdvance": null } });

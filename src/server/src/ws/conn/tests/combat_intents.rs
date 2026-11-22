@@ -363,6 +363,7 @@ async fn combat_harness() -> Harness {
         initiative: None,
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -391,6 +392,7 @@ async fn combat_harness() -> Harness {
         initiative: None,
         tiebreak: 0.0,
         defeated: false,
+        group: None,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -1170,6 +1172,7 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
             initiative: None,
             tiebreak: 0.0,
             defeated: false,
+            group: None,
             resources: Default::default(),
         })
         .unwrap(),
@@ -1783,6 +1786,7 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
             initiative: None,
             tiebreak: 0.0,
             defeated: false,
+            group: None,
             resources: Default::default(),
         })
         .unwrap(),
@@ -1900,4 +1904,178 @@ async fn a_rejected_combat_intent_never_yields_a_combat_result() {
         !refused.succeeded(),
         "a rejection must never be mistaken for a CombatResult"
     );
+}
+
+/// Creates a `combatant-group` child of the harness combat and points each of `members` at it,
+/// through ordinary GM writes, returning the group id.
+async fn make_group(h: &Harness, members: &[Uuid]) -> Uuid {
+    let group_id = crate::test_ids::test_uuid(0x77);
+    let mut group =
+        crate::data::document::tests::world_scoped_doc(h.world_id, group_id, "combatant-group");
+    group.parent_id = Some(h.combat);
+    group.owner = Some(h.gm.user_id);
+    group.engine = Some(serde_json::json!({ "name": "Swarm", "color": null }));
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Create { doc: group }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    for member in members {
+        h.room
+            .publish(
+                h.repo.as_ref(),
+                &h.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: *member,
+                    changes: vec![crate::data::command::FieldChange {
+                        remove: false,
+                        path: "/engine/group".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!(group_id),
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+    group_id
+}
+
+/// The `initiative` currently stored on combatant `id`.
+async fn stored_initiative(h: &Harness, id: Uuid) -> Option<f64> {
+    let doc = h.repo.get_document(id).await.unwrap().unwrap();
+    serde_json::from_value::<CombatantEngine>(doc.engine.unwrap())
+        .unwrap()
+        .initiative
+}
+
+/// A GM rolling a group id stamps one result on every member and posts one message.
+#[tokio::test]
+async fn a_gm_group_roll_stamps_every_member_and_posts_one_message() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant, h.hidden_npc]).await;
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(ok.succeeded());
+    let a = stored_initiative(&h, h.player_combatant).await;
+    assert!(a.is_some());
+    assert_eq!(a, stored_initiative(&h, h.hidden_npc).await);
+    let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "one message for the group, not one per member"
+    );
+    assert_eq!(
+        msgs[0].permissions.default,
+        DocRole::None,
+        "a hidden member makes the group's message GM-only"
+    );
+}
+
+/// A player may not roll a group holding a combatant they do not own: the refusal is whole, so
+/// the player's own member is not rolled either.
+#[tokio::test]
+async fn a_player_cannot_roll_a_group_holding_a_combatant_they_do_not_own() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant, h.hidden_npc]).await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+    assert_eq!(stored_initiative(&h, h.player_combatant).await, None);
+}
+
+/// A player may roll a group whose every member they own.
+#[tokio::test]
+async fn a_player_may_roll_a_group_of_only_their_own_combatants() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant]).await;
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: group,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(ok.succeeded());
+    assert!(stored_initiative(&h, h.player_combatant).await.is_some());
+}
+
+/// Naming a group and one of its members in one roll writes that member twice, so it is refused.
+#[tokio::test]
+async fn naming_a_group_and_its_member_in_one_roll_is_a_duplicate() {
+    let h = combat_harness().await;
+    let group = make_group(&h, &[h.player_combatant]).await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![
+                CombatRollEntry {
+                    combatant_id: group,
+                    notation: "1d20".into(),
+                },
+                CombatRollEntry {
+                    combatant_id: h.player_combatant,
+                    notation: "1d20".into(),
+                },
+            ],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+    assert_eq!(stored_initiative(&h, h.player_combatant).await, None);
 }

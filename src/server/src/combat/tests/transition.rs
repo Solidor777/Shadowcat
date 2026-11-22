@@ -717,6 +717,262 @@ fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
     );
 }
 
+/// An ungrouped-fixture combatant moved into `group` with the given initiative.
+fn grouped(mut c: Combatant, group: Uuid, initiative: Option<f64>) -> Combatant {
+    c.engine.group = Some(group);
+    c.engine.initiative = initiative;
+    c
+}
+
+/// A `combatant-group` fixture child of `combat`.
+fn group_member_set(id: u128, combat: Uuid, name: &str) -> CombatantGroup {
+    let engine = CombatantGroupEngine {
+        name: name.to_string(),
+        color: None,
+    };
+    CombatantGroup {
+        doc: doc(
+            id,
+            "combatant-group",
+            Some(combat),
+            serde_json::to_value(&engine).unwrap(),
+        ),
+        engine,
+    }
+}
+
+#[test]
+fn rebuild_order_keeps_group_members_contiguous_regardless_of_arrival_order() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let rat_a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let lone = {
+        let mut c = actor_combatant(11, combat, 0xB, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    let rat_b = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let other = {
+        let mut c = actor_combatant(13, combat, 0xD, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    // A full tie on initiative and tiebreak, with an ungrouped combatant
+    // standing between the two group members in the stored order.
+    let order = rebuild_order(
+        &[rat_a, lone, rat_b, other],
+        &[
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(13),
+        ],
+    );
+    assert_eq!(
+        order,
+        vec![
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(13)
+        ],
+        "the second member joins the first; ungrouped entries keep their relative order"
+    );
+}
+
+#[test]
+fn rebuild_order_sorts_groups_by_their_shared_initiative_against_ungrouped_combatants() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    // The members' initiatives have drifted apart (15 and 5); the group slots
+    // at its highest member, ahead of the ungrouped 10, and stays together.
+    let high = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(15.0),
+    );
+    let low = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        Some(5.0),
+    );
+    let lone = {
+        let mut c = actor_combatant(11, combat, 0xB, None, false, 0.0);
+        c.engine.initiative = Some(10.0);
+        c
+    };
+    let order = rebuild_order(
+        &[low, lone, high],
+        &[
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(11),
+            crate::test_ids::test_uuid(10),
+        ],
+    );
+    assert_eq!(
+        order,
+        vec![
+            crate::test_ids::test_uuid(12),
+            crate::test_ids::test_uuid(10),
+            crate::test_ids::test_uuid(11)
+        ]
+    );
+}
+
+#[test]
+fn roll_expansion_applies_identical_outcome_to_every_group_member() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        None,
+    );
+    let b = grouped(
+        actor_combatant(11, combat, 0xB, None, false, 0.0),
+        group,
+        None,
+    );
+    let c = grouped(
+        actor_combatant(12, combat, 0xC, None, false, 0.0),
+        group,
+        None,
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id, c.doc.id], None, 0, false),
+        vec![a, b, c],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let ops = roll_with_groups(
+        &snap,
+        &[],
+        &[(group, RollPost::test_with_total("1d20", 14))],
+        WORLD,
+        crate::test_ids::test_uuid(0x6E),
+        "table",
+        0,
+    )
+    .unwrap();
+    let messages = ops
+        .iter()
+        .filter(|o| matches!(o, Operation::Create { doc } if doc.doc_type == "message"))
+        .count();
+    assert_eq!(
+        messages, 1,
+        "one message for the whole group, not one per member"
+    );
+    let docs = apply(&snap, &ops);
+    for id in [10, 11, 12] {
+        let member: CombatantEngine = engine_of(&docs, crate::test_ids::test_uuid(id));
+        assert_eq!(member.initiative, Some(14.0));
+    }
+}
+
+#[test]
+fn a_group_roll_with_a_hidden_member_posts_gm_only() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        None,
+    );
+    let h = grouped(
+        actor_combatant(11, combat, 0xB, None, true, 0.0),
+        group,
+        None,
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, h.doc.id], None, 0, false),
+        vec![a, h],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let ops = roll_with_groups(
+        &snap,
+        &[],
+        &[(group, RollPost::test_with_total("1d20", 9))],
+        WORLD,
+        crate::test_ids::test_uuid(0x6E),
+        "table",
+        0,
+    )
+    .unwrap();
+    let message = ops
+        .iter()
+        .find_map(|o| match o {
+            Operation::Create { doc } if doc.doc_type == "message" => Some(doc),
+            _ => None,
+        })
+        .expect("a roll message");
+    assert_eq!(message.permissions.default, DocRole::None);
+}
+
+#[test]
+fn a_group_with_no_members_or_an_unknown_group_is_not_found() {
+    let combat = crate::test_ids::test_uuid(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id], None, 0, false),
+        vec![a],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Empty")];
+    for id in [0x50, 0x51] {
+        let result = roll_with_groups(
+            &snap,
+            &[],
+            &[(
+                crate::test_ids::test_uuid(id),
+                RollPost::test_with_total("1d20", 9),
+            )],
+            WORLD,
+            crate::test_ids::test_uuid(0x6E),
+            "table",
+            0,
+        );
+        assert!(matches!(result, Err(CombatError::NotFound)));
+    }
+}
+
+#[test]
+fn settle_turn_still_walks_group_members_individually() {
+    let combat = crate::test_ids::test_uuid(1);
+    let group = crate::test_ids::test_uuid(0x50);
+    let a = grouped(
+        actor_combatant(10, combat, 0xA, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let b = grouped(
+        actor_combatant(11, combat, 0xB, None, false, 0.0),
+        group,
+        Some(10.0),
+    );
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    snap.groups = vec![group_member_set(0x50, combat, "Rats")];
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let engine: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(
+        engine.turn,
+        Some(crate::test_ids::test_uuid(11)),
+        "the next group member takes its own turn; the group does not collapse into one"
+    );
+}
+
 #[test]
 fn end_expires_cleanup_effects_then_deletes_the_combat() {
     let combat = crate::test_ids::test_uuid(1);
