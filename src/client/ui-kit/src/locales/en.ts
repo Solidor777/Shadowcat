@@ -403,6 +403,7 @@ export const en: Messages = {
   "tools.snap": "Snap to grid",
   "tools.snapMode": "Snap mode (click to switch)",
   "tools.snapModeCenter": "Snap: cell center",
+  "tools.snapModeEdge": "Snap: edge",
   "tools.snapModeVertex": "Snap: vertex",
   "tools.speakAsToken": "Speak as this token",
   "tools.overBudget": "{over} over budget",

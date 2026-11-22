@@ -5,7 +5,7 @@
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
-  import { MAX_OVERLAY_DISPLAY_CHARS } from "@shadowcat/render";
+  import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
   const ctx = getAppContext();
 
@@ -121,8 +121,27 @@
     ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/snapToGrid", old: rawSnap, value: !snapToGrid }])]);
   }
 
-  /** Flips the session's snap-MODE preference between cell-center and nearest-vertex
-   * snapping. Client-local session state (`ctx.snapModePreference`), never a document write —
+  /** The snap modes in the order the mode button cycles through them. */
+  const SNAP_MODE_CYCLE: SnapMode[] = ["center", "vertex", "edge"];
+
+  /** The mode button's visible label for `mode`.
+   * @param mode The snap mode to label.
+   * @returns The localized label.
+   * @example
+   * ```
+   * snapModeLabel("edge");
+   * ```
+   */
+  function snapModeLabel(mode: SnapMode): string {
+    switch (mode) {
+      case "vertex": return t("tools.snapModeVertex");
+      case "edge": return t("tools.snapModeEdge");
+      case "center": return t("tools.snapModeCenter");
+    }
+  }
+
+  /** Advances the session's snap-MODE preference to the next mode in the cell-center, vertex,
+   * edge cycle. Client-local session state (`ctx.snapModePreference`), never a document write —
    * unlike `toggleSnap` above, nothing here is shared with other clients; `Stage` observes
    * the preference and re-pushes it to the engine's `setSnapMode` chokepoint.
    * @example
@@ -131,7 +150,8 @@
    * ```
    */
   function toggleSnapMode(): void {
-    ctx.snapModePreference.set(ctx.snapModePreference.mode === "vertex" ? "center" : "vertex");
+    const next = (SNAP_MODE_CYCLE.indexOf(ctx.snapModePreference.mode) + 1) % SNAP_MODE_CYCLE.length;
+    ctx.snapModePreference.set(SNAP_MODE_CYCLE[next]);
   }
 
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
@@ -557,19 +577,19 @@
     </button>
   {/if}
 
-  <!-- Snap MODE (center vs vertex) steers only this client's own tool clicks, so it is
+  <!-- Snap MODE (center, vertex or edge) steers only this client's own tool clicks, so it is
        client-local session state (`ctx.snapModePreference`), not a scene-document write;
        GM-only like the snap toggle beside it. -->
   {#if isGm && activeScene}
     <button
       type="button"
       class="tool"
-      aria-pressed={ctx.snapModePreference.mode === "vertex"}
+      aria-pressed={ctx.snapModePreference.mode !== "center"}
       data-testid="snap-mode-toggle"
       title={t("tools.snapMode")}
       onclick={toggleSnapMode}
     >
-      {ctx.snapModePreference.mode === "vertex" ? t("tools.snapModeVertex") : t("tools.snapModeCenter")}
+      {snapModeLabel(ctx.snapModePreference.mode)}
     </button>
   {/if}
 

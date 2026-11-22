@@ -2,7 +2,7 @@ import type { SnapMode } from "@shadowcat/render";
 
 /**
  * The session's snap-MODE preference — which lattice point a snapping tool's point resolves
- * to (`"center"`: the cell's center; `"vertex"`: the nearest cell corner, see `SnapMode`).
+ * to (`"center"`: the cell's center; `"vertex"`: the nearest cell corner; `"edge"`: the nearest point on a cell edge — see `SnapMode`).
  * Client-local and session-scoped: never written to a document and never broadcast, because
  * it only steers how THIS client's tool clicks resolve — the wall/region geometry a tool
  * stores is plain scene-unit floats regardless of the mode used to pick the points.
@@ -20,7 +20,7 @@ export class SnapModePreference {
 
   /** The current snap mode. `"center"` (the default) resolves a snap to the cell's center,
    * preserving the behavior every existing scene's authoring flow was built around;
-   * `"vertex"` resolves to the nearest cell corner.
+   * `"vertex"` resolves to the nearest cell corner, `"edge"` to the nearest point on a cell edge.
    * @returns The current snap mode. */
   get mode(): SnapMode {
     return this.#mode;

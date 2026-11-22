@@ -67,7 +67,7 @@ export class SceneInteractionBridge implements SceneInteraction {
   }
 
   /** Forward to the attached host; a no-op when detached.
-   * @param mode - Which lattice point `snap` resolves to (`"center"` or `"vertex"`).
+   * @param mode - Which lattice point `snap` resolves to (`"center"`, `"vertex"` or `"edge"`).
    * @example sceneInteraction.setSnapMode("vertex");
    */
   setSnapMode(mode: SnapMode): void {

@@ -424,6 +424,9 @@ test("the snap-mode toggle flips the session preference and reflects it (center 
   expect(snapModePreference.mode).toBe("vertex");
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   await fireEvent.click(toggle);
+  expect(snapModePreference.mode).toBe("edge");
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await fireEvent.click(toggle);
   expect(snapModePreference.mode).toBe("center");
   expect(toggle.getAttribute("aria-pressed")).toBe("false");
 });

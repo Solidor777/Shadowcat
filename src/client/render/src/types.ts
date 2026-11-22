@@ -438,10 +438,11 @@ export interface LightingInput {
 
 /** Which lattice point `SceneToolHost.snap` resolves a point to while snapping is enabled:
  * `"center"` snaps to the containing/nearest cell's center; `"vertex"` snaps to the nearest
- * cell corner (`Grid.snapVertex`). Orthogonal to the snap on/off axis
+ * cell corner (`Grid.snapVertex`); `"edge"` snaps to the nearest point on the nearest cell
+ * edge (`Grid.snapEdge`). Orthogonal to the snap on/off axis
  * (`SceneToolHost.setSnapEnabled`): the mode selects the snap TARGET, never whether a snap
  * happens. */
-export type SnapMode = "center" | "vertex";
+export type SnapMode = "center" | "vertex" | "edge";
 
 /** The engine surface tools drive (via the AppContext `scene` bridge). The
  * RenderEngine implements this; a detached bridge no-ops. */
@@ -452,7 +453,7 @@ export interface SceneToolHost {
   /** Snap a scene point to the active grid per the current snap mode (see
    * `setSnapMode`): the containing/nearest cell's CENTER under `"center"` (square: the
    * containing cell's center; hex: the nearest hex's center), the nearest cell VERTEX
-   * under `"vertex"`.
+   * under `"vertex"`, the nearest point on a cell EDGE under `"edge"`.
    * @param p A scene-coordinate point.
    * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled. */
   snap(p: Point): Point;

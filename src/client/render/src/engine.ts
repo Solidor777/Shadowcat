@@ -183,7 +183,7 @@ export class RenderEngine implements SceneToolHost {
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
   /** Which lattice point `snap` resolves to while `snapEnabled` — `"center"` (default) via
-   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`. An orthogonal axis to `snapEnabled`:
+   * `Grid.snap`, `"vertex"` via `Grid.snapVertex`, `"edge"` via `Grid.snapEdge`. An orthogonal axis to `snapEnabled`:
    * the mode selects the snap TARGET, never whether a snap happens. Pushed by the host
    * through {@link setSnapMode}; every `ctx.scene.snap` caller inherits it. */
   private snapMode: SnapMode = "center";
@@ -1239,7 +1239,8 @@ export class RenderEngine implements SceneToolHost {
    * center via axial-round-then-convert for hex (`Grid.snap`; `Grid.axialToPixel` returns a hex
    * center, the same method `Grid.hexLines` calls to get the origin it draws the six corners
    * around — so center mode resolves a center, never a vertex, on either grid kind);
-   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`). The identity function when {@link
+   * `"vertex"`: the nearest cell corner (`Grid.snapVertex`); `"edge"`: the nearest point on the
+   * nearest cell edge (`Grid.snapEdge`). The identity function when {@link
    * setSnapEnabled} has disabled snapping for the current scene, regardless of mode.
    * @param p A scene-coordinate point.
    * @returns `p` snapped per the active mode, or `p` unchanged when snapping is disabled.
@@ -1253,7 +1254,17 @@ export class RenderEngine implements SceneToolHost {
    */
   snap(p: Point): Point {
     if (!this.snapEnabled) return p;
-    return this.snapMode === "vertex" ? this.grid.snapVertex(p) : this.grid.snap(p);
+    switch (this.snapMode) {
+      case "vertex": return this.grid.snapVertex(p);
+      case "edge": return this.grid.snapEdge(p);
+      case "center": return this.grid.snap(p);
+      // Exhaustiveness guard: a new `SnapMode` member fails to compile here rather than
+      // silently snapping to centers.
+      default: {
+        const _exhaustive: never = this.snapMode;
+        return _exhaustive;
+      }
+    }
   }
 
   /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
@@ -1275,7 +1286,8 @@ export class RenderEngine implements SceneToolHost {
 
   /** `SceneToolHost.setSnapMode`: select which lattice point {@link snap} resolves to while
    * snapping is enabled — `"center"` (the default) routes through `Grid.snap` (cell centers),
-   * `"vertex"` through `Grid.snapVertex` (cell corners). Orthogonal to {@link setSnapEnabled}:
+   * `"vertex"` through `Grid.snapVertex` (cell corners), `"edge"` through `Grid.snapEdge` (the
+   * nearest point on a cell edge). Orthogonal to {@link setSnapEnabled}:
    * a snap-off scene stays identity under either mode. This is the single routing point —
    * every tool that calls `ctx.scene.snap` inherits the mode with no per-tool change.
    * @param mode The snap-target mode to apply.

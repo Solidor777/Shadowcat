@@ -585,6 +585,17 @@ test("setSnapMode('vertex') routes the single snap chokepoint through snapVertex
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 }); // back to cell centers
 });
 
+test("setSnapMode('edge') routes the single snap chokepoint through snapEdge", () => {
+  const { engine } = makeEngine(); // square / 100
+  engine.setSnapMode("edge");
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 140, y: 200 }); // nearest edge point, not a corner
+  engine.setSnapEnabled(false);
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 140, y: 170 }); // snap-off stays identity
+  engine.setSnapEnabled(true);
+  engine.setSnapMode("center");
+  expect(engine.snap({ x: 140, y: 170 })).toEqual({ x: 150, y: 150 }); // back to cell centers
+});
+
 test("the snap mode is orthogonal to setSnapEnabled: a snap-off scene stays identity under vertex mode", () => {
   const { engine } = makeEngine(); // square / 100
   engine.setSnapMode("vertex");
