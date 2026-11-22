@@ -105,8 +105,7 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     layer: "walls",
     points: [x1, y1, x2, y2],
     closed: false,
-    stroke: { color: WALL_COLOR, width: WALL_WIDTH },
+    stroke: { color: WALL_COLOR, width: WALL_WIDTH, ...(s.proximity ? { dash: PROXIMITY_DASH } : {}) },
     fill: null,
-    ...(s.proximity ? { dash: PROXIMITY_DASH } : {}),
   };
 }

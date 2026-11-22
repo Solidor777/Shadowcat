@@ -46,6 +46,17 @@ internals (the contract-only element boundary).
   elevation-band editor. Shape/fill/stroke/color/behavior/cost/secrecy/triggers
   remain create-only for all four kinds (region/drawing/template/wall) — a GM
   re-authors those by delete+recreate.
+- **Sense-blocking regions**: the region tool carries three checkboxes
+  (`ToolController.regionOccludesSight`/`regionOccludesLight`/
+  `regionOccludesSound`) that persist as `RegionEngine.occludes` on the next
+  region (none ticked persists `null`; the server rejects an all-false block).
+  The region editor edits the same three flags on an existing region through
+  `/engine/occludes`, writing `null` when the last one is cleared. The region
+  layer draws each sense on its own channel (`regionShapeSpec`): sight swaps
+  the fill for a pale haze, light darkens and thickens the rim, sound dashes
+  the ring (`ShapeNodeSpec.stroke.dash`, painted by `PixiBackend` as one
+  subpath per dash from `dashPath`). The server turns the covered-cell outline
+  into walls for the blocked senses; movement is unaffected.
 - **`Teleport` region trigger**: `ToolController.beginPickPortalTarget`/
   `endPickPortalTarget` capture one stage click as the trigger's destination
   x/y, temporarily roaming the viewed scene (`ToolContext.setGmViewedScene`,

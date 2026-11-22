@@ -402,6 +402,36 @@ fn region_occludes_rejects_an_all_false_flag_set() {
 }
 
 #[test]
+fn region_validate_rejects_non_finite_shape_coordinates() {
+    let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
+    assert!(region.validate().is_ok());
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        region.shape = RegionGeometry::Single(RegionShape {
+            kind: "circle".to_string(),
+            points: vec![1.0, 1.0, bad],
+        });
+        assert!(region.validate().is_err(), "single shape with {bad}");
+        region.shape = RegionGeometry::Compound(vec![
+            CompoundShapePart {
+                shape: RegionShape {
+                    kind: "rect".to_string(),
+                    points: vec![0.0, 0.0, 2.0, 2.0],
+                },
+                hole: false,
+            },
+            CompoundShapePart {
+                shape: RegionShape {
+                    kind: "rect".to_string(),
+                    points: vec![0.0, bad, 1.0, 1.0],
+                },
+                hole: true,
+            },
+        ]);
+        assert!(region.validate().is_err(), "compound hole part with {bad}");
+    }
+}
+
+#[test]
 fn region_occludes_defaults_to_none_and_round_trips() {
     let mut region = ambient_region(AmbientLightMode::Darken, 0.5);
     let json = serde_json::to_value(&region).unwrap();

@@ -104,6 +104,33 @@ test("ambient_light behavior persists the configured mode/level as ambient_overr
   }
 });
 
+test("ticked sense checkboxes persist as occludes; none ticked persists null", () => {
+  // Fails if either persist site stops reading the flags (the literal `null` it replaced) or the
+  // none-ticked case writes an all-false block, which the server rejects.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const none = sent[0][0];
+  if (none.op === "create") expect(none.doc.engine).toMatchObject({ occludes: null });
+
+  controller.regionOccludesSight = true;
+  controller.regionOccludesSound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const some = sent[1][0];
+  if (some.op === "create") {
+    expect(some.doc.engine).toMatchObject({ occludes: { sight: true, light: false, sound: true } });
+  }
+
+  controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "scene-1");
+  controller.commitRegionParts();
+  const compound = sent[2][0];
+  if (compound.op === "create") {
+    expect(compound.doc.engine).toMatchObject({ occludes: { sight: true, light: false, sound: true } });
+  }
+});
+
 test("a non-ambient_light behavior always persists ambient_override: null, even with a configured level", () => {
   // Mutation coverage for `regionAmbientOverride`'s own gate: removing the
   // `regionBehavior !== "ambient_light"` check would leak the configured level onto every
