@@ -107,7 +107,11 @@
                   {t(extreme === "max" ? "chat.roll.naturalMax" : "chat.roll.naturalMin")}
                 </td>
               {/if}
-              {#if !r.kept}<td class="dropped-tag">{t("chat.roll.dropped")}</td>{/if}
+              {#if !r.kept}
+                <td class="dropped-tag">
+                  {t(r.best_of_branch == null ? "chat.roll.dropped" : "chat.roll.droppedBestOf")}
+                </td>
+              {/if}
             </tr>
           {/each}
           {#each outcome.labeled_consts as c, i (i)}

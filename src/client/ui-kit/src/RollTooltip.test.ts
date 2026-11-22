@@ -38,6 +38,7 @@ function fakeT(key: string): string {
   const templates: Record<string, string> = {
     "chat.roll.details": "Roll details",
     "chat.roll.dropped": "dropped",
+    "chat.roll.droppedBestOf": "lost to best",
     "chat.roll.naturalMax": "natural max",
     "chat.roll.naturalMin": "natural min",
   };
@@ -202,6 +203,22 @@ describe("RollTooltip", () => {
     });
     await fireEvent.focus(getByRole("button", { name: /roll details/i }));
     expect(document.querySelectorAll("[data-nat-extreme='min'], [data-nat-extreme='max']")).toHaveLength(0);
+  });
+
+  it("a die discarded by a best(...) branch gives its own reason, an ordinary drop the generic one", async () => {
+    const outcome = testRollOutcome({
+      records: [
+        dieRecord({ kept: false, value: 2, best_of_branch: 1 }),
+        dieRecord({ kept: false, value: 3, best_of_branch: null }),
+      ],
+    });
+    const { getByRole } = render(RollTooltip, {
+      props: { outcome },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    await fireEvent.focus(getByRole("button", { name: /roll details/i }));
+    const tags = [...document.querySelectorAll("tbody tr .dropped-tag")].map((e) => e.textContent?.trim());
+    expect(tags).toEqual(["lost to best", "dropped"]);
   });
 
   it("a dropped natural max carries both the dropped and the natural-extreme marks", async () => {

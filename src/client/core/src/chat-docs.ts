@@ -100,6 +100,9 @@ export type DieRecord = {
   /** The die's face space, mirroring `dice::outcome::DieRecord.kind`. Absent for a roll
    * stored before this field existed (dice-3d fails closed and renders no 3D dice for it). */
   kind?: WireDieKind | null;
+  /** Index of the losing `best(...)` branch that discarded this die; absent or null for a die no
+   * `best(...)` branch discarded. Display-only: selection is decided server-side. */
+  best_of_branch?: number | null;
 };
 
 // Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
@@ -123,6 +126,7 @@ export const dieRecordSchemaImpl = z.object({
   label: z.string().nullish(),
   symbols: z.array(z.string()),
   kind: WireDieKindSchema.nullish(),
+  best_of_branch: z.number().nullish(),
 });
 /** Validator for a `DieRecord`. Only the fields the roll card renders are
  * validated; `.passthrough()` tolerates server-only audit fields (id,
