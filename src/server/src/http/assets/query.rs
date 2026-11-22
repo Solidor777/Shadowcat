@@ -296,7 +296,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
 /// let _ = shadowcat::http::assets::query::list(

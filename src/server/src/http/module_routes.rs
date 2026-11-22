@@ -104,6 +104,7 @@ impl InstalledModuleInfo {
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 /// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let modules = list_installed_modules(user, State(state)).await;
@@ -189,6 +190,7 @@ pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::
 /// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 /// #     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 /// #     tls: shadowcat::tls::TlsRuntime::disabled(),
+/// #     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// # };
 /// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
 /// let result = serve_module_file(
@@ -285,7 +287,7 @@ const MAX_ENABLED_MODULES: usize = 256;
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let ids = get_world_enabled_modules(user, State(state), Path(world.id)).await.unwrap();
@@ -341,7 +343,7 @@ pub async fn get_world_enabled_modules(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = set_world_enabled_modules(

@@ -61,7 +61,7 @@ use crate::ws::room::RoomStatsSnapshot;
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let status = health(State(state)).await;
 /// assert!(status.0.db_connected);
@@ -102,7 +102,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let rooms = debug_rooms(admin, State(state)).await;
@@ -149,7 +149,7 @@ pub async fn debug_rooms(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let manifest = admin_backup(admin, State(state)).await.unwrap();
@@ -292,7 +292,7 @@ const MAX_UI_STATE_BYTES: usize = 64 * 1024;
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
 /// let val = get_ui_state(user, State(state)).await.unwrap();
@@ -356,7 +356,7 @@ pub async fn get_ui_state(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
 /// let result = put_ui_state(user, State(state), Json(serde_json::json!({"theme": "dark"}))).await;
@@ -444,7 +444,7 @@ pub struct ServerConfig {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let resp = config(State(state)).await;
 /// assert!(resp.0.initialized);
@@ -488,7 +488,7 @@ pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let status = admin_tls(admin, State(state)).await;
@@ -543,7 +543,7 @@ fn anti_enumeration_phc() -> &'static str {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
 /// let resp = server
@@ -647,7 +647,7 @@ pub async fn login(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::new(router(state).await).unwrap();
 /// let resp = server.post("/api/logout").await;
@@ -708,7 +708,7 @@ pub struct SetupRequest {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let body = SetupRequest { username: "admin".into(), password: "pw-admin".into(), token: None };
 /// let result = setup(State(state), Json(body)).await;
@@ -879,7 +879,7 @@ pub struct UserEntry {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let body = CreateUserRequest { username: "player1".into(), password: "pw-player".into(), server_role: None };
@@ -942,7 +942,7 @@ pub async fn create_user(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
 /// let users = list_users(admin, State(state)).await.unwrap();
@@ -1002,7 +1002,7 @@ pub async fn list_users(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// // `delete_user` also clears the caller's session-store row, so the
 /// // `tower_sessions` table must exist first — the same migration the real
@@ -1087,7 +1087,7 @@ pub struct ResetPasswordRequest {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// // `reset_user_password` also clears the target's session-store rows, so the
 /// // `tower_sessions` table must exist first, same as `delete_user`'s own example.
@@ -1253,7 +1253,7 @@ pub struct WorldEntry {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let worlds = list_worlds(user, State(state)).await.unwrap();
@@ -1312,7 +1312,7 @@ pub async fn list_worlds(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = CreateWorldRequest { name: "Curse of Strahd".into() };
@@ -1399,7 +1399,7 @@ pub async fn create_world(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = delete_world(user, State(state), Path(world.id)).await;
@@ -1491,7 +1491,7 @@ pub struct MemberEntry {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let members = list_members(user, State(state), Path(world.id)).await.unwrap();
@@ -1596,7 +1596,7 @@ pub struct AddMemberRequest {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = AddMemberRequest { user: pl, role: WorldRole::Player };
@@ -1758,7 +1758,7 @@ impl From<crate::data::sqlite::InviteRecord> for InviteEntry {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = CreateInviteRequest { role: WorldRole::Player };
@@ -1834,7 +1834,7 @@ pub async fn create_invite(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let invites = list_invites(user, State(state), Path(world.id)).await.unwrap();
@@ -1885,7 +1885,7 @@ pub async fn list_invites(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = revoke_invite(user, State(state), Path((world.id, uuid::Uuid::new_v4()))).await;
@@ -1984,7 +1984,7 @@ pub struct AcceptInviteRequest {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: pl, username: "pl".into(), role: ServerRole::User };
 /// let body = AcceptInviteRequest { code: minted.code };
@@ -2098,7 +2098,7 @@ pub async fn accept_invite(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = remove_member(user, State(state), Path((world.id, pl))).await;
@@ -2148,7 +2148,7 @@ pub async fn remove_member(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let doc = Document {
@@ -2236,7 +2236,7 @@ pub struct DocQuery {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let q = DocQuery { r#type: "actor".into() };
@@ -2350,7 +2350,7 @@ pub struct WorldSnapshot {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let snapshot = world_snapshot(user, State(state), Path(world.id)).await.unwrap();
@@ -2460,7 +2460,7 @@ fn by_id_not_found(e: crate::data::DataError) -> AppError {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = get_document(user, State(state), Path(uuid::Uuid::new_v4())).await;
@@ -2594,7 +2594,7 @@ pub struct PatchRequest {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let body = PatchRequest {
@@ -2707,7 +2707,7 @@ pub async fn patch_document(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let cmd = delete_document(user, State(state), Path(doc_id)).await.unwrap();
@@ -2809,7 +2809,7 @@ fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let defaults = get_world_capability_defaults(user, State(state), Path(world.id)).await.unwrap();
@@ -2857,7 +2857,7 @@ pub async fn get_world_capability_defaults(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let result = set_world_capability_defaults(user, State(state), Path(world.id), Json(WorldCapDefaults::default())).await;
@@ -2911,7 +2911,7 @@ const MAX_CAPABILITY_REQUIREMENTS: usize = 256;
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let reqs = get_world_capability_requirements(user, State(state), Path(world.id)).await.unwrap();
@@ -2959,7 +2959,7 @@ pub async fn get_world_capability_requirements(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let reqs = vec![CapabilityRequirement {
@@ -3134,7 +3134,7 @@ fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), A
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = get_world_contract_declarations(user, State(state), Path(world.id)).await.unwrap();
@@ -3182,7 +3182,7 @@ pub async fn get_world_contract_declarations(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = vec![ContractDeclaration {
@@ -3388,7 +3388,7 @@ fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppEr
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = get_world_schema_declarations(user, State(state), Path(world.id)).await.unwrap();
@@ -3436,7 +3436,7 @@ pub async fn get_world_schema_declarations(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
 /// let decls = vec![SchemaDeclaration {

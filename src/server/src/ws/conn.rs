@@ -224,7 +224,7 @@ fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
-///     trash: Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
+///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// // `router` wires this handler at `GET /ws` (HTTP/1.1 upgrade) and `CONNECT /ws` (RFC 8441,
 /// // WebSockets over HTTP/2); see `http::router`'s own example.
