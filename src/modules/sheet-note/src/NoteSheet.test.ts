@@ -173,6 +173,17 @@ describe("NoteSheet heading table of contents", () => {
     }
   });
 
+  it("lists setext and raw-HTML headings by reading the rendered elements", async () => {
+    const doc = buildNoteDoc("w1", "Session 1", "Title\n=====\n<h2>Raw *part*</h2>\ntext", { id: "n1", owner: SELF });
+    doc.engine = { ...(doc.engine as object), body: [{ kind: "html", sanitized_html: "<h1>Title</h1><h2>Raw <em>part</em></h2>" }] };
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => true });
+    const { getAllByTestId, getByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    await tick();
+    expect(getAllByTestId("note-toc-link").map((a) => a.textContent)).toEqual(["Title", "Raw part"]);
+    expect([...getByTestId("note-body").querySelectorAll("h1, h2")].map((h) => h.id)).toEqual(["title", "raw-part"]);
+  });
+
   it("renders no TOC for a note without headings", () => {
     const doc = buildNoteDoc("w1", "Session 1", "plain text", { id: "n1", owner: SELF });
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));

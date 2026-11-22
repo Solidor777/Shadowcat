@@ -1,18 +1,14 @@
-/** One heading found in a note's raw markdown source. */
+/** One heading found in a note's rendered body. */
 export interface TocEntry {
   /** The anchor id: lowercase `a-z0-9-`, unique within the note. Always matches the server's
    * fragment-only link alphabet `[A-Za-z0-9_-]+`, so `[text](#slug)` survives sanitization. */
   slug: string;
-  /** The heading text with its ATX markers and closing hashes removed. */
+  /** The heading's text content, trimmed. */
   text: string;
-  /** The heading level, 1 (`#`) to 6 (`######`). */
+  /** The heading level, 1 (`h1`) to 6 (`h6`). */
   level: number;
 }
 
-/** An ATX heading line: up to three spaces of indent, one to six `#`, then a space/tab or end of line. */
-const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
-/** A fenced-code-block delimiter line: up to three spaces of indent, then three or more backticks or tildes. */
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 /** The slug used when a heading's text has no alphanumeric character. */
 const EMPTY_SLUG = "section";
 
@@ -35,67 +31,31 @@ function slugify(text: string): string {
 }
 
 /**
- * Scans a note's markdown source line by line for ATX headings, skipping lines inside fenced
- * code blocks. A fence closes only on a line of the same character with at least as many
- * characters as the opener. Colliding slugs get a numeric suffix (`intro`, `intro-1`, `intro-2`),
- * and a suffixed slug never collides with a heading whose own text already slugs to it.
- * @param source The note's raw markdown source.
+ * Reads every `h1` to `h6` element in the rendered note body, in document order, gives each its
+ * anchor id and returns the matching entries. The rendered elements are the only source, so the
+ * list and the ids cannot disagree for any heading syntax (ATX, setext, raw HTML, nested in a
+ * quote or list). Colliding slugs get a numeric suffix (`intro`, `intro-1`, `intro-2`), and a
+ * suffixed slug never collides with a heading whose own text already slugs to it.
+ * @param container The element holding the rendered note body.
  * @returns The headings in document order.
  * @example
  * ```ts
- * extractHeadings("# Intro\n## Intro");
- * // [{ slug: "intro", text: "Intro", level: 1 }, { slug: "intro-1", text: "Intro", level: 2 }]
+ * const entries = collectHeadings(bodyElement);
  * ```
  */
-export function extractHeadings(source: string): TocEntry[] {
+export function collectHeadings(container: Element): TocEntry[] {
   const entries: TocEntry[] = [];
   const used = new Set<string>();
-  let fence: string | null = null;
-  for (const line of source.split(/\r?\n/)) {
-    const fenceMatch = FENCE.exec(line);
-    if (fence !== null) {
-      if (fenceMatch && fenceMatch[1].startsWith(fence[0]) && fenceMatch[1].length >= fence.length && line.trim() === fenceMatch[1]) {
-        fence = null;
-      }
-      continue;
-    }
-    if (fenceMatch) {
-      fence = fenceMatch[1];
-      continue;
-    }
-    const heading = ATX_HEADING.exec(line);
-    if (!heading) continue;
-    const text = (heading[2] ?? "").replace(/[ \t]+#+$/, "").replace(/^#+$/, "").trim();
+  for (const el of container.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
+    const text = (el.textContent ?? "").trim();
     const base = slugify(text);
     let slug = base;
     for (let n = 1; used.has(slug); n += 1) slug = `${base}-${n}`;
     used.add(slug);
-    entries.push({ slug, text, level: heading[1].length });
+    el.id = slug;
+    entries.push({ slug, text, level: Number(el.tagName.slice(1)) });
   }
   return entries;
-}
-
-/**
- * Assigns each rendered heading element its anchor id, in document order. The Nth element is
- * matched with the next entry whose level equals the element's level; an element whose level
- * differs from the next entry's (a heading the source scan does not see, such as one inside a
- * blockquote) is skipped and left without an id.
- * @param container The element holding the rendered note body.
- * @param entries The headings from `extractHeadings`, in document order.
- * @example
- * ```ts
- * assignHeadingIds(bodyElement, extractHeadings(source));
- * ```
- */
-export function assignHeadingIds(container: Element, entries: readonly TocEntry[]): void {
-  let next = 0;
-  for (const el of container.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
-    if (next >= entries.length) break;
-    const entry = entries[next];
-    if (Number(el.tagName.slice(1)) !== entry.level) continue;
-    el.id = entry.slug;
-    next += 1;
-  }
 }
 
 /**

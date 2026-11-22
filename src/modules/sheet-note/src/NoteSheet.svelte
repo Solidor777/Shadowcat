@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
   import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
-  import { extractHeadings, assignHeadingIds, findAnchor } from "./note-toc";
+  import { collectHeadings, findAnchor, type TocEntry } from "./note-toc";
 
   // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
@@ -65,16 +65,17 @@
     return firstChannel(ctx.documents);
   });
   const body = $derived.by(() => (doc ? parseNoteBody(doc) : null));
-  /** The headings of the stored source, in order; drives the table of contents and the ids
-   * assigned to the rendered heading elements. */
-  const headings = $derived(extractHeadings(storedSource));
-  /** The body fieldset; the heading-id pass and anchor scrolling are scoped to it. */
+  /** The headings read from the rendered body, in order; drives the table of contents. */
+  let headings = $state.raw<TocEntry[]>([]);
+  /** The body fieldset; heading collection and anchor scrolling are scoped to it. */
   let bodyEl = $state<HTMLElement | null>(null);
 
-  // The rendered headings are sanitized markup with no ids; the Nth heading element receives the
-  // slug of the Nth source heading. Re-runs whenever the body or the source changes.
+  // The rendered headings are sanitized markup with no ids. The table of contents and the ids
+  // both come from the rendered heading elements, so they cannot disagree. Re-runs whenever the
+  // body changes, after the new markup is in the DOM.
   $effect(() => {
-    if (bodyEl && body) assignHeadingIds(bodyEl, headings);
+    void body;
+    headings = bodyEl ? collectHeadings(bodyEl) : [];
   });
 
   // The body's fragment links are plain anchors inside `{@html}` markup, so the click listener
