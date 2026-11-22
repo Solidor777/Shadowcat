@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
+  import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
@@ -456,30 +456,40 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Escape backs out of any open scene-entity editor (clears the editing selection). Tool
-   * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
-   * @param event The window keydown event.
+  /** Whether an Escape keystroke is aimed at the canvas selection. Only a canvas-context Escape
+   * backs out of the editor: a keydown originating inside a dialog (a floating panel closing on
+   * the same keystroke) or a focused form control belongs to that surface.
+   * @param event The Escape keydown event.
+   * @returns True when the event's origin is neither inside a dialog nor a form control.
    * @example
    * ```
-   * onWindowKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * isCanvasEscape(new KeyboardEvent("keydown", { key: "Escape" })); // true
    * ```
    */
-  function onWindowKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape" || !controller.editingEntity) return;
-    // Only a canvas-context Escape backs out of the editor: a keydown originating inside a
-    // dialog (a floating panel closing on the same keystroke) or a focused form control is not
-    // aimed at the canvas selection.
+  function isCanvasEscape(event: KeyboardEvent): boolean {
     const origin = event.target;
-    if (
+    return !(
       origin instanceof Element &&
       (origin.closest('[role="dialog"]') !== null ||
         origin instanceof HTMLInputElement ||
         origin instanceof HTMLSelectElement ||
         origin instanceof HTMLTextAreaElement)
-    )
-      return;
-    controller.editingEntity = null;
+    );
   }
+
+  // Escape backs out of any open scene-entity editor (clears the editing selection) through the
+  // shared coordinator, registered only while an editor is open. Tool deactivation itself stays
+  // with the rail's re-select-clears rule (`controller.toggle`).
+  $effect(() => {
+    if (!controller.editingEntity) return;
+    return escapeCoordinator.register(
+      ESCAPE_PRIORITY.TOOL,
+      () => {
+        controller.editingEntity = null;
+      },
+      isCanvasEscape,
+    );
+  });
 
   const triggerEvents: TriggerEvent[] = ["enter", "arrest", "exit", "turn_start", "turn_end", "round_start", "round_end"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
@@ -565,7 +575,6 @@
   }
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
   {#each visibleTools as tool (tool.id)}

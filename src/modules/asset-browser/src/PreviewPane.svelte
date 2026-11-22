@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl } from "@shadowcat/core";
 
   let {
@@ -24,6 +24,20 @@
   let renameDraft = $state("");
   let confirmingDelete = $state(false);
   let busy = $state(false);
+  /** The inline rename input, bound while a rename is in progress. */
+  let renameEl = $state<HTMLInputElement | null>(null);
+
+  // Escape cancels the inline rename only when the keystroke comes from the rename input itself.
+  $effect(() => {
+    if (!renaming || !mutable) return;
+    return escapeCoordinator.register(
+      ESCAPE_PRIORITY.OVERLAY,
+      () => {
+        renaming = false;
+      },
+      (event) => renameEl !== null && event.target === renameEl,
+    );
+  });
 
   /** Runs one mutation with the shared busy/error/refresh handling.
    * @param op - The REST call to run.
@@ -126,10 +140,9 @@
           const next = renameDraft.trim();
           if (next && next !== asset.original_name)
             void run(() => patchAsset(asset.id, { name: next }));
-        } else if (e.key === "Escape") {
-          renaming = false;
         }
       }}
+      bind:this={renameEl}
     />
   {:else}
     <h3 class="name">

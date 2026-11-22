@@ -1,5 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
+  import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
+  import { trapFocus } from "./focusTrap";
   import type { ConflictGroup } from "./mergeConflict";
 
   let { groups, onApply, onCancel }: {
@@ -35,13 +37,9 @@
     modalEl?.focus();
   });
 
-  $effect(() => {
-    const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
-  });
+  $effect(() => escapeCoordinator.register(ESCAPE_PRIORITY.MODAL, onCancel));
+
+  $effect(() => (modalEl ? trapFocus(modalEl) : undefined));
 
   /**
    * Render a conflict side's value for display: an absent (`undefined`) side shows the

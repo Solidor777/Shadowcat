@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import AssetBrowser from "./AssetBrowser.svelte";
 
   // Renders the pick-mode modal whenever a `pickAsset` request is pending.
@@ -12,17 +12,13 @@
   let dialogEl = $state<HTMLDivElement | null>(null);
 
   // Scrim/Escape/focus pattern shared with the merge-conflict modal: focus
-  // the dialog on open; window-level Escape cancels.
+  // the dialog on open; Escape (through the shared coordinator) cancels.
   $effect(() => {
     if (pending) dialogEl?.focus();
   });
   $effect(() => {
     if (!pending) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") ctx.assetPick.settle(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return escapeCoordinator.register(ESCAPE_PRIORITY.OVERLAY, () => ctx.assetPick.settle(null));
   });
 </script>
 

@@ -2,7 +2,7 @@
   import type { Component } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, confirmDialog } from "@shadowcat/ui-kit";
   import { i18n, locale } from "@shadowcat/ui-kit";
   import { BUILTIN_THEMES, theme } from "@shadowcat/ui-kit";
   import ModuleManager from "./ModuleManager.svelte";
@@ -36,19 +36,31 @@
   let editing = $state<EditingTarget | null>(null);
 
   /**
-   * Deletes a saved custom theme after an explicit confirm. Declining the
-   * confirm is a true no-op. When the deleted theme was active, the controller
+   * Deletes a saved custom theme after an explicit confirm dialog. Declining
+   * the dialog is a true no-op. When the deleted theme was active, the controller
    * itself falls back to the default theme.
    * @param id The custom theme id to delete.
    * @param label The theme's display label, for the confirm message.
+   * @returns Resolves once the dialog is answered and, if confirmed, the theme is deleted.
    * @example
    * ```
    * // private function; not part of the public API — wired to each custom theme row's delete button
-   * removeCustomTheme("mine", "My Theme");
+   * await removeCustomTheme("mine", "My Theme");
    * ```
    */
-  function removeCustomTheme(id: string, label: string): void {
-    if (!window.confirm(t("settings.theme.editor.deleteConfirm", { label }))) return;
+  async function removeCustomTheme(id: string, label: string): Promise<void> {
+    const confirmed = await confirmDialog(
+      { t },
+      {
+        titleKey: "settings.theme.editor.deleteTitle",
+        messageKey: "settings.theme.editor.deleteConfirm",
+        messageParams: { label },
+        confirmLabelKey: "settings.theme.editor.delete",
+        cancelLabelKey: "settings.theme.editor.cancel",
+        danger: true,
+      },
+    );
+    if (!confirmed) return;
     theme.deleteCustom(id);
   }
 

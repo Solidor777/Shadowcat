@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { SpeakAs, SpeakAsToken } from "@shadowcat/ui-kit";
+import { SpeakAs, SpeakAsToken, confirmDialog } from "@shadowcat/ui-kit";
 import {
   DocumentStore,
   buildActorDoc,
@@ -11,6 +11,11 @@ import {
   type WireOperation,
 } from "@shadowcat/core";
 import MessageCard from "./MessageCard.svelte";
+
+vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
+  return { ...actual, confirmDialog: vi.fn() };
+});
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -951,28 +956,34 @@ describe("MessageCard — delete", () => {
     vi.restoreAllMocks();
   });
 
-  it("Delete calls ctx.chat.delete only after window.confirm returns true", async () => {
+  it("Delete calls ctx.chat.delete only after confirmDialog resolves true", async () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
     const del = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
       context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
-    expect(window.confirm).toHaveBeenCalledWith("chat.deleteConfirm");
-    expect(del).toHaveBeenCalledWith("m1");
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ messageKey: "chat.deleteConfirm", danger: true }),
+    );
+    await vi.waitFor(() => expect(del).toHaveBeenCalledWith("m1"));
   });
 
-  it("Delete does not call ctx.chat.delete when window.confirm returns false", async () => {
+  it("Delete does not call ctx.chat.delete when confirmDialog resolves false", async () => {
     const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
     const del = vi.fn();
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(confirmDialog).mockResolvedValue(false);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
       context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    // Let the resolved `false` reach the handler before asserting nothing was deleted.
+    await new Promise((r) => setTimeout(r, 0));
     expect(del).not.toHaveBeenCalled();
   });
 });

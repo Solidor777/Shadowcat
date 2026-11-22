@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext, SegmentList } from "@shadowcat/ui-kit";
+  import { getAppContext, SegmentList, confirmDialog } from "@shadowcat/ui-kit";
   import {
     parseMessageEngine,
     isKnownSegment,
@@ -265,7 +265,7 @@
   function cancelEdit(): void {
     editing = false;
   }
-  /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a native confirm dialog.
+  /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a confirm dialog.
    * The server applies this as a soft-tombstoning `Operation::Update` on `/engine` in
    * `handle_delete_message`, published under `WriteOrigin::ServerMessageRevision` — never a
    * hard `Operation::Delete`; the doc stays in the sequenced log at its original seq. A
@@ -279,8 +279,18 @@
    * doDelete();
    * ```
    */
-  function doDelete(): void {
-    if (window.confirm(t("chat.deleteConfirm"))) ctx.chat.delete(message.id);
+  async function doDelete(): Promise<void> {
+    const confirmed = await confirmDialog(
+      { t },
+      {
+        titleKey: "chat.deleteTitle",
+        messageKey: "chat.deleteConfirm",
+        confirmLabelKey: "chat.delete",
+        cancelLabelKey: "chat.cancel",
+        danger: true,
+      },
+    );
+    if (confirmed) ctx.chat.delete(message.id);
   }
 </script>
 

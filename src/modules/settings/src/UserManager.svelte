@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, confirmDialog } from "@shadowcat/ui-kit";
   import { listUsers, createUser, deleteUser, type ServerUser } from "@shadowcat/core";
 
   // Server-administration surface: creating accounts and listing them are both
@@ -18,7 +18,7 @@
   let deleteError = $state<string | null>(null);
 
   /**
-   * Deletes user `u` after an explicit confirm, then reloads the user list.
+   * Deletes user `u` after an explicit confirm dialog, then reloads the user list.
    * Reports failure on its OWN channel, `deleteError` — kept separate from
    * `load()`'s and `submit()`'s shared `error`, so a failed delete never
    * gets papered over by (or itself clears) an unrelated create/load
@@ -35,7 +35,18 @@
    * ```
    */
   async function removeUser(u: ServerUser): Promise<void> {
-    if (!window.confirm(t("settings.users.deleteConfirm", { username: u.username }))) return;
+    const confirmed = await confirmDialog(
+      { t },
+      {
+        titleKey: "settings.users.deleteTitle",
+        messageKey: "settings.users.deleteConfirm",
+        messageParams: { username: u.username },
+        confirmLabelKey: "settings.users.delete",
+        cancelLabelKey: "settings.users.cancel",
+        danger: true,
+      },
+    );
+    if (!confirmed) return;
     busy = true;
     deleteError = null;
     try {

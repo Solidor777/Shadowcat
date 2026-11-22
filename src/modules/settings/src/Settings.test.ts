@@ -2,9 +2,14 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { ContributionRegistry, SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { BUILTIN_THEMES, DEFAULT_THEME_ID, theme } from "@shadowcat/ui-kit";
+import { BUILTIN_THEMES, DEFAULT_THEME_ID, theme, confirmDialog } from "@shadowcat/ui-kit";
 import Settings from "./Settings.svelte";
 import SectionProbe from "./__fixtures__/SectionProbe.svelte";
+
+vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
+  return { ...actual, confirmDialog: vi.fn() };
+});
 
 // The fixture's `t` is an identity echo (every key resolves to itself), so
 // assertions pin keys and structure rather than resolved English.
@@ -78,20 +83,30 @@ describe("Settings custom theme management", () => {
   it("delete asks for confirmation, then removes the theme and falls back when active", async () => {
     theme.saveCustom("mine", { label: "My Theme", base: "slate-dark", tokens: {} });
     theme.setActive("custom:mine");
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     render(Settings, { context: setAppContextForTest({ role: "player" }) });
     await fireEvent.click(screen.getByRole("button", { name: "settings.theme.editor.delete" }));
-    expect(confirmSpy).toHaveBeenCalledWith("settings.theme.editor.deleteConfirm");
-    expect(theme.customThemes).toEqual({});
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageKey: "settings.theme.editor.deleteConfirm",
+        messageParams: { label: "My Theme" },
+        danger: true,
+      }),
+    );
+    await vi.waitFor(() => expect(theme.customThemes).toEqual({}));
     expect(theme.active).toBe(DEFAULT_THEME_ID);
     expect(screen.queryByRole("button", { name: "settings.theme.editor.delete" })).toBeNull();
   });
 
   it("a declined confirm leaves the theme in place", async () => {
     theme.saveCustom("mine", { label: "My Theme", base: "slate-dark", tokens: {} });
-    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.mocked(confirmDialog).mockResolvedValue(false);
     render(Settings, { context: setAppContextForTest({ role: "player" }) });
     await fireEvent.click(screen.getByRole("button", { name: "settings.theme.editor.delete" }));
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    // Let the resolved `false` reach the handler before asserting the theme survived.
+    await new Promise((r) => setTimeout(r, 0));
     expect(Object.keys(theme.customThemes)).toEqual(["mine"]);
   });
 });

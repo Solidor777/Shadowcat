@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { confirmDialog } from "@shadowcat/ui-kit";
 import UserManager from "./UserManager.svelte";
+
+vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
+  return { ...actual, confirmDialog: vi.fn() };
+});
 
 vi.mock("@shadowcat/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@shadowcat/core")>();
@@ -82,7 +88,7 @@ describe("UserManager", () => {
 
   it("delete asks for confirmation, deletes, reloads; self row has no delete", async () => {
     const { listUsers, deleteUser } = await import("@shadowcat/core");
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     // selfId = the admin row's id → exactly ONE delete button (the other row).
     render(UserManager, {
       context: setAppContextForTest({ role: "player", serverRole: "admin", selfId: "u-1" }),
@@ -90,20 +96,30 @@ describe("UserManager", () => {
     const buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
     expect(buttons).toHaveLength(1);
     await fireEvent.click(buttons[0]);
-    expect(window.confirm).toHaveBeenCalledWith("settings.users.deleteConfirm");
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageKey: "settings.users.deleteConfirm",
+        messageParams: { username: "plain-player" },
+        danger: true,
+      }),
+    );
     await vi.waitFor(() => expect(vi.mocked(deleteUser)).toHaveBeenCalledWith("u-2"));
     await vi.waitFor(() => expect(vi.mocked(listUsers)).toHaveBeenCalledTimes(2)); // initial + reload
   });
 
   it("declined confirm does not delete; failure shows deleteError", async () => {
     const { deleteUser } = await import("@shadowcat/core");
-    vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
     render(UserManager, { context: setAppContextForTest({ serverRole: "admin" }) });
     let buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
     await fireEvent.click(buttons[0]);
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1));
+    // Let the resolved `false` reach the handler before asserting nothing was deleted.
+    await new Promise((r) => setTimeout(r, 0));
     expect(vi.mocked(deleteUser)).not.toHaveBeenCalled();
 
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     vi.mocked(deleteUser).mockRejectedValueOnce(new Error("nope"));
     buttons = await screen.findAllByRole("button", { name: "settings.users.delete" });
     await fireEvent.click(buttons[0]);

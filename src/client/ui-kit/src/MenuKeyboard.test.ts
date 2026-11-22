@@ -1,5 +1,6 @@
 import { test, expect, vi } from "vitest";
 import { createMenuKeyboard } from "./MenuKeyboard";
+import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
 
 function mockEl(): HTMLElement {
   const el = document.createElement("button");
@@ -31,15 +32,45 @@ test("ArrowUp moves focus to the previous item, wrapping before the first", () =
   expect(document.activeElement).toBe(items[2]);
 });
 
-test("Escape calls onClose with no args (default returnFocus)", () => {
+test("handleKeydown ignores Escape: it reaches the menu only through the coordinator", () => {
   const items = [mockEl()];
   const onClose = vi.fn();
   const menu = createMenuKeyboard(() => items, onClose);
+  const event = key("Escape");
 
-  menu.handleKeydown(key("Escape"), 0);
+  menu.handleKeydown(event, 0);
 
+  expect(onClose).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+});
+
+test("activate registers exactly one MENU-priority escape callback that closes with no args", () => {
+  const register = vi.spyOn(escapeCoordinator, "register");
+  const onClose = vi.fn();
+  const menu = createMenuKeyboard(() => [], onClose);
+
+  menu.activate();
+  menu.activate();
+
+  expect(register).toHaveBeenCalledTimes(1);
+  expect(register.mock.calls[0]?.[0]).toBe(ESCAPE_PRIORITY.MENU);
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   expect(onClose).toHaveBeenCalledOnce();
   expect(onClose).toHaveBeenCalledWith();
+  menu.deactivate();
+  register.mockRestore();
+});
+
+test("deactivate removes the registration and is idempotent", () => {
+  const onClose = vi.fn();
+  const menu = createMenuKeyboard(() => [], onClose);
+
+  menu.activate();
+  menu.deactivate();
+  menu.deactivate();
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("Tab calls onClose(false)", () => {

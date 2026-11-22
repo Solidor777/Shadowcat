@@ -116,9 +116,8 @@ export async function openPanel(page: Page, contributionId: string): Promise<voi
     // Already open: dismiss the menu we just opened via Escape rather than re-clicking the
     // trigger — the full-viewport `sc-launcher-backdrop` (`onpointerdown` dismissal) sits above
     // the trigger while the menu is open and intercepts a second trigger click, hanging the
-    // action on actionability retries forever. `openMenu` already moved focus onto the first
-    // item, whose own `onkeydown` handles Escape (`MenuKeyboard`'s Escape branch) identically to
-    // the trigger's.
+    // action on actionability retries forever. The open menu's `MenuKeyboard` registration with
+    // `escapeCoordinator` closes it on Escape wherever focus sits.
     await page.keyboard.press("Escape");
   }
 }
