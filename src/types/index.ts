@@ -74,6 +74,10 @@ export type { BackupRetention } from "./generated/BackupRetention";
 export type { RestoreFailed } from "./generated/RestoreFailed";
 export type { RestoreStaged } from "./generated/RestoreStaged";
 export type { PruneResult } from "./generated/PruneResult";
+export type { PortMapStatus } from "./generated/PortMapStatus";
+export type { PortMapState } from "./generated/PortMapState";
+export type { PortMapProtocol } from "./generated/PortMapProtocol";
+export type { SetPortForward } from "./generated/SetPortForward";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";

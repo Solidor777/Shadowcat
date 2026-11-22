@@ -419,6 +419,7 @@ fn parse_containers_field(value: Option<&str>) -> Result<AudioContainers, AppErr
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::builder()
@@ -629,6 +630,7 @@ pub struct ServeQuery {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
@@ -853,6 +855,7 @@ pub async fn serve(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
@@ -940,6 +943,7 @@ async fn ensure_derivative(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let server = axum_test::TestServer::builder()
@@ -1190,6 +1194,7 @@ pub(super) async fn delete_asset_files_and_row(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };

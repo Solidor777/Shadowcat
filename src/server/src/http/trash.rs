@@ -148,6 +148,7 @@ pub fn cursor_key(id: &str) -> Option<u64> {
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(dir.path().join("trash"), shadowcat::trash::TrashRetention::default())),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -229,6 +230,7 @@ pub async fn list_trash(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(dir.path().join("trash"), shadowcat::trash::TrashRetention::default())),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
@@ -284,6 +286,7 @@ pub async fn empty_trash(
 ///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
 ///     file_permits: std::sync::Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(dir.path().join("trash"), shadowcat::trash::TrashRetention::default())),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });

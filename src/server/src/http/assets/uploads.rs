@@ -657,6 +657,7 @@ pub struct CreateUploadResponse {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -802,6 +803,7 @@ async fn owned_session(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -910,6 +912,7 @@ pub async fn put_chunk(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
@@ -1080,6 +1083,7 @@ async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };

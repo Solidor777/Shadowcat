@@ -226,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         file_permits: Arc::new(crate::http::assets::permits::StreamedFilePermits::production()),
         tls: tls.clone(),
+        portmap: shadowcat::portmap::PortMapRuntime::disabled(),
         trash,
     };
     shadowcat::http::assets::uploads::spawn_sweeper(

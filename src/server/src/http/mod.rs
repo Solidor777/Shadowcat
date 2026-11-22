@@ -12,6 +12,7 @@ pub mod embed;
 pub mod error;
 pub mod module_routes;
 pub mod peer_slots;
+pub mod port_forward;
 pub mod routes;
 pub mod scheme;
 pub mod throttle;
@@ -58,6 +59,7 @@ pub use scheme::into_service;
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
@@ -95,6 +97,9 @@ pub struct AppState {
     pub file_permits: Arc<assets::permits::StreamedFilePermits>,
     /// The TLS subsystem: status published by `/api/config` and the admin route.
     pub tls: Arc<crate::tls::TlsRuntime>,
+    /// The router port-forwarding subsystem: its status and the admin toggle's effect
+    /// (`portmap::PortMapRuntime`).
+    pub portmap: Arc<crate::portmap::PortMapRuntime>,
     /// The trash every production file removal goes through (`trash::Trash`).
     pub trash: Arc<crate::trash::Trash>,
 }
@@ -162,6 +167,7 @@ impl AppState {
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let app = router(state).await;
@@ -245,6 +251,10 @@ pub async fn router(state: AppState) -> Router {
             post(backups::restore_from_backup),
         )
         .route("/api/admin/tls", get(routes::admin_tls))
+        .route(
+            "/api/admin/portmap",
+            get(port_forward::get_status).put(port_forward::put_status),
+        )
         .route("/api/admin/trash", get(trash::list_trash))
         .route("/api/admin/trash/empty", post(trash::empty_trash))
         .route(
@@ -487,6 +497,7 @@ pub(crate) fn session_wait(
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -552,6 +563,7 @@ where
 ///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
 ///     file_permits: Arc::new(shadowcat::http::assets::permits::StreamedFilePermits::production()),
 ///     tls: shadowcat::tls::TlsRuntime::disabled(),
+///     portmap: shadowcat::portmap::PortMapRuntime::disabled(),
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
