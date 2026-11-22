@@ -75,7 +75,7 @@
   {#if tree.length === 0}
     <p class="empty">{t("notes.empty")}</p>
   {:else}
-    <NoteTree nodes={tree} allNotes={allNotes} />
+    <NoteTree nodes={tree} allNotes={allNotes} reorderable={!query.trim()} />
   {/if}
   {#if ctx.canCreate(NOTE_DOC_TYPE)}
     <form onsubmit={(e) => { e.preventDefault(); create(); }}>

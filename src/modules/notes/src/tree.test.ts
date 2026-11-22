@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
 import { buildNoteDoc } from "@shadowcat/core";
-import { buildNoteTree } from "./tree";
+import { buildNoteTree, noteSiblings } from "./tree";
 
 describe("buildNoteTree", () => {
   it("orders root siblings by (engine.sort, created_at)", () => {
@@ -79,5 +79,18 @@ describe("buildNoteTree", () => {
     const ids = flatten(tree);
     expect(ids.sort()).toEqual(["c", "r", "x", "y"].sort());
     expect(new Set(ids).size).toBe(notes.length);
+  });
+});
+
+describe("noteSiblings", () => {
+  it("lists each node's id and engine.sort in the given order, 0 when unset", () => {
+    const a = buildNoteDoc("w1", "A", "", { id: "a", sort: 2000 });
+    const b = buildNoteDoc("w1", "B", "", { id: "b", sort: 1000 });
+    expect(noteSiblings(buildNoteTree([a, b]))).toEqual([
+      { id: "b", sort: 1000 },
+      { id: "a", sort: 2000 },
+    ]);
+    const bare = { ...a, id: "bare", engine: null } as unknown as typeof a;
+    expect(noteSiblings([{ doc: bare, children: [] }])).toEqual([{ id: "bare", sort: 0 }]);
   });
 });
