@@ -1,5 +1,6 @@
 import { test, it, expect, vi, describe, afterEach, beforeEach } from "vitest";
 import * as api from "./api";
+import { CHAT_HISTORY_LIMIT } from "@shadowcat/core";
 import { i18n, theme, DEFAULT_THEME_ID, type PersistedTheme } from "@shadowcat/ui-kit";
 import {
   loadSessionState,
@@ -11,6 +12,8 @@ import {
   setKeybindings,
   getChatRead,
   setChatRead,
+  getChatHistory,
+  pushChatHistory,
   flushSessionState,
   flushOnUnload,
   resetSessionState,
@@ -121,6 +124,39 @@ test("setChatRead records the blob per-world and schedules a debounced persist",
   await flushSessionState();
   expect(put).toHaveBeenCalled();
   expect(put.mock.calls.at(-1)?.[0].worlds?.w1?.chatRead).toBe(blob);
+});
+
+test("getChatHistory is empty for a world with no recorded history", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  await loadSessionState();
+  expect(getChatHistory("w1")).toEqual([]);
+});
+
+test("pushChatHistory appends per world, bounded, and persists only the chatHistory key", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { chatRead: { general: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  for (let i = 0; i < CHAT_HISTORY_LIMIT + 3; i++) pushChatHistory("w1", `m${i}`);
+  const history = getChatHistory("w1");
+  expect(history).toHaveLength(CHAT_HISTORY_LIMIT);
+  expect(history[history.length - 1]).toBe(`m${CHAT_HISTORY_LIMIT + 2}`);
+  expect(getChatHistory("w2")).toEqual([]);
+  await flushSessionState();
+  const slice = put.mock.calls.at(-1)?.[0].worlds?.w1;
+  expect(slice?.chatHistory).toEqual(history);
+  expect(slice).not.toHaveProperty("chatRead");
+});
+
+test("a persisted chatHistory blob survives a reload", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { chatHistory: ["a", "b"] } },
+  });
+  await loadSessionState();
+  expect(getChatHistory("w1")).toEqual(["a", "b"]);
 });
 
 test("a world-slice change persists ONLY the touched key within that world's slice", async () => {
