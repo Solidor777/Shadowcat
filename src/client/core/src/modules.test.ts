@@ -8,10 +8,13 @@ import { OptimisticClient } from "./optimistic";
 import { ContributionRegistry, SYSTEM_CONTRACT } from "./contributions";
 import { silentLogger } from "./logger";
 import { I18n } from "./i18n";
+import { KeybindingsController } from "./keybindings";
 
 function deps() {
+  const hooks = new HookBus(silentLogger);
   return {
-    hooks: new HookBus(silentLogger),
+    keybindings: new KeybindingsController(hooks),
+    hooks,
     services: new ServiceRegistry(),
     middleware: new MiddlewareChain(),
     store: new DocumentStore(),
@@ -315,6 +318,21 @@ test("activate() containment survives unload() itself throwing during rollback",
   expect(r.list().find((m) => m.id === "broken")!.active).toBe(false);
   expect(r.list().find((m) => m.id === "after")!.active).toBe(true);
   expect(after).toHaveBeenCalledOnce();
+});
+
+test("ctx.keybindings stamps the module id and unload removes the module's bindings", async () => {
+  const d = deps();
+  const r = new ModuleRegistry(d);
+  r.add({
+    manifest: { id: "kb", version: "1.0.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.keybindings.register("go", { defaultCombo: "KeyG", labelKey: "kb.go", action: () => {} });
+    },
+  });
+  await r.activate();
+  expect(d.keybindings.bindingsFor("kb").map((b) => b.bindingId)).toEqual(["go"]);
+  await r.unload("kb");
+  expect(d.keybindings.allBindings()).toEqual([]);
 });
 
 test("activate() rolls back partial side effects when register() throws after contributing", async () => {

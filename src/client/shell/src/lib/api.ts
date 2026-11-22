@@ -202,6 +202,10 @@ export interface UiState {
      * validation happens in `ThemeController.load`, which `loadSessionState`
      * passes the value through. */
     theme?: PersistedTheme;
+    /** The account's keybinding overrides, keyed `"<moduleId>:<bindingId>"`; `null` marks an
+     * explicitly unbound binding. Optional: blobs written before the field existed omit it. The
+     * server stores it opaquely — `KeybindingsController.loadOverrides` canonicalizes it. */
+    keybindings?: Record<string, string | null>;
   };
   /** Per-world settings, keyed by world id. */
   worlds: Record<

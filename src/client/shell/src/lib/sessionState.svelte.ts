@@ -1,4 +1,4 @@
-import { consoleLogger } from "@shadowcat/core";
+import { consoleLogger, type KeybindingOverrides } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
 import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
@@ -24,8 +24,8 @@ let persistInFlight: Promise<void> | null = null;
  * settling always resolves every waiting caller together, once. */
 let persistQueued: Promise<void> | null = null;
 
-/** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, or
- * `"theme"`). */
+/** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, `"theme"`, or
+ * `"keybindings"`). */
 type GlobalField = keyof UiState["global"];
 /** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
  * `"chatRead"`). */
@@ -152,6 +152,9 @@ function copyGlobalField(
       return;
     case "theme":
       patch.theme = g.theme;
+      return;
+    case "keybindings":
+      patch.keybindings = g.keybindings;
       return;
     default:
       field satisfies never;
@@ -559,6 +562,32 @@ export function setLastWorld(id: string | null): void {
   if (state.global.lastWorld === id) return;
   state.global.lastWorld = id;
   dirty.global.add("lastWorld");
+  schedulePersist();
+}
+
+/** Reads the account's saved keybinding overrides.
+ * @returns The saved overrides keyed `"<moduleId>:<bindingId>"`; empty when none are saved.
+ * @example
+ * ```
+ * const overrides = getKeybindings();
+ * ```
+ */
+export function getKeybindings(): KeybindingOverrides {
+  return state.global.keybindings ?? {};
+}
+
+/** Stores the account's keybinding overrides, marks them dirty, and schedules a persist. A no-op
+ * (no dirty mark, no persist) when `overrides` equals the stored value.
+ * @param overrides - The full override set (`KeybindingsController.serializeOverrides`).
+ * @example
+ * ```
+ * setKeybindings({ "ducking:push-to-talk": "keyv" });
+ * ```
+ */
+export function setKeybindings(overrides: KeybindingOverrides): void {
+  if (JSON.stringify(getKeybindings()) === JSON.stringify(overrides)) return;
+  state.global.keybindings = overrides;
+  dirty.global.add("keybindings");
   schedulePersist();
 }
 

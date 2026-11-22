@@ -1,5 +1,6 @@
 import { PANEL_CONTRACT, SETTINGS_SECTION_CONTRACT, type Module } from "@shadowcat/core";
 import Settings from "./Settings.svelte";
+import KeybindingsSection from "./KeybindingsSection.svelte";
 
 export { registerSetting, type SettingField, type SettingSelectOption, type RegisterSettingOptions } from "./registerSetting";
 export { default as SettingRow } from "./SettingRow.svelte";
@@ -25,6 +26,13 @@ export const settings: Module = {
       order: 6,
       component: Settings,
       panel: { icon: "🔧", labelKey: "settings.tab" },
+    });
+    ctx.contributions.contribute({
+      id: "settings:keybindings",
+      contract: SETTINGS_SECTION_CONTRACT,
+      component: KeybindingsSection,
+      props: { keybindings: ctx.keybindings },
+      settingsSection: { labelKey: "settings.keybindings.title" },
     });
   },
 };

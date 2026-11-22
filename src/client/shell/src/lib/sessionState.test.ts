@@ -7,6 +7,8 @@ import {
   setLastWorld,
   getPanelLayout,
   setPanelLayout,
+  getKeybindings,
+  setKeybindings,
   getChatRead,
   setChatRead,
   flushSessionState,
@@ -517,4 +519,30 @@ test("the editor save sequence (saveCustom + setActive + preview clear) persists
   const patch = put.mock.calls.at(-1)?.[0];
   expect(patch?.global?.theme?.active).toBe("custom:mine");
   expect(patch?.global?.theme?.custom?.mine?.label).toBe("Mine");
+});
+
+test("a keybindings change persists ONLY global.keybindings, and an equal value is a no-op", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: "w1" }, // locale/lastWorld untouched below
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  expect(getKeybindings()).toEqual({});
+  setKeybindings({ "ducking:push-to-duck": "keyv" });
+  await flushSessionState();
+  expect(put.mock.calls.at(-1)?.[0].global).toEqual({ keybindings: { "ducking:push-to-duck": "keyv" } });
+  const calls = put.mock.calls.length;
+  setKeybindings({ "ducking:push-to-duck": "keyv" });
+  await flushSessionState();
+  expect(put.mock.calls.length).toBe(calls);
+});
+
+test("load exposes the saved keybinding overrides", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null, keybindings: { "a:b": null } },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(getKeybindings()).toEqual({ "a:b": null });
 });

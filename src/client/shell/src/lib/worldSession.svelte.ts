@@ -9,6 +9,7 @@ import {
   type AssetChangedNotice,
   ModuleRegistry,
   HookBus,
+  KeybindingsController,
   ServiceRegistry,
   MiddlewareChain,
   reconcileTopology,
@@ -83,7 +84,7 @@ import type { HooksEmitApi } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
-import { getViewedLevel, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
+import { getKeybindings, getViewedLevel, setKeybindings, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
 import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
@@ -714,6 +715,12 @@ export class WorldSession {
    * `ModuleRegistry`, which does not expose its `Deps`) so `defineCombatHooks` can declare
    * against it before any module registers a listener. */
   #hooks: HookBus;
+  /** The session's keybindings controller: owns the window keydown listener, every module's
+   * bindings, and the account's overrides (loaded from `sessionState` at construction and
+   * written back on every change). Disposed in `leave()`. */
+  #keybindings: KeybindingsController;
+  /** Unsubscribes the `sessionState` write-back from `#keybindings`; called in `leave()`. */
+  #keybindingsUnsub: () => void;
   /** The shared service registry every module's `services` wrapper delegates to; also where
    * `#combat` is provided under `COMBAT_SERVICE` for module lookup. */
   #services: ServiceRegistry;
@@ -844,7 +851,13 @@ export class WorldSession {
         this.#audioEngine.setChannel(id as AudioChannelId, state);
       }
     }
+    this.#keybindings = new KeybindingsController(this.#hooks);
+    this.#keybindings.loadOverrides(getKeybindings());
+    this.#keybindingsUnsub = this.#keybindings.subscribe(() =>
+      setKeybindings(this.#keybindings.serializeOverrides()),
+    );
     this.#modules = new ModuleRegistry({
+      keybindings: this.#keybindings,
       hooks: this.#hooks,
       services: this.#services,
       middleware: new MiddlewareChain(),
@@ -2093,6 +2106,8 @@ export class WorldSession {
     this.#audioUnsub?.();
     this.#audioUnsub = null;
     this.#audioEngine.dispose();
+    this.#keybindingsUnsub();
+    this.#keybindings.dispose();
     for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
       this.#removeModuleStyle(manifestId);
     }

@@ -1,5 +1,5 @@
 import type { Logger } from "@shadowcat/core";
-import { KeySource, NULL_SINK, type DuckSink } from "./keySource";
+import { KeySource, NULL_SINK, type DuckSink, type KeySourceBindings } from "./keySource";
 import { OsMonitorSource } from "./osMonitor";
 import type { DuckingPreferences } from "./duckingMirror";
 import type { MicVadDenialReason } from "./micVad";
@@ -36,20 +36,22 @@ export class DuckSourcesController {
    * Constructs a controller owning the key and OS-monitor sources.
    * @param prefs The initial preferences snapshot (from `readDuckingMirror`).
    * @param logger Diagnostic sink, forwarded to `OsMonitorSource`.
+   * @param keybindings The module's `ctx.keybindings`, where the push-to-duck binding registers.
    * @example
    * ```
-   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} });
+   * declare const keybindings: KeySourceBindings;
+   * const controller = new DuckSourcesController(({} as DuckingPreferences), { debug() {}, warn() {}, error() {} }, keybindings);
    * ```
    */
-  constructor(prefs: DuckingPreferences, logger: Logger) {
-    this.key = new KeySource(NULL_SINK, prefs.keyBinding);
+  constructor(prefs: DuckingPreferences, logger: Logger, keybindings: KeySourceBindings) {
+    this.key = new KeySource(keybindings, NULL_SINK);
     this.osMonitor = new OsMonitorSource({ port: prefs.osPort, watch: prefs.watchList, logger });
     this.osMonitor.setThreshold(prefs.osThreshold);
     this.applyEnablement(prefs);
   }
 
   /**
-   * Applies a preferences snapshot's binding/threshold/watch-list/enablement fields to the
+   * Applies a preferences snapshot's threshold/watch-list/enablement fields to the
    * running sources. Called on every settings change, not just construction.
    * @param prefs The preferences snapshot to apply.
    * @example
@@ -59,7 +61,6 @@ export class DuckSourcesController {
    * ```
    */
   applyPreferences(prefs: DuckingPreferences): void {
-    this.key.setKey(prefs.keyBinding);
     this.osMonitor.setThreshold(prefs.osThreshold);
     this.osMonitor.setWatch(prefs.watchList);
     this.applyEnablement(prefs);
