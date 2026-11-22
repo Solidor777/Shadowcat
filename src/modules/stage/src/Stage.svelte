@@ -216,6 +216,8 @@
         // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
         // content with no other DOM presence.
         onMeasureDrawn: (label) => { host.dataset.measureLabel = label; },
+        // Read-only observability signal: the scene point at the viewport center, as "x,y".
+        onCameraApplied: (c) => { host.dataset.cameraCenter = `${c.x},${c.y}`; },
         onLightingApplied: (frame, sweeping) => {
           // Read-only observability signals: the painted lighting overlay's cell count and
           // whether a carried-light sweep is driving it — an e2e can see a torch light a

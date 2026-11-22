@@ -660,6 +660,22 @@ describe("camera pan-to", () => {
     expect(centerOf(backend).y).toBeCloseTo(300);
   });
 
+  it("onCameraApplied reports the scene point at the viewport center on start and after a pan", () => {
+    const centers: Array<{ x: number; y: number }> = [];
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, reducedMotion: true }),
+      onCameraApplied: (c) => centers.push(c),
+    });
+    engine.setViewport(800, 600);
+    engine.start();
+    expect(centers.at(-1)).toEqual({ x: 400, y: 300 });
+    engine.panToPoint(2000, 700);
+    expect(centers.at(-1)).toEqual({ x: 2000, y: 700 });
+  });
+
   it("a user pan mid-tween cancels the pan", () => {
     const { engine, backend } = makePanEngine(false);
     engine.panToPoint(2000, 300, { durationMs: 400 });

@@ -101,6 +101,10 @@ export interface RenderEngineOpts {
    * suffix, or a plain distance) reaches anything outside the canvas, since the label itself
    * renders only as `DisplayBackend`-drawn canvas content with no other DOM presence. */
   onMeasureDrawn?: (label: string) => void;
+  /** Called after every camera transform push (host observability hook) with the scene point at
+   * the viewport center — how a host surfaces where the camera looks, which otherwise exists
+   * only as a WebGL transform. */
+  onCameraApplied?: (center: Point) => void;
   /** Called on every painted lighting frame (host observability hook) with the frame the
    * backend was handed and whether a carried-light sweep is in flight — so a host can surface
    * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
@@ -2106,6 +2110,9 @@ export class RenderEngine implements SceneToolHost {
    */
   applyCamera(): void {
     this.backend.setCameraTransform(this.camera.transform());
+    this.opts.onCameraApplied?.(
+      this.camera.screenToScene({ x: this.viewport.width / 2, y: this.viewport.height / 2 }),
+    );
     this.redrawGrid();
   }
 
