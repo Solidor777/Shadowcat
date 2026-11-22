@@ -457,6 +457,30 @@ test("scanCandidates names and counts a legitimate acknowledged token", () => {
   ]);
 });
 
+// A split skill file labels each part "Part NN of NN"; the total after "of" marks it as a
+// document-part label rather than a pointer into an outside document.
+test("scanCandidates acknowledges a document-part label in skill prose", () => {
+  const { residue, acknowledged } = scanCandidates(
+    'Read it when editing the module. Part 01 of 03 of "Key files and seams"; the index is next.\n',
+  );
+  expect(residue).toEqual([]);
+  expect(acknowledged).toEqual([
+    {
+      line: 1,
+      token: "Part 01",
+      reason:
+        "a document-part label (Part NN of NN) naming one numbered part of a split skill file",
+    },
+  ]);
+});
+
+// Negative controls: a part number without the "of NN" total still flags, so a process reference
+// to a numbered part of an outside document is not absorbed.
+test("scanCandidates still flags a part number that is not a document-part label", () => {
+  const { residue } = scanCandidates("Landed as Part 2 of the rollout.\n"); // EXAMPLE:
+  expect(residue.map((r) => r.token)).toEqual(["Part 2"]); // EXAMPLE:
+});
+
 // The collision the coverage control found live: `WORD_NARRATION_TOKEN`'s six banned words are
 // also PascalCase enum-variant names, cited inline in backticks as wire-protocol values rather
 // than narration of the code's own past.

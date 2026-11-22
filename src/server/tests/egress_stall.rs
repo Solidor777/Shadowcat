@@ -79,7 +79,7 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
         .expect("the server never ended a connection whose peer stopped reading");
     // Not before a full window of samples has elapsed since the request. How long after the
     // producer was confirmed quiet (no earlier than the writer parking) the cut landed, past a
-    // window and a tick, is recorded, not asserted.
+    // window and a tick, is recorded and bounded by `CUT_OVERSHOOT_MAX`.
     assert!(
         closed_at >= started + WINDOW,
         "cut {:?} after the request, before the {WINDOW:?} window",

@@ -83,15 +83,25 @@ jobs:
         run: cargo build --release
       # The send-buffer keep criterion (H2_SEND_BUF_BYTES against the library default) is defined
       # for the release profile: a debug build's per-frame cost dominates the loopback download
-      # and reads 0.66 to 0.79 where release reads above 0.94. Record-only: every run prints its
-      # buffer_ratio and production_ratio per OS leg (stdout, and the step summary), and asserts
-      # only that every download delivers every byte.
-      - name: Send-buffer throughput gate (release, record-only)
+      # and reads 0.66 to 0.79. The criterion is the median over runs of the buffer ratio. Records
+      # at the 160 KiB buffer (buffer_ratio, three runs per leg in each of two CI runs): Linux
+      # 0.950 to 0.969, macOS 0.892 to 0.981, Windows 0.912 to 0.957; one macOS run read 0.892,
+      # under the 0.90 criterion, and the six-run medians are Linux 0.961, macOS 0.932, Windows
+      # 0.936. Every run prints its buffer_ratio and production_ratio per OS leg (stdout, and the
+      # step summary); the step asserts that every download delivers every byte and that each
+      # run's buffer_ratio is at least BUFFER_RATIO_FLOOR (0.70), 0.110 below the lowest run
+      # recorded at this size (0.810, a bare-server run on macOS).
+      - name: Send-buffer throughput gate (release)
         run: cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture
       # Replace and delete over a file a reader holds open: the contract is asserted and the
       # observed values are recorded per OS leg (stdout, and the step summary).
       - name: Asset replace/delete with an open reader (all OSes, recorded)
         run: cargo test -p shadowcat --test asset_open_handle -- --nocapture --test-threads 1
+      # The tests that call measure::record_cut_overshoot or measure::record run again with
+      # --nocapture: a passing test's stdout is otherwise dropped, and the RECORD lines they print
+      # are what the doc beside CUT_OVERSHOOT_MAX is read from on every OS leg.
+      - name: Cut-overshoot and egress records (all OSes, recorded)
+        run: cargo test -p shadowcat --test egress_stall --test egress_stall_h2 --test egress_boundary --test h2_ws_drain --test h2_ws_tunnel_backpressure --test ws_h1_stalled_session -- --nocapture
       - name: Binary size budget
         run: pnpm lint:binary-size
       # Assemble the icon-carrying distributable. Windows is excluded: the icon

@@ -30,15 +30,28 @@ pub fn record(line: &str) {
     }
 }
 
-/// Records how long after its derived bound a cut was observed.
+/// The most a cut may land after its derived bound, as a ceiling on `observed - derived` in
+/// [`record_cut_overshoot`]. What lies beyond the derived bound is timer and task wake-up latency,
+/// which no premise bounds, so the ceiling is empirical: the worst overshoot recorded on each
+/// operating-system leg (Windows 570 ms, Linux 288 ms, macOS 9 ms; the cuts that land before their
+/// derived bound read negative) with 2000 ms set above it, 3.5 times the worst leg.
+pub const CUT_OVERSHOOT_MAX: Duration = Duration::from_millis(2000);
+
+/// Records how long after its derived bound a cut was observed, and asserts the overshoot is at
+/// most [`CUT_OVERSHOOT_MAX`].
 ///
-/// `derived` is the part of the detection delay the design fixes (the window plus one sampler
-/// tick: the cut lands at the first tick at or after the window). What lies beyond it is timer
-/// and task wake-up latency, which no premise bounds, so the overshoot is recorded per operating
-/// system and asserted on nothing.
+/// `derived` is the part of the delay the design fixes for the path the caller measures (for a
+/// sampler cut, the window plus one sampler tick: the cut lands at the first tick at or after the
+/// window; for a shutdown, the bound at which the session's IO is killed or its send is cut). What
+/// lies beyond it is timer and task wake-up latency, which no premise bounds; the record carries
+/// it per operating system. The ceiling catches a cut observed more than `CUT_OVERSHOOT_MAX`
+/// (2 s) past `derived`: on a one-second window that is a cut more than two whole windows late, so a
+/// cut one extra window late passes.
 ///
-/// TODO: Promote the overshoot to a blocking bound once the three legs are recorded, set below the
-/// worst leg by a stated headroom with the recorded values beside the constant.
+/// # Panics
+///
+/// Panics under [`assert_cut_overshoot_within_ceiling`]; the record is written first, so the
+/// failing value is in the log.
 pub fn record_cut_overshoot(what: &str, observed: Duration, derived: Duration) {
     let overshoot_ms = observed.as_secs_f64() * 1e3 - derived.as_secs_f64() * 1e3;
     record(&format!(
@@ -47,6 +60,20 @@ pub fn record_cut_overshoot(what: &str, observed: Duration, derived: Duration) {
         observed.as_secs_f64() * 1e3,
         derived.as_secs_f64() * 1e3,
     ));
+    assert_cut_overshoot_within_ceiling(what, observed, derived);
+}
+
+/// Asserts `observed` is at most `derived + CUT_OVERSHOOT_MAX`. Separate from
+/// [`record_cut_overshoot`] so the ceiling is testable without writing a record.
+///
+/// # Panics
+///
+/// Panics, naming `what`, when `observed` exceeds `derived + CUT_OVERSHOOT_MAX`.
+pub fn assert_cut_overshoot_within_ceiling(what: &str, observed: Duration, derived: Duration) {
+    assert!(
+        observed <= derived + CUT_OVERSHOOT_MAX,
+        "{what}: cut at {observed:?}, more than {CUT_OVERSHOOT_MAX:?} past the derived {derived:?}"
+    );
 }
 
 /// What one paced read saw, from the client and from the server's drain report.

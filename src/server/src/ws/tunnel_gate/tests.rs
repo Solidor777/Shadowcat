@@ -55,6 +55,42 @@ fn poll_ready(gate: &mut TunnelGate<Taken>) -> (Poll<Result<(), ()>>, Arc<Count>
     (Pin::new(gate).poll_ready(&mut cx), count)
 }
 
+/// What a gate reports once it has been written to until it is no longer ready.
+struct Parked {
+    /// The wake count of the pending readiness poll.
+    count: Arc<Count>,
+    /// How many frames were written.
+    frames: usize,
+    /// The wire bytes of those frames.
+    wire: u64,
+}
+
+/// Writes frames of `payload` bytes while the gate is ready; returns at the first pending
+/// readiness poll. The session ends more than `H2_SEND_BUF_BYTES` ahead of a wire that has taken
+/// nothing, by less than one frame.
+fn write_until_parked(gate: &mut TunnelGate<Taken>, payload: usize) -> Parked {
+    let mut frames = 0;
+    let mut wire = 0;
+    loop {
+        let (poll, count) = poll_ready(gate);
+        if poll.is_pending() {
+            assert!(
+                wire > H2_SEND_BUF_BYTES as u64,
+                "pending at {wire} bytes, within the send buffer"
+            );
+            return Parked {
+                count,
+                frames,
+                wire,
+            };
+        }
+        assert!(matches!(poll, Poll::Ready(Ok(()))));
+        Pin::new(&mut *gate).start_send(frame(payload)).unwrap();
+        frames += 1;
+        wire += wire_len(&frame(payload));
+    }
+}
+
 #[test]
 fn wire_length_counts_the_payload_and_the_unmasked_header() {
     assert_eq!(wire_len(&frame(0)), 2);
@@ -82,28 +118,20 @@ fn a_session_more_than_a_send_buffer_ahead_of_the_wire_is_not_ready_until_the_wi
     let writer = probe.clone();
     let taken = Arc::new(AtomicUsize::new(0));
     let mut gate = TunnelGate::new(Taken(taken.clone()), Some(probe));
-    // Frames of 60,000 payload bytes: the first leaves the session 60,004 ahead (within the 65,536
-    // cap), the second 120,008 ahead.
-    assert!(matches!(poll_ready(&mut gate).0, Poll::Ready(Ok(()))));
-    Pin::new(&mut gate).start_send(frame(60_000)).unwrap();
-    assert!(matches!(poll_ready(&mut gate).0, Poll::Ready(Ok(()))));
-    Pin::new(&mut gate).start_send(frame(60_000)).unwrap();
-    let (pending, count) = poll_ready(&mut gate);
-    assert!(
-        pending.is_pending(),
-        "120,008 bytes ahead of a wire that has taken none"
-    );
-    assert_eq!(count.0.load(Ordering::SeqCst), 0);
-    // The wire takes enough to bring the session back within a send buffer: the parked task wakes
-    // and the gate is ready again.
-    writer.written_on_wire(60_000);
+    // Frames of 60,000 payload bytes until the session is more than a send buffer ahead of a wire
+    // that has taken none.
+    let parked = write_until_parked(&mut gate, 60_000);
+    assert_eq!(parked.count.0.load(Ordering::SeqCst), 0);
+    // The wire takes one frame, which brings the session (over the buffer by less than one frame)
+    // back within it: the parked task wakes and the gate is ready again.
+    writer.written_on_wire(wire_len(&frame(60_000)));
     assert_eq!(
-        count.0.load(Ordering::SeqCst),
+        parked.count.0.load(Ordering::SeqCst),
         1,
         "the wire's progress woke the parked task"
     );
     assert!(matches!(poll_ready(&mut gate).0, Poll::Ready(Ok(()))));
-    assert_eq!(taken.load(Ordering::SeqCst), 2);
+    assert_eq!(taken.load(Ordering::SeqCst), parked.frames);
 }
 
 #[test]
@@ -111,16 +139,18 @@ fn a_wire_that_takes_too_little_leaves_the_session_pending_and_wakes_it_each_tim
     let probe = TunnelProbe::detached(1);
     let writer = probe.clone();
     let mut gate = TunnelGate::new(Taken(Arc::new(AtomicUsize::new(0))), Some(probe));
-    Pin::new(&mut gate).start_send(frame(65_535)).unwrap();
-    Pin::new(&mut gate).start_send(frame(65_535)).unwrap();
-    let (first, count) = poll_ready(&mut gate);
-    assert!(first.is_pending());
+    let parked = write_until_parked(&mut gate, 65_535);
+    let backlog = parked.wire - H2_SEND_BUF_BYTES as u64;
+    assert!(
+        backlog > 20,
+        "the premise: the backlog dwarfs the 10 bytes taken"
+    );
     writer.written_on_wire(10);
-    assert_eq!(count.0.load(Ordering::SeqCst), 1);
+    assert_eq!(parked.count.0.load(Ordering::SeqCst), 1);
     let (second, count) = poll_ready(&mut gate);
     assert!(
         second.is_pending(),
-        "10 bytes of progress does not clear a 131,078-byte backlog"
+        "10 bytes of progress does not clear a {backlog}-byte backlog"
     );
     writer.written_on_wire(10);
     assert_eq!(count.0.load(Ordering::SeqCst), 1);
@@ -131,12 +161,9 @@ fn the_end_of_the_stream_wakes_a_parked_session() {
     let probe = TunnelProbe::detached(1);
     let writer = probe.clone();
     let mut gate = TunnelGate::new(Taken(Arc::new(AtomicUsize::new(0))), Some(probe));
-    Pin::new(&mut gate).start_send(frame(65_535)).unwrap();
-    Pin::new(&mut gate).start_send(frame(65_535)).unwrap();
-    let (pending, count) = poll_ready(&mut gate);
-    assert!(pending.is_pending());
+    let parked = write_until_parked(&mut gate, 65_535);
     writer.ended_on_wire();
-    assert_eq!(count.0.load(Ordering::SeqCst), 1);
+    assert_eq!(parked.count.0.load(Ordering::SeqCst), 1);
     assert!(
         matches!(poll_ready(&mut gate).0, Poll::Ready(Ok(()))),
         "an ended stream is not parked: the next write reports it"

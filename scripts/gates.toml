@@ -105,6 +105,12 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "cargo test -p shadowcat --test egress_stall --test egress_stall_h2 --test egress_boundary --test h2_ws_drain --test h2_ws_tunnel_backpressure --test ws_h1_stalled_session -- --nocapture"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "pnpm lint:binary-size"
 tier = "push"
 

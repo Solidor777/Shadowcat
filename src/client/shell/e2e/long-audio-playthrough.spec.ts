@@ -113,6 +113,7 @@ test("a 20-minute track plays from its start to its natural end in real time wit
      * @returns Resolves once the slot is recorded.
      * @example
      * ```
+     * declare const readSlot: (slot: number) => Promise<void>;
      * await readSlot(0);
      * ```
      */
