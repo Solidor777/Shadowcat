@@ -41,6 +41,7 @@ use super::{
     mux_ogg, transcode, with_suffix, OpusStream, OPUS_FRAME_SAMPLES, OPUS_SUFFIX,
     OPUS_VENDOR_MARKER, WEBM_SUFFIX,
 };
+use crate::trash::Trash;
 
 /// Bytes read from the start of the Ogg sibling (`OPUS_SUFFIX`) to cover its `OpusHead` and
 /// `OpusTags` pages.
@@ -246,7 +247,7 @@ pub(crate) enum Applied {
     /// Every staged file replaced its target.
     Done(usize),
     /// A target no longer matches what was staged against (replaced or deleted), or a rename
-    /// failed: the staged files are removed and the asset is selected again by the next pass.
+    /// failed: the staged files move into the trash and the asset is selected again by the next pass.
     Skipped(String),
 }
 
@@ -269,10 +270,10 @@ fn stage(canonical: &Path, target: PathBuf, bytes: &[u8]) -> io::Result<Staged> 
     })
 }
 
-/// Removes the staged temporary files of a plan that is not applied.
-pub(crate) fn discard(staged: &[Staged]) {
+/// Moves the staged temporary files of a plan that is not applied into `trash`.
+pub(crate) fn discard(staged: &[Staged], trash: &Trash) {
     for s in staged {
-        let _ = fs::remove_file(&s.tmp);
+        let _ = trash.discard_sync(&s.tmp);
     }
 }
 
@@ -280,7 +281,7 @@ pub(crate) fn discard(staged: &[Staged]) {
 /// encode are CPU-bound, so the caller runs it on the blocking pool). Writes only temporary files.
 ///
 /// Selects the asset when either sibling is stale, as the module doc defines.
-pub(crate) fn plan(canonical: &Path) -> Result<Plan, String> {
+pub(crate) fn plan(canonical: &Path, trash: &Trash) -> Result<Plan, String> {
     let webm_path = with_suffix(canonical, WEBM_SUFFIX);
     let ogg_path = with_suffix(canonical, OPUS_SUFFIX);
     let has_webm = webm_path.is_file();
@@ -334,7 +335,7 @@ pub(crate) fn plan(canonical: &Path) -> Result<Plan, String> {
             Ok(())
         })();
         if let Err(e) = result {
-            discard(&staged);
+            discard(&staged, trash);
             return Err(e);
         }
         return Ok(Plan::Write {
@@ -387,22 +388,22 @@ pub(crate) fn rename_file(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Swaps the staged files of `plan` over their targets in order, after checking each target is
-/// still the file the packets were read from. A mismatch or a failed rename stops the swap, removes
-/// every staged file that was not renamed and reports `Applied::Skipped`; the targets already
+/// still the file the packets were read from. A mismatch or a failed rename stops the swap, moves
+/// every staged file that was not renamed into `trash` and reports `Applied::Skipped`; the targets already
 /// renamed stay (WebM first, so the asset is selected again while its Ogg is unfixed).
 ///
 /// The fingerprint check and the rename are two steps, so the check only holds if nothing else
 /// replaces or deletes the target between them. `apply` takes no lock itself: the caller
 /// (`audio_upgrade::upgrade_one`) holds the write side of the write barrier around the call, which
 /// excludes every asset replace, delete and reconvert.
-pub(crate) fn apply(staged: &[Staged], rename: Rename) -> Applied {
+pub(crate) fn apply(staged: &[Staged], rename: Rename, trash: &Trash) -> Applied {
     for (done, s) in staged.iter().enumerate() {
         if fingerprint(&s.target) != Some(s.expect) {
-            discard(&staged[done..]);
+            discard(&staged[done..], trash);
             return Applied::Skipped(format!("{} changed since it was read", s.target.display()));
         }
         if let Err(e) = rename(&s.tmp, &s.target) {
-            discard(&staged[done..]);
+            discard(&staged[done..], trash);
             return Applied::Skipped(format!("rename over {}: {e}", s.target.display()));
         }
     }

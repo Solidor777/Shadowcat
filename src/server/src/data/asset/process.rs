@@ -12,6 +12,7 @@
 pub mod audio;
 
 use super::AssetMeta;
+use crate::trash::Trash;
 use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageReader};
 use serde::{Deserialize, Serialize};
@@ -212,8 +213,19 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 7] {
 /// std::fs::write(&staged, &png).unwrap();
 /// // A real PNG decodes and re-encodes: `converted`/`content_type` come from the
 /// // pipeline's own decision, not from a literal.
-/// let processed: Processed =
-///     process_staged(&staged, "image/png", png.len() as i64, false, AudioContainers::default()).unwrap();
+/// let trash = shadowcat::trash::Trash::new(
+///     dir.path().join("trash"),
+///     shadowcat::trash::TrashRetention::default(),
+/// );
+/// let processed: Processed = process_staged(
+///     &staged,
+///     "image/png",
+///     png.len() as i64,
+///     false,
+///     AudioContainers::default(),
+///     &trash,
+/// )
+/// .unwrap();
 /// assert!(processed.converted);
 /// assert_eq!(processed.content_type, "image/webp");
 /// ```
@@ -256,12 +268,13 @@ fn encode_webp(img: &DynamicImage, enc: Encoding) -> io::Result<Vec<u8>> {
 }
 
 /// Write `bytes` to `dest` through a sibling temp file + rename, so a reader
-/// never observes a partially written derivative.
-fn write_atomic(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+/// never observes a partially written derivative. A temp file left by a failed
+/// rename moves into `trash`.
+fn write_atomic(dest: &Path, bytes: &[u8], trash: &Trash) -> io::Result<()> {
     let tmp = with_suffix(dest, &format!(".{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, bytes)?;
     if let Err(e) = std::fs::rename(&tmp, dest) {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = trash.discard_sync(&tmp);
         return Err(e);
     }
     Ok(())
@@ -289,7 +302,12 @@ fn fit_within(img: &DynamicImage, max_px: u32) -> DynamicImage {
 /// Write both derivatives of `img` beside `canonical`. Lossless when the
 /// source is transparent (alpha must survive), else lossy at
 /// `DERIVATIVE_QUALITY`.
-fn write_derivatives_of(img: &DynamicImage, canonical: &Path, transparent: bool) -> io::Result<()> {
+fn write_derivatives_of(
+    img: &DynamicImage,
+    canonical: &Path,
+    transparent: bool,
+    trash: &Trash,
+) -> io::Result<()> {
     let enc = Encoding {
         lossless: transparent,
         quality: DERIVATIVE_QUALITY,
@@ -297,7 +315,7 @@ fn write_derivatives_of(img: &DynamicImage, canonical: &Path, transparent: bool)
     for variant in [Variant::Thumb, Variant::Preview] {
         let scaled = fit_within(img, variant.max_px());
         let bytes = encode_webp(&scaled, enc)?;
-        write_atomic(&derivative_path(canonical, variant), &bytes)?;
+        write_atomic(&derivative_path(canonical, variant), &bytes, trash)?;
     }
     Ok(())
 }
@@ -309,18 +327,20 @@ fn write_derivatives_of(img: &DynamicImage, canonical: &Path, transparent: bool)
 ///
 /// ```
 /// use shadowcat::data::asset::process::write_derivatives;
-/// use std::path::Path;
+/// use shadowcat::trash::{Trash, TrashRetention};
+/// use std::path::{Path, PathBuf};
 ///
 /// // A canonical that isn't on disk fails to decode rather than panicking.
-/// let err = write_derivatives(Path::new("no-such-canonical.webp")).unwrap_err();
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
+/// let err = write_derivatives(Path::new("no-such-canonical.webp"), &trash).unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 /// ```
-pub fn write_derivatives(canonical: &Path) -> io::Result<()> {
+pub fn write_derivatives(canonical: &Path, trash: &Trash) -> io::Result<()> {
     let mut reader = ImageReader::open(canonical)?.with_guessed_format()?;
     reader.limits(decode_limits());
     let img = reader.decode().map_err(io::Error::other)?;
     let transparent = has_transparent_pixels(&img);
-    write_derivatives_of(&img, canonical, transparent)
+    write_derivatives_of(&img, canonical, transparent, trash)
 }
 
 /// Whether the file at `path` is a multi-frame animation for `content_type`.
@@ -430,12 +450,18 @@ pub struct SheetMeta {
 ///
 /// ```
 /// use shadowcat::data::asset::process::generate_grid_sheet;
-/// use std::path::Path;
+/// use shadowcat::trash::{Trash, TrashRetention};
+/// use std::path::{Path, PathBuf};
 ///
 /// // No frames decode from a nonexistent file; nothing is written.
-/// assert!(generate_grid_sheet(Path::new("no-such-file"), "image/gif").is_none());
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
+/// assert!(generate_grid_sheet(Path::new("no-such-file"), "image/gif", &trash).is_none());
 /// ```
-pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<SheetMeta> {
+pub fn generate_grid_sheet(
+    canonical: &Path,
+    content_type: &str,
+    trash: &Trash,
+) -> Option<SheetMeta> {
     let frames = decode_animation_frames(canonical, content_type);
     if frames.len() < 2 {
         return None;
@@ -500,7 +526,7 @@ pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<Sheet
         },
     )
     .ok()?;
-    write_atomic(&with_suffix(canonical, SHEET_SUFFIX), &sheet_bytes).ok()?;
+    write_atomic(&with_suffix(canonical, SHEET_SUFFIX), &sheet_bytes, trash).ok()?;
     let meta = SheetMeta {
         rows,
         cols,
@@ -510,7 +536,12 @@ pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<Sheet
         height: fh,
     };
     let json_bytes = serde_json::to_vec(&meta).ok()?;
-    write_atomic(&with_suffix(canonical, SHEET_JSON_SUFFIX), &json_bytes).ok()?;
+    write_atomic(
+        &with_suffix(canonical, SHEET_JSON_SUFFIX),
+        &json_bytes,
+        trash,
+    )
+    .ok()?;
     Some(meta)
 }
 
@@ -560,16 +591,19 @@ fn pass_through(
 /// non-`image/*` type, SVG, an animation (never re-encoded), a static WebP
 /// (nothing to gain), and any decode failure. A conversion failure after a
 /// successful decode also falls back to pass-through with the reason in
-/// `conversion_note` — an upload is never rejected for conversion reasons.
+/// `conversion_note` — an upload is never rejected for conversion reasons. The arrived bytes
+/// of a converted upload whose original is not retained move into `trash`.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::asset::process::{audio::AudioContainers, process_staged};
-/// use std::path::Path;
+/// use shadowcat::trash::{Trash, TrashRetention};
+/// use std::path::{Path, PathBuf};
 ///
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true, AudioContainers::default())
+/// let trash = Trash::new(PathBuf::from("trash"), TrashRetention::Disabled);
+/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true, AudioContainers::default(), &trash)
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 /// ```
@@ -579,6 +613,7 @@ pub fn process_staged(
     original_byte_size: i64,
     retain_originals: bool,
     audio_containers: audio::AudioContainers,
+    trash: &Trash,
 ) -> io::Result<Processed> {
     if original_content_type.starts_with("audio/") {
         return audio::process_staged_audio(
@@ -626,11 +661,11 @@ pub fn process_staged(
     let transparent = has_transparent_pixels(&img);
     // Derivatives come from whatever decoded, converted or not; a derivative
     // failure is not a reason to reject the upload (regenerated on demand).
-    if let Err(e) = write_derivatives_of(&img, staged, transparent) {
+    if let Err(e) = write_derivatives_of(&img, staged, transparent, trash) {
         tracing::warn!(?e, path = %staged.display(), "derivative write failed");
     }
     if animated {
-        let sheet = generate_grid_sheet(staged, original_content_type);
+        let sheet = generate_grid_sheet(staged, original_content_type, trash);
         let mut processed = pass_through(
             original_content_type,
             original_byte_size,
@@ -675,7 +710,7 @@ pub fn process_staged(
     if retain_originals {
         std::fs::rename(staged, original_path(staged))?;
     } else {
-        std::fs::remove_file(staged)?;
+        trash.discard_sync(staged)?;
     }
     std::fs::rename(&conv_tmp, staged)?;
 

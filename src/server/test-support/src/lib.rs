@@ -127,6 +127,10 @@ async fn spawn_inner(mutate: impl FnOnce(&mut Config), setup: TlsSetup) -> Harne
     let mut cfg = Config {
         assets_dir: Some(assets_dir.to_string_lossy().into_owned()),
         db: "sqlite::memory:".into(),
+        // A harness server removes discarded files outright: its default trash directory sits
+        // beside the system temp directory and would collect an entry per test run. A test that
+        // inspects the trash sets `trash_retention` and `trash_dir` in `mutate`.
+        trash_retention: shadowcat::trash::TrashRetention::Disabled,
         ..Config::default()
     };
     mutate(&mut cfg);

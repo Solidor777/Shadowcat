@@ -209,9 +209,9 @@ fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
     }
 }
 
-/// Removes the wrapped path on drop unless `keep()` was called — the single
+/// Moves the wrapped path into the trash on drop unless `keep()` was called — the single
 /// source of truth for staged-import-upload cleanup, so a temp file cannot
-/// survive an early return (present or future) without a `remove_file` call
+/// survive an early return (present or future) without a trash call
 /// repeated at every failure site. That alone (multipart error, oversize
 /// upload, I/O failure, `Err(WorldBundleError)`, `Err(DataError)`) is
 /// sufficient reason for this guard to exist: every one of those is an
@@ -231,17 +231,20 @@ fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
 /// panicked task into a `JoinError`, so the panic is caught and re-surfaced
 /// as an ordinary `Err` on the awaiting side well before it would reach
 /// this guard — the shape this guard actually sees there is the same
-/// ordinary early return as every other failure path. The removal itself is
-/// a synchronous `std::fs::remove_file`, not a spawned task: a fire-and-
+/// ordinary early return as every other failure path. The move itself is
+/// a synchronous `Trash::discard_sync`, not a spawned task: a fire-and-
 /// forget `tokio::spawn` from inside `drop` could be dropped before it runs
 /// if the runtime is tearing down, where a blocking call on the current
 /// thread is guaranteed to complete before `drop` returns.
-struct TempFileGuard(Option<std::path::PathBuf>);
+struct TempFileGuard(
+    Option<std::path::PathBuf>,
+    std::sync::Arc<crate::trash::Trash>,
+);
 
 impl TempFileGuard {
     /// Arms cleanup for `path`.
-    fn new(path: std::path::PathBuf) -> Self {
-        Self(Some(path))
+    fn new(path: std::path::PathBuf, trash: std::sync::Arc<crate::trash::Trash>) -> Self {
+        Self(Some(path), trash)
     }
 
     /// Cancels the cleanup. No production call site needs this (the
@@ -261,7 +264,7 @@ impl TempFileGuard {
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
+            let _ = self.1.discard_sync(&path);
         }
     }
 }
@@ -395,17 +398,19 @@ pub async fn import_world(
 ) -> Result<Json<ImportSummary>, AppError> {
     let _read_permit = state.write_barrier.read().await;
     let tmp_tar = std::env::temp_dir().join(format!("shadowcat-import-{}.tar", Uuid::new_v4()));
-    let guard = TempFileGuard::new(tmp_tar.clone());
+    let guard = TempFileGuard::new(tmp_tar.clone(), state.trash.clone());
     stream_bundle_upload(multipart, &tmp_tar).await?;
 
     let assets_dir = state.config.assets_path();
     let tar_path = tmp_tar.clone();
-    let import_result = tokio::task::spawn_blocking(move || read_bundle(&tar_path, &assets_dir))
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, "world import extraction task panicked");
-            AppError::Internal
-        })?;
+    let bundle_trash = state.trash.clone();
+    let import_result =
+        tokio::task::spawn_blocking(move || read_bundle(&tar_path, &assets_dir, &bundle_trash))
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, "world import extraction task panicked");
+                AppError::Internal
+            })?;
     // Extraction is done with the staged file either way — drop the guard
     // here (rather than letting it ride to the end of the function) so the
     // temp file is removed before the DB insert, not after.
@@ -441,7 +446,7 @@ pub async fn import_world(
         }
     };
 
-    let summary = state.repo.import_world(import_data).await?;
+    let summary = state.repo.import_world(import_data, &state.trash).await?;
     Ok(Json(summary))
 }
 

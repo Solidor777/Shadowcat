@@ -123,7 +123,7 @@ async fn a_pass_upgrades_stale_assets_and_a_second_pass_rewrites_nothing() {
     let bare = seed(&repo, world, root.path(), 648, true, (false, false, false)).await;
     let barrier = RwLock::new(());
 
-    let first = upgrade_audio_derivatives(&repo, root.path(), &barrier).await;
+    let first = upgrade_audio_derivatives(&repo, root.path(), &barrier, &test_trash()).await;
     assert_eq!(
         first,
         UpgradeReport {
@@ -143,7 +143,7 @@ async fn a_pass_upgrades_stale_assets_and_a_second_pass_rewrites_nothing() {
         (m.len(), m.modified().unwrap())
     };
     let before = (stamp(outside), stamp(inside));
-    let second = upgrade_audio_derivatives(&repo, root.path(), &barrier).await;
+    let second = upgrade_audio_derivatives(&repo, root.path(), &barrier, &test_trash()).await;
     assert_eq!(
         second,
         UpgradeReport {
@@ -173,7 +173,7 @@ async fn a_failed_swap_is_skipped_and_completed_by_the_next_pass() {
     let old_ogg = std::fs::read(ogg_of(root.path(), world, id)).unwrap();
     let barrier = RwLock::new(());
 
-    let first = upgrade_with(&repo, root.path(), &barrier, refuse).await;
+    let first = upgrade_with(&repo, root.path(), &barrier, refuse, &test_trash()).await;
     assert_eq!(first.skipped, 1);
     assert_eq!(first.written(), 0);
     assert_eq!(
@@ -185,7 +185,7 @@ async fn a_failed_swap_is_skipped_and_completed_by_the_next_pass() {
         old_ogg
     );
 
-    let second = upgrade_audio_derivatives(&repo, root.path(), &barrier).await;
+    let second = upgrade_audio_derivatives(&repo, root.path(), &barrier, &test_trash()).await;
     assert_eq!(second.retranscoded, 1);
     assert_ne!(
         std::fs::read(ogg_of(root.path(), world, id)).unwrap(),
@@ -204,7 +204,8 @@ async fn the_swap_waits_for_the_write_barrier() {
     let barrier = RwLock::new(());
     let held = barrier.write().await;
 
-    let pass = upgrade_audio_derivatives(&repo, root.path(), &barrier);
+    let trash = test_trash();
+    let pass = upgrade_audio_derivatives(&repo, root.path(), &barrier, &trash);
     tokio::pin!(pass);
     assert!(
         tokio::time::timeout(Duration::from_millis(500), &mut pass)
@@ -237,7 +238,8 @@ async fn the_swap_waits_for_an_asset_write_holding_the_read_side() {
     let barrier = RwLock::new(());
     let replace_in_flight = barrier.read().await;
 
-    let pass = upgrade_audio_derivatives(&repo, root.path(), &barrier);
+    let trash = test_trash();
+    let pass = upgrade_audio_derivatives(&repo, root.path(), &barrier, &trash);
     tokio::pin!(pass);
     assert!(
         tokio::time::timeout(Duration::from_millis(500), &mut pass)
@@ -251,4 +253,12 @@ async fn the_swap_waits_for_an_asset_write_holding_the_read_side() {
     );
     drop(replace_in_flight);
     assert_eq!(pass.await.remuxed, 1);
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

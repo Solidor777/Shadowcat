@@ -85,11 +85,14 @@ fn stored(residue: usize, ogg: bool, webm: bool, original: bool) -> Stored {
 
 /// Plans `asset`, expecting a write, and applies it with the real rename.
 fn upgrade(asset: &Stored) -> (Kind, usize) {
-    let Plan::Write { kind, staged } = plan(&asset.canonical).unwrap() else {
+    let Plan::Write { kind, staged } = plan(&asset.canonical, &test_trash()).unwrap() else {
         panic!("expected a write");
     };
     let count = staged.len();
-    assert_eq!(apply(&staged, rename_file), Applied::Done(count));
+    assert_eq!(
+        apply(&staged, rename_file, &test_trash()),
+        Applied::Done(count)
+    );
     (kind, count)
 }
 
@@ -164,7 +167,10 @@ fn residue_648_is_remuxed_and_its_ogg_is_byte_identical() {
     assert_eq!(duration_ms, valid_of(648) as f64 * 1000.0 / 48_000.0);
     assert!(!has_padding, "no padding element at residue 648");
     assert!(is_current(&asset.webm()));
-    assert!(matches!(plan(&asset.canonical).unwrap(), Plan::Current));
+    assert!(matches!(
+        plan(&asset.canonical, &test_trash()).unwrap(),
+        Plan::Current
+    ));
     assert!(asset.leftovers().is_empty());
 }
 
@@ -174,7 +180,7 @@ fn residue_648_is_remuxed_and_its_ogg_is_byte_identical() {
 fn loss_range_residues_re_encode_both_siblings_from_one_encode() {
     for residue in [0, 649, 959] {
         let asset = stored(residue, true, true, true);
-        let Plan::Write { kind, staged } = plan(&asset.canonical).unwrap() else {
+        let Plan::Write { kind, staged } = plan(&asset.canonical, &test_trash()).unwrap() else {
             panic!("residue {residue}: expected a write");
         };
         assert_eq!(kind, Kind::Retranscode, "residue {residue}");
@@ -184,7 +190,7 @@ fn loss_range_residues_re_encode_both_siblings_from_one_encode() {
             vec![asset.webm(), asset.ogg()],
             "WebM first, Ogg last"
         );
-        assert_eq!(apply(&staged, rename_file), Applied::Done(2));
+        assert_eq!(apply(&staged, rename_file, &test_trash()), Applied::Done(2));
 
         let (audible, rms, duration_ms, has_padding) = webm_audible(&asset.webm());
         assert_eq!(audible, valid_of(residue), "webm residue {residue}");
@@ -213,7 +219,10 @@ fn loss_range_residues_re_encode_both_siblings_from_one_encode() {
             webm_packets, ogg_stream.packets,
             "one encode, residue {residue}"
         );
-        assert!(matches!(plan(&asset.canonical).unwrap(), Plan::Current));
+        assert!(matches!(
+            plan(&asset.canonical, &test_trash()).unwrap(),
+            Plan::Current
+        ));
         assert!(asset.leftovers().is_empty());
     }
 }
@@ -230,10 +239,13 @@ fn an_interrupted_sweep_is_selected_again_and_never_fixes_the_ogg_first() {
     }
     let asset = stored(649, true, true, true);
     let old_ogg = std::fs::read(asset.ogg()).unwrap();
-    let Plan::Write { staged, .. } = plan(&asset.canonical).unwrap() else {
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
         panic!("expected a write");
     };
-    assert!(matches!(apply(&staged, fail_the_ogg), Applied::Skipped(_)));
+    assert!(matches!(
+        apply(&staged, fail_the_ogg, &test_trash()),
+        Applied::Skipped(_)
+    ));
     assert!(is_current(&asset.webm()), "the WebM is swapped first");
     assert_eq!(
         std::fs::read(asset.ogg()).unwrap(),
@@ -244,13 +256,16 @@ fn an_interrupted_sweep_is_selected_again_and_never_fixes_the_ogg_first() {
         asset.leftovers().is_empty(),
         "the unswapped staged file is removed"
     );
-    let Plan::Write { kind, .. } = plan(&asset.canonical).unwrap() else {
+    let Plan::Write { kind, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
         panic!("the asset must be selected again");
     };
     assert_eq!(kind, Kind::Retranscode);
     let (_, count) = upgrade(&asset);
     assert_eq!(count, 2);
-    assert!(matches!(plan(&asset.canonical).unwrap(), Plan::Current));
+    assert!(matches!(
+        plan(&asset.canonical, &test_trash()).unwrap(),
+        Plan::Current
+    ));
 }
 
 /// A loss-range asset whose original is gone cannot be repaired: its WebM is remuxed to the length
@@ -269,7 +284,7 @@ fn a_loss_range_asset_without_its_original_is_remuxed_to_its_decodable_length() 
     assert!(!has_padding);
     assert_eq!(std::fs::read(asset.ogg()).unwrap(), old_ogg);
     assert!(matches!(
-        plan(&asset.canonical).unwrap(),
+        plan(&asset.canonical, &test_trash()).unwrap(),
         Plan::Unrepairable(_)
     ));
 }
@@ -286,7 +301,7 @@ fn a_webm_only_asset_is_re_encoded_from_its_original_and_gains_no_ogg() {
 
     let orphan = stored(648, false, true, false);
     assert!(matches!(
-        plan(&orphan.canonical).unwrap(),
+        plan(&orphan.canonical, &test_trash()).unwrap(),
         Plan::Unrepairable(_)
     ));
 }
@@ -304,7 +319,10 @@ fn an_ogg_only_asset_is_re_encoded_only_inside_the_loss_range() {
     assert_eq!(info.vendor, OPUS_VENDOR_MARKER);
 
     let outside = stored(648, true, false, true);
-    assert!(matches!(plan(&outside.canonical).unwrap(), Plan::Current));
+    assert!(matches!(
+        plan(&outside.canonical, &test_trash()).unwrap(),
+        Plan::Current
+    ));
 }
 
 /// A target replaced between staging and swapping (an asset replace renames new siblings in) is
@@ -312,11 +330,14 @@ fn an_ogg_only_asset_is_re_encoded_only_inside_the_loss_range() {
 #[test]
 fn a_sibling_replaced_after_staging_is_not_overwritten() {
     let asset = stored(648, true, true, true);
-    let Plan::Write { staged, .. } = plan(&asset.canonical).unwrap() else {
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
         panic!("expected a write");
     };
     std::fs::write(asset.webm(), b"a newer derivative of a different length").unwrap();
-    assert!(matches!(apply(&staged, rename_file), Applied::Skipped(_)));
+    assert!(matches!(
+        apply(&staged, rename_file, &test_trash()),
+        Applied::Skipped(_)
+    ));
     assert_eq!(
         std::fs::read(asset.webm()).unwrap(),
         b"a newer derivative of a different length"
@@ -334,10 +355,10 @@ fn a_reader_held_across_the_swap_leaves_the_old_or_the_new_file_intact() {
     let asset = stored(648, true, true, true);
     let old = std::fs::read(asset.webm()).unwrap();
     let mut reader = fs::File::open(asset.webm()).unwrap();
-    let Plan::Write { staged, .. } = plan(&asset.canonical).unwrap() else {
+    let Plan::Write { staged, .. } = plan(&asset.canonical, &test_trash()).unwrap() else {
         panic!("expected a write");
     };
-    match apply(&staged, rename_file) {
+    match apply(&staged, rename_file, &test_trash()) {
         Applied::Done(_) => {
             let mut held = Vec::new();
             reader.read_to_end(&mut held).unwrap();
@@ -347,4 +368,12 @@ fn a_reader_held_across_the_swap_leaves_the_old_or_the_new_file_intact() {
         Applied::Skipped(_) => assert_eq!(std::fs::read(asset.webm()).unwrap(), old),
     }
     assert!(asset.leftovers().is_empty());
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

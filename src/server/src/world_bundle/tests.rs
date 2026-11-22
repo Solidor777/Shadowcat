@@ -169,7 +169,7 @@ fn read_bundle_round_trips_write_bundle_output() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let imported = read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let imported = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
 
     assert_eq!(imported.manifest.world_id, world);
     assert_eq!(imported.documents.len(), 1);
@@ -197,7 +197,7 @@ fn read_bundle_rejects_row_count_mismatch() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(
         err,
         WorldBundleError::RowCountMismatch {
@@ -220,7 +220,7 @@ fn read_bundle_rejects_unsupported_schema_version() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(
         err,
         WorldBundleError::UnsupportedSchemaVersion(v) if v == BUNDLE_SCHEMA_VERSION + 1
@@ -243,7 +243,7 @@ fn read_bundle_rejects_archive_not_starting_with_manifest() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(matches!(err, WorldBundleError::Malformed(_)));
 }
 
@@ -302,7 +302,7 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
     std::fs::write(&tar_path, &bytes).unwrap();
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+    let err = read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap_err();
     assert!(
         matches!(&err, WorldBundleError::Malformed(m) if m.contains("duplicate asset entry")),
         "unexpected error: {err:?}"
@@ -406,7 +406,7 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let tar_path = tmp.path().join("bundle.tar");
     std::fs::write(&tar_path, &bytes).unwrap();
     let import_root = tempfile::tempdir().unwrap();
-    let imported = read_bundle(&tar_path, import_root.path()).unwrap();
+    let imported = read_bundle(&tar_path, import_root.path(), &test_trash()).unwrap();
     assert_eq!(imported.staged_assets.len(), 1);
     assert_eq!(imported.assets[0].tags, vec!["hero".to_string()]);
     assert!(imported.assets[0].meta.original_retained);
@@ -450,7 +450,7 @@ fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let bad_path = tmp.path().join("bad.tar");
     std::fs::write(&bad_path, &bad).unwrap();
     let bad_root = tempfile::tempdir().unwrap();
-    let err = read_bundle(&bad_path, bad_root.path()).unwrap_err();
+    let err = read_bundle(&bad_path, bad_root.path(), &test_trash()).unwrap_err();
     assert!(
         matches!(err, WorldBundleError::Malformed(m) if m.contains("unknown asset sibling suffix"))
     );
@@ -475,4 +475,12 @@ fn a_pre_pooling_fog_row_deserializes_with_the_prior_semantics() {
     assert_eq!(row.level_id, "", "absent level_id means the ground level");
     assert!(!row.pool, "absent pool means a real, resolved user");
     assert_eq!(row.username, Some("mock_player".to_string()));
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

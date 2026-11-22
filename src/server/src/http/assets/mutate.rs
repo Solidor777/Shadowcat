@@ -234,6 +234,7 @@ pub async fn reconvert(
             existing.meta.original_byte_size,
             state.config.retain_originals,
             containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -259,6 +260,7 @@ pub async fn reconvert(
         existing.meta.original_byte_size,
         state.config.retain_originals,
         Default::default(),
+        &state.trash,
     )
     .await
     .map_err(|e| {

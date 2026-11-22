@@ -21,6 +21,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::trash::Trash;
+
 /// All fallible backup/restore operations return this.
 ///
 /// # Examples
@@ -169,7 +171,8 @@ fn copy_dir_recursive<'a>(
 /// Snapshot `db_path` (via `VACUUM INTO`, an atomic consistency-guaranteed copy
 /// safe against a live writer) and recursively copy `assets_dir` into
 /// `out_dir`, in that order, then write `out_dir/manifest.json` last. Creates
-/// `out_dir` if absent. Does not check `out_dir` for prior contents — callers
+/// `out_dir` if absent. A leftover snapshot file in `out_dir` moves into `trash`
+/// rather than being removed. Does not check `out_dir` for prior contents — callers
 /// that need the refuse-non-empty-without-force gate call
 /// [`dir_is_empty_or_absent`] first (the CLI layer owns that decision; see
 /// `main::run_backup`).
@@ -184,6 +187,10 @@ fn copy_dir_recursive<'a>(
 ///     Path::new("shadowcat.db"),
 ///     Path::new("assets"),
 ///     Path::new("backups/2026-07-30"),
+///     &shadowcat::trash::Trash::new(
+///         std::path::PathBuf::from("trash"),
+///         shadowcat::trash::TrashRetention::default(),
+///     ),
 /// )
 /// .await?;
 /// println!("{} asset file(s), {} db bytes", manifest.asset_file_count, manifest.db_bytes);
@@ -194,13 +201,14 @@ pub async fn create_backup(
     db_path: &Path,
     assets_dir: &Path,
     out_dir: &Path,
+    trash: &Trash,
 ) -> Result<BackupManifest, BackupError> {
     tokio::fs::create_dir_all(out_dir).await?;
 
     let db_out = out_dir.join("world.db");
     // VACUUM INTO refuses to write into an already-existing file.
     if tokio::fs::metadata(&db_out).await.is_ok() {
-        tokio::fs::remove_file(&db_out).await?;
+        trash.discard(&db_out).await?;
     }
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
     let pool = crate::db::connect_pool(&db_url).await?;
@@ -267,7 +275,8 @@ pub async fn create_backup(
 /// crash between the two renames: the old tree is parked at
 /// `<assets_dir>.restore-old` rather than deleted; the next restore attempt
 /// clears it (see the pre-clear below), so no manual recovery step is
-/// required, though the parked directory is recoverable by hand if needed.
+/// required, though the parked directory is recoverable by hand if needed. Every staging
+/// leftover and the replaced assets tree move into `trash` rather than being removed.
 ///
 /// The db swap and the assets swap are two INDEPENDENT atomic operations, not
 /// one joint transaction across both artifacts: the db rename completes in
@@ -290,6 +299,10 @@ pub async fn create_backup(
 ///     Path::new("shadowcat.db"),
 ///     Path::new("assets"),
 ///     true,
+///     &shadowcat::trash::Trash::new(
+///         std::path::PathBuf::from("trash"),
+///         shadowcat::trash::TrashRetention::default(),
+///     ),
 /// )
 /// .await?;
 /// # Ok(())
@@ -300,6 +313,7 @@ pub async fn restore_backup(
     db_path: &Path,
     assets_dir: &Path,
     force: bool,
+    trash: &Trash,
 ) -> Result<(), BackupError> {
     let manifest_path = backup_dir.join("manifest.json");
     let manifest_bytes = tokio::fs::read(&manifest_path).await.map_err(|_| {
@@ -357,10 +371,10 @@ pub async fn restore_backup(
     // restore can leave either one behind, and `copy_dir_recursive` merges
     // into an existing directory rather than replacing it.
     if tokio::fs::metadata(&assets_stage).await.is_ok() {
-        tokio::fs::remove_dir_all(&assets_stage).await?;
+        trash.discard(&assets_stage).await?;
     }
     if tokio::fs::metadata(&assets_old).await.is_ok() {
-        tokio::fs::remove_dir_all(&assets_old).await?;
+        trash.discard(&assets_old).await?;
     }
     let backup_assets = backup_dir.join("assets");
     copy_dir_recursive(&backup_assets, &assets_stage).await?;
@@ -369,7 +383,7 @@ pub async fn restore_backup(
     }
     tokio::fs::rename(&assets_stage, assets_dir).await?;
     if tokio::fs::metadata(&assets_old).await.is_ok() {
-        tokio::fs::remove_dir_all(&assets_old).await?;
+        trash.discard(&assets_old).await?;
     }
 
     Ok(())

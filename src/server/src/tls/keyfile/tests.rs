@@ -7,9 +7,13 @@ use super::*;
 fn a_protection_failure_aborts_the_write_and_leaves_nothing_behind() {
     let base = tempfile::tempdir().unwrap();
     let key = base.path().join("tls").join("key.pem");
-    let err = write_private_with(&key, b"SECRET", |_| {
-        Err(std::io::Error::other("acl refused"))
-    })
+    let trash = kept_trash(base.path());
+    let err = write_private_with(
+        &key,
+        b"SECRET",
+        |_| Err(std::io::Error::other("acl refused")),
+        &trash,
+    )
     .unwrap_err();
     assert!(err.to_string().contains("acl refused"));
     assert!(
@@ -19,34 +23,42 @@ fn a_protection_failure_aborts_the_write_and_leaves_nothing_behind() {
     let mut tmp = key.file_name().unwrap().to_os_string();
     tmp.push(".tmp");
     let tmp = key.with_file_name(tmp);
-    assert!(!tmp.exists(), "the temporary file is cleaned up");
+    assert!(!tmp.exists(), "the temporary file leaves the key directory");
+    assert_trashed(&trash, "key.pem.tmp");
 }
 
 #[test]
 fn no_secret_byte_is_written_before_protection_succeeds() {
     let base = tempfile::tempdir().unwrap();
     let key = base.path().join("key.pem");
-    write_private_with(&key, b"SECRET", |tmp| {
-        assert_eq!(
-            std::fs::metadata(tmp).unwrap().len(),
-            0,
-            "protection runs while the file is still empty"
-        );
-        Ok(())
-    })
+    write_private_with(
+        &key,
+        b"SECRET",
+        |tmp| {
+            assert_eq!(
+                std::fs::metadata(tmp).unwrap().len(),
+                0,
+                "protection runs while the file is still empty"
+            );
+            Ok(())
+        },
+        &test_trash(),
+    )
     .unwrap();
     assert_eq!(std::fs::read(&key).unwrap(), b"SECRET");
 }
 
 #[test]
-fn a_failed_rename_cleans_up_the_temporary_file() {
+fn a_failed_rename_moves_the_temporary_file_to_the_trash() {
     let base = tempfile::tempdir().unwrap();
     // The destination is a non-empty directory, so the final rename cannot succeed.
     let key = base.path().join("key.pem");
     std::fs::create_dir_all(key.join("inner")).unwrap();
     std::fs::write(key.join("inner").join("f"), b"x").unwrap();
-    assert!(write_private(&key, b"SECRET").is_err());
+    let trash = kept_trash(base.path());
+    assert!(write_private(&key, b"SECRET", &trash).is_err());
     assert!(!base.path().join("key.pem.tmp").exists());
+    assert_trashed(&trash, "key.pem.tmp");
 }
 
 #[cfg(unix)]
@@ -57,7 +69,7 @@ fn an_existing_directory_keeps_its_permissions() {
     let dir = base.path().join("operator-chosen");
     std::fs::create_dir(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    write_private(&dir.join("key.pem"), b"SECRET").unwrap();
+    write_private(&dir.join("key.pem"), b"SECRET", &test_trash()).unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(
         mode(&dir),
@@ -94,7 +106,7 @@ fn an_existing_directory_keeps_its_acl_and_a_created_one_is_protected() {
     let existing = base.path().join("operator-chosen");
     std::fs::create_dir(&existing).unwrap();
     let before = dacl_sddl(&existing).unwrap();
-    write_private(&existing.join("key.pem"), b"SECRET").unwrap();
+    write_private(&existing.join("key.pem"), b"SECRET", &test_trash()).unwrap();
     assert_eq!(
         dacl_sddl(&existing).unwrap(),
         before,
@@ -103,4 +115,24 @@ fn an_existing_directory_keeps_its_acl_and_a_created_one_is_protected() {
     let created = base.path().join("made-here");
     ensure_private_dir(&created).unwrap();
     assert!(dacl_sddl(&created).unwrap().starts_with("D:P"));
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
+}
+
+/// A trash under `dir` that keeps what it receives, so a test can see where a file went.
+fn kept_trash(dir: &Path) -> crate::trash::Trash {
+    crate::trash::Trash::new(dir.join("trash"), crate::trash::TrashRetention::default())
+}
+
+/// Asserts `trash` holds exactly one entry whose original file name is `name`.
+fn assert_trashed(trash: &crate::trash::Trash, name: &str) {
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1, "the temporary file lands in the trash");
+    assert_eq!(entries[0].manifest.original_path.file_name().unwrap(), name);
 }

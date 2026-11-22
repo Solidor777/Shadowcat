@@ -18,6 +18,11 @@ async fn seed_db(path: &Path) {
     pool.close().await;
 }
 
+/// A trash rooted inside the test's own temp directory, retaining entries for the default window.
+fn test_trash(dir: &Path) -> Trash {
+    Trash::new(dir.join("trash"), crate::trash::TrashRetention::default())
+}
+
 #[test]
 fn dir_is_empty_or_absent_covers_absent_empty_and_nonempty() {
     let tmp = tempfile::tempdir().unwrap();
@@ -52,7 +57,7 @@ async fn create_backup_snapshots_db_and_assets() {
         .unwrap();
 
     let out_dir = tmp.path().join("out");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir)
+    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
 
@@ -105,7 +110,7 @@ async fn create_backup_with_no_assets_dir_yields_zero_files() {
     let assets_dir = tmp.path().join("does_not_exist");
     let out_dir = tmp.path().join("out");
 
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir)
+    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
     assert_eq!(manifest.asset_file_count, 0);
@@ -123,7 +128,7 @@ async fn create_backup_escapes_single_quote_in_output_path() {
     // `'` is a legal filename character on Windows, Linux, and macOS; this
     // proves the VACUUM INTO literal-string escaping is correct.
     let out_dir = tmp.path().join("it's a backup dir");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir)
+    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
     assert!(manifest.db_bytes > 0);
@@ -142,15 +147,21 @@ async fn restore_backup_round_trips_content() {
         .unwrap();
 
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir)
+    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
 
     let restored_db = tmp.path().join("restored.db");
     let restored_assets = tmp.path().join("restored_assets");
-    restore_backup(&out_dir, &restored_db, &restored_assets, false)
-        .await
-        .unwrap();
+    restore_backup(
+        &out_dir,
+        &restored_db,
+        &restored_assets,
+        false,
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap();
 
     let restored_url = format!("sqlite://{}", restored_db.to_string_lossy());
     let pool = crate::db::connect_pool(&restored_url).await.unwrap();
@@ -181,7 +192,7 @@ async fn restore_backup_refuses_nonempty_destination_without_force() {
         .await
         .unwrap();
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir)
+    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
 
@@ -192,9 +203,15 @@ async fn restore_backup_refuses_nonempty_destination_without_force() {
         .unwrap();
     let restored_assets = tmp.path().join("restored_assets");
 
-    let err = restore_backup(&out_dir, &restored_db, &restored_assets, false)
-        .await
-        .unwrap_err();
+    let err = restore_backup(
+        &out_dir,
+        &restored_db,
+        &restored_assets,
+        false,
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, BackupError::DestinationNotEmpty(_)));
     // The pre-existing file is untouched.
     assert_eq!(
@@ -203,9 +220,15 @@ async fn restore_backup_refuses_nonempty_destination_without_force() {
     );
 
     // --force proceeds and overwrites it.
-    restore_backup(&out_dir, &restored_db, &restored_assets, true)
-        .await
-        .unwrap();
+    restore_backup(
+        &out_dir,
+        &restored_db,
+        &restored_assets,
+        true,
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         tokio::fs::read(restored_assets.join("a.png"))
             .await
@@ -228,7 +251,7 @@ async fn restore_leaves_no_partial_destination_and_no_staging_residue() {
         .await
         .unwrap();
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir)
+    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
 
@@ -244,9 +267,15 @@ async fn restore_leaves_no_partial_destination_and_no_staging_residue() {
         .await
         .unwrap();
 
-    restore_backup(&out_dir, &restored_db, &restored_assets, true)
-        .await
-        .unwrap();
+    restore_backup(
+        &out_dir,
+        &restored_db,
+        &restored_assets,
+        true,
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap();
 
     // Destination content equals backup content.
     assert_eq!(
@@ -284,6 +313,7 @@ async fn restore_backup_fails_closed_on_missing_manifest() {
         &tmp.path().join("db.sqlite"),
         &tmp.path().join("assets"),
         false,
+        &test_trash(tmp.path()),
     )
     .await
     .unwrap_err();
@@ -307,6 +337,7 @@ async fn restore_backup_fails_closed_on_malformed_manifest() {
         &tmp.path().join("db.sqlite"),
         &tmp.path().join("assets"),
         false,
+        &test_trash(tmp.path()),
     )
     .await
     .unwrap_err();
@@ -328,7 +359,7 @@ async fn backup_and_restore_round_trip_preserves_nested_directory_structure() {
     tokio::fs::write(&deep_file, b"DEEP").await.unwrap();
 
     let out_dir = tmp.path().join("out");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir)
+    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
         .await
         .unwrap();
     assert_eq!(manifest.asset_file_count, 1);
@@ -344,9 +375,15 @@ async fn backup_and_restore_round_trip_preserves_nested_directory_structure() {
     // Round-trip through restore into a third location.
     let restored_db = tmp.path().join("restored.db");
     let restored_assets = tmp.path().join("restored_assets");
-    restore_backup(&out_dir, &restored_db, &restored_assets, false)
-        .await
-        .unwrap();
+    restore_backup(
+        &out_dir,
+        &restored_db,
+        &restored_assets,
+        false,
+        &test_trash(tmp.path()),
+    )
+    .await
+    .unwrap();
 
     let restored_deep = restored_assets
         .join("world1")
@@ -354,4 +391,72 @@ async fn backup_and_restore_round_trip_preserves_nested_directory_structure() {
         .join("battlemap")
         .join("token.png");
     assert_eq!(tokio::fs::read(&restored_deep).await.unwrap(), b"DEEP");
+}
+
+/// A second backup into the same output directory moves the first snapshot's `world.db` into the
+/// trash rather than destroying it. Fails if `create_backup` removes the file outright.
+#[tokio::test]
+async fn create_backup_trashes_a_previous_snapshot_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let assets_dir = tmp.path().join("assets");
+    let out_dir = tmp.path().join("out");
+    let trash = test_trash(tmp.path());
+
+    create_backup(&db_path, &assets_dir, &out_dir, &trash)
+        .await
+        .unwrap();
+    assert!(
+        trash.list().unwrap().is_empty(),
+        "a first backup trashes nothing"
+    );
+    create_backup(&db_path, &assets_dir, &out_dir, &trash)
+        .await
+        .unwrap();
+
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].manifest.original_path.file_name().unwrap(),
+        "world.db"
+    );
+    assert_eq!(entries[0].manifest.kind, crate::trash::TrashedKind::File);
+}
+
+/// A forced restore moves the assets directory it replaces into the trash. Fails if
+/// `restore_backup` removes the previous directory outright, or leaves it out of the trash.
+#[tokio::test]
+async fn restore_backup_trashes_the_replaced_assets_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("shadowcat.db");
+    seed_db(&db_path).await;
+    let assets_dir = tmp.path().join("assets");
+    tokio::fs::create_dir_all(&assets_dir).await.unwrap();
+    tokio::fs::write(assets_dir.join("a.png"), b"AAA")
+        .await
+        .unwrap();
+    let out_dir = tmp.path().join("out");
+    let trash = test_trash(tmp.path());
+    create_backup(&db_path, &assets_dir, &out_dir, &trash)
+        .await
+        .unwrap();
+
+    let restored_db = tmp.path().join("restored.db");
+    let restored_assets = tmp.path().join("restored_assets");
+    tokio::fs::create_dir_all(&restored_assets).await.unwrap();
+    tokio::fs::write(restored_assets.join("stale.png"), b"STALE")
+        .await
+        .unwrap();
+    restore_backup(&out_dir, &restored_db, &restored_assets, true, &trash)
+        .await
+        .unwrap();
+
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].manifest.kind, crate::trash::TrashedKind::Dir);
+    assert_eq!(
+        entries[0].size_bytes, 5,
+        "the replaced directory's stale.png is retained"
+    );
 }

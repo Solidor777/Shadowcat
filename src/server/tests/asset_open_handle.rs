@@ -10,8 +10,8 @@
 //! The held handle is a `tokio::fs::File` from `File::open`, the open the streamed serve path
 //! uses, and `replace_and_delete_succeed_while_a_response_streams_the_canonical` repeats both
 //! controls with a real streaming response as the open handle. The delete controls call the
-//! production route, whose unlink is the route's own `remove_file`; the tests themselves perform
-//! no delete.
+//! production route, whose removal is a move into the trash (`Trash::discard`); the tests
+//! themselves perform no delete.
 
 use std::time::{Duration, Instant};
 

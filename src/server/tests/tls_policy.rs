@@ -21,6 +21,14 @@ fn now() -> OffsetDateTime {
     OffsetDateTime::now_utc()
 }
 
+/// A trash that removes outright: the policy tests never inspect trashed files.
+fn test_trash() -> shadowcat::trash::Trash {
+    shadowcat::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-tls-policy-trash"),
+        shadowcat::trash::TrashRetention::Disabled,
+    )
+}
+
 fn sans(names: &[&str]) -> SanSet {
     SanSet {
         dns: names.iter().map(|s| s.to_string()).collect(),
@@ -160,6 +168,7 @@ fn stored_certificate_is_reused_across_boots() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert!(first.persisted && first.regenerated.is_none());
@@ -169,6 +178,7 @@ fn stored_certificate_is_reused_across_boots() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert!(second.persisted && second.regenerated.is_none());
@@ -185,13 +195,22 @@ fn a_new_interface_address_does_not_regenerate_but_is_reported_as_drift() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     let with_new_lan = SanSources {
         interface_ips: vec![ip("192.168.50.9")],
         ..SanSources::default()
     };
-    let boot2 = load_or_generate(Some(dir.path()), &[], &with_new_lan, &RcgenGenerator, t).unwrap();
+    let boot2 = load_or_generate(
+        Some(dir.path()),
+        &[],
+        &with_new_lan,
+        &RcgenGenerator,
+        t,
+        &test_trash(),
+    )
+    .unwrap();
     assert_eq!(boot1.cert.fingerprint(), boot2.cert.fingerprint());
     assert_eq!(boot2.drift, vec![ip("192.168.50.9")]);
     assert_eq!(
@@ -210,6 +229,7 @@ fn a_missing_configured_hostname_regenerates() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     let hosts = vec!["table.example".to_string()];
@@ -219,6 +239,7 @@ fn a_missing_configured_hostname_regenerates() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(
@@ -234,6 +255,7 @@ fn a_missing_configured_hostname_regenerates() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(boot3.cert.fingerprint(), boot2.cert.fingerprint());
@@ -249,6 +271,7 @@ fn near_expiry_regenerates_by_the_injected_clock() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     // 366 days later the 397-day leaf has 31 days left: still reused.
@@ -259,6 +282,7 @@ fn near_expiry_regenerates_by_the_injected_clock() {
         &SanSources::default(),
         &RcgenGenerator,
         later,
+        &test_trash(),
     )
     .unwrap();
     assert!(reuse.regenerated.is_none());
@@ -270,6 +294,7 @@ fn near_expiry_regenerates_by_the_injected_clock() {
         &SanSources::default(),
         &RcgenGenerator,
         near,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(renewed.regenerated, Some(RegenReason::NearExpiry));
@@ -295,6 +320,7 @@ fn unparsable_or_half_stored_files_regenerate() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     std::fs::write(dir.path().join(CERT_FILE), "garbage").unwrap();
@@ -304,18 +330,20 @@ fn unparsable_or_half_stored_files_regenerate() {
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(second.regenerated, Some(RegenReason::Unusable));
     assert_ne!(first.cert.fingerprint(), second.cert.fingerprint());
     // Only the key file left.
-    std::fs::remove_file(dir.path().join(CERT_FILE)).ok();
+    std::fs::rename(dir.path().join(CERT_FILE), dir.path().join("cert.aside")).unwrap();
     let third = load_or_generate(
         Some(dir.path()),
         &[],
         &SanSources::default(),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert!(third.persisted);
@@ -324,7 +352,15 @@ fn unparsable_or_half_stored_files_regenerate() {
 
 #[test]
 fn no_directory_serves_an_in_memory_certificate() {
-    let out = load_or_generate(None, &[], &SanSources::default(), &RcgenGenerator, now()).unwrap();
+    let out = load_or_generate(
+        None,
+        &[],
+        &SanSources::default(),
+        &RcgenGenerator,
+        now(),
+        &test_trash(),
+    )
+    .unwrap();
     assert!(!out.persisted);
 }
 
@@ -455,6 +491,7 @@ fn a_persisted_certificate_listing_the_hostname_is_replaced_when_the_opt_in_is_o
         &host_sources(true),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert!(opted_in
@@ -467,6 +504,7 @@ fn a_persisted_certificate_listing_the_hostname_is_replaced_when_the_opt_in_is_o
         &host_sources(false),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(off.regenerated, Some(RegenReason::MachineHostnameListed));
@@ -478,6 +516,7 @@ fn a_persisted_certificate_listing_the_hostname_is_replaced_when_the_opt_in_is_o
         &host_sources(false),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(again.regenerated, None);
@@ -494,6 +533,7 @@ fn turning_the_opt_in_on_regenerates_once_and_then_is_stable() {
         &host_sources(false),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     let on = load_or_generate(
@@ -502,6 +542,7 @@ fn turning_the_opt_in_on_regenerates_once_and_then_is_stable() {
         &host_sources(true),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(on.regenerated, Some(RegenReason::MachineHostnameMissing));
@@ -511,6 +552,7 @@ fn turning_the_opt_in_on_regenerates_once_and_then_is_stable() {
         &host_sources(true),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(again.regenerated, None);
@@ -527,6 +569,7 @@ fn a_hostname_the_operator_named_in_tls_hostnames_is_not_treated_as_listed() {
         &host_sources(false),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert!(first
@@ -539,6 +582,7 @@ fn a_hostname_the_operator_named_in_tls_hostnames_is_not_treated_as_listed() {
         &host_sources(false),
         &RcgenGenerator,
         t,
+        &test_trash(),
     )
     .unwrap();
     assert_eq!(
@@ -557,8 +601,24 @@ fn an_unusable_machine_hostname_neither_appears_nor_forces_regeneration() {
             advertise_hostname: true,
             ..SanSources::default()
         };
-        let a = load_or_generate(Some(dir.path()), &[], &sources, &RcgenGenerator, t).unwrap();
-        let b = load_or_generate(Some(dir.path()), &[], &sources, &RcgenGenerator, t).unwrap();
+        let a = load_or_generate(
+            Some(dir.path()),
+            &[],
+            &sources,
+            &RcgenGenerator,
+            t,
+            &test_trash(),
+        )
+        .unwrap();
+        let b = load_or_generate(
+            Some(dir.path()),
+            &[],
+            &sources,
+            &RcgenGenerator,
+            t,
+            &test_trash(),
+        )
+        .unwrap();
         assert_eq!(b.regenerated, None, "{host:?}");
         assert!(a.cert.fingerprint() == b.cert.fingerprint(), "{host:?}");
     }
@@ -580,6 +640,7 @@ fn key_file_and_directory_are_owner_only_on_unix() {
         &SanSources::default(),
         &RcgenGenerator,
         now(),
+        &test_trash(),
     )
     .unwrap();
     let key_mode = std::fs::metadata(dir.join(KEY_FILE))
@@ -603,6 +664,7 @@ fn key_file_dacl_is_protected_and_owner_only_on_windows() {
         &SanSources::default(),
         &RcgenGenerator,
         now(),
+        &test_trash(),
     )
     .unwrap();
     for path in [dir.join(KEY_FILE), dir.clone()] {

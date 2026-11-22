@@ -185,12 +185,13 @@ pub async fn admin_backup(
     // SQLite file; a `VACUUM INTO` "database is locked" from racing the live
     // pool surfaces as an ordinary Internal error for the admin to retry —
     // no busy-loop.
-    let manifest = crate::backup::create_backup(&db_path, &state.config.assets_path(), &out)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "in-server backup failed");
-            AppError::Internal
-        })?;
+    let manifest =
+        crate::backup::create_backup(&db_path, &state.config.assets_path(), &out, &state.trash)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "in-server backup failed");
+                AppError::Internal
+            })?;
     Ok(Json(manifest))
 }
 
@@ -1421,12 +1422,9 @@ pub async fn delete_world(
         let _read_permit = state.write_barrier.read().await;
         state.repo.delete_world(world).await?;
         let dir = state.config.assets_path().join(world.to_string());
-        match tokio::fs::remove_dir_all(&dir).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(?e, %world, "world asset dir removal failed after row delete")
-            }
+        // `discard` treats a missing directory as already gone.
+        if let Err(e) = state.trash.discard(&dir).await {
+            tracing::warn!(?e, %world, "world asset dir trash move failed after row delete")
         }
         Ok::<(), AppError>(())
     }

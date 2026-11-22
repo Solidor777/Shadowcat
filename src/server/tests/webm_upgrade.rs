@@ -98,8 +98,9 @@ async fn a_remuxed_webm_is_a_new_validator_and_the_ogg_is_unchanged() {
     let old_webm = etag(&h, id, "opus-webm").await;
     let old_ogg = etag(&h, id, "opus").await;
     let barrier = tokio::sync::RwLock::new(());
+    let trash = shadowcat::trash::Trash::from_config(&h.config);
 
-    let report = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier).await;
+    let report = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier, &trash).await;
     assert_eq!(
         (report.remuxed, report.retranscoded, report.failed),
         (1, 0, 0)
@@ -147,15 +148,16 @@ async fn a_loss_range_asset_changes_both_validators() {
     let id = seed(&h, 649).await;
     let before = (etag(&h, id, "opus-webm").await, etag(&h, id, "opus").await);
     let barrier = tokio::sync::RwLock::new(());
+    let trash = shadowcat::trash::Trash::from_config(&h.config);
 
-    let report = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier).await;
+    let report = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier, &trash).await;
     assert_eq!((report.retranscoded, report.failed), (1, 0));
     let after = (etag(&h, id, "opus-webm").await, etag(&h, id, "opus").await);
     assert_ne!(after.0, before.0);
     assert_ne!(after.1, before.1);
     assert_eq!(h.repo.get_asset(id).await.unwrap().unwrap().version, 3);
 
-    let again = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier).await;
+    let again = upgrade_audio_derivatives(&h.repo, &h.assets_dir, &barrier, &trash).await;
     assert_eq!((again.current, again.written()), (1, 0));
     assert_eq!(etag(&h, id, "opus-webm").await, after.0);
 }

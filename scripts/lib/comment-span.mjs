@@ -26,8 +26,16 @@ export /**
  *  - A single quote opens a string literal, so a line carrying an ODD number of them consumes the
  *    rest of the line into the CODE span. A Rust lifetime parameter is the live shape — one lone
  *    quote, then a trailing comment that vanishes from the comment span.
- *  - No string state crosses a line, so a line CONTINUING a multi-line template literal is lexed
- *    from a cold start, and a quote inside that literal opens a span that was never open.
+ *  - No ordinary string state crosses a line, so a line CONTINUING a multi-line template literal is
+ *    lexed from a cold start, and a quote inside that literal opens a span that was never open.
+ *    A Rust raw string is the one literal whose state does cross lines (`rawStringHashes`).
+ *
+ * Rust raw strings (`r".."`, `r#".."#`, `br#".."#`) are opaque: a backslash is data, not an escape, and
+ * the literal closes at the first `"` followed by AT LEAST as many `#` as the opener had, consuming
+ * exactly that many (a further `#` is ordinary code). A bare `r`/`br` directly before `#*"` is always
+ * a raw-string opener in compiling Rust, because an identifier cannot abut a string literal.
+ * `state.rawStringHashes` is the opener's `#` count while a raw string is open across lines, else
+ * `null`; a caller that predates the field passes a state without it and gets `null`.
  *
  * Both UNDER-scan, which is the invisible direction. Each has a specimen in the control set below,
  * asserting what the function does today rather than what it should do — the point of a control is
@@ -37,11 +45,35 @@ function splitLine(line, state) {
   let code = "";
   let comment = "";
   let i = 0;
-  let { inBlock, inHtml } = state;
+  let { inBlock, inHtml, rawStringHashes = null } = state;
+  // Index just past the closer of a raw string that needs `hashes` `#`, searching from `from`; -1
+  // when this line holds no closer. A `"` followed by fewer `#` than `hashes` is raw-string content.
+  const rawCloser = (from, hashes) => {
+    let q = line.indexOf('"', from);
+    while (q !== -1) {
+      let n = 0;
+      while (line[q + 1 + n] === "#") n += 1;
+      if (n >= hashes) return q + 1 + hashes;
+      q = line.indexOf('"', q + 1);
+    }
+    return -1;
+  };
   while (i < line.length) {
+    if (rawStringHashes !== null) {
+      const end = rawCloser(i, rawStringHashes);
+      if (end === -1) {
+        return { code: code + line.slice(i), comment, state: { inBlock, inHtml, rawStringHashes } };
+      }
+      code += line.slice(i, end);
+      i = end;
+      rawStringHashes = null;
+      continue;
+    }
     if (inHtml) {
       const end = line.indexOf("-->", i);
-      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
+      if (end === -1) {
+        return { code, comment: comment + line.slice(i), state: { inBlock, inHtml, rawStringHashes } };
+      }
       comment += line.slice(i, end);
       i = end + 3;
       inHtml = false;
@@ -49,13 +81,34 @@ function splitLine(line, state) {
     }
     if (inBlock) {
       const end = line.indexOf("*/", i);
-      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
+      if (end === -1) {
+        return { code, comment: comment + line.slice(i), state: { inBlock, inHtml, rawStringHashes } };
+      }
       comment += line.slice(i, end);
       i = end + 2;
       inBlock = false;
       continue;
     }
     const c = line[i];
+    if (c === "r" || c === "b") {
+      RAW_STRING_OPENER.lastIndex = i;
+      const raw = RAW_STRING_OPENER.exec(line);
+      if (raw !== null) {
+        const hashes = raw[1].length;
+        const openEnd = i + raw[0].length;
+        const end = rawCloser(openEnd, hashes);
+        if (end === -1) {
+          return {
+            code: code + line.slice(i),
+            comment,
+            state: { inBlock, inHtml, rawStringHashes: hashes },
+          };
+        }
+        code += line.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
     // A `//` or `/*` inside a string literal is program data the code acts on, never a comment
     // opener; consuming the literal whole keeps it in the code span for the literal rules below.
     if (c === '"' || c === "'" || c === "`") {
@@ -92,8 +145,12 @@ function splitLine(line, state) {
     code += c;
     i += 1;
   }
-  return { code, comment, state: { inBlock, inHtml } };
+  return { code, comment, state: { inBlock, inHtml, rawStringHashes } };
 }
+
+// The opener of a Rust raw string: `r` or `br`, then `#` characters, then `"`. Sticky so it tests
+// exactly at `lastIndex`.
+const RAW_STRING_OPENER = /(?:br|r)(#*)"/y;
 
 const SUBJECT_SPECIMENS = [
   ["line comment", "// text", " text"],
@@ -116,6 +173,21 @@ const SUBJECT_SPECIMENS = [
   // and so could have changed in either direction without any run saying so.
   ["odd lifetime quote swallows the trailing comment", "pub struct Row<'a> { n: u32 } // text", null],
   ["a template-literal continuation line is lexed cold", "b) + `; // text", null],
+  // Rust raw strings are opaque: no escapes, closer needs at least the opener's `#` count.
+  ["a raw string hides a slash-slash from becoming a comment", 'let s = r"http://example.test"; // text', " text"],
+  ["a raw string with an embedded bare quote is not closed early", 'let s = r#"say "hi" now"#; // text', " text"],
+  [
+    "a raw string closer followed by one extra # leaves that # as ordinary code",
+    'let s = r#"x"## ; // text',
+    " text",
+  ],
+  [
+    "a raw string containing a banned-name-shaped substring stays out of the comment span",
+    'let s = r"remove_file(x) // not a call"; // text',
+    " text",
+  ],
+  ["a raw byte string hides a slash-slash", 'let s = br#"a // b"#; // text', " text"],
+  ["a raw string backslash is data, not an escape", 'let s = r"a\\"; // text', " text"],
 ];
 
 for (const [label, line, want] of SUBJECT_SPECIMENS) {
@@ -133,5 +205,38 @@ for (const [label, line, want] of SUBJECT_SPECIMENS) {
         `Every count this script produces is void until this is fixed.`,
     );
     process.exit(2);
+  }
+}
+
+// The multi-line raw-string checks thread `state` across calls, which the single-line loop above
+// cannot, so they run as their own blocks with the same fail-loud convention.
+function failControl(label, expected, actual) {
+  console.error(
+    `check-comment-refs: splitLine fails its own control "${label}".\n` +
+      `  expected: ${JSON.stringify(expected)}\n` +
+      `  actual:   ${JSON.stringify(actual)}\n` +
+      `Every count this script produces is void until this is fixed.`,
+  );
+  process.exit(2);
+}
+
+{
+  const cold = { inBlock: false, inHtml: false };
+  const first = splitLine('let s = r#"line one', cold);
+  if (first.comment !== "" || first.state.rawStringHashes !== 1) {
+    failControl("a raw string opens on one line", { comment: "", rawStringHashes: 1 }, first);
+  }
+  const second = splitLine('line two"#; // text', first.state);
+  if (second.comment !== " text" || second.state.rawStringHashes !== null) {
+    failControl("a raw string closes on a later line", { comment: " text", rawStringHashes: null }, second);
+  }
+}
+
+{
+  const cold = { inBlock: false, inHtml: false };
+  const first = splitLine('let s = r#"line one', cold);
+  const second = splitLine("line two still open // not a comment", first.state);
+  if (second.comment !== "" || second.state.rawStringHashes !== 1) {
+    failControl("an unterminated raw string stays open", { comment: "", rawStringHashes: 1 }, second);
   }
 }

@@ -215,11 +215,11 @@ impl Default for UploadRateLimiter {
 
 use crate::auth::session::AuthUser;
 use crate::data::asset::process::audio::{self, AudioContainers};
-use crate::data::asset::process::{derivative_path, sibling_paths, write_derivatives, Variant};
+use crate::data::asset::process::{derivative_path, write_derivatives, Variant};
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
-    commit_staged_asset, move_asset_files, process_staged_blocking, remove_asset_files, Asset,
-    Provenance,
+    commit_staged_asset, discard_asset_files, move_asset_files, process_staged_blocking,
+    remove_asset_files, Asset, Provenance,
 };
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
@@ -233,6 +233,8 @@ use mutate::attachment_disposition;
 use range::{Disposition, Route};
 use tokio::io::AsyncWriteExt;
 
+use crate::trash::Trash;
+
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
 /// arrive (never buffering the whole body). Returns
 /// `(content_type, byte_size, original_name, containers)`, where `content_type` is the
@@ -242,11 +244,13 @@ use tokio::io::AsyncWriteExt;
 /// the label is `application/octet-stream`. The bytes are the validation
 /// boundary; a client's image claim is never trusted. `containers` is the
 /// optional trailing text field selecting the audio derivative container(s).
-/// On any failure the partial file is removed.
+/// On any failure the partial file moves into `trash`; the open handle is dropped first
+/// because a file with an open handle cannot be moved on Windows.
 async fn store_streamed(
     mut multipart: Multipart,
     dest: &std::path::Path,
     max_bytes: u64,
+    trash: &Trash,
 ) -> Result<(String, i64, String, Option<String>), AppError> {
     let field = multipart
         .next_field()
@@ -274,13 +278,15 @@ async fn store_streamed(
             Ok(Some(c)) => c,
             Ok(None) => break,
             Err(e) => {
-                let _ = tokio::fs::remove_file(dest).await;
+                drop(file);
+                let _ = trash.discard(dest).await;
                 return Err(AppError::BadRequest(format!("multipart error: {e}")));
             }
         };
         total += chunk.len() as u64;
         if total > max_bytes {
-            let _ = tokio::fs::remove_file(dest).await;
+            drop(file);
+            let _ = trash.discard(dest).await;
             return Err(AppError::PayloadTooLarge(format!(
                 "file exceeds {max_bytes} bytes"
             )));
@@ -290,11 +296,15 @@ async fn store_streamed(
             head.extend_from_slice(&chunk[..chunk.len().min(want)]);
         }
         if file.write_all(&chunk).await.is_err() {
-            let _ = tokio::fs::remove_file(dest).await;
+            drop(file);
+            let _ = trash.discard(dest).await;
             return Err(AppError::Internal);
         }
     }
     file.flush().await.map_err(|_| AppError::Internal)?;
+    // The handle must be closed before any later failure arm moves `dest` (Windows refuses to
+    // move a file with an open handle).
+    drop(file);
 
     // An optional trailing `containers` text field selects the audio derivative container(s)
     // (`data::asset::process::audio::AudioContainers`'s snake_case names); the file field is
@@ -309,14 +319,14 @@ async fn store_streamed(
                 match field.chunk().await {
                     Ok(Some(c)) => {
                         if text.len() + c.len() > 64 {
-                            let _ = tokio::fs::remove_file(dest).await;
+                            let _ = trash.discard(dest).await;
                             return Err(AppError::BadRequest("containers field too long".into()));
                         }
                         text.push_str(&String::from_utf8_lossy(&c));
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        let _ = tokio::fs::remove_file(dest).await;
+                        let _ = trash.discard(dest).await;
                         return Err(AppError::BadRequest(format!("multipart error: {e}")));
                     }
                 }
@@ -470,12 +480,12 @@ pub async fn upload(
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
         let (arrived_type, arrived_size, original_name, containers_field) =
-            store_streamed(multipart, &tmp_path, max).await?;
+            store_streamed(multipart, &tmp_path, max, &state.trash).await?;
         let containers = match parse_containers_field(containers_field.as_deref()) {
             Ok(c) => c,
             Err(e) => {
                 // The staged tmp is already on disk; a rejected selection must not strand it.
-                remove_asset_files(&tmp_path).await;
+                remove_asset_files(&tmp_path, &state.trash).await;
                 return Err(e);
             }
         };
@@ -486,6 +496,7 @@ pub async fn upload(
             arrived_size,
             retain,
             containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -520,9 +531,16 @@ pub async fn upload(
         // assets copy. Concurrent asset writes share the read side freely;
         // this serializes nothing between uploads.
         let _read_permit = state.write_barrier.read().await;
-        commit_staged_asset(&state.repo, &tmp_path, &final_path, asset, &derived)
-            .await
-            .map_err(AppError::from)
+        commit_staged_asset(
+            &state.repo,
+            &tmp_path,
+            &final_path,
+            asset,
+            &derived,
+            &state.trash,
+        )
+        .await
+        .map_err(AppError::from)
     }
     .await;
 
@@ -751,7 +769,7 @@ pub async fn serve(
     let original_name = asset.original_name.clone();
     let (path, content_type) = match variant {
         None => (canonical, asset.content_type),
-        Some(v) => match ensure_derivative(&canonical, v).await {
+        Some(v) => match ensure_derivative(&canonical, v, &state.trash).await {
             Ok(p) => (
                 p,
                 crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
@@ -875,13 +893,15 @@ const INLINE_CONTENT_TYPES: [&str; 6] = [
 async fn ensure_derivative(
     canonical: &std::path::Path,
     variant: Variant,
+    trash: &Trash,
 ) -> std::io::Result<std::path::PathBuf> {
     let path = derivative_path(canonical, variant);
     if tokio::fs::try_exists(&path).await? {
         return Ok(path);
     }
     let src = canonical.to_path_buf();
-    tokio::task::spawn_blocking(move || write_derivatives(&src))
+    let blocking_trash = trash.clone();
+    tokio::task::spawn_blocking(move || write_derivatives(&src, &blocking_trash))
         .await
         .map_err(std::io::Error::other)??;
     Ok(path)
@@ -989,14 +1009,14 @@ pub async fn replace(
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
         let (arrived_type, arrived_size, _name, containers_field) =
-            store_streamed(multipart, &tmp_path, max).await?;
+            store_streamed(multipart, &tmp_path, max, &state.trash).await?;
         // No explicit selection on a replace re-emits the derivative set the asset already
         // has (`audio::effective_reencode_selection`), never silently widening or narrowing it.
         let containers = match containers_field.as_deref() {
             Some(_) => match parse_containers_field(containers_field.as_deref()) {
                 Ok(c) => c,
                 Err(e) => {
-                    remove_asset_files(&tmp_path).await;
+                    remove_asset_files(&tmp_path, &state.trash).await;
                     return Err(e);
                 }
             },
@@ -1011,6 +1031,7 @@ pub async fn replace(
             arrived_size,
             retain,
             containers,
+            &state.trash,
         )
         .await
         .map_err(|e| {
@@ -1069,14 +1090,14 @@ pub(super) async fn commit_replacement(
     {
         Ok(v) => v,
         Err(e) => {
-            remove_asset_files(tmp_path).await;
+            remove_asset_files(tmp_path, &state.trash).await;
             return Err(e.into());
         }
     };
     // Canonical + every sibling (a stale `.orig`/derivative of the old
     // bytes is removed when the new upload has none).
-    if let Err(e) = move_asset_files(tmp_path, final_path).await {
-        remove_asset_files(tmp_path).await;
+    if let Err(e) = move_asset_files(tmp_path, final_path, &state.trash).await {
+        remove_asset_files(tmp_path, &state.trash).await;
         tracing::error!(?e, %id, "asset replace rename failed after DB commit");
         return Err(AppError::Internal);
     }
@@ -1117,17 +1138,11 @@ pub(super) async fn delete_asset_files_and_row(
         return Ok(false);
     };
     let path = state.config.assets_path().join(&deleted.storage_key);
-    if let Err(e) = tokio::fs::remove_file(&path).await {
-        // Record is gone; a missing file is not fatal (it becomes a no-op).
-        tracing::warn!(?e, %id, "asset file remove failed after record delete");
-    }
-    // Siblings (`.orig`, derivatives) exist only for some assets; absence is
-    // the ordinary case and not worth a warning.
-    for sibling in sibling_paths(&path) {
-        match tokio::fs::remove_file(&sibling).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(?e, %id, "asset sibling remove failed after record delete"),
+    // Record is gone; a failed move is not fatal. `Trash::discard` treats a missing file
+    // (siblings exist only for some assets) as already gone, so only real failures log.
+    for (file, outcome) in discard_asset_files(&state.trash, &path).await {
+        if let Err(e) = outcome {
+            tracing::warn!(?e, %id, ?file, "asset file trash move failed after record delete");
         }
     }
     if let Some(room) = state.ws.rooms.get(deleted.world_id) {
