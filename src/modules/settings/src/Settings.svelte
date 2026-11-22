@@ -12,7 +12,7 @@
   import ThemeEditor from "./ThemeEditor.svelte";
   import PerformanceEditor from "./PerformanceEditor.svelte";
 
-  const { role, t, leaveWorld, logout, contributions } = getAppContext();
+  const { role, serverRole, t, leaveWorld, logout, contributions } = getAppContext();
 
   // Bridges the framework-neutral registry's subscribe/snapshot to Svelte's reactivity —
   // the same pattern `Surface` uses, inlined here (rather than reusing `<Surface>`)
@@ -24,7 +24,9 @@
   });
   const sections = $derived.by(() => {
     subscribeSections();
-    return contributions.contributionsFor(SETTINGS_SECTION_CONTRACT);
+    return contributions
+      .contributionsFor(SETTINGS_SECTION_CONTRACT)
+      .filter((section) => !section.settingsSection?.serverAdminOnly || serverRole === "admin");
   });
 
   /** Which theme the editor is open on, when it is open. */
