@@ -496,6 +496,13 @@
     {@render provControl("scene.fogPooling", wsys.scene?.fogPooling, "gameSettings.fogPooling")}
 
     <label>
+      {ctx.t("gameSettings.autoRotateTokens")}
+      <input type="checkbox" aria-label={ctx.t("gameSettings.autoRotateTokens")} checked={prov("scene.autoRotateTokens").value === true}
+        onchange={(e) => set(ws.id, "/engine/scene/autoRotateTokens", wsys.scene?.autoRotateTokens, (e.currentTarget as HTMLInputElement).checked)} />
+    </label>
+    {@render provControl("scene.autoRotateTokens", wsys.scene?.autoRotateTokens, "gameSettings.autoRotateTokens")}
+
+    <label>
       {ctx.t("gameSettings.lightingEnabled")}
       <input type="checkbox" aria-label={ctx.t("gameSettings.lightingEnabled")} checked={prov("scene.lightingEnabled").value === true}
         onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene?.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
@@ -911,6 +918,20 @@
           }}>
           <option value="">{ctx.t("gameSettings.inherit")}</option>
           {#each FOG_POOLING as f}<option value={f}>{f === "individual" ? ctx.t("gameSettings.fogPoolingIndividual") : ctx.t("gameSettings.fogPoolingShared")}</option>{/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.scene.autoRotateTokens")}
+        <select aria-label={ctx.t("gameSettings.scene.autoRotateTokens")}
+          value={ssys.vision?.autoRotateTokens == null ? "" : ssys.vision.autoRotateTokens ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setScene("/engine/vision/autoRotateTokens", ssys.vision?.autoRotateTokens ?? null, v === "" ? null : v === "true");
+          }}>
+          <option value="">{ctx.t("gameSettings.inherit")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
         </select>
       </label>
 

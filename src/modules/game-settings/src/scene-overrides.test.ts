@@ -174,6 +174,33 @@ describe("per-scene overrides", () => {
     ]);
   });
 
+  it("setting the auto-rotate override writes a boolean and inherit clears it to null", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.autoRotateTokens") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "true" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/autoRotateTokens", old: null, new: true }] },
+    ]);
+  });
+
+  it("selecting inherit on an already-set autoRotateTokens override dispatches null to clear it", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: null, movementRestriction: null, movementModel: null, fogPooling: null, autoRotateTokens: false } }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const sel = screen.getByLabelText("gameSettings.scene.autoRotateTokens") as HTMLSelectElement;
+    expect(sel.value).toBe("false");
+    await fireEvent.change(sel, { target: { value: "" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/vision/autoRotateTokens", old: false, new: null }] },
+    ]);
+  });
+
   it("setting fog pooling override writes to the selected scene doc", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
