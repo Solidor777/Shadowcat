@@ -518,7 +518,7 @@
             {t("actors.carriedLight")}
           </label>
           {#if lightOf(a)}
-            <LightEmissionEditor value={lightOf(a)!} onCommit={(next) => commitLight(a, next)} />
+            <LightEmissionEditor value={lightOf(a)!} carriedByToken onCommit={(next) => commitLight(a, next)} />
           {/if}
           <button type="button" class="edit-visual" onclick={() => { editingVisualId = editingVisualId === a.id ? null : a.id; editedVisual = null; }}>
             {t("actors.editVisual")}
@@ -590,7 +590,7 @@
         {t("actors.carriedLight")}
       </label>
       {#if pendingLight}
-        <LightEmissionEditor value={pendingLight} onCommit={(next) => (pendingLight = next)} />
+        <LightEmissionEditor value={pendingLight} carriedByToken onCommit={(next) => (pendingLight = next)} />
       {/if}
     {/if}
     <VisualKindEditor bind:this={visualEditor} conditionOptions={conditionOptions} onBuild={(v) => (pendingVisual = v)} />

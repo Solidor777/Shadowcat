@@ -10,12 +10,15 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  let { value, disabled = false, onCommit }: {
+  let { value, disabled = false, carriedByToken = false, onCommit }: {
     /** The emission being edited (never `null` — the parent renders this component only when an
      * emission exists and handles the absent/inherit states itself). */
     value: LightEmission;
     /** Read-only mode (a sheet the viewer may not edit). */
     disabled?: boolean;
+    /** Whether the emission is carried by a token (actor row, actor sheet, token override). Only
+     * then is the "follow token facing" control shown: a standalone light has no token to follow. */
+    carriedByToken?: boolean;
     /** Commit callback: receives the WHOLE updated emission (whole-object replacement — the
      * emission is one nested payload, so a single `/light` write carries every field's change). */
     onCommit: (next: LightEmission) => void;
@@ -63,6 +66,94 @@
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
     commit({ [key]: n });
+  }
+
+  /** The default darkness threshold written when "activates only in darkness" is first checked. */
+  const DEFAULT_DARKNESS_THRESHOLD = 0.5;
+  /** The default cone width, in degrees, written when "cone" is first checked. */
+  const DEFAULT_CONE_ANGLE = 90;
+
+  /** Toggle the darkness-activation window. Unchecking drops the field (absent = always active).
+   * @param on Whether the window is enabled.
+   * @example
+   * ```
+   * // private helper; wired to the darkness checkbox
+   * setDarknessWindow(true);
+   * ```
+   */
+  function setDarknessWindow(on: boolean): void {
+    if (on) {
+      commit({ activeBelowEnv: DEFAULT_DARKNESS_THRESHOLD });
+      return;
+    }
+    const next = { ...value };
+    delete next.activeBelowEnv;
+    onCommit(next);
+  }
+
+  /** Commit the darkness threshold, clamped into `[0, 1]`; a non-numeric or empty edit is ignored.
+   * @param raw The slider's raw string value.
+   * @example
+   * ```
+   * // private helper; wired to the threshold slider
+   * commitThreshold("1.5"); // commits 1
+   * ```
+   */
+  function commitThreshold(raw: string): void {
+    if (raw.trim() === "") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    commit({ activeBelowEnv: Math.min(1, Math.max(0, n)) });
+  }
+
+  /** Toggle the cone shape. Unchecking drops the angle (absent = the full-circle radial light).
+   * @param on Whether the light is a cone.
+   * @example
+   * ```
+   * // private helper; wired to the cone checkbox
+   * setCone(true);
+   * ```
+   */
+  function setCone(on: boolean): void {
+    if (on) {
+      commit({ angle: DEFAULT_CONE_ANGLE });
+      return;
+    }
+    const next = { ...value };
+    delete next.angle;
+    onCommit(next);
+  }
+
+  /** Commit the cone width, clamped into `(0, 360]` (the server refuses 0 and anything over a
+   * full turn); a non-numeric or empty edit is ignored.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * // private helper; wired to the cone width input
+   * commitAngle("400"); // commits 360
+   * ```
+   */
+  function commitAngle(raw: string): void {
+    if (raw.trim() === "") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return;
+    commit({ angle: Math.min(360, n) });
+  }
+
+  /** Commit the cone direction in degrees; any finite value is legal. A non-numeric or empty
+   * edit is ignored.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * // private helper; wired to the cone direction input
+   * commitRotation("90");
+   * ```
+   */
+  function commitRotation(raw: string): void {
+    if (raw.trim() === "") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    commit({ rotation: n });
   }
 </script>
 
@@ -131,6 +222,79 @@
   >
     {#each falloffCurves as f (f)}<option value={f}>{falloffLabel(f)}</option>{/each}
   </select>
+  <label>
+    <input
+      type="checkbox"
+      data-testid="emission-darkness-only"
+      checked={value.activeBelowEnv != null}
+      {disabled}
+      onchange={(e) => setDarknessWindow(e.currentTarget.checked)}
+    />
+    {t("tools.darknessOnly")}
+  </label>
+  {#if value.activeBelowEnv != null}
+    <label>
+      {t("tools.darknessThreshold")}
+      <input
+        type="range"
+        data-testid="emission-darkness-threshold"
+        min="0"
+        max="1"
+        step="0.05"
+        value={value.activeBelowEnv}
+        {disabled}
+        onchange={(e) => commitThreshold(e.currentTarget.value)}
+      />
+    </label>
+  {/if}
+  <label>
+    <input
+      type="checkbox"
+      data-testid="emission-cone"
+      checked={value.angle != null}
+      {disabled}
+      onchange={(e) => setCone(e.currentTarget.checked)}
+    />
+    {t("tools.cone")}
+  </label>
+  {#if value.angle != null}
+    <label>
+      {t("tools.coneAngle")}
+      <input
+        type="number"
+        data-testid="emission-cone-angle"
+        min="1"
+        max="360"
+        step="5"
+        value={value.angle}
+        {disabled}
+        onchange={(e) => commitAngle(e.currentTarget.value)}
+      />
+    </label>
+    <label>
+      {t("tools.coneRotation")}
+      <input
+        type="number"
+        data-testid="emission-cone-rotation"
+        step="5"
+        value={value.rotation}
+        {disabled}
+        onchange={(e) => commitRotation(e.currentTarget.value)}
+      />
+    </label>
+    {#if carriedByToken}
+      <label>
+        <input
+          type="checkbox"
+          data-testid="emission-follow-token"
+          checked={value.followTokenRotation}
+          {disabled}
+          onchange={(e) => commit({ followTokenRotation: e.currentTarget.checked })}
+        />
+        {t("tools.followTokenFacing")}
+      </label>
+    {/if}
+  {/if}
 </div>
 
 <style lang="scss">

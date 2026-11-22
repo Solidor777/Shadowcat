@@ -133,6 +133,13 @@ function minCol(bbox: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** The eastmost lit column of a `data-lit-bbox` value (`minI,minJ,maxI,maxJ`), or null. */
+function maxCol(bbox: string): number | null {
+  if (!bbox) return null;
+  const n = Number(bbox.split(",")[2]);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** GM setup shared by both tests: world, player account + invite, player session seated, GM
  * re-entered (so the owner select sees the player), snap off, token art uploaded, and a LINKED
  * player-owned "Watcher" actor placed at `observerAt` plus a LINKED torch-carrying "Bearer"
@@ -315,6 +322,113 @@ test("a carried torch lights the corridor for an observing player mid-walk", asy
       }),
       `a sweep frame must light columns west of the resting set: ${midWalk.join(" ; ")}`,
     ).toBe(true);
+  } finally {
+    await close();
+  }
+});
+
+/** The torch's own column at START: `x = 1010` → column 10. A cone facing west never lights a
+ * column east of it. */
+const START_COL = 10;
+
+test("a cone torch lights only its arc, follows the bearer's facing, and sweeps inside the arc mid-walk", async ({
+  page,
+  browser,
+  account,
+}) => {
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
+  const gm = page;
+  const { player, close } = await setupTorchScene(
+    gm,
+    browser,
+    account,
+    `Cone Torch World ${Date.now().toString(36)}`,
+    OBSERVER,
+    START,
+  );
+  try {
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "the radial torch lights the corridor west of it first",
+        timeout: 20_000,
+      })
+      .toBe(START_MIN_COL);
+
+    // Select the bearer while the panel is closed (the docked panel narrows the canvas past it),
+    // then open the actors panel: the selection outlives the panel, and the rotation control
+    // needs it.
+    await gm.getByTestId("tool-select").click();
+    await clickScene(gm, START);
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-actors:panel").click();
+    const actors = gm.locator(".actors");
+
+    // A 90 degree cone at rotation 0 points east, away from the observer: nothing west of the
+    // torch's own column is lit any more.
+    await actors.getByTestId("emission-cone").check();
+    await expect(actors.getByTestId("emission-cone-angle")).toHaveValue("90");
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "an east-facing cone must not light the corridor west of the torch",
+        timeout: 20_000,
+      })
+      .toBe(START_COL);
+
+    // Rotating the cone to face west lights the corridor again.
+    await actors.getByTestId("emission-cone-rotation").fill("180");
+    await actors.getByTestId("emission-cone-rotation").blur();
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "a west-facing cone lights the corridor",
+        timeout: 20_000,
+      })
+      .toBe(START_MIN_COL);
+
+    // Back to rotation 0, but following the token: the bearer faces east (rotation 0) so the
+    // arc points away again; turning the token to 180 turns the arc with it.
+    await actors.getByTestId("emission-cone-rotation").fill("0");
+    await actors.getByTestId("emission-cone-rotation").blur();
+    await actors.getByTestId("emission-follow-token").check();
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "a following cone on an east-facing bearer points away from the observer",
+        timeout: 20_000,
+      })
+      .toBe(START_COL);
+    await actors.getByLabel("Rotation (degrees)").fill("180");
+    await actors.getByLabel("Rotation (degrees)").blur();
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "turning the bearer turns the following cone toward the observer",
+        timeout: 20_000,
+      })
+      .toBe(START_MIN_COL);
+
+    // Walk west with the panel closed: every lit frame, swept or committed, stays inside the arc
+    // (no column east of the bearer's starting column), and the corridor still lights up.
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-actors:panel").click();
+    await watchLighting(player);
+    await walkBearer(gm, START, GOAL);
+    await expect
+      .poll(async () => (await stageHost(player).getAttribute("data-light-sweep")) ?? "", {
+        message: "the observer's sweep must end once the walk completes",
+        timeout: 20_000,
+      })
+      .toBe("0");
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "the committed lighting after the walk lights up to the goal",
+        timeout: 20_000,
+      })
+      .toBe(GOAL_MIN_COL);
+    const log = await lightLog(player);
+    const midWalk = log.filter((v) => v.startsWith("1|"));
+    expect(midWalk.length, `the observer must have painted a light sweep: ${log.join(" ; ")}`).toBeGreaterThan(0);
+    for (const v of log) {
+      const c = maxCol(v.slice(v.indexOf("|") + 1));
+      expect(c === null || c <= START_COL, `a west-facing cone lights nothing east of the start: ${v}`).toBe(true);
+    }
   } finally {
     await close();
   }

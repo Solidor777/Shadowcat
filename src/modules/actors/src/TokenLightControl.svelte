@@ -102,7 +102,7 @@
       </select>
     </label>
     {#if mode === "custom" && rawOverride}
-      <LightEmissionEditor value={rawOverride} onCommit={(next) => setOverride(next)} />
+      <LightEmissionEditor value={rawOverride} carriedByToken onCommit={(next) => setOverride(next)} />
     {/if}
   </div>
 {/if}
