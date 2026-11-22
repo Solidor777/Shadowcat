@@ -73,19 +73,22 @@ pub(crate) enum BodyChunk<'a> {
     Button {
         /// The formula inside the span.
         formula: &'a str,
-        /// Optional label after the `|` separator.
+        /// Optional label after the first `|` separator.
         label: Option<&'a str>,
+        /// Optional flavor after the second `|` separator.
+        flavor: Option<&'a str>,
     },
-    /// A `[[doc:<uuid>[/<embedded_path>]|<label>]]` or `[[token:<uuid>|<label>]]` span: a
-    /// free-form author-inserted link, captured with its target and display label fully
+    /// A `[[doc:<uuid>[/<embedded_path>][|<label>]]]` or `[[token:<uuid>[|<label>]]]` span: a
+    /// free-form author-inserted link, captured with its target and optional display label fully
     /// parsed — `handle_send_message`'s ingest arm does no further parsing (see
     /// `Segment::DocLink`'s own doc comment).
     DocLink {
         /// What the link points at.
         target: DocLinkTarget,
-        /// Display text captured at authoring time (the composer's `|<label>` suffix); never
-        /// empty (an empty/absent label is a `RollError::MalformedDocLink`).
-        label: &'a str,
+        /// Display text captured at authoring time (the composer's `|<label>` suffix); `None`
+        /// when the span has no `|`, never empty (a `|` followed by nothing is a
+        /// `RollError::MalformedDocLink`).
+        label: Option<&'a str>,
     },
     /// A `[[asset:<uuid>[|<alt>]]]` span: an author-inserted image reference.
     /// `alt` is `None` when the span carries no `|<alt>` suffix, or when the
@@ -113,11 +116,11 @@ pub(crate) enum BodyChunk<'a> {
 /// after trim => `None`). Every other span is an `Inline`. Errors: a span
 /// opened but never closed by a balanced `]]` (`RollError::Unterminated`);
 /// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`);
-/// a `doc:`/`token:`-prefixed span with an unparseable id or a missing/empty
-/// `|<label>` suffix (`RollError::MalformedDocLink`). Parameterized on the
-/// non-text-chunk cap so a caller other than the ordinary ingest path
-/// (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`) could
-/// apply a different bound.
+/// a `doc:`/`token:`-prefixed span with an unparseable id or an empty `|<label>` suffix
+/// (`RollError::MalformedDocLink`); a span with no `|` is a link without a label.
+/// Parameterized on the non-text-chunk cap so a caller other than the ordinary
+/// ingest path (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`)
+/// could apply a different bound.
 pub(crate) fn scan_body_capped(
     body: &str,
     max_spans: usize,
@@ -179,14 +182,12 @@ pub(crate) fn scan_body_capped(
             Err(e) => return Err(e),
             Ok(None) => {
                 if let Some(rest) = content.strip_prefix("roll:") {
-                    let (formula, label) = match rest.split_once('|') {
-                        Some((f, l)) => {
-                            let l = l.trim();
-                            (f, if l.is_empty() { None } else { Some(l) })
-                        }
-                        None => (rest, None),
-                    };
-                    chunks.push(BodyChunk::Button { formula, label });
+                    let (formula, label, flavor) = split_button_span(rest);
+                    chunks.push(BodyChunk::Button {
+                        formula,
+                        label,
+                        flavor,
+                    });
                 } else {
                     chunks.push(BodyChunk::Inline(content));
                 }
@@ -200,25 +201,74 @@ pub(crate) fn scan_body_capped(
     Ok(chunks)
 }
 
+/// Splits the content of a `[[roll:...]]` span (after the `roll:` prefix) on `|` into
+/// `(formula, label, flavor)`. The first `|` ends the formula; the second ends the label.
+/// Label and flavor are trimmed and are `None` when absent or empty after trimming. This is the
+/// same `|` convention `split_roll_flavor` applies to a `/roll` body: the first `|` separates
+/// the formula from the text that follows.
+fn split_button_span(rest: &str) -> (&str, Option<&str>, Option<&str>) {
+    match rest.split_once('|') {
+        None => (rest, None, None),
+        Some((formula, tail)) => match tail.split_once('|') {
+            None => (formula, non_empty_trimmed(tail), None),
+            Some((label, flavor)) => (formula, non_empty_trimmed(label), non_empty_trimmed(flavor)),
+        },
+    }
+}
+
+/// `s` trimmed, or `None` when nothing remains.
+fn non_empty_trimmed(s: &str) -> Option<&str> {
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Splits a `/roll` body on its FIRST `|` into `(formula, flavor)`. The dice grammar has no `|`
+/// token, so the first `|` always ends the formula. The flavor is trimmed and is `None` when
+/// the body has no `|` or the text after it is empty. The body reaches this function straight
+/// from `parse_command`, never through `scan_body_capped`, so no bracket nesting is involved.
+pub(crate) fn split_roll_flavor(body: &str) -> (&str, Option<&str>) {
+    match body.split_once('|') {
+        None => (body, None),
+        Some((formula, flavor)) => (formula, non_empty_trimmed(flavor)),
+    }
+}
+
+/// Splits a `doc:`/`token:` span's remainder at the first `|` into `(id_part, label)`. No `|`
+/// gives `label: None`; a `|` whose trimmed tail is empty is `RollError::MalformedDocLink`.
+fn split_link_label(rest: &str) -> Result<(&str, Option<&str>), RollError> {
+    match rest.split_once('|') {
+        None => Ok((rest, None)),
+        Some((id_part, label)) => {
+            let label = label.trim();
+            if label.is_empty() {
+                Err(RollError::MalformedDocLink)
+            } else {
+                Ok((id_part, Some(label)))
+            }
+        }
+    }
+}
+
 /// Parses `content` as a `doc:`/`token:`/`asset:`-prefixed span. `Ok(None)` when `content`
 /// carries none of the three prefixes (the caller falls through to `roll:`/`Inline` handling);
 /// `Err(RollError::MalformedDocLink)`/`Err(RollError::MalformedAssetSpan)` when a recognized
 /// prefix's id/label grammar is malformed; `Ok(Some(chunk))` on success. Grammar:
-/// `doc:<uuid>[/<embedded_path>]|<label>`, `token:<uuid>|<label>`, or
+/// `doc:<uuid>[/<embedded_path>][|<label>]`, `token:<uuid>[|<label>]`, or
 /// `asset:<uuid>[|<alt>]` — for `doc:`/`token:`, the id/path is everything before the FIRST
 /// `|`, split from an optional `/<embedded_path>` at the first `/` after the `doc:`/`token:`
-/// prefix, and the label is everything after that `|`, trimmed, required non-empty
-/// (`Segment::DocLink.label` is a required field, unlike `Button`'s optional label); for
-/// `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
+/// prefix, and the label is everything after that `|`, trimmed. A span with no `|` yields
+/// `label: None`; a `|` followed by nothing (or only whitespace) is
+/// `RollError::MalformedDocLink`, because the author typed the separator and meant a label.
+/// For `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
 /// (`Segment::Image.alt` renders as an empty string either way — see
 /// `chat::body::compose_message`'s `Image` arm).
 fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
     if let Some(rest) = content.strip_prefix("doc:") {
-        let (id_and_path, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(RollError::MalformedDocLink);
-        }
+        let (id_and_path, label) = split_link_label(rest)?;
         let (id_part, embedded_path) = match id_and_path.split_once('/') {
             Some((id, p)) => (id, Some(format!("/{p}"))),
             None => (id_and_path, None),
@@ -233,11 +283,7 @@ fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
         }));
     }
     if let Some(rest) = content.strip_prefix("token:") {
-        let (id_part, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(RollError::MalformedDocLink);
-        }
+        let (id_part, label) = split_link_label(rest)?;
         let token_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Token { token_id },
@@ -296,7 +342,7 @@ pub enum RollError {
     /// ladder is unambiguous (`dice::eval::classify`'s doc comment documents the tie).
     DuplicateTierOffset(i32),
     /// A `[[doc:...]]`/`[[token:...]]` span recognized by its prefix but malformed: an
-    /// unparseable id, or a missing/empty `|<label>` suffix.
+    /// unparseable id, or a `|` with an empty label after it.
     MalformedDocLink,
     /// A template reference could not be resolved — an unknown path, a
     /// non-integer value, or a scan error from the template grammar itself.

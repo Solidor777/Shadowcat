@@ -133,11 +133,25 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
             Segment::Html { sanitized_html } => {
                 push_text(&mut out, &strip_tags_and_decode(sanitized_html));
             }
-            Segment::RollEmbed { formula, .. } => push_text(&mut out, formula),
-            Segment::RollButton { formula, label } => {
+            Segment::RollEmbed {
+                formula, flavor, ..
+            } => {
+                push_text(&mut out, formula);
+                if let Some(flavor) = flavor {
+                    push_text(&mut out, flavor);
+                }
+            }
+            Segment::RollButton {
+                formula,
+                label,
+                flavor,
+            } => {
                 push_text(&mut out, formula);
                 if let Some(label) = label {
                     push_text(&mut out, label);
+                }
+                if let Some(flavor) = flavor {
+                    push_text(&mut out, flavor);
                 }
             }
             Segment::LinkPreview {
@@ -159,7 +173,11 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
                     push_text(&mut out, author_name);
                 }
             }
-            Segment::DocLink { label, .. } => push_text(&mut out, label),
+            Segment::DocLink { label, .. } => {
+                if let Some(label) = label {
+                    push_text(&mut out, label);
+                }
+            }
             Segment::Image { alt, .. } => push_text(&mut out, alt),
             Segment::TableDraw(draw) => push_table_draw_text(&mut out, draw),
         }

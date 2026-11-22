@@ -658,6 +658,8 @@ export const en: Messages = {
   "chat.roll.replaceInput": "Replacement face value for die {index}",
   "chat.roll.recalculated": "Recalculated",
   "chat.oembedOpenOn": "Open on {provider}",
+  "chat.docLink.unknownDocument": "Unknown document",
+  "chat.docLink.unknownToken": "Unknown token",
   "chat.table.draw": "Draw",
   "chat.table.noRow": "No matching row",
   "chat.table.nested": "Nested draw",

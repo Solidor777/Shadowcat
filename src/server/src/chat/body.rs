@@ -126,10 +126,15 @@ pub(crate) async fn compose_message(
                         spec: Some(Box::new(spec)),
                         raw: Some(Box::new(raw)),
                         recalc_history: None,
+                        flavor: None,
                     });
                 }
             },
-            rolls::BodyChunk::Button { formula, label } => {
+            rolls::BodyChunk::Button {
+                formula,
+                label,
+                flavor,
+            } => {
                 if dice_ctx.is_none() {
                     dice_ctx =
                         Some(resolve_dice_context(deps.repo, deps.world_id, deps.channel).await);
@@ -142,12 +147,13 @@ pub(crate) async fn compose_message(
                 segments.push(Segment::RollButton {
                     formula: formula.to_string(),
                     label: label.map(|s| s.to_string()),
+                    flavor: flavor.map(|s| s.to_string()),
                 });
             }
             rolls::BodyChunk::DocLink { target, label } => {
                 segments.push(Segment::DocLink {
                     target,
-                    label: label.to_string(),
+                    label: label.map(|s| s.to_string()),
                 });
             }
             rolls::BodyChunk::Image { asset_id, alt } => {
@@ -214,20 +220,26 @@ pub(crate) fn compose_static(
                 segments.push(Segment::RollButton {
                     formula: formula.to_string(),
                     label: None,
+                    flavor: None,
                 });
             }
-            rolls::BodyChunk::Button { formula, label } => {
+            rolls::BodyChunk::Button {
+                formula,
+                label,
+                flavor,
+            } => {
                 let formula = formula.trim();
                 rolls::validate_formula(formula, crate::dice::ParseContext::default())?;
                 segments.push(Segment::RollButton {
                     formula: formula.to_string(),
                     label: label.map(|s| s.to_string()),
+                    flavor: flavor.map(|s| s.to_string()),
                 });
             }
             rolls::BodyChunk::DocLink { target, label } => {
                 segments.push(Segment::DocLink {
                     target,
-                    label: label.to_string(),
+                    label: label.map(|s| s.to_string()),
                 });
             }
             rolls::BodyChunk::Image { asset_id, alt } => {

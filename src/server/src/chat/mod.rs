@@ -360,6 +360,12 @@ pub enum Segment {
         /// each entry's OWN `previous_raw` is separately GM-gated.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recalc_history: Option<Vec<RecalcEntry>>,
+        /// Author-written caption describing the roll (the text after the first `|` of a
+        /// `/roll <formula> | <flavor>` body). Plain text, never markup; `None` for a roll sent
+        /// without one and for any roll stored before this field existed. Visible to every
+        /// recipient. A recalculation never touches it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flavor: Option<String>,
     },
     /// An unexecuted, parse-and-cap-validated formula the card renders as a
     /// button; clicking it sends a fresh `/roll <formula>` `SendMessage`
@@ -370,6 +376,11 @@ pub enum Segment {
         formula: String,
         /// Optional display label (plain data, never markup).
         label: Option<String>,
+        /// Optional caption the button re-sends as the flavor of the roll it makes (the text after
+        /// the second `|` of a `[[roll:<formula>|<label>|<flavor>]]` span). Plain data, never
+        /// markup; `None` for a button stored before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flavor: Option<String>,
     },
     /// A server-fetched, SSRF-guarded preview of a link in the message.
     /// Rendered by the client from STORED data only — the client never
@@ -406,9 +417,10 @@ pub enum Segment {
     /// segment for that URL and no accompanying generic `LinkPreview` — the
     /// two are mutually exclusive per URL (`link_preview::enrich`).
     OEmbed(OEmbedSegment),
-    /// A free-form, author-inserted link to a document or placed token, captured with its
-    /// display label at authoring time (`label` is never re-resolved at render — only the
-    /// fail-closed existence/visibility gate below re-checks `target`). Distinct from the
+    /// A free-form, author-inserted link to a document or placed token. An explicit `label`
+    /// captured at authoring time always wins and is never re-resolved; a link authored without
+    /// one (`label: None`) takes its text from the target's current name, resolved by the
+    /// client at render. Distinct from the
     /// actor-name header link, which is driven by `actor_owner` attribution, not body content.
     /// Produced by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix branch — reuses the
     /// SAME balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
@@ -419,9 +431,12 @@ pub enum Segment {
     DocLink {
         /// What the link points at.
         target: DocLinkTarget,
-        /// Display text captured at authoring time (the composer's `|<label>` span suffix).
-        /// Rendering never re-resolves a live name lookup for this field.
-        label: String,
+        /// Display text captured at authoring time (the composer's `|<label>` span suffix), or
+        /// `None` when the span carried no `|`. `Some` text is never empty and never re-resolved
+        /// at render. `#[serde(default)]`: a stored segment may omit the key, which reads as
+        /// `None`; every segment stored before this field became optional carries `Some`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     /// An image served exclusively through THIS server's own asset endpoint —
     /// the sanitizer never emits an `<img>` carrying a raw `src` (see
@@ -1655,7 +1670,8 @@ pub async fn handle_send_message(
                 .map_err(SendMessageError::Data)?,
             None => None,
         };
-        match rolls::execute_roll(&parsed.body, dice_ctx, host.as_ref()) {
+        let (roll_body, flavor) = rolls::split_roll_flavor(&parsed.body);
+        match rolls::execute_roll(roll_body, dice_ctx, host.as_ref()) {
             Ok((formula, outcome, spec, raw)) => (
                 vec![Segment::RollEmbed {
                     formula,
@@ -1664,6 +1680,7 @@ pub async fn handle_send_message(
                     spec: Some(Box::new(spec)),
                     raw: Some(Box::new(raw)),
                     recalc_history: None,
+                    flavor: flavor.map(str::to_string),
                 }],
                 Vec::new(),
             ),

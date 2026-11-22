@@ -183,6 +183,23 @@ describe("roll segments", () => {
     }));
     expect(withoutLabel!.content).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
   });
+  test("parses flavor on a roll_embed and a roll_button, and tolerates it being absent", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [
+        { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: "Attack roll" },
+        { kind: "roll_button", formula: "1d20", label: "Attack", flavor: "Swing" },
+      ],
+    }));
+    expect(eng!.content).toEqual([
+      { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: "Attack roll" },
+      { kind: "roll_button", formula: "1d20", label: "Attack", flavor: "Swing" },
+    ]);
+    expect(parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{ kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), flavor: 5 }],
+    }))).toBeNull();
+  });
   test("fail-closed: roll_embed missing outcome fails the whole message parse", () => {
     expect(parseMessageEngine(msgDoc({
       ...base, content: [{ kind: "roll_embed", formula: "1d20" }],
@@ -421,10 +438,17 @@ describe("doc_link segments", () => {
       { kind: "doc_link", target: { kind: "token", token_id: "t1" }, label: "Goblin" },
     ]);
   });
-  test("fail-closed: doc_link missing label fails the whole message parse", () => {
-    expect(parseMessageEngine(msgDoc({
+  test("a doc_link without a label key parses with no label (resolved live at render)", () => {
+    const eng = parseMessageEngine(msgDoc({
       ...base,
       content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }],
+    }));
+    expect(eng!.content).toEqual([{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }]);
+  });
+  test("fail-closed: a doc_link whose label is the wrong type fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: 7 }],
     }))).toBeNull();
   });
   test("fail-closed: doc_link with an unrecognized target kind fails the whole message parse", () => {

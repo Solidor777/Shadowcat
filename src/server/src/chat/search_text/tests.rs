@@ -55,6 +55,7 @@ fn roll_embed_contributes_only_the_formula() {
         spec: None,
         raw: None,
         recalc_history: None,
+        flavor: None,
     }];
     let text = segments_search_text(&segments);
     assert!(text.contains("2d20"));
@@ -62,14 +63,42 @@ fn roll_embed_contributes_only_the_formula() {
 }
 
 #[test]
-fn roll_button_contributes_label_and_formula() {
+fn roll_embed_flavor_is_searchable() {
+    let segments = vec![Segment::RollEmbed {
+        formula: "2d20".to_string(),
+        outcome: sample_outcome(),
+        roll_id: Uuid::new_v4(),
+        spec: None,
+        raw: None,
+        recalc_history: None,
+        flavor: Some("Stealth check".to_string()),
+    }];
+    let text = segments_search_text(&segments);
+    assert!(text.contains("2d20"));
+    assert!(text.contains("Stealth check"));
+}
+
+#[test]
+fn roll_button_contributes_label_flavor_and_formula() {
     let segments = vec![Segment::RollButton {
         formula: "1d8".to_string(),
         label: Some("Attack".to_string()),
+        flavor: Some("Dagger strike".to_string()),
     }];
     let text = segments_search_text(&segments);
     assert!(text.contains("1d8"));
     assert!(text.contains("Attack"));
+    assert!(text.contains("Dagger strike"));
+}
+
+#[test]
+fn doc_link_without_a_label_contributes_nothing() {
+    let token_id = Uuid::new_v4();
+    let segments = vec![Segment::DocLink {
+        target: DocLinkTarget::Token { token_id },
+        label: None,
+    }];
+    assert_eq!(segments_search_text(&segments), "");
 }
 
 #[test]
@@ -111,7 +140,7 @@ fn doc_link_contributes_label_never_target_ids() {
     let token_id = Uuid::new_v4();
     let segments = vec![Segment::DocLink {
         target: DocLinkTarget::Token { token_id },
-        label: "The Villain".to_string(),
+        label: Some("The Villain".to_string()),
     }];
     let text = segments_search_text(&segments);
     assert!(text.contains("The Villain"));
