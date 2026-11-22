@@ -362,6 +362,7 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -389,6 +390,7 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
         resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
             .into_iter()
             .collect(),
@@ -1167,6 +1169,7 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
             },
             initiative: None,
             tiebreak: 0.0,
+            defeated: false,
             resources: Default::default(),
         })
         .unwrap(),
@@ -1779,6 +1782,7 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
             },
             initiative: None,
             tiebreak: 0.0,
+            defeated: false,
             resources: Default::default(),
         })
         .unwrap(),

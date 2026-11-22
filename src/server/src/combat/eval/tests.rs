@@ -39,6 +39,7 @@ fn combatant(id: u128, token_id: Option<Uuid>, actor_id: Option<Uuid>) -> Combat
         kind: CombatantKind::Actor { token_id, actor_id },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
         resources: BTreeMap::new(),
     };
     Combatant {
@@ -61,6 +62,7 @@ fn event_combatant(id: u128) -> Combatant {
         },
         initiative: None,
         tiebreak: 0.0,
+        defeated: false,
         resources: BTreeMap::new(),
     };
     Combatant {

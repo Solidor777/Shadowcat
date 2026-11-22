@@ -302,6 +302,8 @@ export const en: Messages = {
   "combatTracker.noChannel": "No chat channel is configured for rolls.",
   "combatTracker.hidden": "Hide",
   "combatTracker.visible": "Reveal",
+  "combatTracker.defeated": "Defeated",
+  "combatTracker.revive": "Revive",
   "combatTracker.remove": "Remove",
   "combatTracker.removeTurnHint": "Cannot remove the combatant currently taking its turn.",
   "combatTracker.unnamed": "Unnamed",

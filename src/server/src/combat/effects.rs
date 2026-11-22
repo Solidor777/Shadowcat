@@ -265,6 +265,7 @@ fn walk_any_host(
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {
@@ -481,6 +482,7 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 ///     },
 ///     initiative: None,
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: Default::default(),
 /// };
 /// let combatant_doc = Document {

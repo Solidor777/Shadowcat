@@ -6,14 +6,14 @@ function actorCombatant(id: string, opts: { initiative?: number | null; owner?: 
   const engine: CombatantEngine = {
     kind: { type: "actor", token_id: opts.tokenId ?? null, actor_id: null },
     initiative: opts.initiative ?? null,
-    tiebreak: 0,
+    tiebreak: 0, defeated: false,
     resources: {},
   };
   return buildCombatantDoc("w1", "combat-1", engine, { id, owner: opts.owner, hidden: opts.hidden, name: id });
 }
 
 function eventCombatant(id: string, lifespan: number | null = 1): WireDocument {
-  const engine: CombatantEngine = { kind: { type: "event", lifespan, message: null }, initiative: null, tiebreak: 0, resources: {} };
+  const engine: CombatantEngine = { kind: { type: "event", lifespan, message: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} };
   return buildCombatantDoc("w1", "combat-1", engine, { id, name: "An event" });
 }
 

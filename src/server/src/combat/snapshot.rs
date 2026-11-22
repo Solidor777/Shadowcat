@@ -41,6 +41,7 @@ use super::CombatError;
 ///     kind: CombatantKind::Event { lifespan: None, message: None },
 ///     initiative: Some(10.0),
 ///     tiebreak: 0.0,
+///     defeated: false,
 ///     resources: BTreeMap::new(),
 /// };
 /// let doc = Document {

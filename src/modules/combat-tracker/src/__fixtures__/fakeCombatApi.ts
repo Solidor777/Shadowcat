@@ -224,6 +224,9 @@ export function fakeCombatApi(
     setInitiative(combatantId: string, initiative: number | null, tiebreak?: number) {
       record("setInitiative", [combatantId, initiative, tiebreak]);
     },
+    setDefeated(combatantId: string, defeated: boolean) {
+      record("setDefeated", [combatantId, defeated]);
+    },
   };
   return api;
 }

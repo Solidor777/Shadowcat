@@ -159,7 +159,7 @@ describe("CombatHeader controls dispatch through CombatApi", () => {
       ops: [{ op: "create", doc: c }, { op: "create", doc: buildChannelRegistryDoc("w1", { general: { name: "General" } }) }],
     });
     const row: Row = {
-      doc: { ...c, id: "combatant-1", doc_type: "combatant", engine: { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} }, owner: "u-self" },
+      doc: { ...c, id: "combatant-1", doc_type: "combatant", engine: { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {} }, owner: "u-self" },
       kind: "actor", view: null, name: "Combatant 1", art: {},
     };
     const { getByTestId, combatApi } = renderHeader({ combat: c, store, role: "gm", rows: [row] });

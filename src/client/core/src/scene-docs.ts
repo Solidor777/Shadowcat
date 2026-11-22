@@ -1352,7 +1352,7 @@ export interface CombatantDocOptions {
  *
  * const engine: CombatantEngine = {
  *   kind: { type: "event", lifespan: 3, message: "The floor shakes" },
- *   initiative: 20, tiebreak: 0, resources: {},
+ *   initiative: 20, tiebreak: 0, defeated: false, resources: {},
  * };
  * buildCombatantDoc("world-1", "combat-1", engine, { hidden: true }).permissions.default; // "none"
  * ```

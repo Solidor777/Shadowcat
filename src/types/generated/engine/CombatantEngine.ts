@@ -21,6 +21,7 @@ import type { CombatantResource } from "./CombatantResource";
  *     },
  *     initiative: Some(14.0),
  *     tiebreak: 0.0,
+ *     defeated: false,
  *     resources: BTreeMap::new(),
  * };
  * assert_eq!(engine.initiative, Some(14.0));
@@ -42,4 +43,11 @@ tiebreak: number,
 /**
  * Per-resource numbers keyed by `resource-registry` id.
  */
-resources: { [key in string]: CombatantResource }, };
+resources: { [key in string]: CombatantResource }, 
+/**
+ * Out of the fight (unconscious, dead, removed): the turn walk
+ * auto-resolves past this combatant regardless of `turn_control`, while
+ * its document, resources and effects stay alive so it can return.
+ * Independent of the combatant's hidden state.
+ */
+defeated: boolean, };

@@ -691,7 +691,7 @@ describe("combat document builders", () => {
 
   it("buildCombatantDoc parents to the combat and encodes hidden as an unreadable default role", () => {
     const eng: CombatantEngine = {
-      kind: { type: "actor", token_id: "tok-1", actor_id: null }, initiative: null, tiebreak: 0, resources: {},
+      kind: { type: "actor", token_id: "tok-1", actor_id: null }, initiative: null, tiebreak: 0, defeated: false, resources: {},
     };
     const visible = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1" });
     expect(visible.doc_type).toBe(COMBATANT_DOC_TYPE);

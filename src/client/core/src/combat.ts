@@ -268,6 +268,11 @@ export interface CombatApi {
    * @param initiative The new initiative, or `null` to clear it.
    * @param tiebreak The new tiebreak, when given. */
   setInitiative(combatantId: string, initiative: number | null, tiebreak?: number): void;
+  /** Marks a combatant defeated or returns it to the fight: the turn walk skips a defeated
+   * combatant while its document, resources and effects stay alive.
+   * @param combatantId The combatant to update.
+   * @param defeated The new defeated state. */
+  setDefeated(combatantId: string, defeated: boolean): void;
 }
 
 /**
@@ -516,7 +521,7 @@ export class CombatController implements CombatApi {
       const name = entry.name ?? host?.name ?? null;
       const owner = host ? effectiveOwner(host, this.deps.documents) : null;
       const kind: CombatantKind = { type: "actor", token_id: entry.tokenId ?? null, actor_id: actorId };
-      const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
+      const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, resources: {} };
       const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
         owner,
         hidden: entry.hidden,
@@ -536,7 +541,7 @@ export class CombatController implements CombatApi {
     const engine = combat?.engine as CombatEngine | undefined;
     const oldOrder = engine?.order ?? [];
     const kind: CombatantKind = { type: "event", lifespan: ev.lifespan, message: ev.message };
-    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
+    const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, defeated: false, resources: {} };
     const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
       hidden: ev.hidden,
       system: ev.system,
@@ -603,5 +608,11 @@ export class CombatController implements CombatApi {
       edits.push({ path: "/engine/tiebreak", old: engine?.tiebreak ?? 0, value: tiebreak });
     }
     this.dispatch([buildUpdate(combatantId, edits)]);
+  }
+
+  setDefeated(combatantId: string, defeated: boolean): void {
+    const doc = this.deps.documents.get(combatantId);
+    const engine = doc?.engine as CombatantEngine | undefined;
+    this.dispatch([buildUpdate(combatantId, [{ path: "/engine/defeated", old: engine?.defeated ?? false, value: defeated }])]);
   }
 }
