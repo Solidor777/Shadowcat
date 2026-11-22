@@ -672,7 +672,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null,
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null,
         }, "region-1"),
       },
       {

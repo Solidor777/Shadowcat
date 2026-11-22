@@ -1161,3 +1161,140 @@ fn ambient_contributions_carry_no_movement_effect() {
         "an ambient-only field never forces the router's weighted sub-path"
     );
 }
+
+// --- Occluder outlines ---
+
+/// A rect part covering the square-grid cells whose centers fall in `[x0, x1] × [y0, y1]`.
+fn rect_part(x0: f64, y0: f64, x1: f64, y1: f64, hole: bool) -> (RegionShape, bool) {
+    (RegionShape::Rect { x0, y0, x1, y1 }, hole)
+}
+
+/// The set of unordered endpoint pairs of `segs`, rounded, for order-free comparison.
+fn segment_set(
+    segs: &[(crate::scene::vision::P, crate::scene::vision::P)],
+) -> BTreeSet<((i64, i64), (i64, i64))> {
+    segs.iter()
+        .map(|&(a, b)| {
+            let (qa, qb) = (quantize(a), quantize(b));
+            if qa < qb {
+                (qa, qb)
+            } else {
+                (qb, qa)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn outline_of_a_square_block_merges_to_its_perimeter() {
+    // A 3 x 2 block of 100-unit cells: twelve unit cell edges on the boundary, merged by
+    // collinearity into the four sides of the block rectangle.
+    let grid = sq(100.0);
+    let cells = rasterize(
+        &RegionShape::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 300.0,
+            y1: 200.0,
+        },
+        100.0,
+        &grid,
+    )
+    .unwrap();
+    assert_eq!(cells.len(), 6);
+    let outline = cell_outline_segments(&cells, &grid, 100.0);
+    let expected = segment_set(&[
+        ((0.0, 0.0), (300.0, 0.0)),
+        ((300.0, 0.0), (300.0, 200.0)),
+        ((300.0, 200.0), (0.0, 200.0)),
+        ((0.0, 200.0), (0.0, 0.0)),
+    ]);
+    assert_eq!(outline.len(), 4, "collinear runs merge: {outline:?}");
+    assert_eq!(segment_set(&outline), expected);
+}
+
+#[test]
+fn outline_of_a_ring_has_an_inner_loop_for_the_hole() {
+    // A 3 x 3 block minus its center cell: an outer square and an inner square.
+    let grid = sq(100.0);
+    let parts = [
+        rect_part(0.0, 0.0, 300.0, 300.0, false),
+        rect_part(150.0, 150.0, 160.0, 160.0, true),
+    ];
+    let cells = rasterize_compound(&parts, 100.0, &grid).unwrap();
+    assert_eq!(cells.len(), 8);
+    let outline = cell_outline_segments(&cells, &grid, 100.0);
+    let expected = segment_set(&[
+        ((0.0, 0.0), (300.0, 0.0)),
+        ((300.0, 0.0), (300.0, 300.0)),
+        ((300.0, 300.0), (0.0, 300.0)),
+        ((0.0, 300.0), (0.0, 0.0)),
+        ((100.0, 100.0), (200.0, 100.0)),
+        ((200.0, 100.0), (200.0, 200.0)),
+        ((200.0, 200.0), (100.0, 200.0)),
+        ((100.0, 200.0), (100.0, 100.0)),
+    ]);
+    assert_eq!(segment_set(&outline), expected);
+}
+
+#[test]
+fn outline_of_a_hex_block_follows_the_hex_boundary_edges() {
+    // One hex has six edges; two adjacent hexes share one, leaving 5 + 5 boundary edges (no
+    // two of them collinear, so none merge).
+    let grid = crate::scene::grid_shape::HexGrid { size: 50.0 };
+    let one = cell_outline_segments(&[(0, 0)], &grid, 50.0);
+    assert_eq!(one.len(), 6);
+    let two = cell_outline_segments(&[(0, 0), (1, 0)], &grid, 50.0);
+    assert_eq!(two.len(), 10, "the shared edge is interior: {two:?}");
+}
+
+#[test]
+fn occluder_outline_falls_back_to_the_bounding_rectangle_over_the_cell_cap() {
+    // A shape whose rasterization exceeds `MAX_REGION_CELLS` must occlude by its bounding
+    // rectangle, never drop out (a dropped region would reveal what it hides).
+    let grid = sq(1.0);
+    let parts = [rect_part(0.0, 0.0, 1000.0, 1000.0, false)];
+    assert!(rasterize_compound(&parts, 1.0, &grid).is_none());
+    let outline = occluder_outline(&parts, 1.0, &grid);
+    assert_eq!(
+        segment_set(&outline),
+        segment_set(&[
+            ((0.0, 0.0), (1000.0, 0.0)),
+            ((1000.0, 0.0), (1000.0, 1000.0)),
+            ((1000.0, 1000.0), (0.0, 1000.0)),
+            ((0.0, 1000.0), (0.0, 0.0)),
+        ])
+    );
+}
+
+#[test]
+fn occluder_outline_falls_back_to_the_bounding_rectangle_over_the_edge_cap() {
+    // A 70 x 70 lattice of isolated one-cell parts: 4900 cells (under the cell cap) with 19,600
+    // unmerged boundary edges (over `MAX_OCCLUDER_EDGES`), so the additive bounding rectangle
+    // stands in. Fails if the edge cap is not enforced (the full outline would be returned).
+    let grid = sq(10.0);
+    let mut parts = Vec::new();
+    for i in 0..70 {
+        for j in 0..70 {
+            let (x, y) = (f64::from(i) * 20.0, f64::from(j) * 20.0);
+            parts.push(rect_part(x + 2.0, y + 2.0, x + 8.0, y + 8.0, false));
+        }
+    }
+    let cells = rasterize_compound(&parts, 10.0, &grid).unwrap();
+    assert_eq!(cells.len(), 4900);
+    assert!(cell_outline_segments(&cells, &grid, 10.0).len() > MAX_OCCLUDER_EDGES);
+    let outline = occluder_outline(&parts, 10.0, &grid);
+    assert_eq!(
+        outline.len(),
+        4,
+        "the bounding rectangle: {}",
+        outline.len()
+    );
+}
+
+#[test]
+fn occluder_outline_of_a_region_covering_no_cell_center_is_empty() {
+    let grid = sq(100.0);
+    let parts = [rect_part(10.0, 10.0, 20.0, 20.0, false)];
+    assert!(occluder_outline(&parts, 100.0, &grid).is_empty());
+}

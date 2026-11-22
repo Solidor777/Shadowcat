@@ -465,6 +465,7 @@ describe("buildRegionDoc", () => {
       ],
       elevation: null,
       ambient_override: null,
+      occludes: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -484,6 +485,7 @@ describe("buildRegionDoc", () => {
       triggers: [],
       elevation: null,
       ambient_override: null,
+      occludes: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
@@ -507,6 +509,7 @@ describe("buildRegionDoc", () => {
       triggers: [],
       elevation: null,
       ambient_override: null,
+      occludes: null,
     };
     const compound: RegionEngine = {
       shape: [
@@ -520,6 +523,7 @@ describe("buildRegionDoc", () => {
       triggers: [],
       elevation: null,
       ambient_override: null,
+      occludes: null,
     };
     for (const engine of [legacy, compound]) {
       const revived = JSON.parse(JSON.stringify(buildRegionDoc("world1", "scene1", engine))) as { engine: RegionEngine };
@@ -551,6 +555,7 @@ describe("buildRegionDoc", () => {
         triggers: [],
         elevation: null,
         ambient_override: override,
+        occludes: null,
       };
       const doc = buildRegionDoc("world1", "scene1", eng);
       expect(doc.engine).toEqual(eng);

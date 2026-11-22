@@ -698,6 +698,7 @@ export class ToolController {
       triggers: $state.snapshot(this.regionTriggers),
       elevation: this.ctx.viewedLevelBand?.() ?? null,
       ambient_override: regionAmbientOverride(this),
+      occludes: null,
     };
     const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
     if (this.regionSecret) setRegionVisibility(doc, true);
@@ -1098,6 +1099,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
             triggers: $state.snapshot(controller.regionTriggers),
             elevation: ctx.viewedLevelBand?.() ?? null,
             ambient_override: regionAmbientOverride(controller),
+            occludes: null,
           };
           const doc = buildRegionDoc(ctx.world, scene.id, engine);
           if (controller.regionSecret) setRegionVisibility(doc, true);

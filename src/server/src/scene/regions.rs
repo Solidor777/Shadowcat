@@ -123,30 +123,23 @@ pub(crate) enum RegionEffect {
 /// `pathfinding::MAX_FOOTPRINT_CELLS`'s fail-closed discipline.
 pub(crate) const MAX_REGION_CELLS: i64 = 100_000;
 
-/// Rasterize `shape` to the grid cells whose CENTER falls inside it. Fails closed (`None`) on a
-/// degenerate shape (non-finite coords, non-positive circle radius, polygon with `< 3` vertices)
-/// or an over-cap AABB — never returns a partial or silently-empty result that a caller could
-/// mistake for "shape covers no cells".
-pub(crate) fn rasterize(
-    shape: &RegionShape,
-    cell: f64,
-    grid: &dyn crate::scene::grid_shape::GridShape,
-) -> Option<Vec<Cell>> {
-    if !cell.is_finite() || cell <= 0.0 {
-        return None;
-    }
-    let (minx, miny, maxx, maxy) = match shape {
+/// The axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of `shape` in scene units, the
+/// one derivation both `rasterize`'s candidate enumeration and `occluder_outline`'s over-cap
+/// rectangle read. `None` on a degenerate shape: non-finite coordinates, a non-positive circle
+/// radius or a polygon with fewer than three vertices.
+fn shape_bounds(shape: &RegionShape) -> Option<(f64, f64, f64, f64)> {
+    match shape {
         RegionShape::Rect { x0, y0, x1, y1 } => {
             if ![*x0, *y0, *x1, *y1].iter().all(|v| v.is_finite()) {
                 return None;
             }
-            (x0.min(*x1), y0.min(*y1), x0.max(*x1), y0.max(*y1))
+            Some((x0.min(*x1), y0.min(*y1), x0.max(*x1), y0.max(*y1)))
         }
         RegionShape::Circle { cx, cy, r } => {
             if !cx.is_finite() || !cy.is_finite() || !r.is_finite() || *r <= 0.0 {
                 return None;
             }
-            (cx - r, cy - r, cx + r, cy + r)
+            Some((cx - r, cy - r, cx + r, cy + r))
         }
         RegionShape::Polygon { points } => {
             if points.len() < 3 || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
@@ -159,9 +152,24 @@ pub(crate) fn rasterize(
                 maxx = maxx.max(*x);
                 maxy = maxy.max(*y);
             }
-            (minx, miny, maxx, maxy)
+            Some((minx, miny, maxx, maxy))
         }
-    };
+    }
+}
+
+/// Rasterize `shape` to the grid cells whose CENTER falls inside it. Fails closed (`None`) on a
+/// degenerate shape (non-finite coords, non-positive circle radius, polygon with `< 3` vertices)
+/// or an over-cap AABB — never returns a partial or silently-empty result that a caller could
+/// mistake for "shape covers no cells".
+pub(crate) fn rasterize(
+    shape: &RegionShape,
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Option<Vec<Cell>> {
+    if !cell.is_finite() || cell <= 0.0 {
+        return None;
+    }
+    let (minx, miny, maxx, maxy) = shape_bounds(shape)?;
     // `Cell = (i32, i32)`: an extreme finite coordinate must fail closed to `None` (reject), never
     // alias onto a real cell. This pre-check is RETAINED rather than delegated to `cells_in_bounds`:
     // that primitive's `f64 as i32` cast SATURATES to `i32::MAX/MIN` on a large-but-small-span
@@ -601,6 +609,188 @@ impl RegionFieldBuilder {
             tag_cost,
         }
     }
+}
+
+/// Upper bound on the segments one region contributes as a sense occluder. A region whose
+/// merged cell outline exceeds it occludes through its bounding rectangle instead
+/// (`occluder_outline`), keeping the per-raycast wall count bounded without ever occluding less.
+pub(crate) const MAX_OCCLUDER_EDGES: usize = 4096;
+
+/// Fixed-point scale for outline vertex identity: two cells' shared corner, computed from
+/// different cell centers, differs by float rounding noise far below `1 / OUTLINE_QUANTUM`
+/// scene units, so rounding to this grid makes the corners compare equal.
+const OUTLINE_QUANTUM: f64 = 1e4;
+
+/// A scene point rounded onto the `OUTLINE_QUANTUM` grid; the key outline edges and vertices
+/// are matched by.
+type QuantizedPoint = (i64, i64);
+
+/// Round `p` onto the `OUTLINE_QUANTUM` grid.
+fn quantize(p: crate::scene::vision::P) -> QuantizedPoint {
+    (
+        (p.0 * OUTLINE_QUANTUM).round() as i64,
+        (p.1 * OUTLINE_QUANTUM).round() as i64,
+    )
+}
+
+/// The boundary of a covered-cell set as wall segments: every cell edge no other covered cell
+/// shares. Cell corners come from `GridShape::cell_vertices` (square and hex), ordered into a
+/// ring by angle around the cell's centroid (cells are convex, and `cell_vertices` promises no
+/// ring order). An edge listed by exactly one covered cell is a boundary edge; one listed by two
+/// is interior. Holes in the set therefore produce inner outlines with no extra work. Runs of
+/// collinear boundary edges are merged into one segment, so a square region's outline is its
+/// corner-to-corner polygon rather than a segment per cell. Output order is deterministic for a
+/// given set.
+pub(crate) fn cell_outline_segments(
+    cells: &[Cell],
+    grid: &dyn crate::scene::grid_shape::GridShape,
+    cell: f64,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    type Edge = (u32, crate::scene::vision::P, crate::scene::vision::P);
+    let mut edges: BTreeMap<(QuantizedPoint, QuantizedPoint), Edge> = BTreeMap::new();
+    for &c in cells {
+        let mut ring = grid.cell_vertices(c, cell);
+        let n = ring.len() as f64;
+        let cx = ring.iter().map(|v| v.0).sum::<f64>() / n;
+        let cy = ring.iter().map(|v| v.1).sum::<f64>() / n;
+        ring.sort_by(|a, b| {
+            (a.1 - cy)
+                .atan2(a.0 - cx)
+                .total_cmp(&(b.1 - cy).atan2(b.0 - cx))
+        });
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            let (qa, qb) = (quantize(a), quantize(b));
+            if qa == qb {
+                continue;
+            }
+            let key = if qa < qb { (qa, qb) } else { (qb, qa) };
+            edges
+                .entry(key)
+                .and_modify(|e| e.0 += 1)
+                .or_insert((1, a, b));
+        }
+    }
+    let boundary: Vec<_> = edges
+        .into_values()
+        .filter(|e| e.0 == 1)
+        .map(|e| (e.1, e.2))
+        .collect();
+    merge_collinear_edges(boundary)
+}
+
+/// Join boundary segments that meet end to end in a straight line at a vertex touched by
+/// exactly those two segments. A vertex shared by more than two segments (a pinch point) or
+/// by a bend is left alone. One pass suffices: a join replaces two segments with one that
+/// touches the same two outer vertices, so no vertex's incident count changes.
+fn merge_collinear_edges(
+    edges: Vec<(crate::scene::vision::P, crate::scene::vision::P)>,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    let mut segs: Vec<Option<(crate::scene::vision::P, crate::scene::vision::P)>> =
+        edges.into_iter().map(Some).collect();
+    let mut at: BTreeMap<QuantizedPoint, Vec<usize>> = BTreeMap::new();
+    for (i, s) in segs.iter().enumerate() {
+        if let Some((a, b)) = s {
+            at.entry(quantize(*a)).or_default().push(i);
+            at.entry(quantize(*b)).or_default().push(i);
+        }
+    }
+    let keys: Vec<QuantizedPoint> = at.keys().copied().collect();
+    for key in keys {
+        let Some(ids) = at.get(&key) else { continue };
+        if ids.len() != 2 || ids[0] == ids[1] {
+            continue;
+        }
+        let (i, j) = (ids[0], ids[1]);
+        let (Some((a1, b1)), Some((a2, b2))) = (segs[i], segs[j]) else {
+            continue;
+        };
+        let (far1, v) = if quantize(a1) == key {
+            (b1, a1)
+        } else {
+            (a1, b1)
+        };
+        let far2 = if quantize(a2) == key { b2 } else { a2 };
+        let d1 = (v.0 - far1.0, v.1 - far1.1);
+        let d2 = (far2.0 - v.0, far2.1 - v.1);
+        let cross = d1.0 * d2.1 - d1.1 * d2.0;
+        let dot = d1.0 * d2.0 + d1.1 * d2.1;
+        let scale = d1.0.hypot(d1.1) * d2.0.hypot(d2.1);
+        if dot <= 0.0 || cross.abs() > 1e-9 * scale {
+            continue;
+        }
+        let joined = segs.len();
+        segs.push(Some((far1, far2)));
+        segs[i] = None;
+        segs[j] = None;
+        for end in [quantize(far1), quantize(far2)] {
+            if let Some(list) = at.get_mut(&end) {
+                for id in list.iter_mut() {
+                    if *id == i || *id == j {
+                        *id = joined;
+                    }
+                }
+            }
+        }
+        at.remove(&key);
+    }
+    segs.into_iter().flatten().collect()
+}
+
+/// The occluder segments of a region's `(shape, hole)` part list: the composed cell set's outline
+/// (`rasterize_compound` then `cell_outline_segments`, the same coverage movement, ambient light
+/// and triggers read). Fails CLOSED toward more occlusion: when the set cannot be rasterized (an
+/// over-cap or degenerate part) or its outline passes `MAX_OCCLUDER_EDGES`, the bounding
+/// rectangle of the additive parts stands in (holes ignored), because dropping the region would
+/// reveal what it was authored to hide. A region covering no cell centers yields no segments.
+pub(crate) fn occluder_outline(
+    parts: &[(RegionShape, bool)],
+    cell: f64,
+    grid: &dyn crate::scene::grid_shape::GridShape,
+) -> Vec<(crate::scene::vision::P, crate::scene::vision::P)> {
+    if let Some(cells) = rasterize_compound(parts, cell, grid) {
+        let outline = cell_outline_segments(&cells, grid, cell);
+        if outline.len() <= MAX_OCCLUDER_EDGES {
+            return outline;
+        }
+    }
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for (shape, hole) in parts {
+        if *hole {
+            continue;
+        }
+        let Some((x0, y0, x1, y1)) = shape_bounds(shape) else {
+            continue;
+        };
+        bounds = Some(match bounds {
+            None => (x0, y0, x1, y1),
+            Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+        });
+    }
+    let Some((x0, y0, x1, y1)) = bounds else {
+        return Vec::new();
+    };
+    vec![
+        ((x0, y0), (x1, y0)),
+        ((x1, y0), (x1, y1)),
+        ((x1, y1), (x0, y1)),
+        ((x0, y1), (x0, y0)),
+    ]
+}
+
+/// One memoized `occluder_outline` result for a region document. Reused only while the region's
+/// shape, the scene's cell size and its grid kind all still equal the values it was computed
+/// from, so a stale entry can never be served whichever path mutated the document (the same
+/// self-verifying shape as `SceneEcs`'s decoded-engine cache).
+pub(crate) struct OccluderCacheEntry {
+    /// The region geometry the outline was computed from.
+    pub(crate) shape: crate::data::engine::RegionGeometry,
+    /// The cell size the outline was computed at.
+    pub(crate) cell: f64,
+    /// The grid kind (square or hex) the outline was computed on.
+    pub(crate) kind: crate::scene::GridKind,
+    /// The outline segments, shared by every collector call that hits this entry.
+    pub(crate) outline: std::sync::Arc<Vec<(crate::scene::vision::P, crate::scene::vision::P)>>,
 }
 
 /// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionGeometry` — the
