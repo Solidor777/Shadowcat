@@ -2605,6 +2605,7 @@ pub async fn handle_recalc_roll(
 ///     "psst".to_string(),
 ///     None,
 ///     Audience::GmOnly,
+///     None,
 /// )
 /// .await
 /// .unwrap()

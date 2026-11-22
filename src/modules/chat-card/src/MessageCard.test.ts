@@ -662,7 +662,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.reroll"));
@@ -677,7 +677,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.remove"));
@@ -693,7 +693,7 @@ describe("MessageCard — GM recalc menu", () => {
         documents: storeWith(doc),
         role: "gm",
         t: fakeT, plural: fakePlural,
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() },
       }),
     });
     const input = screen.getByLabelText("Replacement face value for die 1") as HTMLInputElement;
