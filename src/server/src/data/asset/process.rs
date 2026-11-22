@@ -213,8 +213,19 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 7] {
 /// std::fs::write(&staged, &png).unwrap();
 /// // A real PNG decodes and re-encodes: `converted`/`content_type` come from the
 /// // pipeline's own decision, not from a literal.
-/// let processed: Processed =
-///     process_staged(&staged, "image/png", png.len() as i64, false, AudioContainers::default()).unwrap();
+/// let trash = shadowcat::trash::Trash::new(
+///     dir.path().join("trash"),
+///     shadowcat::trash::TrashRetention::default(),
+/// );
+/// let processed: Processed = process_staged(
+///     &staged,
+///     "image/png",
+///     png.len() as i64,
+///     false,
+///     AudioContainers::default(),
+///     &trash,
+/// )
+/// .unwrap();
 /// assert!(processed.converted);
 /// assert_eq!(processed.content_type, "image/webp");
 /// ```
