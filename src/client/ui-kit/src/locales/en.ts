@@ -696,6 +696,16 @@ export const en: Messages = {
   "gameSettings.resources.keyShape": "Keys must start with a lowercase letter and contain only lowercase letters, digits, - and _.",
   "gameSettings.chat.images":
     "Images: asset links and server-fetched copies of linked images; never hotlinked",
+  "gameSettings.chat.blindVisibleToPlayers":
+    "Players see that another character rolled blind (never the result)",
+  "gameSettings.chat.blindVisibleToActorOwner":
+    "A player sees that the GM rolled blind for their character (never the result)",
+  "chat.blind.rolled": "Rolled blind",
+  "chat.blind.badge": "Blind",
+  "chat.composer.rollMode": "Roll mode",
+  "chat.composer.rollModeBlind": "Blind roll (only the GM sees it)",
+  "chat.composer.rollModeSelf": "Self roll (only you see it)",
+  "chat.revise.blind": "Blind roll (only the GM sees the result)",
   "chat.tab": "Chat",
   "chat.channels": "Channels",
   "chat.all": "All",

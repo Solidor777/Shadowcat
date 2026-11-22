@@ -570,6 +570,67 @@ describe("table_draw segments", () => {
   });
 });
 
+describe("blind rolls: results the server withholds", () => {
+  const blind = { ...base, kind: "roll", audience: { kind: "blind" } };
+  const withheldRoll = { kind: "roll_embed", roll_id: "r1" };
+
+  test("a blind message parses a roll_embed with no formula and no outcome", () => {
+    const eng = parseMessageEngine(msgDoc({ ...blind, content: [withheldRoll] }));
+    expect(eng).not.toBeNull();
+    expect(eng!.audience).toEqual({ kind: "blind" });
+    expect(eng!.content).toEqual([{ kind: "roll_embed", roll_id: "r1" }]);
+  });
+
+  test("a blind message parses a table_draw with no formula, outcome or row", () => {
+    const draw = { kind: "table_draw", table_id: "t1", table_name: "Loot", roll_id: "r1" };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [draw] }))).not.toBeNull();
+  });
+
+  test("a blind message parses a recalc entry with no previous_outcome", () => {
+    const seg = {
+      ...withheldRoll,
+      recalc_history: [{ recalculated_by: "GM", recalculated_at: 5 }],
+    };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [seg] }))).not.toBeNull();
+  });
+
+  test("a blind message parses a withheld roll nested in a secret block", () => {
+    const secret = { kind: "secret", visibility: "gm_only", content: [withheldRoll] };
+    expect(parseMessageEngine(msgDoc({ ...blind, content: [secret] }))).not.toBeNull();
+  });
+
+  test("fail-closed: a non-blind message still refuses a roll_embed with no formula", () => {
+    const seg = { kind: "roll_embed", outcome: rollOutcome() };
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [seg] }))).toBeNull();
+  });
+
+  test("fail-closed: a non-blind message still refuses a table_draw with no outcome", () => {
+    const draw = tableDraw();
+    delete draw.outcome;
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [draw] }))).toBeNull();
+  });
+
+  test("fail-closed: a whisper refuses a recalc entry with no previous_outcome", () => {
+    const seg = {
+      kind: "roll_embed", formula: "1d6", outcome: rollOutcome(),
+      recalc_history: [{ recalculated_by: "GM", recalculated_at: 5 }],
+    };
+    const whisper = { ...base, kind: "roll", audience: { kind: "whisper", recipients: [] }, content: [seg] };
+    expect(parseMessageEngine(msgDoc(whisper))).toBeNull();
+  });
+
+  test("fail-closed: a withheld roll nested in a secret refuses a non-blind message", () => {
+    const secret = { kind: "secret", visibility: "gm_only", content: [withheldRoll] };
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [secret] }))).toBeNull();
+  });
+
+  test("a blind message the GM holds parses in full", () => {
+    const seg = { kind: "roll_embed", formula: "1d20", outcome: rollOutcome(), roll_id: "r1" };
+    const eng = parseMessageEngine(msgDoc({ ...blind, content: [seg] }));
+    expect(eng!.content).toEqual([seg]);
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");

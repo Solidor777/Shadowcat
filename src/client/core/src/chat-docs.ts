@@ -253,8 +253,9 @@ export const WireRawRollSchema: z.ZodType<WireRawRoll> = wireRawRollSchemaImpl.p
  * server-side, and the client never needs to reconstruct a past recalc's
  * exact die-level state) and pass through unvalidated. */
 export type RecalcHistoryEntry = {
-  /** The roll outcome that was in effect immediately before this recalculation. */
-  previous_outcome: RollOutcome;
+  /** The roll outcome that was in effect immediately before this recalculation. Absent on a
+   * blind roll's copy for a reader who is not the GM. */
+  previous_outcome?: RollOutcome;
   /** Display name of the user who triggered this recalculation. */
   recalculated_by: string;
   /** Unix-epoch milliseconds when this recalculation was applied. */
@@ -263,7 +264,7 @@ export type RecalcHistoryEntry = {
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const recalcHistoryEntrySchemaImpl = z.object({
-  previous_outcome: RollOutcomeSchema,
+  previous_outcome: RollOutcomeSchema.optional(),
   recalculated_by: z.string(),
   recalculated_at: z.number(),
 });
@@ -490,10 +491,12 @@ export type SecretSegment = {
 export type RollEmbedSegment = {
   /** Discriminant. */
   kind: "roll_embed";
-  /** The formula as the author wrote it. */
-  formula: string;
-  /** The full deterministic outcome, natural faces included. */
-  outcome: RollOutcome;
+  /** The formula as the author wrote it. Absent on a blind roll's copy for a reader who is not
+   * the GM; `parseMessageEngine` accepts the absence only on a message with a `blind` audience. */
+  formula?: string;
+  /** The full deterministic outcome, natural faces included. Absent exactly when `formula` is
+   * (a blind roll withheld from this reader). */
+  outcome?: RollOutcome;
   /** Stable identity for this roll; a recalc targets it by this id, never by
    * array index. Optional here (not `.default(...)`) purely to tolerate a
    * malformed/legacy test fixture omitting it -- the server always emits it. */
@@ -531,15 +534,17 @@ export type TableDrawSegment = {
   /** Stable identity for this draw (mirrors `roll_embed.roll_id`'s role) —
    * NOT a recalc target. */
   roll_id: string;
-  /** The notation actually rolled. */
-  formula: string;
-  /** The full deterministic outcome of the roll that selected a row. */
-  outcome: RollOutcome;
+  /** The notation actually rolled. Absent on a blind draw's copy for a reader who is not the GM. */
+  formula?: string;
+  /** The full deterministic outcome of the roll that selected a row. Absent exactly when
+   * `formula` is (a blind draw withheld from this reader). */
+  outcome?: RollOutcome;
   /** GM-visible only: the parsed spec the row-selecting roll was scored from. */
   spec?: unknown;
   /** GM-visible only: the natural-face log the row-selecting roll was evaluated from. */
   raw?: WireRawRoll | null;
-  /** The matched row, or `null`/absent when a Formula total matched no range. */
+  /** The matched row, or `null`/absent when a Formula total matched no range. Also absent
+   * when a blind draw withholds it, so absence alone does not mean "no row matched". */
   row?: DrawnRow | null;
 };
 
@@ -572,8 +577,8 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
     table_id: z.string(),
     table_name: z.string(),
     roll_id: z.string(),
-    formula: z.string(),
-    outcome: RollOutcomeSchema,
+    formula: z.string().optional(),
+    outcome: RollOutcomeSchema.optional(),
     spec: z.unknown().optional(),
     raw: WireRawRollSchema.nullish(),
     row: drawnRowSchemaImpl.nullish(),
@@ -594,8 +599,8 @@ const secretSegmentSchemaImpl: z.ZodType<SecretSegment, z.ZodTypeDef, unknown> =
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const rollEmbedSegmentSchemaImpl = z.object({
   kind: z.literal("roll_embed"),
-  formula: z.string(),
-  outcome: RollOutcomeSchema,
+  formula: z.string().optional(),
+  outcome: RollOutcomeSchema.optional(),
   roll_id: z.string().optional(),
   spec: z.unknown().optional(),
   raw: WireRawRollSchema.nullish(),
@@ -747,18 +752,60 @@ export type ChatMessageEngine = {
   deleted_at?: number | null;
 };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
-export const chatMessageEngineSchemaImpl = z.object({
-  channel: z.string(),
-  user_owner: z.string(),
-  actor_owner: ActorOwnerRefSchema.nullish(),
-  kind: MessageKindSchema,
-  audience: AudienceSchema.default({ kind: "public" }),
-  content: SegmentListSchema,
-  source: z.string().nullish(),
-  edited_at: z.number().nullish(),
-  deleted_at: z.number().nullish(),
-});
+/** Whether `content` holds a roll or table draw whose formula or outcome is absent, anywhere
+ * (recursing through secret blocks, and a table draw's matched row and nested draws). The
+ * server withholds those from a reader of a blind roll who is not the GM; on any other
+ * audience their absence is a malformed message.
+ * @param content The segment list to scan (raw, including forward-compat unknown entries).
+ * @returns `true` when at least one roll, table draw or recalculation entry lacks its result.
+ * @example
+ * ```ts
+ * // private helper; not part of the public API — called by the message-engine schema refinement
+ * declare const content: (ChatSegment | UnknownSegment)[];
+ * holdsWithheldRoll(content);
+ * ```
+ */
+function holdsWithheldRoll(content: (ChatSegment | UnknownSegment)[]): boolean {
+  return content.some((seg) => {
+    if (!isKnownSegment(seg)) return false;
+    if (seg.kind === "roll_embed") {
+      return (
+        seg.formula === undefined ||
+        seg.outcome === undefined ||
+        (seg.recalc_history ?? []).some((entry) => entry.previous_outcome === undefined)
+      );
+    }
+    if (seg.kind === "table_draw") {
+      return (
+        seg.formula === undefined ||
+        seg.outcome === undefined ||
+        (seg.row ? holdsWithheldRoll([...seg.row.content, ...seg.row.nested]) : false)
+      );
+    }
+    if (seg.kind === "secret") return holdsWithheldRoll(seg.content);
+    return false;
+  });
+}
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above. The refinement keeps the
+// fail-closed rule for every audience except `blind`, the only one whose copies the server
+// strips a roll's formula and outcome from.
+export const chatMessageEngineSchemaImpl = z
+  .object({
+    channel: z.string(),
+    user_owner: z.string(),
+    actor_owner: ActorOwnerRefSchema.nullish(),
+    kind: MessageKindSchema,
+    audience: AudienceSchema.default({ kind: "public" }),
+    content: SegmentListSchema,
+    source: z.string().nullish(),
+    edited_at: z.number().nullish(),
+    deleted_at: z.number().nullish(),
+  })
+  .refine((eng) => eng.audience.kind === "blind" || !holdsWithheldRoll(eng.content), {
+    message: "a roll with no formula or outcome is only valid on a blind message",
+    path: ["content"],
+  });
 /** Validator for a `ChatMessageEngine`. Input type is widened to `unknown` because
  * `audience.default(...)` makes that key optional on input while the hand-written
  * `ChatMessageEngine` output type keeps it required. */

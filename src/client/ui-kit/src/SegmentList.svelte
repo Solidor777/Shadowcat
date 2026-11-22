@@ -207,7 +207,12 @@
   {:else if s.kind === "roll_embed"}
     <!-- `flavor` is author-written plain text: an escaped text node, never {@html}. -->
     {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}
-    <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
+    {#if s.outcome}
+      <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
+    {:else}
+      <!-- A blind roll the server withheld from this reader: no formula, no digits. -->
+      <span class="blind-roll" data-testid="blind-roll-card">{t("chat.blind.rolled")}</span>
+    {/if}
   {:else if s.kind === "roll_button"}
     <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
       {s.label ?? s.formula}
@@ -277,9 +282,15 @@
     it, indented. -->
     <div class="table-draw">
       <div class="table-draw-header">
-        <RollTooltip outcome={s.outcome} recalcHistory={null} />
+        {#if s.outcome}
+          <RollTooltip outcome={s.outcome} recalcHistory={null} />
+        {:else}
+          <span class="blind-roll" data-testid="blind-roll-card">{t("chat.blind.rolled")}</span>
+        {/if}
       </div>
-      {#if s.row}
+      {#if !s.outcome}
+        <!-- A withheld blind draw has no row either; absence of `row` here does not mean no row matched. -->
+      {:else if s.row}
         <div class="table-draw-row-label">{s.row.label}</div>
         <SegmentList segments={s.row.content} {channel} />
         {#if s.row.nested.length > 0}
@@ -331,6 +342,16 @@
     opacity: 0.75;
     font-style: italic;
     margin-inline: var(--space-1);
+  }
+  .blind-roll {
+    // Compact card for a blind roll withheld from this reader; italic and dimmed like a
+    // placeholder, since it carries no result.
+    display: inline-block;
+    padding: 0 var(--space-1);
+    border: 1px dashed currentColor;
+    border-radius: var(--radius-1, 4px);
+    font-style: italic;
+    opacity: 0.8;
   }
   .roll-btn {
     // Touch floor: matches the message card's `.actions` control sizing.
