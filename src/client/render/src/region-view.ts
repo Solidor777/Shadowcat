@@ -14,6 +14,17 @@ const BEHAVIOR_FILL: Record<string, number> = {
 };
 const FILL_ALPHA = 0.25;
 const STROKE_WIDTH = 2;
+/** Fill of a region that blocks sight: a pale haze, denser than a behavior tint so a fog bank
+ * reads as fog. */
+const SIGHT_HAZE_COLOR = 0xcfd8e0;
+/** Opacity of the sight haze fill. */
+const SIGHT_HAZE_ALPHA = 0.55;
+/** Rim color of a region that blocks light. */
+const LIGHT_RIM_COLOR = 0x101018;
+/** Rim width of a region that blocks light, wider than the plain outline. */
+const LIGHT_RIM_WIDTH = 5;
+/** Dash pattern of the ring of a region that blocks sound, in scene units. */
+const SOUND_DASH = { on: 12, off: 8 };
 
 /** Reconciles `doc_type:"region"` documents into the `regions` layer as tinted shapes. Only
  * regions the viewer is permitted to see ever reach `store` (server-side egress filtering) —
@@ -165,13 +176,20 @@ export function regionShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   if (additive.length === 0) return null;
 
   const color = BEHAVIOR_FILL[s?.behavior ?? ""] ?? BEHAVIOR_FILL.terrain;
+  // Each blocked sense owns one visual channel so a GM reads them independently: sight swaps the
+  // fill for a pale haze, light darkens and thickens the rim, sound dashes the ring.
+  const occ = s?.occludes;
   return {
     layer: "regions",
     points: additive[0],
     extraParts: additive.length > 1 ? additive.slice(1) : undefined,
     holes: holes.length > 0 ? holes : undefined,
     closed: true,
-    stroke: { color, width: STROKE_WIDTH },
-    fill: { color, alpha: FILL_ALPHA },
+    stroke: {
+      color: occ?.light ? LIGHT_RIM_COLOR : color,
+      width: occ?.light ? LIGHT_RIM_WIDTH : STROKE_WIDTH,
+      ...(occ?.sound ? { dash: SOUND_DASH } : {}),
+    },
+    fill: occ?.sight ? { color: SIGHT_HAZE_COLOR, alpha: SIGHT_HAZE_ALPHA } : { color, alpha: FILL_ALPHA },
   };
 }

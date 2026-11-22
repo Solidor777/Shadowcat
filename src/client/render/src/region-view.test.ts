@@ -45,6 +45,34 @@ test("each region behavior carries its own fill tint", () => {
   expect(new Set(tints).size).toBe(tints.length);
 });
 
+test("each occluded sense owns one visual channel; no occludes keeps the behavior styling", () => {
+  // Fails if a sense stops changing its channel (fill haze / rim / dash) or leaks into another.
+  const spec = (occludes: unknown) => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const doc = regionDoc("r1", { kind: "rect", points: [0, 0, 10, 10] }, "terrain");
+    (doc.engine as Record<string, unknown>).occludes = occludes;
+    store.applyCommand(cmd(1, [{ op: "create", doc }]));
+    new RegionView(store, backend).reconcile();
+    return backend.shapes.get("r1")!;
+  };
+  const plain = spec(null);
+  expect(plain.stroke?.dash).toBeUndefined();
+  const sight = spec({ sight: true, light: false, sound: false });
+  expect(sight.fill!.color).not.toBe(plain.fill!.color);
+  expect(sight.fill!.alpha).toBeGreaterThan(plain.fill!.alpha);
+  expect(sight.stroke).toEqual(plain.stroke);
+  const light = spec({ sight: false, light: true, sound: false });
+  expect(light.stroke!.color).not.toBe(plain.stroke!.color);
+  expect(light.stroke!.width).toBeGreaterThan(plain.stroke!.width);
+  expect(light.stroke!.dash).toBeUndefined();
+  expect(light.fill).toEqual(plain.fill);
+  const sound = spec({ sight: false, light: false, sound: true });
+  expect(sound.stroke!.dash).toEqual({ on: 12, off: 8 });
+  expect(sound.stroke!.color).toBe(plain.stroke!.color);
+  expect(sound.fill).toEqual(plain.fill);
+});
+
 test("a circular region tessellates to a closed polygon", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

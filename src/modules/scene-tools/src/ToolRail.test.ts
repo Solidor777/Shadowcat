@@ -1213,6 +1213,57 @@ test("selecting a region with the select tool opens its elevation editor; the ba
   });
 });
 
+test("the region editor's sense checkboxes write /engine/occludes and clearing the last one writes null", async () => {
+  // Fails if a checkbox writes the wrong flag, drops the other flags, uses a derived `old`, or
+  // leaves an all-false block (which the server rejects) instead of null.
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const documents = editorStore();
+  let seq = 10;
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        documents.applyCommand({ seq: seq++, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("region-editor");
+
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sight"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{ path: "/engine/occludes", old: null, new: { sight: true, light: false, sound: false } }],
+  });
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{
+      path: "/engine/occludes",
+      old: { sight: true, light: false, sound: false },
+      new: { sight: true, light: false, sound: true },
+    }],
+  });
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sight"));
+  await fireEvent.click(screen.getByTestId("region-editor-occludes-sound"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{ path: "/engine/occludes", old: { sight: false, light: false, sound: true }, new: null }],
+  });
+});
+
+test("the region tool shows the three sense checkboxes", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  for (const sense of ["sight", "light", "sound"]) {
+    expect(screen.getByTestId(`region-occludes-${sense}`)).toBeTruthy();
+  }
+});
+
 test("the region editor's delete dispatches the full pre-image and closes the editor", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];

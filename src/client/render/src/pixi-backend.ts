@@ -10,6 +10,7 @@ import type { EmoteGlyph } from "./emote-view";
 import type { RemoteRulerPath } from "./remote-ruler-view";
 import { TextureCacheManager } from "./texture-cache";
 import { dashSegments } from "./geometry";
+import { dashRing } from "./dash";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -2104,7 +2105,17 @@ function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void 
   // Compound additive rings are always closed fills (a region is always an area).
   for (const ring of tokenSpec.extraParts ?? []) paintRing(g, ring, true);
   if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
-  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
+  const stroke = tokenSpec.stroke;
+  const dash = stroke?.dash;
+  if (stroke && dash) {
+    // Pixi has no dash style: stroke each dash polyline as its own subpath of a fresh path.
+    g.beginPath();
+    const rings = [tokenSpec.points, ...(tokenSpec.extraParts ?? [])];
+    rings.forEach((ring, i) => {
+      for (const d of dashRing(ring, i > 0 || tokenSpec.closed, dash.on, dash.off)) paintRing(g, d, false);
+    });
+    g.stroke({ width: stroke.width, color: stroke.color });
+  } else if (stroke) g.stroke({ width: stroke.width, color: stroke.color });
 }
 
 /** Trace an open polyline as dashes: each polyline segment is split by `dashSegments` into

@@ -208,6 +208,25 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
   return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
 
+describe("PixiBackend shape stroke dash", () => {
+  /** Draws one open two-point shape through `drawOverlay` and returns its overlay Graphics log. */
+  function overlayLog(dash: { on: number; off: number } | undefined): GraphicsInstructionLog {
+    const backend = headlessBackend();
+    backend.drawOverlay([{ points: [0, 0, 10, 0], closed: false, stroke: { color: 0xff0000, width: 2, ...(dash ? { dash } : {}) }, fill: null }]);
+    return (backend as unknown as { toolOverlay: GraphicsInstructionLog }).toolOverlay;
+  }
+
+  test("a dashed stroke paints one subpath per dash and strokes once", () => {
+    const log = overlayLog({ on: 2, off: 2 });
+    expect(pathActions(log).filter((a) => a === "moveTo")).toHaveLength(3);
+    expect(styleOf(log, "stroke")?.width).toBeCloseTo(2);
+  });
+
+  test("a solid stroke paints a single subpath", () => {
+    expect(pathActions(overlayLog(undefined)).filter((a) => a === "moveTo")).toHaveLength(1);
+  });
+});
+
 describe("PixiBackend.setVisibilityBlend", () => {
   test("reuses both captured RenderTextures across many ticks holding the same (from, to) sample pair — only the blend factor moves", () => {
     // Mirrors RenderEngine.applyVisionSweep's per-tick call shape: a sweep holds the same

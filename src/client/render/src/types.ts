@@ -339,6 +339,13 @@ export interface ShapeNodeSpec {
     color: number;
     /** Stroke width, in scene (px) units. */
     width: number;
+    /** Dash pattern in scene units (`on` drawn, `off` skipped), or absent for a solid stroke. */
+    dash?: {
+      /** Length of each drawn dash, in scene units. */
+      on: number;
+      /** Length of each gap, in scene units. */
+      off: number;
+    };
   } | null;
   /** Dash pattern for an open polyline's stroke, in scene units: `on` drawn then `off` gap,
    * restarting at the start of each polyline segment. Absent = a solid stroke. Ignored for a
