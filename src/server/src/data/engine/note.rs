@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use crate::chat::{compose_static, Segment, NOTE_CONTENT_POLICY};
 
@@ -28,17 +29,57 @@ pub const MAX_NOTE_SOURCE_CHARS: usize = 65_536;
 /// this is deliberately larger than `chat::rolls::MAX_INLINE_ROLLS`.
 pub const MAX_NOTE_SPANS: usize = 64;
 
+/// What a note page shows above its caption. Internally tagged on `kind`, so a
+/// text page is `{"kind":"text"}` and a media page is
+/// `{"kind":"image","asset_id":"<uuid>"}`.
+///
+/// `asset_id` is not checked for existence at ingest (the same posture as a chat
+/// `[[asset:]]` span and a table `Image` entry): the client renders it through
+/// the asset resolver and shows a placeholder when it does not resolve.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::note::NotePageKind;
+///
+/// assert_eq!(NotePageKind::default(), NotePageKind::Text);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotePageKind {
+    /// A text-only page: the markdown `body` is the whole page.
+    #[default]
+    Text,
+    /// A page showing one image asset above its caption.
+    Image {
+        /// The image asset shown.
+        asset_id: Uuid,
+    },
+    /// A page showing one PDF asset above its caption.
+    Pdf {
+        /// The PDF asset shown.
+        asset_id: Uuid,
+    },
+    /// A page showing one video asset above its caption.
+    Video {
+        /// The video asset shown.
+        asset_id: Uuid,
+    },
+}
+
 /// The engine body of a rich-text note. Envelope `name` is the note's title.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::engine::note::NoteEngine;
+/// use shadowcat::data::engine::note::{NoteEngine, NotePageKind};
 ///
 /// let note = NoteEngine {
 ///     source: "# Session recap".into(),
 ///     body: vec![],
 ///     sort: 0,
+///     kind: NotePageKind::Text,
 /// };
 /// assert_eq!(note.source, "# Session recap");
 /// assert!(note.body.is_empty()); // server-derived; overwritten by derive_body
@@ -61,6 +102,11 @@ pub struct NoteEngine {
     /// `created_at`). Has no meaning for a root-level note.
     #[serde(default)]
     pub sort: i64,
+    /// What the page shows above its caption. A note stored without this
+    /// field reads as `NotePageKind::Text`. `source` and `body` keep their
+    /// meaning for every kind (a media page's `source` is its caption).
+    #[serde(default)]
+    pub kind: NotePageKind,
 }
 
 impl NoteEngine {
@@ -74,7 +120,12 @@ impl NoteEngine {
     /// ```
     /// use shadowcat::data::engine::note::NoteEngine;
     ///
-    /// let note = NoteEngine { source: "hello".into(), body: vec![], sort: 0 };
+    /// let note = NoteEngine {
+    ///     source: "hello".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
     /// assert!(note.validate().is_ok());
     /// ```
     pub fn validate(&self) -> Result<(), String> {
@@ -101,7 +152,12 @@ impl NoteEngine {
     /// ```
     /// use shadowcat::data::engine::note::NoteEngine;
     ///
-    /// let mut note = NoteEngine { source: "plain text".into(), body: vec![], sort: 0 };
+    /// let mut note = NoteEngine {
+    ///     source: "plain text".into(),
+    ///     body: vec![],
+    ///     sort: 0,
+    ///     kind: Default::default(),
+    /// };
     /// note.derive_body().unwrap();
     /// assert!(!note.body.is_empty()); // derived from source, never client-supplied
     /// ```

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import { tick } from "svelte";
 import {
+  AssetResolver,
   DocumentStore,
   buildNoteDoc,
   buildChannelRegistryDoc,
@@ -211,5 +212,89 @@ describe("NoteSheet tree navigation", () => {
     const context = setAppContextForTest({ documents, canEdit: () => true, canCreate: () => false });
     const { queryByTestId } = render(NoteSheet, { props: { docId: "p1", systemPrefix: "/system", close: () => {} }, context });
     expect(queryByTestId("note-new-child")).toBeNull();
+  });
+});
+
+describe("NoteSheet typed pages", () => {
+  const ASSET = "00000000-0000-0000-0000-0000000000a1";
+  const NEW_ASSET = "00000000-0000-0000-0000-0000000000a2";
+
+  function sheetFor(kind: { kind: "text" } | { kind: "image" | "pdf" | "video"; asset_id: string }, over: Parameters<typeof setAppContextForTest>[0] = {}) {
+    const doc = buildNoteDoc("w1", "Page", "A caption", { id: "n1", owner: SELF, kind });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => true, ...over });
+    return render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+  }
+
+  it("a text page renders no media block", () => {
+    const { queryByTestId } = sheetFor({ kind: "text" });
+    expect(queryByTestId("note-media")).toBeNull();
+  });
+
+  it("an image page renders an img from the asset resolver above the caption body", () => {
+    const { getByTestId, container } = sheetFor({ kind: "image", asset_id: ASSET });
+    const media = getByTestId("note-media");
+    expect(media.dataset.mediaKind).toBe("image");
+    expect(media.querySelector("img")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);
+    const body = getByTestId("note-body");
+    expect(media.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector("embed, video")).toBeNull();
+  });
+
+  it("a pdf page renders an embed and a video page renders a video element", () => {
+    const pdf = sheetFor({ kind: "pdf", asset_id: ASSET });
+    expect(pdf.getByTestId("note-media").querySelector("embed")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);
+    pdf.unmount();
+    const video = sheetFor({ kind: "video", asset_id: ASSET });
+    expect(video.getByTestId("note-media").querySelector("video")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);
+  });
+
+  it("an asset the resolver reports deleted renders the placeholder text, not a media element", () => {
+    const assets = new AssetResolver();
+    assets.onAssetChanged({ uuid: ASSET, op: "deleted", version: 2 });
+    const { getByTestId, container } = sheetFor({ kind: "image", asset_id: ASSET }, { assets });
+    expect(getByTestId("note-media-missing")).toBeTruthy();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("a media element that fails to load swaps to the placeholder text", async () => {
+    const { getByTestId, container } = sheetFor({ kind: "image", asset_id: ASSET });
+    await fireEvent.error(container.querySelector("img") as HTMLImageElement);
+    expect(getByTestId("note-media-missing")).toBeTruthy();
+  });
+
+  it("Change media writes the whole kind with the picked asset and the old kind as the pre-image", async () => {
+    const calls: unknown[] = [];
+    const picks: unknown[] = [];
+    const { getByTestId } = sheetFor({ kind: "pdf", asset_id: ASSET }, {
+      dispatchIntent: (ops) => calls.push(ops),
+      pickAsset: ((opts: unknown) => { picks.push(opts); return Promise.resolve(NEW_ASSET); }) as never,
+    });
+    await fireEvent.click(getByTestId("note-change-media"));
+    await tick();
+    expect(picks).toEqual([{ kind: "other" }]);
+    expect(calls).toEqual([[{ op: "update", doc_id: "n1", changes: [{
+      path: "/engine/kind",
+      old: { kind: "pdf", asset_id: ASSET },
+      new: { kind: "pdf", asset_id: NEW_ASSET },
+    }] }]]);
+  });
+
+  it("an image page opens the picker filtered to images; a cancelled pick writes nothing", async () => {
+    const calls: unknown[] = [];
+    const picks: unknown[] = [];
+    const { getByTestId } = sheetFor({ kind: "image", asset_id: ASSET }, {
+      dispatchIntent: (ops) => calls.push(ops),
+      pickAsset: ((opts: unknown) => { picks.push(opts); return Promise.resolve(null); }) as never,
+    });
+    await fireEvent.click(getByTestId("note-change-media"));
+    await tick();
+    expect(picks).toEqual([{ kind: "image" }]);
+    expect(calls).toEqual([]);
+  });
+
+  it("hides Change media when the viewer cannot edit the kind", () => {
+    const { queryByTestId } = sheetFor({ kind: "image", asset_id: ASSET }, { canEdit: () => false });
+    expect(queryByTestId("note-change-media")).toBeNull();
   });
 });
