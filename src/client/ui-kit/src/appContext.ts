@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice } from "@shadowcat/core";
 import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -64,6 +64,13 @@ export interface ChatApi {
    * @returns Resolves once the recalc is accepted; rejects on a non-GM sender
    * or server refusal. */
   recalc(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void>;
+  /** GM-only reveal or conceal: replace a stored message's audience. Same
+   * correlated-rejection contract as `send`/`edit`/`delete`/`recalc`.
+   * @param messageId - Id of the message whose audience changes.
+   * @param audience - The replacement readership.
+   * @returns Resolves once the revision is accepted; rejects on a non-GM sender
+   * or server refusal. */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void>;
   /** Draw one or more rows from a `table` document, posted as one chat message.
    * Same correlated-rejection contract as `send`/`edit`/`delete`/`recalc`.
    * @param opts - Draw options.

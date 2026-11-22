@@ -776,7 +776,7 @@ describe("MessageCard — roll button", () => {
     const send = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
@@ -791,7 +791,7 @@ describe("MessageCard — roll button", () => {
     speakAs.actorId = "actor-1";
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -812,7 +812,7 @@ describe("MessageCard — roll button", () => {
     speakAsToken.select("tok-1");
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, plural: fakePlural, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -954,7 +954,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     const textarea = screen.getByLabelText("chat.edit") as HTMLTextAreaElement;
@@ -969,7 +969,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     await fireEvent.click(screen.getByText("chat.cancel"));
@@ -989,7 +989,7 @@ describe("MessageCard — delete", () => {
     vi.mocked(confirmDialog).mockResolvedValue(true);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
     expect(confirmDialog).toHaveBeenCalledWith(
@@ -1005,13 +1005,71 @@ describe("MessageCard — delete", () => {
     vi.mocked(confirmDialog).mockResolvedValue(false);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
     await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
     // Let the resolved `false` reach the handler before asserting nothing was deleted.
     await new Promise((r) => setTimeout(r, 0));
     expect(del).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageCard — revise audience", () => {
+  const members = new Map([
+    ["u1", "Author"],
+    ["u2", "Friend"],
+    ["u3", "Other"],
+  ]);
+
+  it("never renders the control for a non-GM viewer, even the message's owner", () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", members }),
+    });
+    expect(screen.queryByText("chat.revise.open")).toBeNull();
+  });
+
+  it("a GM conceals to a whisper: the author is not offered and the chosen recipients are sent", async () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1" }));
+    const reviseAudience = vi.fn(() => Promise.resolve());
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        selfId: "gm",
+        role: "gm",
+        members,
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience, drawTable: () => Promise.resolve() },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    await fireEvent.change(screen.getByLabelText("chat.revise.audience"), { target: { value: "whisper" } });
+    expect(screen.queryByLabelText("Author")).toBeNull();
+    await fireEvent.click(screen.getByLabelText("Friend"));
+    await fireEvent.click(screen.getByText("chat.revise.apply"));
+    expect(reviseAudience).toHaveBeenCalledWith("m1", { kind: "whisper", recipients: ["u2"] });
+  });
+
+  it("a GM reveals to everyone with a bare public audience", async () => {
+    const doc = msgDoc("m1", baseSystem({ user_owner: "u1", audience: { kind: "gm_only" } }));
+    const reviseAudience = vi.fn(() => Promise.resolve());
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        selfId: "gm",
+        role: "gm",
+        members,
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience, drawTable: () => Promise.resolve() },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.revise.open"));
+    expect((screen.getByLabelText("chat.revise.audience") as HTMLSelectElement).value).toBe("gm_only");
+    await fireEvent.change(screen.getByLabelText("chat.revise.audience"), { target: { value: "public" } });
+    await fireEvent.click(screen.getByText("chat.revise.apply"));
+    expect(reviseAudience).toHaveBeenCalledWith("m1", { kind: "public" });
   });
 });
 

@@ -110,7 +110,7 @@ describe("TablesPanel row gating and draw", () => {
     const doc = buildTableDoc("w1", "A", engine(), { id: "t1" });
     const drawTable = vi.fn(() => Promise.resolve());
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
-    const withChannel = render(TablesPanel, { context: setAppContextForTest({ documents, chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable } }) });
+    const withChannel = render(TablesPanel, { context: setAppContextForTest({ documents, chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable } }) });
     expect((withChannel.getByTestId("table-quick-draw") as HTMLButtonElement).disabled).toBe(false);
     await fireEvent.click(withChannel.getByTestId("table-quick-draw"));
     expect(drawTable).toHaveBeenCalledWith({ tableId: "t1", channel: "general", count: 1 });
@@ -125,7 +125,7 @@ describe("TablesPanel row gating and draw", () => {
       context: setAppContextForTest({
         documents,
         notify: (m) => notified.push(m),
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), reviseAudience: () => Promise.resolve(), drawTable },
       }),
     });
     await fireEvent.click(getByTestId("table-quick-draw"));

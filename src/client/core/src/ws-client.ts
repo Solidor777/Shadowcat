@@ -2017,6 +2017,32 @@ export class WsClient {
     return p;
   }
 
+  /** GM-only reveal or conceal of a stored message. Resolves/rejects like
+   * `sendChatMessage`; the server rejects a non-GM sender, an unknown or deleted
+   * message, or a whisper naming a non-member via a correlated `chat_error`.
+   * @param messageId The message whose audience changes.
+   * @param audience The replacement readership.
+   * @returns Resolves (void) once the revision is accepted; rejects with the
+   * server's player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.reviseAudience("msg-1", { kind: "public" });
+   * ```
+   */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "revise_audience", request_id, message_id: messageId, audience });
+    return p;
+  }
+
   /** Draw one or more rows from a `table` document, posted as one chat message.
    * Resolves/rejects like `sendChatMessage`; a refusal (unknown table, no READ,
    * cycle, etc.) rejects via a correlated `chat_error`.

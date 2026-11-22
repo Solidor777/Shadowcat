@@ -179,6 +179,7 @@
       edit: (id, c) => session.editChatMessage(id, c),
       delete: (id) => session.deleteChatMessage(id),
       recalc: (id, rollId, ops) => session.recalcRoll(id, rollId, ops),
+      reviseAudience: (id, audience) => session.reviseAudience(id, audience),
       drawTable: (opts) => session.drawTable(opts),
     },
     uiState: {

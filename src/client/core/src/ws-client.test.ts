@@ -1448,6 +1448,26 @@ describe("WsClient", () => {
     expect(frame.request_id.length).toBeGreaterThan(0);
   });
 
+  it("reviseAudience sends a revise_audience frame with a request_id", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.reviseAudience("msg-1", { kind: "whisper", recipients: ["u2"] }).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "revise_audience")!);
+    expect(frame).toMatchObject({
+      type: "revise_audience",
+      message_id: "msg-1",
+      audience: { kind: "whisper", recipients: ["u2"] },
+    });
+    expect(typeof frame.request_id).toBe("string");
+    expect(frame.request_id.length).toBeGreaterThan(0);
+  });
+
   it("drawTable sends a draw_table frame defaulting count/audience/actorOwner", async () => {
     const sent: string[] = [];
     const client = new WsClient({

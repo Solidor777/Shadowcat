@@ -50,6 +50,7 @@ import {
   type WireCapabilityRequirement,
   type ChatSendOptions,
   type WireRecalcOp,
+  type WireAudience,
   type DrawTableOptions,
   type SceneFrame,
   type SceneSubscription,
@@ -1378,6 +1379,22 @@ export class WorldSession {
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
     if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.recalcRoll(messageId, rollId, ops);
+  }
+
+  /** GM-only reveal or conceal of a stored message. Resolves/rejects with the correlated outcome.
+   * @param messageId The message whose audience changes.
+   * @param audience The replacement readership.
+   * @returns Same silence-based resolution as `sendChatMessage` -- resolves when the error window
+   * elapses with no correlated `chat_error`, rejects on one or on disconnect.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.reviseAudience("msg-1", { kind: "gm_only" });
+   * ```
+   */
+  reviseAudience(messageId: string, audience: WireAudience): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.reviseAudience(messageId, audience);
   }
 
   /** Send a merge intent (`merge_pull`/`merge_push`/`merge_revert`). Thin delegate to

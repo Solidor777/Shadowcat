@@ -1923,6 +1923,17 @@ export type ClientMsg =
       ops: WireRecalcOp[];
     }
   | {
+      /** GM-only reveal or conceal: replaces a stored message's audience and readership
+       * permissions. Same asymmetric reply protocol as `send_message`. */
+      type: "revise_audience";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The message whose audience changes. */
+      message_id: string;
+      /** The replacement readership (public / gm-only / whisper). */
+      audience: WireAudience;
+    }
+  | {
       /** Draw one or more rows from a `table` document, posted as ONE `kind: "roll"` message
        * (a `table_draw` segment, recursive through any nested draws). Same asymmetric reply
        * protocol as `send_message`; a refusal is a correlated `chat_error`. */
