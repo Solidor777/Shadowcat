@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import type {
   AudioBufferLike,
   AudioContextLike,
+  BiquadFilterNodeLike,
   BufferSourceNodeLike,
   GainNodeLike,
   MediaElementLike,
@@ -54,6 +55,29 @@ function stubPanner(): PannerNodeLike {
   };
 }
 
+/** A `BiquadFilterNodeLike` whose `connect`/`disconnect` are spies and whose cutoff param
+ * writes through like `stubGain`'s.
+ * @returns The stub node.
+ * @example
+ * ```ts
+ * import { stubAudioContext } from "../__fixtures__/stubContext";
+ * stubAudioContext().createBiquadFilter().type; // "lowpass"
+ * ```
+ */
+function stubBiquad(): BiquadFilterNodeLike {
+  return {
+    type: "lowpass",
+    frequency: {
+      value: 350,
+      setTargetAtTime(target: number): void {
+        this.value = target;
+      },
+    },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+}
+
 /** A minimal `AudioBufferLike` for the stub context: carries the duration/sampleRate the
  * buffered-loop math reads; `copyToChannel` is a no-op (nothing renders in Node).
  * @param durationSecs The buffer's duration, seconds.
@@ -100,6 +124,8 @@ export interface StubAudioContext extends AudioContextLike {
   gains: GainNodeLike[];
   /** Every stereo panner the stub created, in creation order (spy targets). */
   panners: PannerNodeLike[];
+  /** Every biquad filter the stub created, in creation order (spy targets). */
+  filters: BiquadFilterNodeLike[];
   /** Every media-element source the stub created, in creation order (spy targets). */
   mediaSources: MediaElementSourceNodeLike[];
 }
@@ -121,11 +147,13 @@ export function stubAudioContext(): StubAudioContext {
   const sources: BufferSourceNodeLike[] = [];
   const gains: GainNodeLike[] = [];
   const panners: PannerNodeLike[] = [];
+  const filters: BiquadFilterNodeLike[] = [];
   const mediaSources: MediaElementSourceNodeLike[] = [];
   const stub: StubAudioContext = {
     sources,
     gains,
     panners,
+    filters,
     mediaSources,
     resumeMode: "resolve",
     resumeCalls: 0,
@@ -154,6 +182,11 @@ export function stubAudioContext(): StubAudioContext {
     createStereoPanner: () => {
       const node = stubPanner();
       panners.push(node);
+      return node;
+    },
+    createBiquadFilter: () => {
+      const node = stubBiquad();
+      filters.push(node);
       return node;
     },
     createBufferSource: (): BufferSourceNodeLike => {

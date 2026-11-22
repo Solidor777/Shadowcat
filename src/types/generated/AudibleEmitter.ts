@@ -13,6 +13,7 @@
  *     asset: "a-wind".into(),
  *     gain: 0.5,
  *     pan: -0.25,
+ *     muffled: false,
  *     loop_: true,
  * };
  * assert!(emitter.loop_);
@@ -38,6 +39,13 @@ gain: number,
  * Stereo pan, `-1..=1`.
  */
 pan: number, 
+/**
+ * Whether `gain` was reduced by wall occlusion this frame (`Occlusion::Walls` plus
+ * `segment_occluded`). The client runs a lowpass filter while `true`. Set by the same
+ * branch that applies `throughWallGain`, so the two never disagree; `false` under flat
+ * mixing, without a listener, and under `Occlusion::None`.
+ */
+muffled: boolean, 
 /**
  * Loop the asset per the emission's own `loop` flag.
  */

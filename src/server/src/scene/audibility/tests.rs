@@ -467,6 +467,48 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
         em.gain > 0.0,
         "occlusion attenuates, never silences outright"
     );
+    assert!(
+        em.muffled,
+        "the same occluded branch that reduces gain flags the emitter muffled"
+    );
+}
+
+#[test]
+fn compute_audibility_unoccluded_emitter_is_not_muffled() {
+    let user = crate::test_ids::test_uuid(7);
+    let ecs = listener_and_emitter(user, 12);
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(!slice.emitters[0].muffled, "no wall between: not muffled");
+}
+
+#[test]
+fn compute_audibility_spatial_false_never_muffles_despite_a_wall() {
+    let user = crate::test_ids::test_uuid(7);
+    let mut ecs = listener_and_emitter(user, 12);
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150}, "blocksSight": true }),
+        ),
+    });
+    ecs.set_world_settings_for_test(ws_body(&[("/audio/spatial", json!(false))]));
+    let slice = ecs.compute_audibility(
+        &player_ctx(user),
+        &no_world_grants(),
+        crate::test_ids::test_uuid(10),
+        None,
+    );
+    assert!(
+        !slice.emitters[0].muffled,
+        "flat mixing runs no occlusion test, so nothing is muffled"
+    );
 }
 
 #[test]
@@ -491,6 +533,10 @@ fn compute_audibility_occlusion_none_ignores_walls() {
     assert!(
         (slice.emitters[0].gain - 0.8 * 8.0 / 9.0).abs() < 1e-9,
         "Occlusion::None: the wall between listener and emitter changes nothing"
+    );
+    assert!(
+        !slice.emitters[0].muffled,
+        "Occlusion::None turns occlusion off, so a geometrically intervening wall never muffles"
     );
 }
 
@@ -526,6 +572,7 @@ fn compute_audibility_blocks_sound_false_wall_never_occludes_despite_blocking_si
         "a sound-transparent wall between listener and emitter changes nothing: {}",
         slice.emitters[0].gain
     );
+    assert!(!slice.emitters[0].muffled);
 }
 
 #[test]

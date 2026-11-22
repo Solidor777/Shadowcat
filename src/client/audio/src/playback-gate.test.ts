@@ -110,7 +110,7 @@ describe("AudioEngine start-up through the gate", () => {
       scene: "s1",
       listener: null,
       spatial: true,
-      emitters: [{ token: "t1", asset: "a1", gain: 1, pan: 0, loop: true }],
+      emitters: [{ token: "t1", asset: "a1", gain: 1, pan: 0, muffled: false, loop: true }],
     };
     const first = vi.fn();
     engine.applyAudibility(payload);
