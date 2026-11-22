@@ -437,7 +437,7 @@ describe("resolveTokenVisual", () => {
   });
 
   it("passes a well-formed transform through on an image, an animated visual and generated art", () => {
-    const transform = { anchor: { x: -0.25, y: 1.5 }, scale: 2, tint: "#ffcc88" };
+    const transform = { anchor: { x: -0.25, y: 1.5 }, scale: 2, tint: "#ffcc88", facing: 270 };
     const image: TokenVisual = { kind: "image", asset: "a1", transform };
     const animated: TokenVisual = { kind: "animated", source: { type: "frames", frames: ["a1"] }, fps: 8, loop: true, transform };
     const generated: TokenVisual = { kind: "generated", art: image as RenderVisual, crop: "circle", border: null, background: null };
@@ -459,6 +459,10 @@ describe("resolveTokenVisual", () => {
       ["non-finite scale", { ...good, scale: Number.NaN }],
       ["non-string tint", { ...good, tint: 0xff0000 }],
       ["malformed tint", { ...good, tint: "ff0000" }],
+      ["negative facing", { ...good, facing: -1 }],
+      ["facing of 360", { ...good, facing: 360 }],
+      ["non-finite facing", { ...good, facing: Number.NaN }],
+      ["non-numeric facing", { ...good, facing: "up" }],
     ];
     for (const [label, transform] of malformed) {
       it(`${label}, on an image, an animated visual and generated art`, () => {

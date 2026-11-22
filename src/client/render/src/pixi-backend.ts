@@ -977,7 +977,8 @@ export class PixiBackend implements DisplayBackend {
    * the authored `transform.scale`, anchored at `(transform.anchorX, transform.anchorY)`, and
    * multiply-tinted by `transform.tint`. An art without a transform gets the default centered
    * anchor, unit scale and white (identity) tint. Uses Pixi's native `anchor`/`width`/`height`/
-   * `tint` sprite properties; the static tint composes independently of the dynamic `TokenFx`
+   * `tint` sprite properties, and turned by `-transform.facing` degrees so the art points along the
+   * token's rotation (`visualContainer` already applies the rotation itself); the static tint composes independently of the dynamic `TokenFx`
    * filter chain, which applies on top.
    * @param node The token render node whose `visual` sprite to frame.
    * @param art The resolved art (`tokenSpec.visual`, or a generated visual's `art`).
@@ -996,6 +997,10 @@ export class PixiBackend implements DisplayBackend {
     node.visual.width = tokenSpec.w * (transform?.scale ?? 1);
     node.visual.height = tokenSpec.h * (transform?.scale ?? 1);
     node.visual.tint = transform?.tint ?? 0xffffff;
+    // `visualContainer.angle` carries the token's rotation, so the art sprite's own angle is the
+    // negated facing: net art angle = rotation - facing. Art-only, so the border and generated
+    // frame keep the token's rotation.
+    node.visual.angle = -(transform?.facing ?? 0);
   }
 
   /** Create a node's generated-visual frame (`TokenNode.generated`) on first use: the
