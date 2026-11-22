@@ -52,7 +52,7 @@ async fn a_table_and_a_folder_may_be_created_under_a_table_folder_in_the_same_wo
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
     let top = table_folder_doc(1, w, "top", None);
-    create_all(&r, &ctx, w, &[top.clone()], 1).await;
+    create_all(&r, &ctx, w, std::slice::from_ref(&top), 1).await;
     let sub = table_folder_doc(2, w, "sub", Some(top.id));
     let table = table_doc(3, w, Some(top.id));
     create_all(&r, &ctx, w, &[sub.clone(), table.clone()], 2).await;
@@ -102,7 +102,7 @@ async fn a_table_folder_cannot_sit_under_a_table() {
     let r = repo().await;
     let (w, ctx) = gm_world(&r).await;
     let table = table_doc(1, w, None);
-    create_all(&r, &ctx, w, &[table.clone()], 1).await;
+    create_all(&r, &ctx, w, std::slice::from_ref(&table), 1).await;
     let msg = create_err(&r, &ctx, w, table_folder_doc(2, w, "f", Some(table.id))).await;
     assert_eq!(
         msg,
@@ -126,9 +126,9 @@ async fn moving_a_table_under_a_table_folder_in_another_world_is_rejected() {
         world_role: WorldRole::Gm,
     };
     let foreign = table_folder_doc(9, w2.id, "foreign", None);
-    create_all(&r, &ctx2, w2.id, &[foreign.clone()], 1).await;
+    create_all(&r, &ctx2, w2.id, std::slice::from_ref(&foreign), 1).await;
     let table = table_doc(1, w, None);
-    create_all(&r, &ctx, w, &[table.clone()], 2).await;
+    create_all(&r, &ctx, w, std::slice::from_ref(&table), 2).await;
     let err = r
         .apply_intent(
             &ctx,
