@@ -5,6 +5,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 pub mod assets;
+pub mod backups;
 pub mod compression;
 pub mod conn_serve;
 pub mod embed;
@@ -231,7 +232,14 @@ pub async fn router(state: AppState) -> Router {
             get(crate::ws::conn::ws_handler).connect(crate::ws::conn::ws_handler),
         )
         .route("/api/debug/rooms", get(routes::debug_rooms))
-        .route("/api/admin/backup", post(routes::admin_backup))
+        .route("/api/admin/backup", post(backups::admin_backup))
+        .route("/api/admin/backups", get(backups::list))
+        .route("/api/admin/backups/prune", post(backups::prune_now))
+        .route("/api/admin/backups/{id}", delete(backups::delete_backup))
+        .route(
+            "/api/admin/backups/{id}/restore",
+            post(backups::restore_from_backup),
+        )
         .route("/api/admin/tls", get(routes::admin_tls))
         .route("/api/admin/trash", get(trash::list_trash))
         .route("/api/admin/trash/empty", post(trash::empty_trash))
@@ -484,6 +492,9 @@ where
 
 /// [`serve`] with explicit connection `limits`.
 ///
+/// The serve loop also stops when `WsState::trigger_shutdown` is called from inside the server
+/// (the admin restore route), exactly as when `shutdown_fut` resolves.
+///
 /// [`conn_serve::serve_router`] runs `WsState::trigger_shutdown` as its `on_drain` hook, before
 /// it drains, for both causes (`shutdown_fut` resolving and `source` ending): an HTTP/2
 /// WebSocket is a stream inside its connection, so a drain that waited for connections before
@@ -542,6 +553,15 @@ where
     S: conn_serve::ConnSource,
 {
     let ws_state = state.ws.clone();
+    // A `WsState::trigger_shutdown` from inside the server (the admin restore route) stops the
+    // serve loop the same way `shutdown_fut` does; both causes then run the one drain below.
+    let mut stop_requested = ws_state.shutdown.clone();
+    let shutdown_fut = async move {
+        tokio::select! {
+            () = shutdown_fut => {}
+            _ = stop_requested.wait_for(|requested| *requested) => {}
+        }
+    };
     let app = router(state).await;
     let drain_ws = ws_state.clone();
     let outcome = conn_serve::serve_router(source, app, shutdown_fut, limits, move || {

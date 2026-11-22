@@ -243,8 +243,15 @@ async fn run_backup(config: &Config, out_dir: &std::path::Path, force: bool) -> 
         );
     }
     let trash = shadowcat::trash::Trash::from_config(config);
-    let manifest =
-        shadowcat::backup::create_backup(&db_path, &config.assets_path(), out_dir, &trash).await?;
+    let manifest = shadowcat::backup::create_backup(
+        &db_path,
+        &config.assets_path(),
+        out_dir,
+        &trash,
+        shadowcat::backup::BackupKind::Manual,
+        None,
+    )
+    .await?;
     println!(
         "backup written to {}: {} asset file(s), {} db byte(s), shadowcat {}",
         out_dir.display(),

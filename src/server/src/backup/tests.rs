@@ -57,9 +57,16 @@ async fn create_backup_snapshots_db_and_assets() {
         .unwrap();
 
     let out_dir = tmp.path().join("out");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    let manifest = create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(manifest.asset_file_count, 2);
     assert!(manifest.db_bytes > 0);
@@ -110,9 +117,16 @@ async fn create_backup_with_no_assets_dir_yields_zero_files() {
     let assets_dir = tmp.path().join("does_not_exist");
     let out_dir = tmp.path().join("out");
 
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    let manifest = create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(manifest.asset_file_count, 0);
     assert!(out_dir.join("assets").is_dir());
 }
@@ -128,9 +142,16 @@ async fn create_backup_escapes_single_quote_in_output_path() {
     // `'` is a legal filename character on Windows, Linux, and macOS; this
     // proves the VACUUM INTO literal-string escaping is correct.
     let out_dir = tmp.path().join("it's a backup dir");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    let manifest = create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(manifest.db_bytes > 0);
     assert!(out_dir.join("world.db").is_file());
 }
@@ -147,9 +168,16 @@ async fn restore_backup_round_trips_content() {
         .unwrap();
 
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     let restored_db = tmp.path().join("restored.db");
     let restored_assets = tmp.path().join("restored_assets");
@@ -192,9 +220,16 @@ async fn restore_backup_refuses_nonempty_destination_without_force() {
         .await
         .unwrap();
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     // An existing destination db file blocks a force-less restore.
     let restored_db = tmp.path().join("restored.db");
@@ -251,9 +286,16 @@ async fn restore_leaves_no_partial_destination_and_no_staging_residue() {
         .await
         .unwrap();
     let out_dir = tmp.path().join("out");
-    create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Seed DIFFERENT pre-existing destination content that force-restore
     // must fully replace.
@@ -359,9 +401,16 @@ async fn backup_and_restore_round_trip_preserves_nested_directory_structure() {
     tokio::fs::write(&deep_file, b"DEEP").await.unwrap();
 
     let out_dir = tmp.path().join("out");
-    let manifest = create_backup(&db_path, &assets_dir, &out_dir, &test_trash(tmp.path()))
-        .await
-        .unwrap();
+    let manifest = create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &test_trash(tmp.path()),
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(manifest.asset_file_count, 1);
 
     let backed_up_deep = out_dir
@@ -404,16 +453,30 @@ async fn create_backup_trashes_a_previous_snapshot_database() {
     let out_dir = tmp.path().join("out");
     let trash = test_trash(tmp.path());
 
-    create_backup(&db_path, &assets_dir, &out_dir, &trash)
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &trash,
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(
         trash.list().unwrap().is_empty(),
         "a first backup trashes nothing"
     );
-    create_backup(&db_path, &assets_dir, &out_dir, &trash)
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &trash,
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     let entries = trash.list().unwrap();
     assert_eq!(entries.len(), 1);
@@ -438,9 +501,16 @@ async fn restore_backup_trashes_the_replaced_assets_directory() {
         .unwrap();
     let out_dir = tmp.path().join("out");
     let trash = test_trash(tmp.path());
-    create_backup(&db_path, &assets_dir, &out_dir, &trash)
-        .await
-        .unwrap();
+    create_backup(
+        &db_path,
+        &assets_dir,
+        &out_dir,
+        &trash,
+        BackupKind::Manual,
+        None,
+    )
+    .await
+    .unwrap();
 
     let restored_db = tmp.path().join("restored.db");
     let restored_assets = tmp.path().join("restored_assets");

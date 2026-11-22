@@ -3025,6 +3025,234 @@ async fn admin_backup_reports_a_malformed_database_string_as_an_internal_error()
     );
 }
 
+/// Gives `state` a real, retaining trash inside `tmp`, so a deleted backup is observable there.
+fn with_retaining_trash(state: &mut AppState, tmp: &tempfile::TempDir) {
+    state.trash = Arc::new(crate::trash::Trash::new(
+        tmp.path().join("trash"),
+        crate::trash::TrashRetention::default(),
+    ));
+}
+
+/// Creates one backup through the route and returns its id, spacing the calls so ids differ.
+async fn post_backup(admin: &axum_test::TestServer) -> String {
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    admin.post("/api/admin/backup").await.assert_status_ok();
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    listing["entries"][0]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn every_backup_route_is_admin_only() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    seed_user(&state, "pleb").await;
+    let admin = login_server(&state, "root").await;
+    let user = login_server(&state, "pleb").await;
+    let id = post_backup(&admin).await;
+
+    user.get("/api/admin/backups")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.post("/api/admin/backups/prune")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.delete(&format!("/api/admin/backups/{id}"))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    user.post(&format!("/api/admin/backups/{id}/restore"))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // The refused restore stopped nothing and wrote no marker.
+    assert!(!*state.ws.shutdown.borrow());
+    assert!(!tmp.path().join("restore-pending.json").exists());
+}
+
+#[tokio::test]
+async fn backup_list_returns_newest_first_with_policy_and_root() {
+    let (mut state, tmp) = file_backed_state().await;
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(9),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let first = post_backup(&admin).await;
+    let second = post_backup(&admin).await;
+    assert_ne!(first, second);
+
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["entries"][0]["id"], second.as_str());
+    assert_eq!(listing["entries"][1]["id"], first.as_str());
+    assert_eq!(listing["entries"][0]["manifest"]["kind"], "manual");
+    assert!(listing["entries"][0]["total_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(listing["policy"]["keep_last"], 9);
+    assert!(listing["policy"]["keep_days"].is_null());
+    assert_eq!(
+        listing["root"],
+        tmp.path().join("backups").to_string_lossy().as_ref()
+    );
+}
+
+#[tokio::test]
+async fn delete_moves_the_backup_into_the_trash_and_unknown_ids_are_404() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let id = post_backup(&admin).await;
+
+    admin
+        .delete("/api/admin/backups/missing")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete("/api/admin/backups/has.dot")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    admin
+        .delete(&format!("/api/admin/backups/{id}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert!(listing["entries"].as_array().unwrap().is_empty());
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_backup_prunes_down_to_the_configured_count() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(2),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(post_backup(&admin).await);
+    }
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    let listed: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [ids[2].as_str(), ids[1].as_str()]);
+    assert_eq!(state.trash.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_prune_route_applies_the_policy_now() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let oldest = post_backup(&admin).await;
+    let middle = post_backup(&admin).await;
+    let newest = post_backup(&admin).await;
+
+    // No policy: nothing is removed.
+    let none: serde_json::Value = admin.post("/api/admin/backups/prune").await.json();
+    assert!(none["removed"].as_array().unwrap().is_empty());
+
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(1),
+        ..(*state.config).clone()
+    });
+    let admin = login_server(&state, "root").await;
+    let result: serde_json::Value = admin.post("/api/admin/backups/prune").await.json();
+    let mut removed: Vec<String> = result["removed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    removed.sort();
+    let mut expected = vec![oldest, middle];
+    expected.sort();
+    assert_eq!(removed, expected);
+    let listing: serde_json::Value = admin.get("/api/admin/backups").await.json();
+    assert_eq!(listing["entries"][0]["id"], newest.as_str());
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn restore_takes_a_pre_restore_backup_writes_the_marker_and_requests_shutdown() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let target = post_backup(&admin).await;
+    assert!(!*state.ws.shutdown.borrow());
+
+    let res = admin
+        .post(&format!("/api/admin/backups/{target}/restore"))
+        .await;
+    res.assert_status_ok();
+    let staged: serde_json::Value = res.json();
+    assert_eq!(staged["staged"], true);
+    let pre_id = staged["pre_restore_id"].as_str().unwrap().to_string();
+    assert_ne!(pre_id, target);
+
+    let marker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("restore-pending.json")).unwrap())
+            .unwrap();
+    assert_eq!(marker["id"], target.as_str());
+    assert!(marker["requested_at_ms"].as_u64().unwrap() > 0);
+    assert!(!tmp.path().join("restore-pending.json.tmp").exists());
+    assert!(
+        *state.ws.shutdown.borrow(),
+        "the server must be told to stop"
+    );
+
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    let pre = listing.iter().find(|e| e.id == pre_id).unwrap();
+    assert_eq!(pre.manifest.kind, crate::backup::BackupKind::PreRestore);
+    assert_eq!(
+        pre.manifest.note.as_deref(),
+        Some(format!("before restoring {target}").as_str())
+    );
+}
+
+#[tokio::test]
+async fn restore_of_an_unknown_id_changes_nothing() {
+    let (state, tmp) = file_backed_state().await;
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let only = post_backup(&admin).await;
+
+    admin
+        .post("/api/admin/backups/missing/restore")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert!(!tmp.path().join("restore-pending.json").exists());
+    assert!(!*state.ws.shutdown.borrow());
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    assert_eq!(listing.len(), 1);
+    assert_eq!(listing[0].id, only);
+}
+
+#[tokio::test]
+async fn serve_with_returns_once_the_server_requests_its_own_shutdown() {
+    let state = initialized_state().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws = state.ws.clone();
+    let serve = tokio::spawn(serve_with(
+        listener,
+        state,
+        std::future::pending::<()>(),
+        conn_serve::ConnLimits::default(),
+    ));
+    ws.trigger_shutdown();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), serve)
+        .await
+        .expect("serve_with must stop after trigger_shutdown")
+        .unwrap();
+    assert!(outcome.is_ok());
+}
+
 #[tokio::test]
 async fn security_response_headers_are_set_on_every_response_without_hsts_by_default() {
     let server = fresh_server().await;

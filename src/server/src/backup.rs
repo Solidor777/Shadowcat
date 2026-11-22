@@ -20,6 +20,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 use crate::trash::Trash;
 
@@ -57,13 +58,43 @@ pub enum BackupError {
     InvalidBackupDir(String, String),
 }
 
-/// Written to `<out_dir>/manifest.json` by [`create_backup`] and validated by
-/// `restore_backup` before any destination file is touched.
+/// Why a backup was taken. Recorded in `manifest.json` so the backup list can label it and a
+/// later scheduler can filter its own runs.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::backup::BackupManifest;
+/// use shadowcat::backup::BackupKind;
+///
+/// assert_eq!(serde_json::to_string(&BackupKind::PreRestore).unwrap(), "\"pre-restore\"");
+/// assert_eq!(BackupKind::default(), BackupKind::Manual);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub enum BackupKind {
+    /// An admin or CLI request.
+    #[default]
+    #[serde(rename = "manual")]
+    #[ts(rename = "manual")]
+    Manual,
+    /// The safety backup taken just before a restore is staged.
+    #[serde(rename = "pre-restore")]
+    #[ts(rename = "pre-restore")]
+    PreRestore,
+    /// A timer-driven backup.
+    #[serde(rename = "scheduled")]
+    #[ts(rename = "scheduled")]
+    Scheduled,
+}
+
+/// Written to `<out_dir>/manifest.json` by [`create_backup`] and validated by
+/// `restore_backup` before any destination file is touched. `kind` and `note` default when
+/// absent, so a manifest written before they existed still parses.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::{BackupKind, BackupManifest};
 ///
 /// let manifest = BackupManifest {
 ///     shadowcat_version: "0.1.0".to_string(),
@@ -72,12 +103,15 @@ pub enum BackupError {
 ///     source_assets_dir: "assets".to_string(),
 ///     asset_file_count: 3,
 ///     db_bytes: 4096,
+///     kind: BackupKind::Manual,
+///     note: None,
 /// };
 /// let json = serde_json::to_string(&manifest).unwrap();
 /// let round_tripped: BackupManifest = serde_json::from_str(&json).unwrap();
 /// assert_eq!(round_tripped, manifest);
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
 pub struct BackupManifest {
     /// Server version that wrote the backup (shown when restoring later).
     pub shadowcat_version: String,
@@ -91,6 +125,12 @@ pub struct BackupManifest {
     pub asset_file_count: u64,
     /// Byte size of the `world.db` snapshot; echoed in the CLI summary line.
     pub db_bytes: u64,
+    /// Why the backup was taken.
+    #[serde(default)]
+    pub kind: BackupKind,
+    /// Free-text label the requester attached, if any.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// True when `path` does not exist, or exists as an empty directory. A path
@@ -175,7 +215,7 @@ fn copy_dir_recursive<'a>(
 /// rather than being removed. Does not check `out_dir` for prior contents — callers
 /// that need the refuse-non-empty-without-force gate call
 /// [`dir_is_empty_or_absent`] first (the CLI layer owns that decision; see
-/// `main::run_backup`).
+/// `main::run_backup`). `kind` and `note` are recorded in the manifest.
 ///
 /// # Examples
 ///
@@ -191,6 +231,8 @@ fn copy_dir_recursive<'a>(
 ///         std::path::PathBuf::from("trash"),
 ///         shadowcat::trash::TrashRetention::default(),
 ///     ),
+///     shadowcat::backup::BackupKind::Manual,
+///     None,
 /// )
 /// .await?;
 /// println!("{} asset file(s), {} db bytes", manifest.asset_file_count, manifest.db_bytes);
@@ -202,6 +244,8 @@ pub async fn create_backup(
     assets_dir: &Path,
     out_dir: &Path,
     trash: &Trash,
+    kind: BackupKind,
+    note: Option<String>,
 ) -> Result<BackupManifest, BackupError> {
     tokio::fs::create_dir_all(out_dir).await?;
 
@@ -243,6 +287,8 @@ pub async fn create_backup(
         source_assets_dir: assets_dir.to_string_lossy().to_string(),
         asset_file_count,
         db_bytes,
+        kind,
+        note,
     };
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     tokio::fs::write(out_dir.join("manifest.json"), manifest_json).await?;
@@ -388,6 +434,8 @@ pub async fn restore_backup(
 
     Ok(())
 }
+
+pub mod catalog;
 
 #[cfg(test)]
 mod tests;
