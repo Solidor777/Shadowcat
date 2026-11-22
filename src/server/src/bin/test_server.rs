@@ -231,6 +231,7 @@ async fn main() -> anyhow::Result<()> {
     shadowcat::http::assets::uploads::spawn_sweeper(
         state.uploads.clone(),
         state.upload_rate.clone(),
+        state.trash.clone(),
     );
     let config = state.config.clone();
     let app = http::router(state).await;

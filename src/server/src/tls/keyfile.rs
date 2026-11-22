@@ -14,14 +14,17 @@
 //! restrict one of those is logged and non-fatal because the key file's own protection is what
 //! guards the secret.
 //!
-//! INVARIANT: A failed write removes its `<key>.tmp` temporary file, which may hold secret bytes.
-//! The removal itself is best-effort.
+//! INVARIANT: A failed write moves its `<key>.tmp` temporary file, which may hold secret bytes,
+//! into the trash. The file keeps the owner-only protection it was restricted with, because a
+//! rename on one volume carries the file's mode and ACL with it. The move is best-effort.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
 use std::io::Write;
 use std::path::Path;
+
+use crate::trash::Trash;
 
 /// Creates `dir` (and any missing parents) and restricts every directory it CREATED to the
 /// current user. Directories that already existed are left exactly as they are.
@@ -51,18 +54,23 @@ pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
 /// Writes `contents` to `path` readable only by the current user: the bytes go to a sibling
 /// temporary file that is protected BEFORE any secret byte is written, then renamed over `path`
 /// so a reader never observes a partial key. Fails (writing nothing secret, leaving no temporary
-/// file) when the file cannot be protected.
+/// file) when the file cannot be protected. A temporary file left by a failed write moves into
+/// `trash`.
 ///
 /// # Examples
 ///
 /// ```
 /// let base = tempfile::tempdir().unwrap();
 /// let path = base.path().join("tls").join("key.pem");
-/// shadowcat::tls::keyfile::write_private(&path, b"secret").unwrap();
+/// let trash = shadowcat::trash::Trash::new(
+///     base.path().join("trash"),
+///     shadowcat::trash::TrashRetention::default(),
+/// );
+/// shadowcat::tls::keyfile::write_private(&path, b"secret", &trash).unwrap();
 /// assert_eq!(std::fs::read(&path).unwrap(), b"secret");
 /// ```
-pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    write_private_with(path, contents, protect_file)
+pub fn write_private(path: &Path, contents: &[u8], trash: &Trash) -> std::io::Result<()> {
+    write_private_with(path, contents, protect_file, trash)
 }
 
 /// [`write_private`] with the protection step injected, so a refusing OS can be simulated.
@@ -70,6 +78,7 @@ fn write_private_with(
     path: &Path,
     contents: &[u8],
     protect: impl FnOnce(&Path) -> std::io::Result<()>,
+    trash: &Trash,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         ensure_private_dir(parent)?;
@@ -86,8 +95,8 @@ fn write_private_with(
         std::fs::rename(&tmp, path)
     })();
     if result.is_err() {
-        // Best effort: the temporary file may hold secret bytes.
-        let _ = std::fs::remove_file(&tmp);
+        // Best effort: the temporary file may hold secret bytes, so it leaves the key directory.
+        let _ = trash.discard_sync(&tmp);
     }
     result
 }
@@ -153,7 +162,11 @@ fn protect_file(file: &Path) -> std::io::Result<()> {
 /// # #[cfg(windows)] {
 /// let dir = tempfile::tempdir().unwrap();
 /// let p = dir.path().join("key.pem");
-/// shadowcat::tls::keyfile::write_private(&p, b"x").unwrap();
+/// let trash = shadowcat::trash::Trash::new(
+///     dir.path().join("trash"),
+///     shadowcat::trash::TrashRetention::default(),
+/// );
+/// shadowcat::tls::keyfile::write_private(&p, b"x", &trash).unwrap();
 /// let sddl = shadowcat::tls::keyfile::dacl_sddl(&p).unwrap();
 /// assert!(sddl.starts_with("D:P"));
 /// # }

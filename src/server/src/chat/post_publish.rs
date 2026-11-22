@@ -251,6 +251,8 @@ pub struct PostPublishDeps {
     /// `resolve_preview_image`/`resolve_thumbnail_asset` jobs targeting the
     /// identical URL -- see `PreviewFetchLocks`'s doc.
     pub preview_fetch_locks: PreviewFetchLocks,
+    /// Where a failed asset commit's staged files go.
+    pub trash: Arc<crate::trash::Trash>,
 }
 
 /// Runs every queued `PendingEnrichment` for `message_id` concurrently, then
@@ -279,6 +281,7 @@ pub async fn run_pending_enrichments(
         retain_originals,
         write_barrier,
         preview_fetch_locks,
+        trash,
     } = deps;
     let mut set = tokio::task::JoinSet::new();
     for job in jobs {
@@ -289,6 +292,7 @@ pub async fn run_pending_enrichments(
             retain_originals,
             write_barrier: write_barrier.clone(),
             preview_fetch_locks: preview_fetch_locks.clone(),
+            trash: trash.clone(),
         };
         set.spawn(async move { resolve_job(deps, world_id, job).await });
     }
@@ -429,6 +433,8 @@ struct FetchDeps {
     write_barrier: Arc<tokio::sync::RwLock<()>>,
     /// Per-(world, URL) fetch-lock registry -- see `PreviewFetchLocks`'s doc.
     preview_fetch_locks: PreviewFetchLocks,
+    /// Where a failed asset commit's staged files go.
+    trash: Arc<crate::trash::Trash>,
 }
 
 /// Dispatches one job to its resolver. `None` on any failure (network,
@@ -504,6 +510,7 @@ async fn resolve_preview_image(
         retain_originals,
         write_barrier,
         preview_fetch_locks,
+        trash,
     } = deps;
     // The landed address's own row joins the read and write set, so an asset already recorded
     // under it is reused and a new asset is recorded on it.
@@ -582,6 +589,7 @@ async fn resolve_preview_image(
                     retain_originals,
                 },
                 now,
+                &trash,
             )
             .await
             .ok()?
@@ -722,6 +730,7 @@ async fn resolve_inline_image(
         retain_originals,
         write_barrier,
         preview_fetch_locks,
+        trash,
     } = deps;
     let lock_keys = [(world_id, image_url.clone())];
     with_preview_url_locks(&preview_fetch_locks, &lock_keys, move || async move {
@@ -771,6 +780,7 @@ async fn resolve_inline_image(
                     retain_originals,
                 },
                 now,
+                &trash,
             )
             .await
             .ok()?
@@ -851,6 +861,7 @@ async fn resolve_thumbnail_asset(
         retain_originals,
         write_barrier,
         preview_fetch_locks,
+        trash,
     } = deps;
     // Same per-(world, URL) exclusion + re-check-after-lock treatment as
     // `resolve_preview_image`, keyed by the thumbnail's own URL (the same key
@@ -888,6 +899,7 @@ async fn resolve_thumbnail_asset(
                     retain_originals,
                 },
                 now,
+                &trash,
             )
             .await
             .ok()?

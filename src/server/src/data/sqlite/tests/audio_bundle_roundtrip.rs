@@ -111,7 +111,10 @@ async fn bundle_export_import_carries_playlists_and_the_audio_state_singleton() 
         staged_assets: vec![],
         staged_siblings: vec![],
     };
-    target.import_world(import_data).await.unwrap();
+    target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     let imported_playlists = target
         .query_documents(world, PLAYLIST_DOC_TYPE)
@@ -132,4 +135,12 @@ async fn bundle_export_import_carries_playlists_and_the_audio_state_singleton() 
     let carried: AudioStateEngine =
         serde_json::from_value(imported_states[0].engine.clone().unwrap()).unwrap();
     assert_eq!(carried.shuffle_seed, 7);
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

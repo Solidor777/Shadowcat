@@ -1270,8 +1270,12 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
     assert_ne!(target_owner, owner);
 
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    let summary = target.import_world(import_data).await.unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     assert_eq!(summary.world_id, w.id);
     assert_eq!(summary.skipped_members, 0);
@@ -1414,7 +1418,10 @@ async fn import_world_nulls_owner_when_username_unresolvable() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     // `gm4` (the sole world_members row) also doesn't exist on target.
     assert_eq!(summary.skipped_members, 1);
 
@@ -1458,7 +1465,10 @@ async fn import_world_rejects_world_id_collision_before_writing_any_row() {
         staged_siblings: vec![],
     };
 
-    let err = r.import_world(import_data).await.unwrap_err();
+    let err = r
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Conflict(_)));
 
     // Zero partial state: still exactly the one original document, not two.
@@ -1524,7 +1534,10 @@ async fn import_world_rejects_duplicate_singleton_document_before_writing_any_ro
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Conflict(_)));
 
     // Zero partial state: the whole transaction (including the `worlds`
@@ -1577,7 +1590,10 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.skipped_fog, 1);
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM explored_fog WHERE world_id = ?")
@@ -1670,7 +1686,10 @@ async fn import_world_inserts_world_invites_row() {
         staged_assets: Vec::new(),
         staged_siblings: vec![],
     };
-    target.import_world(import_data).await.unwrap();
+    target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     let row: (String, String, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT secret_hash, role, created_by, consumed_by FROM world_invites WHERE id = ?",
@@ -1742,7 +1761,10 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::BadPath(_)));
 
     // Transaction did not commit: neither the world nor its document exist.
@@ -1818,7 +1840,10 @@ async fn import_world_rejects_a_document_with_a_non_v4_v7_id() {
         staged_siblings: vec![],
     };
 
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, DataError::OpFailed(ref m) if m.contains("v4 or v7")),
         "a bundle row with a non-v4/v7 id must be rejected, got {err:?}"
@@ -1935,13 +1960,17 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
         .await
         .unwrap();
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
     assert_eq!(
         import_data.staged_siblings.len(),
         1,
         "only the thumb travelled"
     );
-    target.import_world(import_data).await.unwrap();
+    target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
 
     let got = target.get_asset(asset_id).await.unwrap().unwrap();
     assert_eq!(got.folder_id, Some(folder.id));
@@ -2065,7 +2094,10 @@ async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-cycle", vec![a, b]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::Sqlx(_)));
 
     let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
@@ -2095,7 +2127,10 @@ async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-dup-id", vec![first, second, child]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     match &err {
         DataError::OpFailed(m) => assert!(
             m.contains(&dup_id.to_string()),
@@ -2127,7 +2162,10 @@ async fn import_world_rejects_a_self_parented_note() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-self", vec![note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(matches!(err, DataError::OpFailed(m) if m == "document cannot be its own parent"));
 
     let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
@@ -2153,7 +2191,10 @@ async fn import_world_rejects_a_note_parented_to_an_actor() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-wrong-type", vec![actor, note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "note parent must be a note in the same world")
     );
@@ -2182,7 +2223,10 @@ async fn import_world_rejects_a_parented_combat_document() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-combat", vec![parent, combat]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "a combat document cannot have a parent")
     );
@@ -2219,7 +2263,10 @@ async fn import_world_accepts_a_child_note_sorting_before_its_parent() {
         .await
         .unwrap();
     let import_data = placement_import_data(world_id, "gm-order", vec![child.clone(), parent]);
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.world_id, world_id);
 
     let stored_parent: Option<String> =
@@ -2249,7 +2296,10 @@ async fn import_world_accepts_a_valid_asset_folder_tree() {
     // Child listed before its parent, same ordering hazard as the note test
     // above, over the OTHER doc_type `check_parent_placement` covers.
     let import_data = placement_import_data(world_id, "gm-folders", vec![child, root]);
-    let summary = target.import_world(import_data).await.unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.world_id, world_id);
 
     let stored_parent: Option<String> =
@@ -2285,7 +2335,10 @@ async fn import_world_rejects_a_document_whose_own_scope_names_a_different_world
     };
 
     let import_data = placement_import_data(world_id, "gm-scope-orphan", vec![note]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
     );
@@ -2329,7 +2382,10 @@ async fn import_world_rejects_when_only_the_parent_document_has_a_foreign_scope(
     let child = note_doc(202, world_id, "child", Some(parent.id));
 
     let import_data = placement_import_data(world_id, "gm-scope-parent", vec![parent, child]);
-    let err = target.import_world(import_data).await.unwrap_err();
+    let err = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap_err();
     assert!(
         matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
     );
@@ -2473,7 +2529,10 @@ async fn import_world_refuses_a_bundle_document_a_validator_rejects() {
         .unwrap()
         .with_modules_dir(dir.path());
     let err = target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .unwrap_err();
     let DataError::OpFailed(msg) = err else {
@@ -2524,7 +2583,10 @@ async fn import_world_rejects_a_schema_violating_bundle_before_any_validator_run
         .unwrap()
         .with_modules_dir(dir.path());
     let err = target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -2556,7 +2618,10 @@ async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
         .unwrap()
         .with_modules_dir(dir.path());
     target
-        .import_world(import_data_with_settings(&export_data, settings))
+        .import_world(
+            import_data_with_settings(&export_data, settings),
+            &test_trash(),
+        )
         .await
         .expect("a bundle whose documents pass their declared validators imports cleanly");
 
@@ -2615,8 +2680,12 @@ async fn fog_on_two_levels_of_one_scene_round_trips_with_both_levels_intact() {
         .await
         .unwrap();
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    let summary = target.import_world(import_data).await.unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(summary.skipped_fog, 0);
 
     let target_gm = sqlx::query_scalar::<_, String>("SELECT id FROM users WHERE username = ?")
@@ -2680,8 +2749,12 @@ async fn shared_pool_fog_row_round_trips_without_a_username() {
         .await
         .unwrap();
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    let summary = target.import_world(import_data).await.unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(
         summary.skipped_fog, 0,
         "a pool row must never be counted as skipped"
@@ -2730,8 +2803,12 @@ async fn orphan_fog_row_is_classified_apart_from_the_pool_and_skipped_and_counte
 
     let target = repo().await;
     let import_tmp = tempfile::tempdir().unwrap();
-    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
-    let summary = target.import_world(import_data).await.unwrap();
+    let import_data =
+        crate::world_bundle::read_bundle(&tar_path, import_tmp.path(), &test_trash()).unwrap();
+    let summary = target
+        .import_world(import_data, &test_trash())
+        .await
+        .unwrap();
     assert_eq!(
         summary.skipped_fog, 1,
         "the orphan row is skipped-and-counted, not silently absorbed"
@@ -2744,4 +2821,12 @@ async fn orphan_fog_row_is_classified_apart_from_the_pool_and_skipped_and_counte
             .is_none(),
         "an orphan row must never be merged into the pool bucket"
     );
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

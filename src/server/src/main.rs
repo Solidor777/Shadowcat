@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
     shadowcat::http::assets::uploads::spawn_sweeper(
         state.uploads.clone(),
         state.upload_rate.clone(),
+        state.trash.clone(),
     );
     // The first pass runs at once, so entries that expired while the server was down are removed
     // at startup; a `disabled` trash has nothing to sweep and starts no task.
@@ -173,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
         state.repo.clone(),
         config.assets_path(),
         state.write_barrier.clone(),
+        state.trash.clone(),
     );
     // `http::serve_with` runs `http::conn_serve::serve_router` (per-connection `ConnMeta` connect-info,
     // so `throttle::ClientIp` and the scheme decider see a real peer; header-read, HTTP/2 idle,
@@ -240,8 +242,9 @@ async fn run_backup(config: &Config, out_dir: &std::path::Path, force: bool) -> 
             out_dir.display()
         );
     }
+    let trash = shadowcat::trash::Trash::from_config(config);
     let manifest =
-        shadowcat::backup::create_backup(&db_path, &config.assets_path(), out_dir).await?;
+        shadowcat::backup::create_backup(&db_path, &config.assets_path(), out_dir, &trash).await?;
     println!(
         "backup written to {}: {} asset file(s), {} db byte(s), shadowcat {}",
         out_dir.display(),
@@ -269,6 +272,7 @@ fn run_tls_regenerate(config: &Config) -> anyhow::Result<()> {
         &shadowcat::tls::selfsigned::SanSources::detect(config.tls_advertise_hostname),
         &shadowcat::tls::selfsigned::RcgenGenerator,
         time::OffsetDateTime::now_utc(),
+        &shadowcat::trash::Trash::from_config(config),
     )?;
     println!(
         "regenerated {}: sha256 {}",
@@ -294,7 +298,9 @@ async fn run_restore(
             config.db
         )
     })?;
-    shadowcat::backup::restore_backup(backup_dir, &db_path, &config.assets_path(), force).await?;
+    let trash = shadowcat::trash::Trash::from_config(config);
+    shadowcat::backup::restore_backup(backup_dir, &db_path, &config.assets_path(), force, &trash)
+        .await?;
     println!(
         "restored {} into db={} assets={}",
         backup_dir.display(),

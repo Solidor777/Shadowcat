@@ -52,15 +52,32 @@ fn channel_writer_blocks_the_writer_thread_once_the_channel_is_full() {
     assert!(second_write_done.load(std::sync::atomic::Ordering::SeqCst));
 }
 
+/// A trash under `dir` that keeps what it receives, so a test can see where a file went.
+fn kept_trash(dir: &std::path::Path) -> std::sync::Arc<crate::trash::Trash> {
+    std::sync::Arc::new(crate::trash::Trash::new(
+        dir.join("trash"),
+        crate::trash::TrashRetention::default(),
+    ))
+}
+
+/// Asserts `trash` holds exactly one entry whose original file name is `name`.
+fn assert_trashed(trash: &crate::trash::Trash, name: &str) {
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1, "the guarded file lands in the trash");
+    assert_eq!(entries[0].manifest.original_path.file_name().unwrap(), name);
+}
+
 #[test]
-fn temp_file_guard_removes_the_file_on_ordinary_drop() {
+fn temp_file_guard_moves_the_file_to_the_trash_on_ordinary_drop() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("guarded.tmp");
     std::fs::write(&path, b"x").unwrap();
+    let trash = kept_trash(tmp.path());
     {
-        let _guard = TempFileGuard::new(path.clone());
+        let _guard = TempFileGuard::new(path.clone(), trash.clone());
     }
     assert!(!path.exists());
+    assert_trashed(&trash, "guarded.tmp");
 }
 
 #[test]
@@ -68,9 +85,11 @@ fn temp_file_guard_keep_prevents_removal() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("kept.tmp");
     std::fs::write(&path, b"x").unwrap();
-    let guard = TempFileGuard::new(path.clone());
+    let trash = kept_trash(tmp.path());
+    let guard = TempFileGuard::new(path.clone(), trash.clone());
     guard.keep();
     assert!(path.exists());
+    assert!(trash.list().unwrap().is_empty());
 }
 
 /// Models the exact shape `import_world` relies on: a guard held across
@@ -81,9 +100,12 @@ fn temp_file_guard_keep_prevents_removal() {
 /// The guard local goes out of scope on that early return exactly as it
 /// would on any other path, so cleanup is unconditional.
 #[test]
-fn temp_file_guard_removes_the_file_on_early_return_via_question_mark() {
-    fn helper(path: std::path::PathBuf) -> Result<(), AppError> {
-        let _guard = TempFileGuard::new(path);
+fn temp_file_guard_trashes_the_file_on_early_return_via_question_mark() {
+    fn helper(
+        path: std::path::PathBuf,
+        trash: std::sync::Arc<crate::trash::Trash>,
+    ) -> Result<(), AppError> {
+        let _guard = TempFileGuard::new(path, trash);
         let inner: Result<(), AppError> = Err(AppError::Internal);
         inner?;
         Ok(())
@@ -91,21 +113,25 @@ fn temp_file_guard_removes_the_file_on_early_return_via_question_mark() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("early-return.tmp");
     std::fs::write(&path, b"x").unwrap();
-    assert!(helper(path.clone()).is_err());
+    let trash = kept_trash(tmp.path());
+    assert!(helper(path.clone(), trash.clone()).is_err());
     assert!(!path.exists());
+    assert_trashed(&trash, "early-return.tmp");
 }
 
 /// A genuine Rust panic while the guard is live — belt-and-suspenders on
 /// top of the `?`-based test above, confirming `Drop::drop` also runs
 /// during unwind, not just on a normal early return.
 #[test]
-fn temp_file_guard_removes_the_file_on_panic_unwind() {
+fn temp_file_guard_trashes_the_file_on_panic_unwind() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("panicked.tmp");
     std::fs::write(&path, b"x").unwrap();
+    let trash = kept_trash(tmp.path());
     let path_for_panic = path.clone();
+    let trash_for_panic = trash.clone();
     let result = std::panic::catch_unwind(move || {
-        let _guard = TempFileGuard::new(path_for_panic);
+        let _guard = TempFileGuard::new(path_for_panic, trash_for_panic);
         panic!("simulated panic while the guard is live");
     });
     assert!(result.is_err());
@@ -113,4 +139,5 @@ fn temp_file_guard_removes_the_file_on_panic_unwind() {
         !path.exists(),
         "guard must remove the file during panic unwind"
     );
+    assert_trashed(&trash, "panicked.tmp");
 }

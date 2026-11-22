@@ -27,6 +27,7 @@ use time::{Duration, OffsetDateTime};
 use super::keyfile;
 use super::resolver::LoadedCert;
 use super::TlsError;
+use crate::trash::Trash;
 
 /// File name of the persisted certificate under the TLS directory.
 pub const CERT_FILE: &str = "selfsigned-cert.pem";
@@ -626,8 +627,10 @@ pub fn drifted_addresses(cert: &LoadedCert, eligible: &[IpAddr]) -> Vec<IpAddr> 
 ///
 /// ```
 /// use shadowcat::tls::selfsigned::{load_or_generate, RcgenGenerator, SanSources};
+/// use shadowcat::trash::{Trash, TrashRetention};
 ///
-/// let out = load_or_generate(None, &[], &SanSources::default(), &RcgenGenerator, time::OffsetDateTime::now_utc()).unwrap();
+/// let trash = Trash::new(std::path::PathBuf::from("trash"), TrashRetention::Disabled);
+/// let out = load_or_generate(None, &[], &SanSources::default(), &RcgenGenerator, time::OffsetDateTime::now_utc(), &trash).unwrap();
 /// assert!(!out.persisted);
 /// ```
 #[derive(Debug)]
@@ -659,10 +662,10 @@ fn read_persisted(dir: &Path) -> Result<LoadedCert, TlsError> {
 }
 
 /// Writes a generated pair under `dir` (key protected owner-only).
-fn persist(dir: &Path, g: &Generated) -> Result<(), TlsError> {
-    keyfile::write_private(&dir.join(KEY_FILE), g.key_pem.as_bytes())
+fn persist(dir: &Path, g: &Generated, trash: &Trash) -> Result<(), TlsError> {
+    keyfile::write_private(&dir.join(KEY_FILE), g.key_pem.as_bytes(), trash)
         .map_err(|e| TlsError::Io(format!("{}: {e}", dir.join(KEY_FILE).display())))?;
-    keyfile::write_private(&dir.join(CERT_FILE), g.cert_pem.as_bytes())
+    keyfile::write_private(&dir.join(CERT_FILE), g.cert_pem.as_bytes(), trash)
         .map_err(|e| TlsError::Io(format!("{}: {e}", dir.join(CERT_FILE).display())))?;
     Ok(())
 }
@@ -676,11 +679,13 @@ fn persist(dir: &Path, g: &Generated) -> Result<(), TlsError> {
 ///
 /// ```
 /// use shadowcat::tls::selfsigned::{load_or_generate, RcgenGenerator, SanSources};
+/// use shadowcat::trash::{Trash, TrashRetention};
 ///
 /// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
 /// let now = time::OffsetDateTime::now_utc();
-/// let first = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now).unwrap();
-/// let second = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now).unwrap();
+/// let first = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now, &trash).unwrap();
+/// let second = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now, &trash).unwrap();
 /// assert_eq!(first.cert.fingerprint(), second.cert.fingerprint());
 /// ```
 pub fn load_or_generate(
@@ -689,6 +694,7 @@ pub fn load_or_generate(
     sources: &SanSources,
     generator: &dyn CertGenerator,
     now: OffsetDateTime,
+    trash: &Trash,
 ) -> Result<SelfSigned, TlsError> {
     let mut regenerated = None;
     if let Some(dir) = dir {
@@ -719,7 +725,7 @@ pub fn load_or_generate(
     let sans = SanSet::assemble(tls_hostnames, sources);
     let g = generator.generate(&sans, now)?;
     let (persisted, persist_error) = match dir {
-        Some(dir) => match persist(dir, &g) {
+        Some(dir) => match persist(dir, &g, trash) {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
         },
@@ -753,11 +759,13 @@ pub fn cert_path(dir: &Path) -> PathBuf {
 ///
 /// ```
 /// use shadowcat::tls::selfsigned::{force_regenerate, load_or_generate, RcgenGenerator, SanSources};
+/// use shadowcat::trash::{Trash, TrashRetention};
 ///
 /// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
 /// let now = time::OffsetDateTime::now_utc();
-/// let a = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now).unwrap();
-/// let b = force_regenerate(dir.path(), &[], &SanSources::default(), &RcgenGenerator, now).unwrap();
+/// let a = load_or_generate(Some(dir.path()), &[], &SanSources::default(), &RcgenGenerator, now, &trash).unwrap();
+/// let b = force_regenerate(dir.path(), &[], &SanSources::default(), &RcgenGenerator, now, &trash).unwrap();
 /// assert_ne!(a.cert.fingerprint(), b.fingerprint());
 /// ```
 pub fn force_regenerate(
@@ -766,9 +774,10 @@ pub fn force_regenerate(
     sources: &SanSources,
     generator: &dyn CertGenerator,
     now: OffsetDateTime,
+    trash: &Trash,
 ) -> Result<Arc<LoadedCert>, TlsError> {
     let sans = SanSet::assemble(tls_hostnames, sources);
     let g = generator.generate(&sans, now)?;
-    persist(dir, &g)?;
+    persist(dir, &g, trash)?;
     Ok(Arc::new(g.loaded))
 }

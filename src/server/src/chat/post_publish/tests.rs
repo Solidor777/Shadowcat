@@ -54,7 +54,16 @@ fn test_fetch_deps(
         retain_originals: true,
         write_barrier: test_write_barrier(),
         preview_fetch_locks,
+        trash: test_trash(),
     }
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> Arc<crate::trash::Trash> {
+    Arc::new(crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    ))
 }
 
 /// A publish helper: sends a plain message and returns its message id --
@@ -543,6 +552,7 @@ async fn run_pending_enrichments_appends_new_image_segment_for_an_inline_image_j
             retain_originals: true,
             write_barrier: test_write_barrier(),
             preview_fetch_locks: test_preview_fetch_locks(),
+            trash: test_trash(),
         },
         message_id,
         world.id,
@@ -665,6 +675,7 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
             retain_originals: true,
             write_barrier: test_write_barrier(),
             preview_fetch_locks: test_preview_fetch_locks(),
+            trash: test_trash(),
         },
         message_id,
         world.id,
@@ -758,6 +769,7 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
             retain_originals: true,
             write_barrier: test_write_barrier(),
             preview_fetch_locks: test_preview_fetch_locks(),
+            trash: test_trash(),
         },
         message_id,
         world.id,
@@ -889,6 +901,7 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
             retain_originals: true,
             write_barrier: test_write_barrier(),
             preview_fetch_locks: test_preview_fetch_locks(),
+            trash: test_trash(),
         },
         message_id,
         world.id,
@@ -1352,6 +1365,7 @@ async fn run_pending_enrichments_serves_candidates_sharing_a_preview_url_with_on
             retain_originals: true,
             write_barrier: test_write_barrier(),
             preview_fetch_locks: test_preview_fetch_locks(),
+            trash: test_trash(),
         },
         message_id,
         world.id,

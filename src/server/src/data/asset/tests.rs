@@ -25,6 +25,7 @@ async fn create_asset_from_bytes_and_upload_produce_identical_asset_shape() {
             retain_originals: true,
         },
         1_234,
+        &test_trash(),
     )
     .await
     .unwrap();
@@ -67,6 +68,7 @@ async fn commit_staged_asset_insert_failure_removes_the_renamed_file() {
             retain_originals: true,
         },
         1_234,
+        &test_trash(),
     )
     .await
     .unwrap_err();
@@ -111,6 +113,7 @@ async fn create_asset_from_bytes_created_by_none_is_accepted() {
             retain_originals: true,
         },
         5_678,
+        &test_trash(),
     )
     .await
     .unwrap();
@@ -140,10 +143,20 @@ async fn move_asset_files_removes_stale_sheet_siblings_absent_at_the_staged_stem
             .unwrap();
     }
 
-    move_asset_files(&staged, &final_path).await.unwrap();
+    move_asset_files(&staged, &final_path, &test_trash())
+        .await
+        .unwrap();
 
     for p in crate::data::asset::process::sibling_paths(&final_path) {
         assert!(!p.exists(), "stale sibling left behind: {}", p.display());
     }
     assert!(final_path.exists());
+}
+
+/// A trash that removes outright: these tests never inspect trashed files.
+fn test_trash() -> crate::trash::Trash {
+    crate::trash::Trash::new(
+        std::env::temp_dir().join("shadowcat-test-trash"),
+        crate::trash::TrashRetention::Disabled,
+    )
 }

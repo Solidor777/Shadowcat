@@ -338,7 +338,8 @@ impl SqliteRepository {
     /// writer connection for the entire call, including the asset-rename
     /// loop — every other server write (chat, moves, document edits) blocks
     /// for the whole import, the same trade-off `POST /api/admin/backup`
-    /// already accepts for its snapshot.
+    /// already accepts for its snapshot. Staged files left by a failed rename
+    /// move into `trash`.
     ///
     /// # Examples
     ///
@@ -371,13 +372,21 @@ impl SqliteRepository {
     ///     staged_assets: vec![],
     ///     staged_siblings: vec![],
     /// };
-    /// let summary = repo.import_world(data).await?;
+    /// let trash = shadowcat::trash::Trash::new(
+    ///     std::path::PathBuf::from("trash"),
+    ///     shadowcat::trash::TrashRetention::Disabled,
+    /// );
+    /// let summary = repo.import_world(data, &trash).await?;
     /// assert_eq!(summary.world_id, world_id);
     /// assert!(repo.get_world(world_id).await?.is_some());
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn import_world(&self, data: WorldImportData) -> Result<ImportSummary, DataError> {
+    pub async fn import_world(
+        &self,
+        data: WorldImportData,
+        trash: &crate::trash::Trash,
+    ) -> Result<ImportSummary, DataError> {
         let mut tx = self.pool.begin().await?;
         let world = data.manifest.world_id;
 
@@ -917,10 +926,10 @@ impl SqliteRepository {
                 .join(name);
             if let Err(e) = tokio::fs::rename(staged, &dest).await {
                 for done in &finalized {
-                    let _ = tokio::fs::remove_file(done).await;
+                    let _ = trash.discard(done).await;
                 }
                 for (_, remaining) in &moves {
-                    let _ = tokio::fs::remove_file(remaining).await;
+                    let _ = trash.discard(remaining).await;
                 }
                 return Err(DataError::OpFailed(format!(
                     "failed to finalize imported asset file {name}: {e}"

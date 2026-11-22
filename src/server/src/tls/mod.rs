@@ -37,6 +37,7 @@ use time::OffsetDateTime;
 use ts_rs::TS;
 
 use crate::config::{AcmeChallenge, Config, TlsMode};
+use crate::trash::Trash;
 
 use self::pem::{PemPaths, PemStamp};
 use self::resolver::{CertResolver, LoadedCert, Snapshot};
@@ -312,6 +313,8 @@ struct Settings {
     sources: SanSources,
     /// Certificate generator.
     generator: Arc<dyn CertGenerator>,
+    /// Where a key temporary file left by a failed write goes.
+    trash: Trash,
 }
 
 /// The TLS subsystem's runtime handle: the swap cell the listener reads and the status the HTTP
@@ -431,6 +434,7 @@ impl TlsRuntime {
             &settings.sources,
             settings.generator.as_ref(),
             now,
+            &settings.trash,
         ) {
             Ok(ss) => ss,
             Err(e) => {
@@ -710,6 +714,7 @@ impl TlsRuntime {
             &self.settings.sources,
             self.settings.generator.as_ref(),
             now,
+            &self.settings.trash,
         ) {
             Ok(replacement) => {
                 if let Some(err) = &replacement.persist_error {
@@ -882,6 +887,7 @@ impl Settings {
             bind_port,
             sources,
             generator,
+            trash: Trash::from_config(config),
         }
     }
 }
