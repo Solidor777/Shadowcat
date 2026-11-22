@@ -159,6 +159,9 @@ export interface ResolvedArtTransform {
   scale: number;
   /** Multiply tint, packed `0xRRGGBB`; absent for none. */
   tint?: number;
+  /** Direction the art faces as drawn, degrees in the `TokenNodeSpec.rotation` convention; the
+   * backend turns the art by the token's rotation minus this. Absent means the art faces +x. */
+  facing?: number;
 }
 
 /** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is

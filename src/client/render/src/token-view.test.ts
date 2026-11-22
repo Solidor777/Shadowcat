@@ -389,6 +389,13 @@ test("resolves a transform's anchor, scale and packed tint on an image visual", 
   });
 });
 
+test("resolves a transform's facing onto the resolved art transform and omits it when unset", () => {
+  const { spec } = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 270 } });
+  expect((spec!.visual as { transform: { facing?: number } }).transform.facing).toBe(270);
+  const unset = specFor({ kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1 } });
+  expect("facing" in (unset.spec!.visual as { transform: object }).transform).toBe(false);
+});
+
 test("resolves a transform with no tint on an animated visual, leaving tint absent", () => {
   const { spec, assets } = specFor({ kind: "animated", source: { type: "frames", frames: ["f1"] }, fps: 4, loop: true, transform: { anchor: { x: 0.5, y: 0.5 }, scale: 2 } });
   expect(spec!.visual).toEqual({

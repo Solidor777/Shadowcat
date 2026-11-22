@@ -459,7 +459,7 @@ function resolveFace(
 
 /** Structural validity of an optional `VisualTransform` on an `"image"`/`"animated"` visual: absent
  * (`undefined`/`null`) is valid; present needs finite `anchor.x`/`anchor.y`, a finite positive
- * `scale`, and a `#rrggbb` string `tint` when set. A hand-edited or legacy document can carry a
+ * `scale`, a `#rrggbb` string `tint` when set, and a finite `facing` in `[0, 360)` when set. A hand-edited or legacy document can carry a
  * value the type system forbids, so the check mirrors the server's `VisualTransform::validate`
  * and fails the whole visual closed. Not exported (folded into `resolveTokenVisual`'s public
  * surface).
@@ -476,6 +476,7 @@ function isValidTransform(t: VisualTransform | null | undefined): boolean {
   if (typeof t !== "object" || !t.anchor || typeof t.anchor !== "object") return false;
   if (!Number.isFinite(t.anchor.x) || !Number.isFinite(t.anchor.y)) return false;
   if (!Number.isFinite(t.scale) || t.scale <= 0) return false;
+  if (t.facing !== undefined && t.facing !== null && !(Number.isFinite(t.facing) && t.facing >= 0 && t.facing < 360)) return false;
   if (t.tint === undefined || t.tint === null) return true;
   return typeof t.tint === "string" && /^#[0-9a-fA-F]{6}$/.test(t.tint);
 }

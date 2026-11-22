@@ -256,6 +256,46 @@ describe("VisualKindEditor", () => {
     await vi.waitFor(() => expect(onBuild).toHaveBeenLastCalledWith(null));
   });
 
+  it("Art faces: a preset and a typed angle build a normalised facing, and facing 0 drops the key", async () => {
+    const onBuild = vi.fn();
+    render(VisualKindEditor, { context: ctxFor(vi.fn().mockResolvedValue("asset-1")), props: { conditionOptions: [], onBuild } });
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+
+    await fireEvent.change(screen.getByLabelText("actors.transformFacing"), { target: { value: "270" } });
+    await vi.waitFor(() =>
+      expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 270 } }),
+    );
+    expect((screen.getByLabelText("actors.transformFacingDegrees") as HTMLInputElement).value).toBe("270");
+
+    // A typed angle outside [0, 360) builds its normalised equivalent: the server refuses the raw value.
+    await fireEvent.change(screen.getByLabelText("actors.transformFacingDegrees"), { target: { value: "450" } });
+    await vi.waitFor(() =>
+      expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 90 } }),
+    );
+    await fireEvent.change(screen.getByLabelText("actors.transformFacingDegrees"), { target: { value: "-90" } });
+    await vi.waitFor(() =>
+      expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 270 } }),
+    );
+    // A non-preset angle selects the "Other angle" entry.
+    await fireEvent.change(screen.getByLabelText("actors.transformFacingDegrees"), { target: { value: "45" } });
+    await vi.waitFor(() => expect((screen.getByLabelText("actors.transformFacing") as HTMLSelectElement).value).toBe(""));
+
+    await fireEvent.change(screen.getByLabelText("actors.transformFacing"), { target: { value: "0" } });
+    await vi.waitFor(() => expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1" }));
+
+    await fireEvent.change(screen.getByLabelText("actors.transformFacingDegrees"), { target: { value: "" } });
+    await vi.waitFor(() => expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1" }));
+  });
+
+  it("Art faces: an `initial` visual's facing seeds the controls and re-emits unchanged", async () => {
+    const onBuild = vi.fn();
+    const initial: TokenVisual = { kind: "image", asset: "p1", transform: { anchor: { x: 0.5, y: 0.5 }, scale: 1, facing: 180 } };
+    render(VisualKindEditor, { context: ctxFor(), props: { conditionOptions: [], onBuild, initial } });
+    expect((screen.getByLabelText("actors.transformFacing") as HTMLSelectElement).value).toBe("180");
+    expect((screen.getByLabelText("actors.transformFacingDegrees") as HTMLInputElement).value).toBe("180");
+    await vi.waitFor(() => expect(onBuild).toHaveBeenLastCalledWith(initial));
+  });
+
   it("initializes the framing from an `initial` animated visual and re-emits it unchanged", async () => {
     const onBuild = vi.fn();
     const initial: TokenVisual = {

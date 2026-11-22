@@ -162,7 +162,7 @@ interface TokenNodeLike {
   /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order + fx slot. */
   visualContainer: Container;
   /** Mirror of `TokenNode.visual` — read to assert mask assignment. */
-  visual: { mask: unknown; anchor: { x: number; y: number }; width: number; height: number; tint: number };
+  visual: { mask: unknown; anchor: { x: number; y: number }; width: number; height: number; tint: number; angle: number };
   /** Mirror of `TokenNode.generated` — read to assert frame lifetime. */
   generated: { background: GraphicsInstructionLog; mask: GraphicsInstructionLog; ring: GraphicsInstructionLog } | null;
   /** Mirror of `TokenNode.aura` — read to assert the disc's draw + lifetime. */
@@ -265,6 +265,30 @@ describe("PixiBackend.frameTokenArt", () => {
     expect([node.visual.anchor.x, node.visual.anchor.y]).toEqual([0.25, 1]);
     expect([node.visual.width, node.visual.height]).toEqual([200, 100]);
     expect(node.visual.tint).toBe(0xff8800);
+  });
+
+  test("art facing up on a token rotated 90 degrees is drawn turned by rotation minus facing", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    // `setToken` assigns the token rotation to `visualContainer.angle` before framing the art.
+    node.visualContainer.angle = 90;
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 270 } }, spec);
+    // Up is 270 in the bearing convention; the art ends 90 - 270 = -180 from as-drawn (upside down,
+    // pointing down). Dropping the facing term leaves 90; flipping its sign gives 360.
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(-180);
+    // Art facing down (90) on a token rotated 90 is already aligned: net 0.
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 90 } }, spec);
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(0);
+  });
+
+  test("an art with no facing is drawn at the token rotation alone", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    node.visualContainer.angle = 90;
+    backend.frameTokenArt(node, { kind: "image", url: "u", transform: { anchorX: 0.5, anchorY: 0.5, scale: 1, facing: 270 } }, spec);
+    backend.frameTokenArt(node, { kind: "image", url: "u" }, spec);
+    expect(node.visual.angle).toBeCloseTo(0);
+    expect(node.visualContainer.angle + node.visual.angle).toBeCloseTo(90);
   });
 
   test("re-framing an untransformed art restores the defaults", () => {

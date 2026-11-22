@@ -552,6 +552,7 @@ export class TokenView {
       anchorY: transform.anchor.y,
       scale: transform.scale,
       ...(transform.tint ? { tint: parseColor(transform.tint) } : {}),
+      ...(transform.facing != null ? { facing: transform.facing } : {}),
     };
   }
 

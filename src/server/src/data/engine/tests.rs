@@ -963,12 +963,56 @@ fn visual_transform_validate_rejects_non_finite_values() {
         anchor: TransformAnchor { x, y: 0.5 },
         scale,
         tint: None,
+        facing: None,
     };
     assert!(transform(f64::NAN, 1.0).validate().is_err());
     assert!(transform(f64::INFINITY, 1.0).validate().is_err());
     assert!(transform(0.5, f64::NAN).validate().is_err());
     assert!(transform(0.5, f64::INFINITY).validate().is_err());
     assert!(transform(0.5, 1.0).validate().is_ok());
+}
+
+#[test]
+fn visual_transform_facing_round_trips_and_is_optional() {
+    let with = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "tint": null, "facing": 270.0 } });
+    let v: TokenVisual = serde_json::from_value(with.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&v).unwrap(), with);
+    assert!(v.validate().is_ok());
+
+    // An absent facing stays absent on the wire (no `facing: null` key).
+    let without = json!({ "kind": "image", "asset": TRANSFORM_ASSET,
+        "transform": { "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0 } });
+    let v: TokenVisual = serde_json::from_value(without).unwrap();
+    assert!(serde_json::to_value(&v).unwrap()["transform"]
+        .get("facing")
+        .is_none());
+}
+
+#[test]
+fn visual_transform_validate_rejects_out_of_range_facing() {
+    for facing in [-0.5, 360.0, 720.0] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "facing": facing }),
+        );
+        assert!(v.validate().is_err(), "facing {facing} must be refused");
+    }
+    for facing in [0.0, 90.0, 359.9] {
+        let v = image_with_transform(
+            json!({ "anchor": { "x": 0.5, "y": 0.5 }, "scale": 1.0, "facing": facing }),
+        );
+        assert!(v.validate().is_ok(), "facing {facing} must be accepted");
+    }
+    // JSON cannot carry NaN or infinity, so the check runs on the typed struct.
+    for facing in [f64::NAN, f64::INFINITY] {
+        let t = VisualTransform {
+            anchor: TransformAnchor { x: 0.5, y: 0.5 },
+            scale: 1.0,
+            tint: None,
+            facing: Some(facing),
+        };
+        assert!(t.validate().is_err());
+    }
 }
 
 #[test]
@@ -1155,11 +1199,11 @@ fn engine_literal_defaults_match_client_default() {
             "lightMode": "environmentLight",
             "environment": { "color": "#0a0e1a", "intensity": 0.0 },
             "observerVision": false,
+            "autoRotateTokens": false,
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,
             "fogPooling": "individual",
-            "autoRotateTokens": false,
         })
     );
     assert_eq!(
