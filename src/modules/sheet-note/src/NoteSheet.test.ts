@@ -122,6 +122,66 @@ describe("NoteSheet draft-base edit flow", () => {
   });
 });
 
+describe("NoteSheet heading table of contents", () => {
+  const SOURCE = "# Intro\ntext\n## Details\n[jump](#details)";
+  const HTML = '<h1>Intro</h1><p>text</p><h2>Details</h2><p><a href="#details">jump</a></p>';
+
+  function mount() {
+    const doc = buildNoteDoc("w1", "Session 1", SOURCE, { id: "n1", owner: SELF });
+    doc.engine = { ...(doc.engine as object), body: [{ kind: "html", sanitized_html: HTML }] };
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => true });
+    return render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+  }
+
+  it("lists the source headings and assigns their ids to the rendered headings", async () => {
+    const { getAllByTestId, getByTestId } = mount();
+    await tick();
+    expect(getAllByTestId("note-toc-link").map((a) => a.textContent)).toEqual(["Intro", "Details"]);
+    const ids = [...getByTestId("note-body").querySelectorAll("h1, h2")].map((h) => h.id);
+    expect(ids).toEqual(["intro", "details"]);
+  });
+
+  it("scrolls to the heading when a TOC link is clicked, without changing the location hash", async () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.id); };
+    try {
+      const { getAllByTestId } = mount();
+      await tick();
+      await fireEvent.click(getAllByTestId("note-toc-link")[1]);
+      expect(scrolled).toEqual(["details"]);
+      expect(window.location.hash).toBe("");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("scrolls inside the note when a fragment link in the body is clicked", async () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.id); };
+    try {
+      const { getByTestId } = mount();
+      await tick();
+      const link = getByTestId("note-body").querySelector("a") as HTMLAnchorElement;
+      await fireEvent.click(link);
+      expect(scrolled).toEqual(["details"]);
+      expect(window.location.hash).toBe("");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("renders no TOC for a note without headings", () => {
+    const doc = buildNoteDoc("w1", "Session 1", "plain text", { id: "n1", owner: SELF });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => true });
+    const { queryByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    expect(queryByTestId("note-toc")).toBeNull();
+  });
+});
+
 describe("NoteSheet read-only for a non-writer", () => {
   it("hides the Edit control for a non-writer while still rendering the body", () => {
     const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });

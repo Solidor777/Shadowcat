@@ -251,8 +251,8 @@ fn surviving_bold_tag_strips_event_handler() {
 /// Protocol-relative URLs (`//host/path`) have no scheme at all, so
 /// ammonia's `url_schemes` allowlist never sees them — they are governed
 /// solely by `url_relative`, which defaults to `PassThrough` (lets them
-/// through unchanged). `ammonia_for` must set `UrlRelative::Deny` or a
-/// smuggled `<img src="//evil.example/pixel.gif">` in a whispered/
+/// through unchanged). `ammonia_for` must deny every relative form other
+/// than a same-page fragment or a smuggled `<img src="//evil.example/pixel.gif">` in a whispered/
 /// GM-only message becomes a tracking pixel that fires for every
 /// recipient. Assert the relative URL is neither collected nor rendered.
 #[test]
@@ -273,6 +273,69 @@ fn protocol_relative_url_is_denied() {
         !out.contains("//evil.example"),
         "protocol-relative url survived: {out}"
     );
+}
+
+/// A same-page fragment href (`#slug`, slug alphabet `A-Za-z0-9_-`)
+/// survives so a note can link to its own headings. Fails if
+/// `ammonia_for` goes back to denying every relative URL.
+#[test]
+fn fragment_only_href_survives() {
+    let out = render(&sanitize(r##"<a href="#my-section_2">x</a>"##, &hyperlinks_on()).segments);
+    assert!(
+        out.contains(r##"href="#my-section_2""##),
+        "fragment href stripped: {out}"
+    );
+    let out = render(
+        &sanitize(
+            "[go](#intro)",
+            &ChatContentPolicy {
+                markdown: Some(true),
+                hyperlinks: Some(true),
+                ..off()
+            },
+        )
+        .segments,
+    );
+    assert!(
+        out.contains(r##"href="#intro""##),
+        "markdown fragment stripped: {out}"
+    );
+}
+
+/// A fragment `<img src>` is neither rendered nor collected: the image
+/// collector only records absolute URLs. Fails if the collector records
+/// every `src` that reaches ammonia's attribute filter.
+#[test]
+fn fragment_img_src_is_not_collected() {
+    let out = sanitize(r##"<img src="#slug">"##, &images_on());
+    assert!(
+        out.image_urls.is_empty(),
+        "fragment src collected: {:?}",
+        out.image_urls
+    );
+}
+
+/// Every relative form except a well-formed fragment is still stripped:
+/// protocol-relative, host-relative, path-relative, empty and malformed
+/// fragments. Fails if the evaluator passes anything beyond
+/// `#[A-Za-z0-9_-]+`.
+#[test]
+fn non_fragment_relative_hrefs_are_stripped() {
+    for href in [
+        "//evil.example/x",
+        "evil.example/x",
+        "/path",
+        "#",
+        "#<script>",
+        "#a b",
+        "#a/b",
+        "#a%20b",
+        "#a.b",
+    ] {
+        let html = format!(r#"<a href="{href}">x</a>"#);
+        let out = render(&sanitize(&html, &hyperlinks_on()).segments);
+        assert!(!out.contains("href"), "href {href:?} survived: {out}");
+    }
 }
 
 /// `images: false`: no `<img>` in the output and no `image_urls` collected,

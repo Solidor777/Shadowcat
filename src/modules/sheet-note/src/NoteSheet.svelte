@@ -2,6 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, setField, SegmentList } from "@shadowcat/ui-kit";
   import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
+  import { extractHeadings, assignHeadingIds, findAnchor } from "./note-toc";
 
   // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
@@ -64,6 +65,55 @@
     return firstChannel(ctx.documents);
   });
   const body = $derived.by(() => (doc ? parseNoteBody(doc) : null));
+  /** The headings of the stored source, in order; drives the table of contents and the ids
+   * assigned to the rendered heading elements. */
+  const headings = $derived(extractHeadings(storedSource));
+  /** The body fieldset; the heading-id pass and anchor scrolling are scoped to it. */
+  let bodyEl = $state<HTMLElement | null>(null);
+
+  // The rendered headings are sanitized markup with no ids; the Nth heading element receives the
+  // slug of the Nth source heading. Re-runs whenever the body or the source changes.
+  $effect(() => {
+    if (bodyEl && body) assignHeadingIds(bodyEl, headings);
+  });
+
+  // The body's fragment links are plain anchors inside `{@html}` markup, so the click listener
+  // is attached to the element rather than declared in the template.
+  $effect(() => {
+    const el = bodyEl;
+    if (!el) return;
+    el.addEventListener("click", onBodyClick);
+    return () => el.removeEventListener("click", onBodyClick);
+  });
+
+  /** Scrolls the heading with id `slug` into view inside the note body.
+   * @param slug The heading anchor id.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to TOC and in-body fragment links
+   * scrollToHeading("intro");
+   * ```
+   */
+  function scrollToHeading(slug: string): void {
+    if (bodyEl) findAnchor(bodyEl, slug)?.scrollIntoView({ block: "start" });
+  }
+
+  /** Handles a click on a same-page fragment link in the rendered body: the hash router owns
+   * `location.hash`, so the link scrolls inside the note instead of navigating.
+   * @param event The click event bubbling from the body.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the body fieldset's click
+   * onBodyClick(event);
+   * ```
+   */
+  function onBodyClick(event: MouseEvent): void {
+    const link = (event.target as Element).closest("a");
+    const href = link?.getAttribute("href");
+    if (!href || !href.startsWith("#")) return;
+    event.preventDefault();
+    scrollToHeading(href.slice(1));
+  }
   const kindPath = $derived(`${enginePrefix}/kind`);
   const pageKind = $derived.by(() => (doc ? parseNotePageKind(doc) : ({ kind: "text" } as const)));
   /** The media asset id of an image/pdf/video page, or `null` for a text page. */
@@ -282,7 +332,19 @@
       </div>
     {/if}
 
-    <fieldset class="body" disabled={(channel ?? "") === ""} data-testid="note-body">
+    {#if headings.length > 0}
+      <nav class="toc" data-testid="note-toc" aria-label={t("sheetNote.toc")}>
+        <ul>
+          {#each headings as h (h.slug)}
+            <li style:margin-inline-start="{(h.level - 1) * 12}px">
+              <a href="#{h.slug}" data-testid="note-toc-link" onclick={(e) => { e.preventDefault(); scrollToHeading(h.slug); }}>{h.text}</a>
+            </li>
+          {/each}
+        </ul>
+      </nav>
+    {/if}
+
+    <fieldset class="body" disabled={(channel ?? "") === ""} data-testid="note-body" bind:this={bodyEl}>
       <legend>{t("sheetNote.title")}</legend>
       {#if body}
         <SegmentList segments={body} channel={channel ?? ""} />
@@ -345,6 +407,8 @@
   .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   label { display: flex; flex-direction: column; gap: 2px; }
   .body { border: 1px solid var(--border); border-radius: var(--radius-1); padding: var(--space-1); }
+  .toc ul { list-style: none; margin: 0; padding: 0; }
+  .toc a { display: inline-block; min-height: 44px; line-height: 44px; }
   .media { display: flex; flex-direction: column; gap: var(--space-1); }
   .media img, .media video { max-width: 100%; height: auto; }
   .media embed { width: 100%; min-height: 60vh; }
