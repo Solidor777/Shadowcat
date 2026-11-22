@@ -100,6 +100,7 @@ export type {
   MoveLightSample,
   MoveStream,
   VfxNotice,
+  PresentNoteNotice,
   ResetExploredFogOptions,
   ExploredFogResetNotice,
   RulerNotice,

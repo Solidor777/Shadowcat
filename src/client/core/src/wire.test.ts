@@ -721,6 +721,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       elevation: null,
       id: "i",
     },
+    present_note: { type: "present_note", note_id: "n", presented_by: "u" },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {

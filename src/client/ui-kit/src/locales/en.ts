@@ -860,6 +860,8 @@ export const en: Messages = {
   "sheetNote.toc": "Table of contents",
   "sheetNote.changeMedia": "Change media",
   "sheetNote.mediaMissing": "This page's media could not be loaded.",
+  "sheetNote.present": "Present to players",
+  "notes.presenting": "The GM is presenting: {name}",
   "sheetTable.title": "Table",
   "sheetTable.description": "Description",
   "sheetTable.draw": "Draw",

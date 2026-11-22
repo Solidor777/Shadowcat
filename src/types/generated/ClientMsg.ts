@@ -297,7 +297,15 @@ actor_owner: ActorOwnerRef | null,
 /**
  * Visibility policy (public / gm-only / whisper).
  */
-audience: Audience, } | { "type": "combat_start", 
+audience: Audience, } | { "type": "present_note", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The `note` document to present.
+ */
+note_id: string, } | { "type": "combat_start", 
 /**
  * Correlation token for `CombatError`.
  */

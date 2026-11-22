@@ -366,6 +366,15 @@ export interface VfxNotice {
   id: string;
 }
 
+/** A relayed "the GM is presenting this note" focus signal (`WsClientHandlers.onPresentNote`);
+ * carries no seq and no note content. */
+export interface PresentNoteNotice {
+  /** The note document being presented. */
+  noteId: string;
+  /** The GM who presented it (server-stamped). */
+  presentedBy: string;
+}
+
 /** Timeout override for a correlated request whose only option is how long to wait for the
  * reply before rejecting. Shared by `WsClient.moveRequest` and `WsClient.pathfind` — each
  * signature's own doc states its default. */
@@ -509,6 +518,9 @@ export interface WsClientHandlers {
   /** An out-of-band relayed VFX one-shot (carries no seq).
    * @param msg The effect's scene, position, asset, and sending user. */
   onVfx?(msg: VfxNotice): void;
+  /** An out-of-band "the GM is presenting this note" signal (carries no seq).
+   * @param msg The presented note id and the presenting GM. */
+  onPresentNote?(msg: PresentNoteNotice): void;
   /** A connection attempt failed (connect rejected, socket closed, or no `welcome` before the
    * watchdog) before this client has EVER been welcomed. `consecutive` counts the failures since
    * `start()` and is monotonically increasing; it never fires once a `welcome` has been received,
@@ -1493,6 +1505,11 @@ export class WsClient {
           }),
         );
         break;
+      case "present_note":
+        this.safeEmit(() =>
+          this.opts.handlers.onPresentNote?.({ noteId: msg.note_id, presentedBy: msg.presented_by }),
+        );
+        break;
       case "scene_derived": {
         const handler = this.sceneSubs.get(msg.request_id);
         if (handler) this.safeEmit(() => handler({ payload: msg.payload, computedAtSeq: msg.computed_at_seq }));
@@ -2080,6 +2097,31 @@ export class WsClient {
       actor_owner: opts.actorOwner ?? null,
       audience: opts.audience ?? { kind: "public" },
     });
+    return p;
+  }
+
+  /** GM-only: ask the server to tell every connected client to open a shared note. Resolves/
+   * rejects like `sendChatMessage`; a refusal (not a GM, unknown note, note not shared with
+   * players, rate limit) rejects via a correlated `chat_error`.
+   * @param noteId The `note` document to present.
+   * @returns Resolves (void) once the request is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.presentNote("note-1");
+   * ```
+   */
+  presentNote(noteId: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "present_note", request_id, note_id: noteId });
     return p;
   }
 
