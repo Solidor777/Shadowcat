@@ -13,11 +13,35 @@ fn viewer(user_id: Option<uuid::Uuid>) -> Access {
     }
 }
 
+/// The wire form of every tier round-trips: bare strings for the role tiers,
+/// `{"recipients": [...]}` for a list. Fails if the untagged `Recipients`
+/// variant stops deserializing or shadows a bare-string tier.
+#[test]
+fn visibility_wire_form_round_trips() {
+    let alice = test_uuid(0xA1);
+    let list = Visibility::Recipients {
+        recipients: vec![alice],
+    };
+    let json = serde_json::to_value(&list).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "recipients": [alice.to_string()] })
+    );
+    assert_eq!(serde_json::from_value::<Visibility>(json).unwrap(), list);
+    for tier in [Visibility::All, Visibility::GmOnly, Visibility::OwnerOrGm] {
+        let json = serde_json::to_value(&tier).unwrap();
+        assert!(json.is_string(), "role tiers stay bare strings");
+        assert_eq!(serde_json::from_value::<Visibility>(json).unwrap(), tier);
+    }
+}
+
 #[test]
 fn recipients_tier_is_exact_listed_membership() {
     let alice = test_uuid(0xA1);
     let bob = test_uuid(0xB0);
-    let tier = Visibility::Recipients(vec![alice]);
+    let tier = Visibility::Recipients {
+        recipients: vec![alice],
+    };
     assert!(viewer(Some(alice)).can_see(&tier), "listed user sees it");
     assert!(!viewer(Some(bob)).can_see(&tier), "unlisted user is denied");
     assert!(
@@ -30,7 +54,9 @@ fn recipients_tier_is_exact_listed_membership() {
 fn recipients_tier_never_grants_by_role() {
     let alice = test_uuid(0xA1);
     let gm_id = test_uuid(0x6D);
-    let tier = Visibility::Recipients(vec![alice]);
+    let tier = Visibility::Recipients {
+        recipients: vec![alice],
+    };
     let unlisted_gm = Access {
         all: true,
         see_gm_only: true,
@@ -41,10 +67,14 @@ fn recipients_tier_never_grants_by_role() {
         !unlisted_gm.can_see(&tier),
         "a GM that is not individually listed sees nothing"
     );
-    let listed_gm = Visibility::Recipients(vec![gm_id]);
+    let listed_gm = Visibility::Recipients {
+        recipients: vec![gm_id],
+    };
     assert!(unlisted_gm.can_see(&listed_gm), "a listed GM sees it");
     assert!(
-        !viewer(Some(alice)).can_see(&Visibility::Recipients(Vec::new())),
+        !viewer(Some(alice)).can_see(&Visibility::Recipients {
+            recipients: Vec::new()
+        }),
         "an empty list admits nobody"
     );
 }
@@ -76,7 +106,12 @@ fn filter_properties_strips_a_recipients_tiered_property_for_unlisted_viewers() 
     let alice = test_uuid(0xA1);
     let bob = test_uuid(0xB0);
     let d = doc(
-        perms_with(&[("/system/secret", Visibility::Recipients(vec![alice]))]),
+        perms_with(&[(
+            "/system/secret",
+            Visibility::Recipients {
+                recipients: vec![alice],
+            },
+        )]),
         serde_json::json!({ "secret": "MOCK_SECRET_A", "open": 1 }),
     );
 
@@ -128,7 +163,12 @@ fn a_gm_is_filtered_like_anyone_when_the_document_holds_a_recipients_tier() {
     };
     let d = doc(
         perms_with(&[
-            ("/system/secret", Visibility::Recipients(vec![alice])),
+            (
+                "/system/secret",
+                Visibility::Recipients {
+                    recipients: vec![alice],
+                },
+            ),
             ("/system/gm_note", Visibility::GmOnly),
         ]),
         serde_json::json!({ "secret": "MOCK_SECRET_A", "gm_note": "MOCK_NOTE_A" }),
@@ -191,7 +231,9 @@ fn assert_replay_hides_from_unlisted_gm(tier_at_commit: bool, tier_now: bool) {
     };
     let tiers = vec![(
         "/system/secret".to_string(),
-        Visibility::Recipients(vec![alice]),
+        Visibility::Recipients {
+            recipients: vec![alice],
+        },
     )];
     let permissions = PermissionSet {
         default: crate::data::document::DocRole::Observer,

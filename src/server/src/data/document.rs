@@ -135,7 +135,7 @@ pub enum DocRole {
 /// // A recipient list serializes as an object, distinct from the bare-string tiers.
 /// let ids = vec![uuid::Uuid::nil()];
 /// assert_eq!(
-///     serde_json::to_value(Visibility::Recipients(ids)).unwrap(),
+///     serde_json::to_value(Visibility::Recipients { recipients: ids }).unwrap(),
 ///     serde_json::json!({ "recipients": ["00000000-0000-0000-0000-000000000000"] })
 /// );
 /// ```
@@ -153,7 +153,16 @@ pub enum Visibility {
     /// Readable only by the listed users, by exact membership against
     /// `Access::user_id`. Never grants by role: a GM sees it only when
     /// individually listed, the same rule as `Audience::Whisper`'s recipients.
-    Recipients(Vec<Uuid>),
+    ///
+    /// Untagged so the wire form stays `{"recipients": [...]}` while the
+    /// `recipients` property is a declared field that carries its own doc in
+    /// the generated type.
+    #[serde(untagged)]
+    Recipients {
+        /// Ids of the users who may read the subtree; matched exactly against
+        /// the recipient's user id.
+        recipients: Vec<Uuid>,
+    },
 }
 
 /// The standing an instance's effective owner held on the instance's

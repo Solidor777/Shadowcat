@@ -19,9 +19,14 @@
  * // A recipient list serializes as an object, distinct from the bare-string tiers.
  * let ids = vec![uuid::Uuid::nil()];
  * assert_eq!(
- *     serde_json::to_value(Visibility::Recipients(ids)).unwrap(),
+ *     serde_json::to_value(Visibility::Recipients { recipients: ids }).unwrap(),
  *     serde_json::json!({ "recipients": ["00000000-0000-0000-0000-000000000000"] })
  * );
  * ```
  */
-export type Visibility = "all" | "gm_only" | "owner_or_gm" | { "recipients": Array<string> };
+export type Visibility = "all" | "gm_only" | "owner_or_gm" | { 
+/**
+ * Ids of the users who may read the subtree; matched exactly against
+ * the recipient's user id.
+ */
+recipients: Array<string>, };
