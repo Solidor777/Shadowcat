@@ -175,7 +175,7 @@
         <!-- GM-only like the server's carried-light write gate (`carried_light_touched`):
              an emission edits the SHARED illumination field, unlike the owner-writable fields
              above. -->
-        <LightEmissionEditor value={engine.light} disabled={readOnly || ctx.role !== "gm"} onCommit={(next) => setEngine("light", next)} />
+        <LightEmissionEditor value={engine.light} carriedByToken disabled={readOnly || ctx.role !== "gm"} onCommit={(next) => setEngine("light", next)} />
       {/if}
       <!-- Aura/sound/VFX emissions: owner-writable like the fields above — unlike `light`
            just above (a shared, GM-only field), `aura`/`sound`/`vfx` carry no GM gate. -->
