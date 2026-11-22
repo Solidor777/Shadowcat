@@ -23,6 +23,7 @@ import type { MovementRestriction } from "./MovementRestriction";
  *     movement_model: None,
  *     fog_pooling: None,
  *     auto_rotate_tokens: None,
+ *     facing_vision: None,
  * };
  * assert_eq!(overrides.los_restriction, Some(true));
  * ```
@@ -55,4 +56,8 @@ fogPooling: FogPooling | null,
 /**
  * Auto-rotate-tokens override (see `WorldSceneDefaults.auto_rotate_tokens`).
  */
-autoRotateTokens?: boolean | null, };
+autoRotateTokens?: boolean | null, 
+/**
+ * Facing-limited-vision switch override (see `WorldSceneDefaults.facing_vision`).
+ */
+facingVision?: boolean | null, };

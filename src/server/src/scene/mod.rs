@@ -50,8 +50,8 @@ use crate::scene::lighting::Band;
 pub use visibility_compute::compute_derived;
 pub(crate) use visibility_compute::segments_cross;
 use visibility_compute::{
-    accumulate_visible_cells, cell_visible, point_qualifies, source_los_poly, LightingInputs,
-    VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
+    accumulate_visible_cells, cell_visible, facing_arc_for, point_qualifies, source_los_poly,
+    LightingInputs, VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
 };
 
 /// Resolved per-scene lighting mode. The client's wire twin is generated from
@@ -188,6 +188,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     grid_kind: GridKind::Square,
 ///     fog_pooling: FogPooling::Individual,
 ///     auto_rotate_tokens: false,
+///     facing_vision: false,
 /// };
 /// assert!(scene.fog);
 /// ```
@@ -233,6 +234,10 @@ pub struct ResolvedScene {
     /// Whether a completed move rotates the mover to face its movement direction
     /// (`Room::execute_move`, gated per token by `TokenEngine::lock_rotation`).
     pub auto_rotate_tokens: bool,
+    /// Whether a token's `FacingVision` limits its sight to a forward arc plus bubble
+    /// (`gather_vision_sources_in_scene` reads it). Part of `ResolvedScene`, so toggling it misses
+    /// the visibility cache (`VisibilityInputsSnapshot::settings`).
+    pub facing_vision: bool,
 }
 
 impl ResolvedScene {
@@ -474,6 +479,9 @@ pub(crate) struct SightSource {
     walls: Vec<vision::Seg>,
     /// LOS polygon from `vp` through `walls` (the whole scene bound when LOS is off).
     poly: Vec<vision::P>,
+    /// The source's facing arc: `los_at`'s re-raycast of a moving source reuses it, because the
+    /// token's rotation does not change mid-move.
+    facing: Option<vision::FacingArc>,
 }
 
 /// A recipient's line of sight in one scene — the LOS half of the visibility predicate: the
@@ -541,6 +549,7 @@ impl SightSources {
                         &s.walls,
                         self.settings.los_restriction,
                         self.extent,
+                        s.facing,
                     )),
                 ),
                 None => (s.vp, Cow::Borrowed(s.poly.as_slice())),
@@ -1909,6 +1918,10 @@ impl SceneEcs {
             .and_then(|s| s.auto_rotate_tokens)
             .or(sd_scene.and_then(|s| s.auto_rotate_tokens))
             .unwrap_or(d.auto_rotate_tokens);
+        let d_facing_vision = ws_scene
+            .and_then(|s| s.facing_vision)
+            .or(sd_scene.and_then(|s| s.facing_vision))
+            .unwrap_or(d.facing_vision);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1940,6 +1953,9 @@ impl SceneEcs {
         let auto_rotate_tokens = vision_ov
             .and_then(|v| v.auto_rotate_tokens)
             .unwrap_or(d_auto_rotate);
+        let facing_vision = vision_ov
+            .and_then(|v| v.facing_vision)
+            .unwrap_or(d_facing_vision);
 
         // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
@@ -1966,6 +1982,7 @@ impl SceneEcs {
             grid_kind: grid_kind_from(s),
             fog_pooling,
             auto_rotate_tokens,
+            facing_vision,
         }
     }
 
@@ -2376,7 +2393,8 @@ impl SceneEcs {
                 .into_iter()
                 .map(|s| {
                     let walls = elevation::walls_at_elevation(&sight_walls, s.elevation);
-                    let poly = source_los_poly(s.vp, &walls, settings.los_restriction, extent);
+                    let poly =
+                        source_los_poly(s.vp, &walls, settings.los_restriction, extent, s.facing);
                     SightSource {
                         id: s.id,
                         vp: s.vp,
@@ -2385,6 +2403,7 @@ impl SceneEcs {
                         senses: s.senses,
                         walls,
                         poly,
+                        facing: s.facing,
                     }
                 })
                 .collect()
@@ -3351,42 +3370,71 @@ impl SceneEcs {
         Some(ent.doc.clone())
     }
 
-    /// The token's effective vision assignments — the ONE linked/instanced/override precedence
-    /// walk, shared by `token_vision_floors` (the terrain-floor view) and
-    /// `senses::SceneEcs::token_creature_senses` (the creature-sense view) so the two consumers
-    /// can never disagree on which assignments a token carries. Precedence (mirrors
-    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and
-    /// applies `overrides.vision` as a wholesale replacement when present; a dangling link
-    /// (actor absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`)
-    /// uses its `embedded.actor[0].engine.vision` without overrides.
+    /// The token's effective vision assignments, shared by `token_vision_floors` (the
+    /// terrain-floor view) and `senses::SceneEcs::token_creature_senses` (the creature-sense
+    /// view) so the two consumers can never disagree on which assignments a token carries. The
+    /// precedence is `resolve_token_actor_field`'s: a LINKED token applies `overrides.vision` as
+    /// a wholesale replacement when present; an INSTANCED token uses its
+    /// `embedded.actor[0].engine.vision` without overrides.
     fn token_vision_assignments(&self, token: &Document) -> Option<Vec<eng::VisionAssignment>> {
+        self.resolve_token_actor_field(token, |o| o.vision.clone(), |a| a.vision, |_| None)
+    }
+
+    /// The token's effective facing-limited field of view (`None` = unrestricted), through the
+    /// SAME linked/instanced/override walk as `token_vision_assignments`
+    /// (`resolve_token_actor_field`). An actorless token (no `actor_id`, no embedded actor) reads
+    /// its own `TokenEngine::facing_vision`; that is the only field the two views differ on,
+    /// because an actorless token has no vision assignments at all.
+    fn token_facing_vision(&self, token: &Document) -> Option<eng::FacingVision> {
+        self.resolve_token_actor_field(
+            token,
+            |o| o.facing_vision,
+            |a| a.facing_vision,
+            |t| t.facing_vision,
+        )
+    }
+
+    /// THE linked/instanced/override precedence walk for a token's actor-sourced field: every
+    /// field that follows it (`token_vision_assignments`, `token_facing_vision`) calls this, so
+    /// two such fields can never resolve through different rules. Precedence (mirrors
+    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and a
+    /// present `pick_override` value REPLACES the actor's wholesale; a dangling link (actor
+    /// absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
+    /// embedded actor's value without overrides; with no embedded actor either, `pick_raw` reads
+    /// the token's own engine band.
+    fn resolve_token_actor_field<T>(
+        &self,
+        token: &Document,
+        pick_override: impl Fn(&eng::TokenOverrides) -> Option<T>,
+        pick_actor: impl Fn(eng::ActorEngine) -> Option<T>,
+        pick_raw: impl Fn(&eng::TokenEngine) -> Option<T>,
+    ) -> Option<T> {
         let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
-        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
-        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
-        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
-        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
         match token_eng.as_ref().and_then(|t| t.actor_id) {
             Some(id) => match self.actors.get(&id) {
                 Some(actor) => token_eng
                     .as_ref()
                     .and_then(|t| t.overrides.as_ref())
-                    .and_then(|o| o.vision.clone())
+                    .and_then(&pick_override)
                     .or_else(|| {
                         self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
-                            .and_then(|a| a.vision)
+                            .and_then(&pick_actor)
                     }),
                 None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
             },
             // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
             // `apply_op`'s invalidation removes on a token mutation — caching under the
             // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
-            None => token
+            None => match token
                 .embedded
                 .get("actor")
                 .and_then(|v| v.first())
                 .and_then(engine_as::<eng::ActorEngine>)
-                .and_then(|a| a.vision),
+            {
+                Some(a) => pick_actor(a),
+                None => token_eng.as_ref().and_then(&pick_raw),
+            },
         }
     }
 
@@ -4374,6 +4422,7 @@ impl SceneEcs {
                     &src_walls,
                     settings.los_restriction,
                     cell_grid.world_extent(settings.bounds),
+                    src.facing,
                 );
                 if poly.len() < 3 {
                     continue;
@@ -4660,7 +4709,7 @@ impl SceneEcs {
             cell,
             sources: sources
                 .iter()
-                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
+                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone(), s.facing))
                 .collect(),
             // The scene's declared levels decide each source's level (`elevation::level_of`)
             // and therefore which level-filtered illumination field its cells are judged
@@ -4734,6 +4783,16 @@ impl SceneEcs {
         settings: &ResolvedScene,
     ) -> Vec<VisSrc> {
         let mut sources: Vec<VisSrc> = Vec::new();
+        // One grid step's world distance, resolved only when the facing switch is on: the bubble
+        // radius is authored in cells and converts through it (the same scale a source's vision
+        // range uses).
+        let world_units_per_cell = if settings.facing_vision {
+            self.scene_grid_sizes()
+                .get(&scene)
+                .map(|&cell| self.resolve_grid_shape(scene, cell).world_units_per_cell())
+        } else {
+            None
+        };
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token" || e.doc.parent_id != Some(scene) {
                 continue;
@@ -4755,6 +4814,12 @@ impl SceneEcs {
                     elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
                     senses: self.token_creature_senses(&e.doc),
+                    // An observer-vision source (a non-owned readable token) uses ITS OWN
+                    // rotation and arc: one admission decision, one geometry per source.
+                    facing: world_units_per_cell.and_then(|wupc| {
+                        self.token_facing_vision(&e.doc)
+                            .and_then(|fv| facing_arc_for(&fv, t.rotation, wupc))
+                    }),
                 });
             }
         }

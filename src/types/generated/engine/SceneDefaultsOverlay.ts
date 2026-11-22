@@ -63,4 +63,8 @@ fogPooling?: FogPooling | null,
 /**
  * Overrides `WorldSceneDefaults.auto_rotate_tokens`.
  */
-autoRotateTokens?: boolean | null, };
+autoRotateTokens?: boolean | null, 
+/**
+ * Overrides `WorldSceneDefaults.facing_vision`.
+ */
+facingVision?: boolean | null, };

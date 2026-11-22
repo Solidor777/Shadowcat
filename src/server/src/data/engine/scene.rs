@@ -282,6 +282,7 @@ pub enum FogPooling {
 ///     movement_model: None,
 ///     fog_pooling: None,
 ///     auto_rotate_tokens: None,
+///     facing_vision: None,
 /// };
 /// assert_eq!(overrides.los_restriction, Some(true));
 /// ```
@@ -311,6 +312,10 @@ pub struct SceneVisionOverrides {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub auto_rotate_tokens: Option<bool>,
+    /// Facing-limited-vision switch override (see `WorldSceneDefaults.facing_vision`).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub facing_vision: Option<bool>,
 }
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
@@ -488,6 +493,11 @@ pub struct WorldSceneDefaults {
     /// world sees no behaviour change until it opts in.
     #[serde(default)]
     pub auto_rotate_tokens: bool,
+    /// Whether tokens carrying a `FacingVision` see only their forward arc plus bubble instead of
+    /// all round. Off by default: with the switch off every token's `facing_vision` data is
+    /// ignored and sight is unchanged.
+    #[serde(default)]
+    pub facing_vision: bool,
 }
 
 /// A scene's ambient playlist override: when this scene becomes the world's active scene
@@ -753,6 +763,7 @@ impl Default for WorldSceneDefaults {
             partial_cell_leniency: true,
             fog_pooling: FogPooling::Individual,
             auto_rotate_tokens: false,
+            facing_vision: false,
         }
     }
 }

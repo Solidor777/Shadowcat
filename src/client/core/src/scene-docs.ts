@@ -302,6 +302,7 @@ export const DEFAULT_WORLD_SETTINGS: {
     partialCellLeniency: true,
     fogPooling: "individual",
     autoRotateTokens: false,
+    facingVision: false,
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },

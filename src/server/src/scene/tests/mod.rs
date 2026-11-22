@@ -329,6 +329,7 @@ mod combat_index;
 mod cone_and_window;
 mod cost_parity;
 mod ecs_and_footprints;
+mod facing_vision;
 mod pathfind_and_vision;
 mod region_occluders;
 mod resolution_and_lighting;

@@ -21,6 +21,7 @@ fn empty_overrides() -> TokenOverrides {
         size: None,
         shape: None,
         vision: None,
+        facing_vision: None,
         light: None,
         movement: None,
         aura: None,

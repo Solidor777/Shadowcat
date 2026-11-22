@@ -1200,6 +1200,7 @@ fn engine_literal_defaults_match_client_default() {
             "environment": { "color": "#0a0e1a", "intensity": 0.0 },
             "observerVision": false,
             "autoRotateTokens": false,
+            "facingVision": false,
             "movementRestriction": "visible",
             "movementModel": "grid-stepped",
             "partialCellLeniency": true,

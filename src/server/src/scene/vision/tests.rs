@@ -533,3 +533,97 @@ fn sight_light_and_sound_agree_on_one_proximity_wall_and_origin() {
         );
     }
 }
+
+/// A facing arc of `arc_deg` degrees centred on `facing_deg`, with an all-round bubble of
+/// `near` world units.
+fn arc(facing_deg: f64, arc_deg: f64, near: f64) -> FacingArc {
+    FacingArc {
+        facing_rad: facing_deg.to_radians(),
+        half_rad: (arc_deg / 2.0).to_radians(),
+        near_world: near,
+    }
+}
+
+#[test]
+fn facing_polygon_keeps_the_arc_and_drops_what_is_behind_and_beside() {
+    let poly = visibility_polygon_facing((0.0, 0.0), &[], bound(), arc(0.0, 90.0, 0.0));
+    assert!(point_in_poly(&poly, (50.0, 0.0)), "straight ahead is seen");
+    assert!(point_in_poly(&poly, (50.0, 20.0)), "inside the arc is seen");
+    assert!(!point_in_poly(&poly, (-50.0, 0.0)), "behind is not seen");
+    assert!(
+        !point_in_poly(&poly, (0.0, 50.0)),
+        "beside, outside the 45-degree half angle, is not seen"
+    );
+    assert!(!point_in_poly(&poly, (0.0, -50.0)));
+}
+
+#[test]
+fn facing_polygon_bubble_is_all_round_and_bounded() {
+    let poly = visibility_polygon_facing((0.0, 0.0), &[], bound(), arc(0.0, 90.0, 20.0));
+    assert!(
+        point_in_poly(&poly, (-10.0, 0.0)),
+        "inside the bubble, behind"
+    );
+    assert!(
+        point_in_poly(&poly, (0.0, 10.0)),
+        "inside the bubble, beside"
+    );
+    assert!(
+        !point_in_poly(&poly, (-30.0, 0.0)),
+        "past the bubble, behind"
+    );
+    assert!(
+        point_in_poly(&poly, (60.0, 0.0)),
+        "the arc still runs far past the bubble"
+    );
+}
+
+#[test]
+fn facing_polygon_arc_spanning_the_pi_seam_includes_the_forward_points() {
+    let poly = visibility_polygon_facing((0.0, 0.0), &[], bound(), arc(180.0, 90.0, 0.0));
+    assert!(point_in_poly(&poly, (-50.0, 0.0)), "facing -x sees -x");
+    assert!(point_in_poly(&poly, (-50.0, 20.0)));
+    assert!(
+        point_in_poly(&poly, (-50.0, -20.0)),
+        "both sides of the seam"
+    );
+    assert!(
+        !point_in_poly(&poly, (50.0, 0.0)),
+        "behind a -x facing is +x"
+    );
+}
+
+#[test]
+fn facing_polygon_walls_still_occlude_inside_the_arc() {
+    let wall = wall_seg((30.0, -100.0), (30.0, 100.0));
+    let poly = visibility_polygon_facing((0.0, 0.0), &[wall], bound(), arc(0.0, 90.0, 0.0));
+    assert!(point_in_poly(&poly, (20.0, 0.0)), "in front of the wall");
+    assert!(!point_in_poly(&poly, (50.0, 0.0)), "behind the wall");
+}
+
+#[test]
+fn facing_polygon_bubble_stops_at_a_wall_closer_than_its_radius() {
+    // The wall sits at x = -5 behind the viewer; the bubble radius is 20. The ray cap is the
+    // nearer of the two, so the bubble never reaches through the wall.
+    let wall = wall_seg((-5.0, -100.0), (-5.0, 100.0));
+    let poly = visibility_polygon_facing((0.0, 0.0), &[wall], bound(), arc(0.0, 90.0, 20.0));
+    assert!(point_in_poly(&poly, (-3.0, 0.0)));
+    assert!(!point_in_poly(&poly, (-10.0, 0.0)));
+}
+
+#[test]
+fn facing_polygon_full_circle_arc_matches_the_unrestricted_polygon() {
+    // `half_rad` just under pi is the widest representable arc: the only rays cut are the single
+    // one exactly opposite the facing, which the bubble cap then bounds.
+    let plain = visibility_polygon((0.0, 0.0), &[], bound());
+    let wide = visibility_polygon_facing((0.0, 0.0), &[], bound(), arc(0.0, 359.0, 30.0));
+    for p in [
+        (90.0, 90.0),
+        (-90.0, 90.0),
+        (-90.0, -90.0),
+        (90.0, -90.0),
+        (0.0, 90.0),
+    ] {
+        assert_eq!(point_in_poly(&plain, p), point_in_poly(&wide, p), "{p:?}");
+    }
+}

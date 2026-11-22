@@ -64,4 +64,10 @@ fogPooling: FogPooling,
  * whose `TokenEngine.lock_rotation` is set is never rotated). Off by default: an existing
  * world sees no behaviour change until it opts in.
  */
-autoRotateTokens: boolean, };
+autoRotateTokens: boolean, 
+/**
+ * Whether tokens carrying a `FacingVision` see only their forward arc plus bubble instead of
+ * all round. Off by default: with the switch off every token's `facing_vision` data is
+ * ignored and sight is unchanged.
+ */
+facingVision: boolean, };

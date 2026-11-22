@@ -65,6 +65,9 @@ pub struct SceneDefaultsOverlay {
     /// Overrides `WorldSceneDefaults.auto_rotate_tokens`.
     #[ts(optional = nullable)]
     pub auto_rotate_tokens: Option<bool>,
+    /// Overrides `WorldSceneDefaults.facing_vision`.
+    #[ts(optional = nullable)]
+    pub facing_vision: Option<bool>,
 }
 
 /// `Option`-lifted twin of `Pathfinding`.
