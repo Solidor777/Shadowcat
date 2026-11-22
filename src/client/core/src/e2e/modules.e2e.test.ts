@@ -100,10 +100,16 @@ describe("module toolchain e2e", () => {
 
     const list = (await fetch(`${server.baseUrl}/api/modules`, {
       headers: { cookie },
-    }).then((r) => r.json())) as Array<{ manifest: { id: string }; entry_url: string }>;
+    }).then((r) => r.json())) as Array<{
+      manifest: { id: string };
+      entry_url: string;
+      engine_compat_ok: boolean;
+    }>;
     const found = list.find((m) => m.manifest.id === "fixture-mod");
     expect(found).toBeDefined();
     expect(found!.entry_url).toBe("/modules/fixture-mod/index.js");
+    // The engines range tracks the running server's own version, so the server's verdict is true.
+    expect(found!.engine_compat_ok).toBe(true);
 
     const entryRes = await fetch(`${server.baseUrl}${found!.entry_url}`, {
       headers: { cookie },

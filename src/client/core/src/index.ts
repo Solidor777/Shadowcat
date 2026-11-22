@@ -52,7 +52,14 @@ export type {
   ContractDeclaration,
 } from "./manifest";
 export { ModuleRegistry } from "./modules";
-export type { Module, ModuleContext, ModuleInfo } from "./modules";
+export type {
+  Module,
+  ModuleActivationOutcome,
+  ModuleActivationResult,
+  ModuleContext,
+  ModuleInfo,
+  ModuleStatusEntry,
+} from "./modules";
 export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";

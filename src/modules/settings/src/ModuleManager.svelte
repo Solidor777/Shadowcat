@@ -7,7 +7,7 @@
     type InstalledModuleInfo,
   } from "@shadowcat/core";
 
-  const { world, t, reconcileInstalledModules } = getAppContext();
+  const { world, t, reconcileInstalledModules, moduleStatus } = getAppContext();
 
   let installed = $state<InstalledModuleInfo[]>([]);
   let enabled = $state<Map<string, boolean>>(new Map());
@@ -42,6 +42,47 @@
       id?: unknown;
     }).id;
     return typeof id === "string" ? id : info.id;
+  }
+
+  /**
+   * The engine range the manifest declares it needs (`engines.shadowcat`), for display next to
+   * the server's `engine_compat_ok` verdict. The verdict itself is never recomputed here: the
+   * server owns the semver match, and a second implementation could disagree on a range edge.
+   * @param info The installed module.
+   * @returns The declared range, or `null` when the manifest declares none.
+   * @example
+   * ```
+   * // private function; not part of the public API — used for the incompatibility line below
+   * declare const info: InstalledModuleInfo;
+   * requiredEngineRange(info);
+   * ```
+   */
+  function requiredEngineRange(info: InstalledModuleInfo): string | null {
+    const range = (info.manifest as {
+      /** The manifest's `engines` block, read structurally since `InstalledModuleInfo.manifest`
+       * is untyped JSON. */
+      engines?: {
+        /** The semver range of server versions the module supports. */
+        shadowcat?: unknown;
+      };
+    }).engines?.shadowcat;
+    return typeof range === "string" ? range : null;
+  }
+
+  /**
+   * Maps a module problem class to the i18n key of its status line.
+   * @param status The problem class from `AppContext.moduleStatus`.
+   * @returns The `settings.modules.*` key naming that problem.
+   * @example
+   * ```
+   * // private function; not part of the public API — used for the status line below
+   * statusKey("load-failed");
+   * ```
+   */
+  function statusKey(status: "skipped-deps-unmet" | "failed" | "load-failed"): string {
+    if (status === "load-failed") return "settings.modules.loadFailed";
+    if (status === "skipped-deps-unmet") return "settings.modules.skippedDepsUnmet";
+    return "settings.modules.activationFailed";
   }
 
   /**
@@ -187,10 +228,26 @@
               type="checkbox"
               aria-label={displayName(info)}
               checked={enabled.has(info.id)}
+              disabled={!info.engine_compat_ok && !enabled.has(info.id)}
               onchange={() => toggle(info.id)}
             />
             {displayName(info)}
           </label>
+          {#if !info.engine_compat_ok}
+            <p class="error" data-testid="module-incompatible">
+              {requiredEngineRange(info) === null
+                ? t("settings.modules.incompatibleNoRange")
+                : t("settings.modules.incompatible", { required: requiredEngineRange(info) ?? "" })}
+            </p>
+          {/if}
+          {#if moduleStatus.get(info.id)}
+            <p class="error" data-testid="module-status-error">
+              {t(statusKey(moduleStatus.get(info.id)!.status), {
+                id: displayName(info),
+                detail: moduleStatus.get(info.id)!.error ?? "",
+              })}
+            </p>
+          {/if}
           {#if info.has_validators && enabled.has(info.id)}
             <label>
               <input
