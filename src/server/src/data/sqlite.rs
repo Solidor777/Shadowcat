@@ -1771,7 +1771,7 @@ impl Repository for SqliteRepository {
                     // Random-variant token art resolves to a concrete visual first, so the
                     // derived `base` snapshot, validation, storage and broadcast all see the
                     // drawn value and no token document ever stores a pool.
-                    Self::resolve_token_random_variants(&mut *tx, world_id, doc).await?;
+                    Self::resolve_token_random_variants(&mut tx, world_id, doc).await?;
                     // `base` is server-owned: derive it from the document's
                     // OWN bands BEFORE any validation runs, so the derived
                     // value is what gets validated, normalized, stored,
