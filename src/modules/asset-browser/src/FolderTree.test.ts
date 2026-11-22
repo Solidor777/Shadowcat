@@ -63,6 +63,45 @@ test("the delete dialog maps its choice onto the assets policy param", async () 
   await waitFor(() => expect(del).toHaveBeenCalledWith("fa", "reparent"));
 });
 
+test("Escape closes the delete dialog without deleting", async () => {
+  const del = vi.spyOn(api, "deleteAssetFolder").mockResolvedValue();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx() });
+  await fireEvent.click(await screen.findByTestId("folder-delete-fb"));
+  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  await fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(del).not.toHaveBeenCalled();
+});
+
+test("the delete dialog takes focus and Tab from its last button wraps to its first", async () => {
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx() });
+  await fireEvent.click(await screen.findByTestId("folder-delete-fb"));
+  const dialog = screen.getByRole("alertdialog");
+  await waitFor(() => expect(document.activeElement).toBe(dialog));
+  const buttons = dialog.querySelectorAll("button");
+  const last = buttons[buttons.length - 1] as HTMLElement;
+  last.focus();
+  await fireEvent.keyDown(last, { key: "Tab" });
+  expect(document.activeElement).toBe(buttons[0]);
+});
+
+test("Escape in the rename input cancels the rename without dispatching", async () => {
+  const dispatchIntent = vi.fn();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx({ dispatchIntent }) });
+  await fireEvent.click(await screen.findByTestId("folder-rename-fb"));
+  const input = screen.getByTestId("folder-rename-input-fb");
+  await fireEvent.keyDown(input, { key: "Escape" });
+  expect(screen.queryByTestId("folder-rename-input-fb")).toBeNull();
+  expect(dispatchIntent).not.toHaveBeenCalled();
+});
+
+test("Escape outside the rename input leaves the rename open and unconsumed", async () => {
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx() });
+  await fireEvent.click(await screen.findByTestId("folder-rename-fb"));
+  expect(await fireEvent.keyDown(document.body, { key: "Escape" })).toBe(true);
+  expect(screen.getByTestId("folder-rename-input-fb")).toBeTruthy();
+});
+
 test("dropping dragged assets on a node reports them with the folder id", async () => {
   const onDropAssets = vi.fn();
   render(FolderTree, { props: { ...PROPS, onDropAssets }, context: treeCtx() });

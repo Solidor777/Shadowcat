@@ -37,11 +37,15 @@
 
   // Menu items are a flat list per the WAI-ARIA Menu pattern: arrow keys move
   // DOM focus directly — no separate "activate" step, since a menuitem's own
-  // activation IS selecting it via Enter/Space/click. Escape here closes the
-  // MENU POPUP only — distinct from a floating PANEL's own Escape-to-close
-  // (wired in `DockviewEngine.#wireFloatingA11y` against the floating dialog
-  // element, unrelated to this popup).
+  // activation IS selecting it via Enter/Space/click. Escape closes the MENU
+  // POPUP only, through `menuKeyboard`'s coordinator registration (held for
+  // the component's mounted lifetime); a floating PANEL's own Escape-to-close
+  // is a separate registration made by `DockviewEngine.#wireFloatingA11y`.
   const menuKeyboard = createMenuKeyboard(() => itemEls, (returnFocus) => onClose(returnFocus));
+  $effect(() => {
+    menuKeyboard.activate();
+    return () => menuKeyboard.deactivate();
+  });
   /** Forwards a menu item's keydown to the shared APG menu-keyboard handler.
    * @param event The keydown event.
    * @param index The item's index within `items`.

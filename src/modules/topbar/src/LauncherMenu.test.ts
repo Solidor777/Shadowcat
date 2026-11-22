@@ -91,6 +91,25 @@ test("Escape on a menu item returns focus to the trigger", async () => {
   expect(document.activeElement).toBe(screen.getByTestId("launcher-trigger"));
 });
 
+test("Escape on the trigger closes an open menu through the coordinator, and a second Escape is not consumed", async () => {
+  const { bridge } = bridgeWith(META);
+  render(LauncherMenu, { context: setAppContextForTest({ panels: bridge }) });
+  const trigger = screen.getByTestId("launcher-trigger");
+  await fireEvent.click(trigger);
+  expect(await fireEvent.keyDown(trigger, { key: "Escape" })).toBe(false);
+  expect(screen.queryByTestId("launcher-menu")).toBeNull();
+  // The menu's registration is gone, so nothing consumes the next Escape.
+  expect(await fireEvent.keyDown(trigger, { key: "Escape" })).toBe(true);
+});
+
+test("unmounting an open menu drops its Escape registration", async () => {
+  const { bridge } = bridgeWith(META);
+  const { unmount } = render(LauncherMenu, { context: setAppContextForTest({ panels: bridge }) });
+  await fireEvent.click(screen.getByTestId("launcher-trigger"));
+  unmount();
+  expect(await fireEvent.keyDown(document.body, { key: "Escape" })).toBe(true);
+});
+
 test("Tab on a menu item closes the menu but does NOT force focus back to the trigger (APG Menu Button pattern)", async () => {
   const { bridge } = bridgeWith(META);
   render(LauncherMenu, { context: setAppContextForTest({ panels: bridge }) });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
   import type { TlsStatus } from "@shadowcat/types";
   import { consoleLogger } from "@shadowcat/core";
@@ -216,3 +216,4 @@
 <Surface contract="shadowcat.surface:root" />
 <TemplateModalHost controller={templates} />
 <NotificationHost />
+<DialogHost />

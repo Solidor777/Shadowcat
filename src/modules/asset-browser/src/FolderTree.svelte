@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY, trapFocus } from "@shadowcat/ui-kit";
   import { deleteAssetFolder, buildMoveOp, buildUpdate, type WireDocument } from "@shadowcat/core";
   import {
     folderChildren,
@@ -48,6 +48,36 @@
   let movePickerFor = $state<string | null>(null);
   /** The folder whose delete dialog is open, or null. */
   let deleteDialogFor = $state<string | null>(null);
+  /** The open inline rename input, bound while a rename is in progress. */
+  let renameEl = $state<HTMLInputElement | null>(null);
+  /** The open delete dialog element, bound while the dialog is shown. */
+  let deleteDialogEl = $state<HTMLElement | null>(null);
+
+  // Escape cancels an inline rename only when the keystroke comes from the rename input itself.
+  $effect(() => {
+    if (renamingFor === null) return;
+    return escapeCoordinator.register(
+      ESCAPE_PRIORITY.OVERLAY,
+      () => {
+        renamingFor = null;
+      },
+      (event) => renameEl !== null && event.target === renameEl,
+    );
+  });
+
+  // The delete dialog closes on Escape, takes focus when it opens, and keeps Tab inside itself.
+  $effect(() => {
+    if (deleteDialogFor === null || deleteDialogEl === null) return;
+    const release = trapFocus(deleteDialogEl);
+    const unregister = escapeCoordinator.register(ESCAPE_PRIORITY.OVERLAY, () => {
+      deleteDialogFor = null;
+    });
+    deleteDialogEl.focus();
+    return () => {
+      release();
+      unregister();
+    };
+  });
 
   /** Commits the create input as a new root-level folder (or under the
    * current selection).
@@ -211,12 +241,11 @@
           data-testid={"folder-rename-input-" + f.id}
           type="text"
           bind:value={renameDraft}
+          bind:this={renameEl}
           onkeydown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
               commitRename(f);
-            } else if (e.key === "Escape") {
-              renamingFor = null;
             }
           }}
         />
@@ -236,7 +265,13 @@
         </div>
       {/if}
       {#if deleteDialogFor === f.id}
-        <div class="delete-dialog" role="alertdialog" aria-label={t("assetBrowser.deleteFolder")}>
+        <div
+          class="delete-dialog"
+          role="alertdialog"
+          tabindex="-1"
+          aria-label={t("assetBrowser.deleteFolder")}
+          bind:this={deleteDialogEl}
+        >
           <p>{t("assetBrowser.deleteFolderPrompt", { name: f.name ?? "" })}</p>
           <button type="button" data-testid="folder-delete-reparent" onclick={() => void confirmDelete(f.id, "reparent")}>
             {t("assetBrowser.deleteReparent")}

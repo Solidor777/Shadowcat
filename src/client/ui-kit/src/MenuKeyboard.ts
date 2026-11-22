@@ -1,3 +1,5 @@
+import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
+
 /** Shared WAI-ARIA APG Menu Button keyboard behavior for a flat `role="menuitem"`
  * list: arrow keys move DOM focus directly (no separate "activate" step, since a
  * menuitem's own activation IS selecting it via Enter/Space/click). Framework- and
@@ -10,6 +12,11 @@ export interface MenuKeyboard {
    * @param event - The native keydown event.
    * @param index - The index of the item that currently has focus. */
   handleKeydown(event: KeyboardEvent, index: number): void;
+  /** Registers the menu's Escape-to-close (calls `onClose()` with focus returned) with the shared
+   * escape coordinator. Call when the menu opens; a second call while active is a no-op. */
+  activate(): void;
+  /** Removes the Escape registration. Call on every path that closes the menu; idempotent. */
+  deactivate(): void;
 }
 
 /**
@@ -19,7 +26,8 @@ export interface MenuKeyboard {
  * @param getItemEls - Returns the current focusable `role="menuitem"` elements, in order.
  * @param onClose - Invoked to close the owning menu; `returnFocus` (default `true`)
  * tells the caller whether to return focus to the menu's trigger.
- * @returns A `{ focusItem, handleKeydown }` pair to wire onto the menu's keydown handler.
+ * @returns The `{ focusItem, handleKeydown, activate, deactivate }` handle: wire `handleKeydown`
+ * onto the menu's keydown handler and bracket the menu's open lifetime with `activate`/`deactivate`.
  * @example
  * const menu = createMenuKeyboard(() => itemEls, (returnFocus) => close(returnFocus));
  */
@@ -42,8 +50,9 @@ export function createMenuKeyboard(
 
   /**
    * Handle one keydown on the menu's item at `index` per the WAI-ARIA APG Menu
-   * Button pattern: Arrow/Home/End move focus, Escape closes and returns focus,
-   * Tab closes without returning focus and lets native Tab traversal proceed.
+   * Button pattern: Arrow/Home/End move focus, Tab closes without returning focus and lets
+   * native Tab traversal proceed. Escape is not handled here: it reaches the menu through
+   * `activate`'s coordinator registration.
    * Unhandled keys pass through untouched.
    * @param event - The native keydown event; preventDefault/stopPropagation are
    * called only for the keys this function handles.
@@ -68,13 +77,6 @@ export function createMenuKeyboard(
         event.preventDefault();
         focusItem(getItemEls().length - 1);
         break;
-      case "Escape":
-        // Closes the owning menu popup only — the caller decides what "close"
-        // means (e.g. a floating panel's own Escape-to-close is separate).
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-        break;
       case "Tab":
         // WAI-ARIA APG Menu Button pattern: Tab closes the menu and lets focus
         // proceed natively to the next tabbable element — it does NOT bounce
@@ -85,5 +87,27 @@ export function createMenuKeyboard(
     }
   }
 
-  return { focusItem, handleKeydown };
+  /** Disposer of the live Escape registration; `undefined` while the menu is inactive. */
+  let disposeEscape: (() => void) | undefined;
+
+  /**
+   * Registers the menu's Escape-to-close with `escapeCoordinator` at menu priority. Calling it
+   * while already active replaces nothing: the existing registration stays.
+   * @example activate();
+   */
+  function activate(): void {
+    if (disposeEscape !== undefined) return;
+    disposeEscape = escapeCoordinator.register(ESCAPE_PRIORITY.MENU, () => onClose());
+  }
+
+  /**
+   * Removes the Escape registration made by `activate`; a no-op when none is live.
+   * @example deactivate();
+   */
+  function deactivate(): void {
+    disposeEscape?.();
+    disposeEscape = undefined;
+  }
+
+  return { focusItem, handleKeydown, activate, deactivate };
 }

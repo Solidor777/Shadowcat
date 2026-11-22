@@ -46,6 +46,7 @@ export const en: Messages = {
   "settings.theme.editor.new": "New custom theme",
   "settings.theme.editor.edit": "Edit",
   "settings.theme.editor.delete": "Delete",
+  "settings.theme.editor.deleteTitle": "Delete theme",
   "settings.theme.editor.deleteConfirm":
     "Delete theme {label}? This cannot be undone.",
   "settings.theme.editor.heading": "Theme editor",
@@ -85,6 +86,8 @@ export const en: Messages = {
   "settings.users.loading": "Loading accounts…",
   "settings.users.error": "Could not create account: {message}",
   "settings.users.delete": "Delete",
+  "settings.users.cancel": "Cancel",
+  "settings.users.deleteTitle": "Delete account",
   "settings.users.deleteConfirm":
     "Delete account {username}? This cannot be undone.",
   "settings.users.deleteError": "Could not delete account: {message}",
@@ -600,6 +603,7 @@ export const en: Messages = {
   "chat.delete": "Delete",
   "chat.save": "Save",
   "chat.cancel": "Cancel",
+  "chat.deleteTitle": "Delete message",
   "chat.deleteConfirm": "Delete this message?",
   "chat.rollPending": "🎲 {formula}",
   "chat.systemBadge": "System",

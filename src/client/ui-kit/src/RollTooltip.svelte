@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import type { RollOutcome, RecalcHistoryEntry } from "@shadowcat/core";
 
   let {
@@ -38,10 +38,10 @@
   function show(): void {
     open = true;
   }
-  /** Closes the popover (hover/focus leave/Escape).
+  /** Closes the popover (hover/focus leave and the Escape registration).
    * @example
    * ```
-   * // internal; wired to onblur/onmouseleave/Escape handling
+   * // internal; wired to onblur/onmouseleave and the Escape registration
    * hide();
    * ```
    */
@@ -66,43 +66,12 @@
     open = !open;
   }
 
-  /** WAI-ARIA `tooltip` pattern: Escape dismisses without moving focus off the trigger.
-   * @param event The keyboard event.
-   * @example
-   * ```
-   * // internal; wired to onkeydown
-   * onKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
-   * ```
-   */
-  function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      hide();
-    }
-  }
-
-  // A hover-opened (not focused) popover has no keydown target to catch Escape on, since
-  // mousemove/mouseenter never focuses the trigger; a document-level listener while open
-  // covers that case (the focused case is also handled redundantly by onKeydown above,
-  // which additionally stops propagation).
+  // WAI-ARIA `tooltip` pattern: Escape dismisses the open popover without moving focus off the
+  // trigger. One registration with the shared coordinator covers the focused and the
+  // hover-opened (unfocused) cases alike and ranks the tooltip below any open overlay or modal.
   $effect(() => {
     if (!open) return;
-    /** Escape handler for the open-but-not-focused (hover-opened) case; the enclosing
-     * effect's comment explains why this listener is needed alongside `onKeydown` above.
-     * @param event The keyboard event.
-     * @example
-     * ```
-     * // internal; registered only while the popover is open (declared inside the
-     * // effect body, so only its call shape is shown here)
-     * declare function onDocKeydown(event: KeyboardEvent): void;
-     * onDocKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
-     * ```
-     */
-    function onDocKeydown(event: KeyboardEvent): void {
-      if (event.key === "Escape") hide();
-    }
-    document.addEventListener("keydown", onDocKeydown);
-    return () => document.removeEventListener("keydown", onDocKeydown);
+    return escapeCoordinator.register(ESCAPE_PRIORITY.TOOLTIP, hide);
   });
 </script>
 
@@ -117,7 +86,6 @@
     onmouseenter={show}
     onmouseleave={hide}
     onclick={onClick}
-    onkeydown={onKeydown}
   >
     {outcome.successes ?? outcome.total}
   </button>

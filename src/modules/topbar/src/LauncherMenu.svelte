@@ -35,12 +35,13 @@
   function openMenu(): void {
     itemEls = [];
     open = true;
+    menuKeyboard.activate();
     queueMicrotask(() => itemEls[0]?.focus());
   }
   /**
    * Closes the menu. `returnFocus` defaults to `true` (the WAI-ARIA APG Menu
    * Button pattern's expected dismiss behavior) — used by `activate()` after
-   * selecting an item, and by the Escape branch below. Callers pass `false`
+   * selecting an item, and by the menu's Escape registration. Callers pass `false`
    * when focus either never left the trigger (the toggle-close branch below,
    * fired from the trigger's OWN keydown handler) or is moving elsewhere on
    * purpose (the backdrop's outside-pointer dismissal, which would otherwise
@@ -56,6 +57,7 @@
    */
   function closeMenu(returnFocus = true): void {
     open = false;
+    menuKeyboard.deactivate();
     if (returnFocus) queueMicrotask(() => triggerEl?.focus());
   }
   /**
@@ -101,6 +103,8 @@
   });
 
   const menuKeyboard = createMenuKeyboard(() => itemEls, closeMenu);
+  // Unmounting while open drops the Escape registration too.
+  $effect(() => () => menuKeyboard.deactivate());
   /**
    * Delegates a menu item's keydown to `@shadowcat/ui-kit`'s
    * `createMenuKeyboard` — the arrow-key/Home/End navigation contract is
@@ -120,7 +124,8 @@
     menuKeyboard.handleKeydown(event, index);
   }
   /**
-   * Handles the trigger button's own keydown. Escape closes an open menu.
+   * Handles the trigger button's own keydown. Escape reaches an open menu through
+   * `menuKeyboard`'s coordinator registration, not here.
    * ArrowDown/Enter/Space open a closed menu, or — on an ALREADY-open
    * trigger — close it rather than re-open it: a true toggle, so a menu with
    * no keyboard-reachable items (e.g. zero registered panels) can never trap
@@ -135,11 +140,6 @@
    * ```
    */
   function onTriggerKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && open) {
-      event.preventDefault();
-      closeMenu();
-      return;
-    }
     if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       // Toggle, not open-only — see this function's JSDoc for why.
