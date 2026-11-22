@@ -121,16 +121,29 @@ async fn an_http1_peer_that_stops_reading_a_response_is_cut_within_the_window_pl
 }
 
 /// How many multiples of `ConnLimits::egress_floor` per window the progressing reader takes. The
-/// connection unit reads the bytes the socket ACCEPTS, and over loopback they arrive in lumps of
-/// 100 to 260 KB (the peer's receive-window step, plus on Windows a whole queued write accepted
-/// at once; the `egress_measure` program's `h1-progress` and `socket-grants` subcommands print
-/// the lumps). A reader taking fewer floors per window than a lump holds sees no acceptance for
-/// whole windows and is cut, at every window length measured (1, 3, 10 and 60 s), because the
-/// lump is a count of bytes and the floor is a count of bytes per window. Readers at 16 times the
-/// floor and above were not cut at a 1 s window in the one run that measured them; the multiple here keeps the control well clear
-/// of the lumps, so it states a property of the loopback and the measure, not a promise of the
-/// unit at lower rates.
-const PROGRESS_FLOORS_PER_WINDOW: usize = 64;
+/// connection unit reads the bytes the socket ACCEPTS, and over loopback they arrive in lumps: 100
+/// to 260 KB on Windows (the peer's receive-window step, plus a whole queued write accepted at
+/// once) and 0.9 to 1.1 MB on Linux (the autotuned send buffer; the `egress_measure` program's
+/// `h1-progress` and `socket-grants` subcommands print the lumps). A reader taking fewer bytes per
+/// window than a lump holds sees no acceptance for whole windows and is cut, at every window
+/// length measured (1, 3, 10 and 60 s), because the lump is a count of bytes and the floor is a
+/// count of bytes per window. At this multiple the reader takes 8 MiB per window, about eight
+/// Linux lumps, so a lump lands every eighth of a window; `LUMP_GAP_BOUND` asserts that premise.
+/// The multiple states a property of the loopback and the measure, not a promise of the unit at
+/// lower rates.
+const PROGRESS_FLOORS_PER_WINDOW: usize = 512;
+
+/// The fewest multiples of `ConnLimits::egress_floor` per window the reader must actually have
+/// taken, over each of two windows, for a pass to mean progress was made: 1 MiB a window, about one
+/// Linux lump. It is below `PROGRESS_FLOORS_PER_WINDOW` because the reader takes what the socket
+/// has accepted, and on Windows the accepted lumps hold the read under the requested rate.
+const MIN_FLOORS_PER_WINDOW_READ: usize = 64;
+
+/// The longest gap between two socket acceptances the progressing reader may see before the
+/// control stops meaning anything: half a window. A gap of a whole window with fewer than the
+/// floor accepted is what the connection unit cuts, so a gap this long is the premise failing,
+/// not the unit.
+const LUMP_GAP_BOUND: Duration = Duration::from_millis(500);
 
 /// What the progressing reader saw when the connection ended: the bytes it had read and, for
 /// each sample at which the socket had accepted more, when (milliseconds since the request) and
@@ -170,9 +183,23 @@ async fn an_http1_peer_that_keeps_reading_is_not_cut_across_three_windows() {
         );
         read += n;
     }
+    let least = 2 * MIN_FLOORS_PER_WINDOW_READ * ConnLimits::default().egress_floor;
     assert!(
-        read >= 2 * per_window,
-        "the reader took {read} B, too little for the control to mean anything"
+        read >= least,
+        "the reader took {read} B, under the {least} B the control needs to mean anything"
+    );
+    // The first grant is the buffer filling before the reader paces it, so the gaps start at the
+    // second.
+    let widest_gap = grants
+        .windows(2)
+        .skip(1)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        widest_gap < LUMP_GAP_BOUND.as_millis(),
+        "the socket went {widest_gap} ms between acceptances, too long for the control to mean anything: {}",
+        evidence(read, &grants)
     );
     assert!(
         server.closed.lock().unwrap().is_empty(),
