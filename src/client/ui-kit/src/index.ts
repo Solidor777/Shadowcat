@@ -53,6 +53,9 @@ export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
 export { default as PermissionsEditor } from "./PermissionsEditor.svelte";
 export { default as UserMultiSelect } from "./UserMultiSelect.svelte";
+export { default as EffectsList } from "./EffectsList.svelte";
+export { listEffects, effectOriginText } from "./effectsList";
+export type { EffectEntry, EffectLookup } from "./effectsList";
 export { default as RollTooltip } from "./RollTooltip.svelte";
 export { default as SegmentList } from "./SegmentList.svelte";
 export {

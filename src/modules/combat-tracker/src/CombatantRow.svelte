@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, EffectsList } from "@shadowcat/ui-kit";
   import { resolveConditions, firstChannel, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
   import { formatResource, type Row } from "./model";
 
@@ -42,6 +42,14 @@
   const engine = $derived(row.doc.engine as CombatantEngine);
   const mayRoll = $derived(can.roll(row.doc.id));
   const mayEditResource = $derived(can.resource(row.doc.id));
+
+  // The document whose embedded effects this row lists: the token (its embedded actor copy)
+  // when the combatant names one, else the linked actor.
+  const effectHost = $derived.by(() => {
+    subscribeDocs();
+    const id = row.art.tokenId ?? row.art.actorId;
+    return id ? ctx.documents.get(id) : undefined;
+  });
 
   const conditions = $derived.by(() => {
     subscribeDocs();
@@ -182,6 +190,8 @@
     {#each conditions as c (c.id)}
       <span class="glyph" title={c.name}>{c.icon}</span>
     {/each}
+
+    <EffectsList host={effectHost} anchor={row.doc.id} compact />
 
     {#if can.edit || mayEditResource}
       <input type="number" aria-label={ctx.t("combatTracker.initiative")} value={engine.initiative ?? ""}
