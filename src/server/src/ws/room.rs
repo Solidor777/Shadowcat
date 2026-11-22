@@ -748,6 +748,14 @@ pub struct Room {
     /// scope: the floor only needs to survive for the lifetime of the room, exactly like
     /// `moving`.
     session_floors: Mutex<HashMap<Uuid, i64>>,
+    /// Per-user live connection count in this room, driving the 0<->1 presence-transition
+    /// broadcast (`ServerMsg::Presence`). Derived, in-memory only, cleared with the room: there
+    /// is no snapshot frame, so a client learns a user's presence only from transitions seen
+    /// since its own connect. A `std::sync::Mutex` because the guard is never held across an
+    /// `.await` and `presence_connect`/`presence_disconnect` are synchronous. Parallels
+    /// `RoomStats::connections` without replacing it: `reap_if_empty` still reads that
+    /// aggregate.
+    presence: std::sync::Mutex<HashMap<Uuid, u32>>,
     /// Whether an explicit `ClientMsg::ResyncRequest` is clamped against `resync_floor`
     /// (`ws::conn`'s `Egress::Resync` handler reads this via `Room::resync_floor_enforced`
     /// — the internal `Lagged`-driven auto-resync deliberately does NOT consult it, since
@@ -930,6 +938,7 @@ impl Room {
             stats: RoomStats::default(),
             moving: Mutex::new(HashMap::new()),
             session_floors: Mutex::new(HashMap::new()),
+            presence: std::sync::Mutex::new(HashMap::new()),
             resync_floor_enforced_flag: resync_floor_enforced,
             vfx_rate,
             turn_round_dedup: Mutex::new(HashMap::new()),
@@ -3625,6 +3634,85 @@ impl Room {
         match self.session_floors.lock().await.get(&user_id) {
             Some(&floor) => floor + 1,
             None => self.current_seq() + 1,
+        }
+    }
+
+    /// Records one more live connection for `user`; `true` iff it is the user's first in this
+    /// room (the 0->1 transition). The caller broadcasts `ServerMsg::Presence { online: true }`
+    /// only on `true`, so a second tab never re-announces an already-online user.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// assert!(room.presence_connect(gm));
+    /// assert!(!room.presence_connect(gm));
+    /// # }
+    /// ```
+    pub fn presence_connect(&self, user: Uuid) -> bool {
+        let mut counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        let count = counts.entry(user).or_insert(0);
+        *count += 1;
+        *count == 1
+    }
+
+    /// Drops one live connection for `user`; `true` iff the count reached zero (the 1->0
+    /// transition). A user with no recorded connection is a no-op returning `false`; the count
+    /// never underflows and a zero count leaves no map entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// room.presence_connect(gm);
+    /// room.presence_connect(gm);
+    /// assert!(!room.presence_disconnect(gm));
+    /// assert!(room.presence_disconnect(gm));
+    /// assert!(!room.presence_disconnect(gm));
+    /// # }
+    /// ```
+    pub fn presence_disconnect(&self, user: Uuid) -> bool {
+        let mut counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        match counts.get_mut(&user) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            Some(_) => {
+                counts.remove(&user);
+                true
+            }
+            None => false,
         }
     }
 

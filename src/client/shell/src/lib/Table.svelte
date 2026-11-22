@@ -154,6 +154,7 @@
       };
     },
     members: session.members,
+    presence: session.presence,
     t,
     plural,
     compare,

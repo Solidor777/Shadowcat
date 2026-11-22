@@ -33,6 +33,8 @@ export const en: Messages = {
   "topbar.world": "world {world}",
   "topbar.launcher": "Panels",
   "topbar.presence": "Players",
+  "topbar.online": "online",
+  "topbar.offline": "offline",
   "settings.tab": "Settings",
   "settings.title": "Settings",
   "settings.role": "Role: {role}",

@@ -226,7 +226,15 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "modules_changed" } | { "type": "emote", 
+user: string, } | { "type": "modules_changed" } | { "type": "presence", 
+/**
+ * The member whose presence changed.
+ */
+user: string, 
+/**
+ * `true` when the member's first connection opened, `false` when the last one closed.
+ */
+online: boolean, } | { "type": "emote", 
 /**
  * Scene the token stands on.
  */

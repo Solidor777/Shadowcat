@@ -1062,6 +1062,17 @@ export type ServerMsg =
       type: "modules_changed";
     }
   | {
+      /** A member's live-connection count in this world crossed 0->1 or 1->0. Out-of-band (no
+       * seq, never buffered/resynced), delivered to every connection in the room. Transitions
+       * only: there is no snapshot frame, so a member already online before this connection
+       * opened is unknown until their next transition. */
+      type: "presence";
+      /** The member whose presence changed. */
+      user: string;
+      /** `true` when the member's first connection opened, `false` when the last one closed. */
+      online: boolean;
+    }
+  | {
       /** A region-triggered floating overlay over a token: the server-authored twin of
        * `emote`, bounded at INGRESS by the server's `chat::MAX_MESSAGE_CHARS` (never
        * `emote`'s 16-byte player bound, and never a tighter server-side cap of its own).
@@ -1410,6 +1421,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     level: z.string().nullable(),
   }),
   z.object({ type: z.literal("modules_changed") }),
+  z.object({ type: z.literal("presence"), user: z.string(), online: z.boolean() }),
   z.object({
     type: z.literal("scrolling_text"),
     scene: z.string(),

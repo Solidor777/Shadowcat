@@ -1381,6 +1381,19 @@ pub enum ServerMsg {
     /// payload: each client re-fetches the enabled set itself, and "the set changed" is already
     /// visible to every world member through the membership-gated enabled-modules route.
     ModulesChanged,
+    /// A member's live-connection count in this world crossed 0->1 or 1->0
+    /// (`Room::presence_connect`/`presence_disconnect`). Out-of-band (no seq, never
+    /// buffered/resynced), mirroring `ScenePing`, and delivered to every connection in the room:
+    /// the audience the member roster in `Welcome` already reaches, and online status is no more
+    /// sensitive than membership. Transitions only, with no snapshot frame: a client learns
+    /// the presence of a user who was already online before it connected at that user's next
+    /// transition.
+    Presence {
+        /// The member whose presence changed.
+        user: Uuid,
+        /// `true` when the member's first connection opened, `false` when the last one closed.
+        online: bool,
+    },
     /// A relayed emote: the sender's transient glyph over a token. Out-of-band
     /// (no seq, never buffered/resynced), mirroring `ScenePing`.
     Emote {

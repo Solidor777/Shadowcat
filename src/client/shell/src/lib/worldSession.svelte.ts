@@ -373,6 +373,11 @@ export class WorldSession {
    * so the reference captured into AppContext at mount stays valid and consumers
    * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
+  /** userId → whether that member currently has a live connection, set from the server's
+   * `presence` transition frames. Mutated in place like `members`, so the reference captured
+   * into AppContext at mount stays valid. Not reset on reconnect and never seeded from a
+   * snapshot (the server sends none): an absent key means unknown, not offline. */
+  readonly presence = new SvelteMap<string, boolean>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
    * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
@@ -1695,6 +1700,7 @@ export class WorldSession {
         onModulesChanged: () => {
           void this.reconcileInstalledModules();
         },
+        onPresence: (user, online) => this.presence.set(user, online),
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {

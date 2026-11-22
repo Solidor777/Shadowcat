@@ -545,6 +545,22 @@ test("a GM Welcome populates members in place (stable reference) for see-as labe
   expect(captured.get("u9")).toBe("Zara");
 });
 
+test("presence frames update the reactive presence map in place (stable reference)", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.presence;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.presence.has("u9")).toBe(false);
+
+  push({ type: "presence", user: "u9", online: true });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(true));
+  push({ type: "presence", user: "u9", online: false });
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
+  expect(session.presence).toBe(captured);
+});
+
 test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {
   vi.mocked(listWorldMembers).mockResolvedValueOnce([
     { user: "u9", username: "Zara", role: "player" },

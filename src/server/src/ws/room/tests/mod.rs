@@ -3567,6 +3567,7 @@ mod door_toggle;
 mod movement_budget;
 
 mod mover_light;
+mod presence;
 mod region_triggers;
 
 // ---------- Room::disable_faulting_validator_locked ----------
