@@ -144,6 +144,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     // interception overrides this with its own emitter.
     hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
+    moduleStatus: over.moduleStatus ?? new Map(),
     // Mirrors `WorldSession.viewedSceneId`: null only when no scene exists, otherwise the
     // `resolveViewedScene` answer (snapshotted at construction).
     viewedSceneId: over.viewedSceneId !== undefined ? over.viewedSceneId : resolveViewedScene(documents),

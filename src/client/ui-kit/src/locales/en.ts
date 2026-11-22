@@ -63,6 +63,12 @@ export const en: Messages = {
   "settings.modules.error": "Module operation failed: {message}",
   "settings.modules.runValidators": "Run sandboxed validators ({name})",
   "settings.modules.validatorLoadError": "Validator failed to load: {message}",
+  "settings.modules.loadFailed": "Module {id} failed to load: {detail}",
+  "settings.modules.skippedDepsUnmet": "Module {id} was not activated: a dependency is unmet.",
+  "settings.modules.activationFailed": "Module {id} failed to activate: {detail}",
+  "settings.modules.incompatible": "Incompatible with this server: requires Shadowcat {required}.",
+  "settings.modules.incompatibleNoRange":
+    "Incompatible with this server: the module declares no Shadowcat engine range.",
   "settings.invites.title": "World invites",
   "settings.invites.role": "World role",
   "settings.invites.mint": "Create invite",

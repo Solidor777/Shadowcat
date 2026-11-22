@@ -499,6 +499,43 @@ async fn enabled_modules_rejects_a_module_with_no_engines_field() {
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// `GET /api/modules` carries the server's own `engine_compat_ok` verdict per install: a
+/// satisfiable range is `true`, an unsatisfiable one is `false`, and an absent declaration is
+/// `false` (the same fail-closed rule `set_world_enabled_modules` enforces on save). Defaulting
+/// an absent declaration to `true` would flip the last assertion.
+#[tokio::test]
+async fn list_installed_modules_reports_the_engine_compat_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    for (folder, manifest) in [
+        (
+            "compatible",
+            r#"{"id":"compatible","version":"1.0.0","engines":{"shadowcat":"*"}}"#,
+        ),
+        (
+            "too-new",
+            r#"{"id":"too-new","version":"1.0.0","engines":{"shadowcat":"^99.0.0"}}"#,
+        ),
+        ("no-engines", r#"{"id":"no-engines","version":"1.0.0"}"#),
+    ] {
+        std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+        std::fs::write(dir.path().join(folder).join("module.json"), manifest).unwrap();
+    }
+    let (gm, _pl, _world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    let got: serde_json::Value = gm.get("/api/modules").await.json();
+    let verdict = |id: &str| -> bool {
+        got.as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap_or_else(|| panic!("module {id} listed"))["engine_compat_ok"]
+            .as_bool()
+            .expect("engine_compat_ok is a bool")
+    };
+    assert!(verdict("compatible"));
+    assert!(!verdict("too-new"));
+    assert!(!verdict("no-engines"));
+}
+
 #[tokio::test]
 async fn enabled_modules_rejects_two_system_providers() {
     let dir = tempfile::tempdir().unwrap();

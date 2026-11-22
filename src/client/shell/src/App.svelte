@@ -230,6 +230,22 @@
       // The audio refusal reason is already player-presentable free text produced server-side
       // (unlike `RejectReason`'s fixed key set) — pushed raw, never through `t()`.
       onAudioError: (reason) => notifications.push("warning", reason),
+      // A module that failed to load or activate, or was skipped for an unmet dependency, is
+      // named to the GM; `detail` is the failure message, empty for a skip.
+      onModuleStatus: (id, status, detail) =>
+        notifications.push(
+          "warning",
+          t(
+            `settings.modules.${
+              status === "load-failed"
+                ? "loadFailed"
+                : status === "skipped-deps-unmet"
+                  ? "skippedDepsUnmet"
+                  : "activationFailed"
+            }`,
+            { id, detail: detail ?? "" },
+          ),
+        ),
       // A browser can render an https: page after a certificate exception and still refuse
       // `wss:`; the same server answers plain HTTP on the same port, so name that address.
       onConnectFailure: (n) => void hintPlainHttpIfWssRefused(n),

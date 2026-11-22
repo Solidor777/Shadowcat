@@ -34,6 +34,7 @@ use crate::http::AppState;
 ///     entry_url: "/modules/dnd5e/index.js".into(),
 ///     has_validators: false,
 ///     validator_load_error: None,
+///     engine_compat_ok: true,
 /// };
 /// let value = serde_json::to_value(&info).unwrap();
 /// assert_eq!(value["id"], "dnd5e");
@@ -55,6 +56,11 @@ pub struct InstalledModuleInfo {
     /// to load (`sandbox::registry::ValidatorRegistry::load_error_for`) — shown beside the
     /// "Run sandboxed validators" toggle.
     pub validator_load_error: Option<String>,
+    /// The server's own `crate::modules::engine_compat_ok` verdict for this install, computed at
+    /// scan time (fail-closed: no `engines.shadowcat` declaration is `false`). The client reads
+    /// this and never re-derives it from `engines.shadowcat`: a second semver matcher could
+    /// disagree with the one `set_world_enabled_modules` enforces on every save.
+    pub engine_compat_ok: bool,
 }
 
 impl InstalledModuleInfo {
@@ -69,6 +75,7 @@ impl InstalledModuleInfo {
             entry_url: m.entry_url.clone(),
             has_validators: !m.validators.is_empty(),
             validator_load_error: registry.load_error_for(&m.id).map(str::to_string),
+            engine_compat_ok: crate::modules::engine_compat_ok(m),
         }
     }
 }

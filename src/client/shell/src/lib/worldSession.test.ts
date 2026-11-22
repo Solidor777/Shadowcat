@@ -1632,6 +1632,7 @@ test("resolves an enabled folder id to its installed entry even when the manifes
       entry_url: "/modules/folder-name/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   const warnings: unknown[][] = [];
@@ -1854,6 +1855,7 @@ test("reconcileInstalledModules loads a newly-enabled module and activates it", 
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
 
@@ -1876,6 +1878,7 @@ test("reconcileInstalledModules unloads (cascade) a module no longer in the enab
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1900,6 +1903,7 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ];
 
@@ -1932,6 +1936,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_A_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
     {
       id: "ext-b-folder",
@@ -1939,6 +1944,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_B_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1955,6 +1961,7 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
       entry_url: FIXTURE_B_URL,
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -2141,6 +2148,7 @@ async function enterWithStyledModule(): Promise<WorldSession> {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   const externalModule: Module = {
@@ -2188,6 +2196,7 @@ test("a reconcile unload removes the module's stylesheet", async () => {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -2205,6 +2214,7 @@ test("a module whose activation fails gets no stylesheet link", async () => {
       entry_url: "/modules/folder-one/index.js",
       has_validators: false,
       validator_load_error: null,
+      engine_compat_ok: true,
     },
   ]);
   // The import succeeds (so the load result lists the module) but activation
@@ -2226,6 +2236,98 @@ test("a module whose activation fails gets no stylesheet link", async () => {
   await vi.waitFor(() => expect(core.getEnabledModules).toHaveBeenCalled());
   await new Promise((r) => setTimeout(r, 0));
   expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+  session.leave();
+});
+
+/** Mocks one installed, enabled external module (folder `folder-one`, manifest `mod-one`) and
+ * enters a session whose import resolves to `importModule`'s outcome.
+ * @param importModule The session's `importModule` stub.
+ * @param onModuleStatus Optional status callback spy.
+ * @returns The entered session, after the external-module pipeline settled.
+ * @example
+ * ```
+ * // private test helper; not part of the public API
+ * const session = await enterWithModuleImport(vi.fn().mockRejectedValue(new Error("x")));
+ * ```
+ */
+async function enterWithModuleImport(
+  importModule: (url: string) => Promise<unknown>,
+  onModuleStatus?: (id: string, status: string, detail: string | null) => void,
+): Promise<WorldSession> {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    },
+  ]);
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    importModule,
+    ...(onModuleStatus ? { onModuleStatus } : {}),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(core.getEnabledModules).toHaveBeenCalled());
+  await vi.waitFor(() => expect(importModule).toHaveBeenCalled());
+  await new Promise((r) => setTimeout(r, 0));
+  return session;
+}
+
+test("a module whose register() throws reaches onModuleStatus and the persistent moduleStatus map", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockResolvedValue({
+      manifest: { ...styledModuleManifest },
+      register: vi.fn().mockRejectedValue(new Error("boom")),
+    }),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledWith("folder-one", "failed", "boom");
+  expect(session.moduleStatus.get("folder-one")).toEqual({
+    id: "folder-one",
+    status: "failed",
+    error: "boom",
+  });
+  session.leave();
+});
+
+test("a module whose import fails reaches onModuleStatus as load-failed under its folder id", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockRejectedValue(new Error("import blew up")),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledWith(
+    "folder-one",
+    "load-failed",
+    expect.stringContaining("import blew up"),
+  );
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  session.leave();
+});
+
+test("moduleStatus is populated even when no onModuleStatus callback is set", async () => {
+  const session = await enterWithModuleImport(vi.fn().mockRejectedValue(new Error("nope")));
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  session.leave();
+});
+
+test("a module that activates cleanly leaves no moduleStatus entry and never calls onModuleStatus", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockResolvedValue({ manifest: { ...styledModuleManifest }, register: vi.fn() }),
+    onModuleStatus,
+  );
+  expect(session.moduleStatus.size).toBe(0);
+  expect(onModuleStatus).not.toHaveBeenCalled();
   session.leave();
 });
 

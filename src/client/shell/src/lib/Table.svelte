@@ -194,6 +194,7 @@
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
+    moduleStatus: session.moduleStatus,
     leaveWorld: () => leaveWorld(),
     logout: async () => {
       await logout();

@@ -76,6 +76,9 @@ import {
   type AudioStateEngine,
   type PlaylistEngine,
   type HookFaultPayload,
+  type ModuleActivationOutcome,
+  type ModuleLoadFailure,
+  type ModuleStatusEntry,
   type RulerNotice,
 } from "@shadowcat/core";
 import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
@@ -145,6 +148,17 @@ export interface WorldSessionOpts {
    * player-presentable reason (fire-and-forget frame — there is no correlated reply to
    * reject instead). The shell surfaces it as a toast. */
   onAudioError?: (reason: string) => void;
+  /** Called for every module problem: a load failure (`ModuleLoadResult.failed`) or a
+   * non-`"activated"` `ModuleActivationOutcome`, from the first-party and external activation
+   * passes and `reconcileInstalledModules`. `id` is the install folder id for an external module
+   * and the registry id for a first-party one; `detail` is the failure message, or `null` for a
+   * skipped module. The shell surfaces it as a toast; a headless caller (tests) may leave it
+   * unset. */
+  onModuleStatus?: (
+    id: string,
+    status: "skipped-deps-unmet" | "failed" | "load-failed",
+    detail: string | null,
+  ) => void;
   /** Called on each connection failure before the session's first `welcome` (see
    * `WsClientHandlers.onConnectFailure`), with the running count. The shell turns a run of them
    * into a first-connect hint; a headless caller may leave it unset. */
@@ -765,6 +779,11 @@ export class WorldSession {
    * unload (reconcile) and in bulk on `leave()` — a link left behind would
    * keep a previous world's module styles applied app-wide. */
   #moduleStyleLinks = new Map<string, HTMLLinkElement>();
+  /** The last known problem per module, keyed on the install folder id for an external module
+   * and the registry id for a first-party one. A module with no entry has no known problem; a
+   * later successful activation or a successful reload removes its entry. Reactive, so the
+   * module manager reads it through `AppContext.moduleStatus` and re-renders as passes land. */
+  readonly moduleStatus = new SvelteMap<string, ModuleStatusEntry>();
 
   /** Construct a session bound to one connection factory + default module set; call
    * `enter(worldId)` to open the world connection.
@@ -1772,7 +1791,7 @@ export class WorldSession {
         }
         this.#activated = true;
         try {
-          await this.#modules.activate();
+          this.#reportModuleStatus((await this.#modules.activate()).outcomes, [], []);
           await this.#loadExternalModules(w.world, w.server_version);
         } catch (e) {
           this.#activated = false;
@@ -1867,7 +1886,9 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      if (result.loaded.length > 0) await this.#modules.activate();
+      const outcomes =
+        result.loaded.length > 0 ? (await this.#modules.activate()).outcomes : [];
+      this.#reportModuleStatus(outcomes, result.failed, resolved);
       // Styles follow activation, never precede it, and only a module that
       // actually activated gets a link: a per-module activation failure logs
       // and skips without rejecting (see `ModuleRegistry.activate`), so
@@ -1881,6 +1902,48 @@ export class WorldSession {
       );
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
+    }
+  }
+
+  /** Folds one load/activation pass into `moduleStatus` and forwards each problem to
+   * `opts.onModuleStatus`. Both failure classes (a load failure and an activation skip or
+   * failure) go through this one function so the persistent map and the toast callback cannot
+   * disagree. An `"activated"` outcome clears that module's earlier entry. An external module is
+   * keyed on its install folder id (`#externalModuleIds`' key space, the one the module manager
+   * lists by); a first-party module has no folder id and keeps its registry id.
+   * @param outcomes The pass's `ModuleActivationOutcome`s, keyed by registry (manifest) id.
+   * @param failed The pass's `ModuleLoadResult.failed` entries, keyed by manifest id.
+   * @param resolved The entries handed to `loadModules`, used to map a failed manifest id back
+   * to its folder id; empty for a first-party pass.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * // called after every ModuleRegistry.activate() and loadModules() pass; not part of the public API
+   * session.#reportModuleStatus([{ id: "example", status: "activated" }], [], []);
+   * ```
+   */
+  #reportModuleStatus(
+    outcomes: ModuleActivationOutcome[],
+    failed: ModuleLoadFailure[],
+    resolved: ResolvedModuleEntry[],
+  ): void {
+    const folderByManifestId = new Map<string, string>();
+    for (const [folderId, manifestId] of this.#externalModuleIds) {
+      folderByManifestId.set(manifestId, folderId);
+    }
+    for (const r of resolved) folderByManifestId.set(r.manifest.id, r.folderId);
+    const record = (entry: ModuleStatusEntry): void => {
+      const key = folderByManifestId.get(entry.id) ?? entry.id;
+      this.moduleStatus.set(key, { ...entry, id: key });
+      this.opts.onModuleStatus?.(key, entry.status, entry.error ?? null);
+    };
+    for (const f of failed) record({ id: f.id, status: "load-failed", error: f.error });
+    for (const o of outcomes) {
+      if (o.status === "activated") {
+        this.moduleStatus.delete(folderByManifestId.get(o.id) ?? o.id);
+      } else {
+        record({ id: o.id, status: o.status, ...(o.error === undefined ? {} : { error: o.error }) });
+      }
     }
   }
 
@@ -2043,6 +2106,7 @@ export class WorldSession {
         try {
           await this.#modules.unload(manifestId, { cascade: true });
           this.#externalModuleIds.delete(folderId);
+          this.moduleStatus.delete(folderId);
           this.#removeModuleStyle(manifestId);
         } catch (e) {
           this.#logger.warn(`external module ${manifestId} failed to unload during reconcile`, e);
@@ -2062,7 +2126,9 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load during reconcile: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      if (result.loaded.length > 0) await this.#modules.activate();
+      const outcomes =
+        result.loaded.length > 0 ? (await this.#modules.activate()).outcomes : [];
+      this.#reportModuleStatus(outcomes, result.failed, resolved);
       // Styles follow activation, never precede it, and only a module that
       // actually activated gets a link: a per-module activation failure logs
       // and skips without rejecting (see `ModuleRegistry.activate`), so
