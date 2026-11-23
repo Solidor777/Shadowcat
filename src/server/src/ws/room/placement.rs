@@ -21,6 +21,7 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
 use crate::modules::{engine_compat_ok, ModuleScanCache, PlacementDecl, PlacementWho};
+use crate::scene::placed_regions::PLACEMENT_EXPIRES_AT_KEY;
 
 /// Grouped inputs to `Room::place_effect` (mirroring `ToggleDoorInputs`).
 pub(crate) struct PlaceEffectInputs {
@@ -65,6 +66,10 @@ pub(crate) enum PlaceEffectError {
     /// The area's kind is not allowed or its extent exceeds the declaration's `max_extent`.
     #[error("placement rejected")]
     AreaRefused,
+    /// The declaration sets `max_range_cells` and the area's centre is farther than that from the
+    /// named caster token.
+    #[error("placement rejected")]
+    OutOfRange,
     /// The region built from the declaration and area failed `RegionEngine::validate`.
     #[error("placement rejected")]
     InvalidRegion(String),
@@ -96,6 +101,7 @@ pub(crate) fn place_effect_wire_message(err: &PlaceEffectError, world_role: Worl
         PlaceEffectError::CasterNotOwned => "no owned caster token on that scene".to_string(),
         PlaceEffectError::UnknownScene => "no such scene".to_string(),
         PlaceEffectError::AreaRefused => "the area is not allowed by the placement".to_string(),
+        PlaceEffectError::OutOfRange => "the area is out of range of the caster".to_string(),
         PlaceEffectError::InvalidRegion(reason) => format!("invalid region: {reason}"),
         PlaceEffectError::RateLimited => "rate limited".to_string(),
         PlaceEffectError::Data(_) => "internal error".to_string(),
@@ -187,9 +193,18 @@ impl Room {
         if !decl.admits(&req.shape) {
             return Err(PlaceEffectError::AreaRefused);
         }
+        if decl.max_range_cells.is_some() {
+            self.check_caster_range(decl, ctx, &req).await?;
+        }
         let region = decl.region_engine(req.shape);
         region.validate().map_err(PlaceEffectError::InvalidRegion)?;
 
+        let mut placement = serde_json::json!({
+            "module": req.module, "id": decl.id, "by": ctx.user_id
+        });
+        if let Some(at) = decl.expires_at(req.ts) {
+            placement[PLACEMENT_EXPIRES_AT_KEY] = serde_json::json!(at);
+        }
         let doc = Document {
             id: Uuid::new_v4(),
             scope: Scope::World {
@@ -208,9 +223,7 @@ impl Room {
             embedded: Default::default(),
             parent_id: Some(req.scene_id),
             engine: Some(serde_json::to_value(&region).map_err(DataError::from)?),
-            system: serde_json::json!({
-                "placement": { "module": req.module, "id": decl.id, "by": ctx.user_id }
-            }),
+            system: serde_json::json!({ "placement": placement }),
             created_at: req.ts,
             updated_at: req.ts,
         };
@@ -224,4 +237,120 @@ impl Room {
         .await?;
         Ok(())
     }
+
+    /// Enforce `decl.max_range_cells` against the caster the request names. The caster must be on
+    /// the request's scene and, for a non-GM, effectively owned by the sender; it supplies the
+    /// measuring point. A GM that names no caster is not range-limited (a GM may always place);
+    /// every other missing or foreign caster is `PlaceEffectError::CasterNotOwned`, so a range
+    /// limit cannot be sidestepped by omitting the caster. The distance is
+    /// `PlacementDecl::within_range` at the scene's `GridShape::world_units_per_cell`, the same
+    /// cells-to-scene-units conversion the door-reach check applies.
+    async fn check_caster_range(
+        &self,
+        decl: &PlacementDecl,
+        ctx: &PermissionContext,
+        req: &PlaceEffectInputs,
+    ) -> Result<(), PlaceEffectError> {
+        let is_gm = ctx.world_role == WorldRole::Gm;
+        if is_gm && req.caster.is_none() {
+            return Ok(());
+        }
+        let ecs = self.scene.read().await;
+        let caster_pos = req.caster.and_then(|token| {
+            let (scene, owner) = ecs.token_scene_and_effective_owner(token)?;
+            let admitted = scene == req.scene_id && (is_gm || owner == Some(ctx.user_id));
+            admitted.then(|| ecs.token_position(token)).flatten()
+        });
+        let Some(pos) = caster_pos else {
+            return Err(PlaceEffectError::CasterNotOwned);
+        };
+        let cell = ecs
+            .scene_grid_sizes()
+            .get(&req.scene_id)
+            .copied()
+            .ok_or(PlaceEffectError::UnknownScene)?;
+        let wu_per_cell = ecs
+            .resolve_grid_shape(req.scene_id, cell)
+            .world_units_per_cell();
+        if decl.within_range(pos, &req.shape, wu_per_cell) {
+            Ok(())
+        } else {
+            Err(PlaceEffectError::OutOfRange)
+        }
+    }
+
+    /// Remove every placed region whose expiry stamp (`PLACEMENT_EXPIRES_AT_KEY`) is at or before
+    /// `now_ms`, as one `Delete` batch under `WriteOrigin::ModulePlacement`, authored as the
+    /// world's seed author (`world_seed::seed_author`, a GM). Returns how many regions were
+    /// removed. A world with no GM member cannot author the delete and removes nothing. Holds
+    /// `publish_guard` across the read and the commit, so a region a GM deleted meanwhile cannot
+    /// make the batch stale.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let removed = room.expire_due_placements(repo, now_ms).await?;
+    /// ```
+    pub(crate) async fn expire_due_placements(
+        &self,
+        repo: &dyn Repository,
+        now_ms: i64,
+    ) -> Result<usize, DataError> {
+        let _guard = self.publish_guard.lock().await;
+        let due = self.scene.read().await.due_placement_regions(now_ms);
+        if due.is_empty() {
+            return Ok(0);
+        }
+        let Some(ctx) = crate::data::world_seed::seed_author(repo, self.world_id).await else {
+            return Ok(0);
+        };
+        let count = due.len();
+        let ops = due
+            .into_iter()
+            .map(|doc| Operation::Delete { doc })
+            .collect();
+        self.commit_ops_locked(repo, &ctx, ops, now_ms, WriteOrigin::ModulePlacement)
+            .await?;
+        Ok(count)
+    }
+}
+
+/// How often the server's sweep looks for placed regions past their expiry; the `period` the
+/// server passes to `spawn_placement_expiry_sweep`.
+pub(crate) const PLACEMENT_EXPIRY_PERIOD: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Spawn the background task that expires module-placed regions. Every `period` it asks each live
+/// room to `Room::expire_due_placements`; a failed sweep is logged and retried on the next tick.
+/// The task ends when `shutdown` reports a requested shutdown (or its sender is dropped). A room
+/// hydrated after a restart carries its regions' persisted stamps, so regions that expired while
+/// the server was down are removed on the first tick after the room is created; a world with no
+/// live room has no region effect to expire.
+///
+/// # Examples
+///
+/// ```text
+/// spawn_placement_expiry_sweep(ws.rooms.clone(), repo.clone(), ws.shutdown.clone(), PLACEMENT_EXPIRY_PERIOD);
+/// ```
+pub(crate) fn spawn_placement_expiry_sweep(
+    rooms: Arc<super::RoomRegistry>,
+    repo: Arc<crate::data::sqlite::SqliteRepository>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    period: std::time::Duration,
+) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(period);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = shutdown.wait_for(|requested| *requested) => return,
+            }
+            let now = crate::ws::time::now_millis();
+            for room in rooms.live_rooms() {
+                if let Err(e) = room.expire_due_placements(repo.as_ref(), now).await {
+                    tracing::warn!(world = %room.world_id, error = %e, "placement expiry sweep failed");
+                }
+            }
+        }
+    });
 }

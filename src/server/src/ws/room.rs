@@ -27,7 +27,10 @@ use crate::ws::protocol::{ResyncSource, ServerMsg};
 use crate::ws::PingRateLimiter;
 
 mod placement;
-pub(crate) use placement::{place_effect_wire_message, PlaceEffectError, PlaceEffectInputs};
+pub(crate) use placement::{
+    place_effect_wire_message, spawn_placement_expiry_sweep, PlaceEffectError, PlaceEffectInputs,
+    PLACEMENT_EXPIRY_PERIOD,
+};
 mod portal;
 pub(crate) use portal::{portal_choice_wire_message, PortalChoiceError};
 
@@ -4260,6 +4263,20 @@ impl RoomRegistry {
     /// ```
     pub fn get(&self, world_id: Uuid) -> Option<Arc<Room>> {
         self.rooms.get(&world_id).map(|r| r.clone())
+    }
+
+    /// Every live room, cloned out of the registry so a caller can `.await` on each without
+    /// holding a map guard.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// assert!(RoomRegistry::new().live_rooms().is_empty());
+    /// ```
+    pub fn live_rooms(&self) -> Vec<Arc<Room>> {
+        self.rooms.iter().map(|r| r.value().clone()).collect()
     }
 
     /// Telemetry snapshots for every live room (admin debug endpoint).

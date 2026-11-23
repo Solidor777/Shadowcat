@@ -195,9 +195,78 @@ pub struct PlacementDecl {
     /// The region's `RegionEngine::elevation`.
     #[serde(default)]
     pub elevation: Option<crate::data::engine::ElevationBand>,
+    /// How long a placed area lasts, in seconds, counted from the server's commit time. The
+    /// server removes the region once it has passed (`Room::expire_due_placements`); absent means
+    /// the area persists until a GM deletes it. At most `MAX_PLACEMENT_DURATION_SECS`.
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
+    /// The farthest the area's centre may be from the caster token, in grid cells (measured with
+    /// `euclidean_span_cells`, the shared scene-point span the move executor prices
+    /// continuous spans with). Absent means no range limit. When set, a non-GM request must name
+    /// a caster token it effectively owns on the scene, whatever `who` says.
+    #[serde(default)]
+    pub max_range_cells: Option<f64>,
 }
 
+/// The longest `PlacementDecl::duration_secs` a declaration may carry (30 days). Bounds the
+/// millisecond expiry stamp well inside `i64`.
+pub const MAX_PLACEMENT_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
+
 impl PlacementDecl {
+    /// The wall-clock millisecond at which an area placed at `placed_at_ms` expires, or `None`
+    /// when the declaration sets no `duration_secs`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::modules::PlacementDecl;
+    ///
+    /// let decl: PlacementDecl = serde_json::from_value(serde_json::json!({
+    ///     "id": "zone", "who": "gm", "shapes": ["rect"], "maxExtent": 5.0, "durationSecs": 6
+    /// }))
+    /// .unwrap();
+    /// assert_eq!(decl.expires_at(1_000), Some(7_000));
+    /// ```
+    pub fn expires_at(&self, placed_at_ms: i64) -> Option<i64> {
+        self.duration_secs
+            .map(|secs| placed_at_ms.saturating_add((secs as i64).saturating_mul(1000)))
+    }
+
+    /// Whether `shape`'s centre lies within `max_range_cells` of `caster`, measured as the
+    /// Euclidean span between the two scene points in cells (`euclidean_span_cells`, at
+    /// `world_units_per_cell`). Always `true` when the declaration sets no range; `false` when the
+    /// shape is malformed (no centre).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::RegionShape;
+    /// use shadowcat::modules::PlacementDecl;
+    ///
+    /// let decl: PlacementDecl = serde_json::from_value(serde_json::json!({
+    ///     "id": "zone", "who": "gm", "shapes": ["circle"], "maxExtent": 5.0, "maxRangeCells": 3.0
+    /// }))
+    /// .unwrap();
+    /// let near = RegionShape { kind: "circle".into(), points: vec![250.0, 0.0, 1.0] };
+    /// let far = RegionShape { kind: "circle".into(), points: vec![350.0, 0.0, 1.0] };
+    /// assert!(decl.within_range((0.0, 0.0), &near, 100.0));
+    /// assert!(!decl.within_range((0.0, 0.0), &far, 100.0));
+    /// ```
+    pub fn within_range(
+        &self,
+        caster: (f64, f64),
+        shape: &crate::data::engine::RegionShape,
+        world_units_per_cell: f64,
+    ) -> bool {
+        let Some(max) = self.max_range_cells else {
+            return true;
+        };
+        shape_center(shape).is_some_and(|centre| {
+            crate::scene::grid_shape::euclidean_span_cells(caster, centre, world_units_per_cell)
+                <= max
+        })
+    }
+
     /// The region body this declaration produces for `shape`: the declaration's effect set
     /// around the requested area. The caller validates the result with `RegionEngine::validate`.
     ///
@@ -267,6 +336,20 @@ impl PlacementDecl {
         if !self.max_extent.is_finite() || self.max_extent <= 0.0 {
             return Err("placement maxExtent must be a finite positive number".into());
         }
+        if self
+            .duration_secs
+            .is_some_and(|s| s == 0 || s > MAX_PLACEMENT_DURATION_SECS)
+        {
+            return Err(
+                "placement durationSecs must be 1..=MAX_PLACEMENT_DURATION_SECS seconds".into(),
+            );
+        }
+        if self
+            .max_range_cells
+            .is_some_and(|r| !r.is_finite() || r <= 0.0)
+        {
+            return Err("placement maxRangeCells must be a finite positive number".into());
+        }
         let probe = crate::data::engine::RegionShape {
             kind: "circle".into(),
             points: vec![0.0, 0.0, 1.0],
@@ -321,6 +404,33 @@ fn shape_extent(shape: &crate::data::engine::RegionShape) -> Option<f64> {
                 hi = (hi.0.max(c[0]), hi.1.max(c[1]));
             }
             Some((hi.0 - lo.0).max(hi.1 - lo.1))
+        }
+        _ => None,
+    }
+}
+
+/// The centre of `shape`'s bounding box (a circle's own centre), or `None` when its point list
+/// does not match its kind.
+///
+/// # Examples
+///
+/// ```text
+/// shape_center(circle [4, 6, 2]) == Some((4.0, 6.0))
+/// shape_center(rect [0, 0, 4, 2]) == Some((2.0, 1.0))
+/// ```
+fn shape_center(shape: &crate::data::engine::RegionShape) -> Option<(f64, f64)> {
+    let p = &shape.points;
+    match shape.kind.as_str() {
+        "circle" if p.len() == 3 => Some((p[0], p[1])),
+        "rect" if p.len() == 4 => Some(((p[0] + p[2]) / 2.0, (p[1] + p[3]) / 2.0)),
+        "polygon" if p.len() >= 6 && p.len().is_multiple_of(2) => {
+            let mut lo = (f64::INFINITY, f64::INFINITY);
+            let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for c in p.chunks(2) {
+                lo = (lo.0.min(c[0]), lo.1.min(c[1]));
+                hi = (hi.0.max(c[0]), hi.1.max(c[1]));
+            }
+            Some(((lo.0 + hi.0) / 2.0, (lo.1 + hi.1) / 2.0))
         }
         _ => None,
     }

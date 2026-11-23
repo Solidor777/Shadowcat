@@ -384,6 +384,8 @@ Declare each placeable effect under `placements` in `module.json`:
     "who": "caster_owner",
     "shapes": ["circle"],
     "maxExtent": 12,
+    "durationSecs": 60,
+    "maxRangeCells": 6,
     "behavior": "terrain",
     "cost": 1,
     "triggers": [
@@ -399,6 +401,15 @@ Declare each placeable effect under `placements` in `module.json`:
   effectively owns). A GM may always place.
 - `shapes` lists the allowed area kinds (`circle`, `rect`, `polygon`) and `maxExtent` is
   the largest bounding-box side of the area, in scene units.
+- `durationSecs` (optional) is how long the placed area lasts, from the moment the server
+  commits it, in whole seconds (1 to 2,592,000, which is 30 days). The server then deletes the
+  region; the stamp is stored in the region document, so a restart does not extend it. Left
+  out, the area lasts until a GM deletes it.
+- `maxRangeCells` (optional) is the farthest the area's centre may be from the caster token,
+  in grid cells. The server measures the straight-line span between the caster's position and
+  the centre of the area's bounding box, divided by the scene's cell size. When it is set, a
+  player's request must name a caster token the player effectively owns on the scene, whatever
+  `who` says. A GM who names a caster is held to the range too; a GM who names none is not.
 - `behavior`, `cost`, `triggers` and `elevation` are the region's effect set, exactly as
   the region document defines them. The server builds the region from these and
   validates it before creating it.
@@ -414,7 +425,8 @@ await ctx.placeEffect("my-module", "fireball", sceneId, { kind: "circle", points
 
 The promise rejects with the server's reason when the placement is refused. A player
 sees the single wording "placement rejected" for every refusal; a GM sees the specific
-reason. The placed region lasts until a GM deletes it. If your module also declares a
+reason, and an area outside `maxRangeCells` is refused the same way. A placed region lasts
+for its `durationSecs`, or until a GM deletes it when none is declared. If your module also declares a
 validator, it still judges the created region and can refuse it.
 
 ## Install, enable, dev loop

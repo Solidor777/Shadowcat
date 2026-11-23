@@ -23,6 +23,7 @@ pub mod movement;
 pub(crate) mod movement_tags;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
+pub(crate) mod placed_regions;
 pub(crate) mod regions;
 pub mod rotation_gate;
 pub(crate) mod senses;

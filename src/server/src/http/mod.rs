@@ -606,6 +606,14 @@ where
             _ = stop_requested.wait_for(|requested| *requested) => {}
         }
     };
+    // Module-placed regions with a declared duration are removed by this task; it ends with the
+    // shutdown request the serve loop above also watches.
+    crate::ws::room::spawn_placement_expiry_sweep(
+        ws_state.rooms.clone(),
+        state.repo.clone(),
+        ws_state.shutdown.clone(),
+        crate::ws::room::PLACEMENT_EXPIRY_PERIOD,
+    );
     let app = router(state).await;
     let drain_ws = ws_state.clone();
     let outcome = conn_serve::serve_router(source, app, shutdown_fut, limits, move || {

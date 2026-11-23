@@ -409,7 +409,8 @@ pub enum WriteOrigin {
     /// effect set from a module manifest declaration and vetted the sender against that
     /// declaration's `who` before ever constructing the op); scope, size, engine,
     /// containment, singleton, schema and OCC checks all run; never derivable from a wire
-    /// frame. It creates exactly one `region` document.
+    /// frame. It creates one `region` document per placement, and deletes a placed region whose
+    /// declared duration has passed (`ws::room::Room::expire_due_placements`).
     ModulePlacement,
 }
 
