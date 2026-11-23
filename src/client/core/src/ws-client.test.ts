@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { WsClient, NotConnectedError, RequestTimeoutError, PathfindError, SessionPausedError } from "./ws-client";
-import type { MoveStream } from "./ws-client";
+import type { MoveStream, WsClientHandlers } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { DocumentStore } from "./store";
 import type { ClientMsg, ServerMsg, WireOperation } from "./wire";
@@ -2022,6 +2022,116 @@ describe("WsClient scrolling-text frames", () => {
     await flush();
     expect(received).toEqual([{ scene: "s1", token: "t1", text: "You feel a chill.", gmOnly: true }]);
     client.stop();
+  });
+});
+
+describe("WsClient portal frames", () => {
+  /** Start a client over a recording transport. */
+  async function startPortalClient(handlers: Partial<WsClientHandlers> = {}): Promise<{
+    /** The client under test. */
+    client: WsClient;
+    /** Every raw frame the client sent. */
+    sent: string[];
+    /** Feeds one raw server frame to the client. */
+    deliver: (frame: object) => void;
+  }> {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: { onCommand: () => {}, ...handlers },
+    });
+    await client.start();
+    await flush();
+    return { client, sent, deliver: (frame) => onMessage(JSON.stringify(frame)) };
+  }
+
+  it("a portal_offer frame invokes onPortalOffer with every field mapped (snake_case to camelCase)", async () => {
+    const received: unknown[] = [];
+    const { client, deliver } = await startPortalClient({ onPortalOffer: (m) => received.push(m) });
+    deliver({
+      type: "portal_offer",
+      offer_id: "o1",
+      scene: "s1",
+      token: "t1",
+      prompt: "Where to?",
+      options: [{ index: 0, label: "The Cellar", destination_name: null, available: true }],
+      gm_only: true,
+      owner: "u1",
+    });
+    await flush();
+    expect(received).toEqual([
+      {
+        offerId: "o1",
+        scene: "s1",
+        token: "t1",
+        prompt: "Where to?",
+        options: [{ index: 0, label: "The Cellar", destination_name: null, available: true }],
+        gmOnly: true,
+        owner: "u1",
+      },
+    ]);
+    client.stop();
+  });
+
+  it("choosePortal sends choose_portal with the option index and decline sends a null choice", async () => {
+    const { client, sent } = await startPortalClient();
+    const accept = client.choosePortal("o1", 2);
+    const decline = client.choosePortal("o2", null);
+    const frames = sent.map((s) => JSON.parse(s)).filter((f) => f.type === "choose_portal");
+    expect(frames[0]).toMatchObject({ type: "choose_portal", offer_id: "o1", choice: 2 });
+    expect(frames[1]).toMatchObject({ type: "choose_portal", offer_id: "o2", choice: null });
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    client.stop();
+    await expect(accept).rejects.toThrow();
+    await expect(decline).rejects.toThrow();
+  });
+
+  it("a correlated portal_choice_error rejects the request with the server's text", async () => {
+    const { client, sent, deliver } = await startPortalClient();
+    const p = client.choosePortal("o1", 0);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "choose_portal")!);
+    deliver({ type: "portal_choice_error", request_id: frame.request_id, message: "portal rejected" });
+    await expect(p).rejects.toThrow(/portal rejected/);
+    client.stop();
+  });
+
+  it("a portal_choice_error with reason paused rejects with SessionPausedError", async () => {
+    const { client, sent, deliver } = await startPortalClient();
+    const p = client.choosePortal("o1", 0);
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "choose_portal")!);
+    deliver({ type: "portal_choice_error", request_id: frame.request_id, message: "paused", reason: "paused" });
+    await expect(p).rejects.toBeInstanceOf(SessionPausedError);
+    client.stop();
+  });
+
+  it("a portal_choice_error for an unknown request id settles nothing", async () => {
+    const { client, deliver } = await startPortalClient();
+    const p = client.openPortal("t1");
+    deliver({ type: "portal_choice_error", request_id: randomUuid(), message: "portal rejected" });
+    let settled: string | null = null;
+    void p.then(
+      () => (settled = "resolved"),
+      () => (settled = "rejected"),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(settled).toBeNull();
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
+  });
+
+  it("openPortal sends open_portal naming the token", async () => {
+    const { client, sent } = await startPortalClient();
+    const p = client.openPortal("t9");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "open_portal")!);
+    expect(frame).toMatchObject({ type: "open_portal", token: "t9" });
+    expect(typeof frame.request_id).toBe("string");
+    client.stop();
+    await expect(p).rejects.toThrow();
   });
 });
 

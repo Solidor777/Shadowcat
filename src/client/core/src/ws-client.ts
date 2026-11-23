@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { DoorState, FalloffCurve, RejectReason } from "@shadowcat/types";
+import type { DoorState, FalloffCurve, PortalOfferOption, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -374,6 +374,40 @@ export interface ScrollingTextNotice {
   gmOnly: boolean;
 }
 
+/** In-flight requests whose only reply is a refusal frame, keyed by request_id: success is
+ * assumed once `CHAT_ERROR_WINDOW_MS` passes in silence. */
+type SilencePending = Map<
+  string,
+  {
+    /** Resolves (void) once the silence window elapses with no refusal. */
+    resolve: () => void;
+    /** Rejects with the server's reason on a correlated refusal, or on disconnect. */
+    reject: (e: Error) => void;
+    /** The silence-window timeout handle that resolves success-assumed. */
+    timer: ReturnType<typeof setTimeout>;
+  }
+>;
+
+/** A portal offer (`WsClientHandlers.onPortalOffer`); carries no seq. Holds no coordinates:
+ * the answer names an option by its `index`. */
+export interface PortalOfferNotice {
+  /** Identifies the offer in `WsClient.choosePortal`. */
+  offerId: string;
+  /** The scene the token stands on. */
+  scene: string;
+  /** The token that may take a portal. */
+  token: string;
+  /** The GM-authored heading, if any. */
+  prompt: string | null;
+  /** The destinations in display order. */
+  options: PortalOfferOption[];
+  /** True when the firing region is not visible to every world member — the frame reaches only
+   * GM connections (server-decided). */
+  gmOnly: boolean;
+  /** The token's effective owner, the one non-GM recipient of a public offer. */
+  owner: string | null;
+}
+
 /** A relayed VFX one-shot (`WsClientHandlers.onVfx`); carries no seq. */
 export interface VfxNotice {
   /** The scene the effect plays on. */
@@ -535,6 +569,10 @@ export interface WsClientHandlers {
   /** An out-of-band region-triggered scrolling-text overlay (carries no seq).
    * @param msg The overlay's scene, token, text, and GM-only secrecy flag. */
   onScrollingText?(msg: ScrollingTextNotice): void;
+  /** An out-of-band portal offer for a token the user may move through a portal (carries no
+   * seq). Addressed by the server: only a GM connection and the token's owner receive it.
+   * @param msg The offer's id, scene, token, prompt and options. */
+  onPortalOffer?(msg: PortalOfferNotice): void;
   /** A GM's `reset_explored_fog` intent took effect (carries no seq); delivered to every
    * connection in the room. No client action is required — the next "vision" push already
    * reflects the cleared memory — this exists for UI feedback only.
@@ -747,6 +785,10 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** In-flight portal answers and re-open requests, keyed by request_id — the same
+   * refusal-only reply shape as `doorPending` (`portal_choice_error` is the only reply), kept
+   * as its own map so the two families' error frames never cross-correlate. */
+  private portalPending: SilencePending = new Map();
   /** In-flight merge intents (`MergePull`/`MergePush`/`MergeRevert`), keyed by request_id. Unlike
    * `combatPending`/`chatPending`, a merge intent's reply IS a correlated frame carrying real
    * payload (`ServerMsg::MergeResult`'s `outcome`) — the same one-shot request/reply shape as
@@ -951,6 +993,11 @@ export class WsClient {
       p.reject(new NotConnectedError(reason));
     }
     this.doorPending.clear();
+    for (const p of this.portalPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new NotConnectedError(reason));
+    }
+    this.portalPending.clear();
     // Combat intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
     for (const p of this.combatPending.values()) {
@@ -1441,6 +1488,31 @@ export class WsClient {
         }
         break;
       }
+      case "portal_choice_error": {
+        // A refused portal answer or re-open: reject the correlated request. `refusalError`
+        // maps the paused reason to `SessionPausedError`; every other refusal keeps the
+        // server's role-conditioned (uniform for a non-GM) wording.
+        const p = this.portalPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.portalPending.delete(msg.request_id);
+          p.reject(refusalError(msg));
+        }
+        break;
+      }
+      case "portal_offer":
+        this.safeEmit(() =>
+          this.opts.handlers.onPortalOffer?.({
+            offerId: msg.offer_id,
+            scene: msg.scene,
+            token: msg.token,
+            prompt: msg.prompt,
+            options: msg.options,
+            gmOnly: msg.gm_only,
+            owner: msg.owner,
+          }),
+        );
+        break;
       case "combat_error": {
         // A rejected combat intent: reject the correlated entry directly by request_id.
         const p = this.combatPending.get(msg.request_id);
@@ -2184,9 +2256,27 @@ export class WsClient {
    * ```
    */
   private trackDoorToggle(request_id: string): Promise<void> {
+    return this.trackSilenceSettled(this.doorPending, request_id);
+  }
+
+  /** Register a correlated request whose only reply is a refusal: resolves (success-assumed)
+   * when the silence window elapses, rejects when the matching refusal frame settles the entry
+   * in `pending`. The shared body of `trackDoorToggle` and `trackPortalRequest`.
+   * @param pending The map the request is registered in, keyed by `request_id`.
+   * @param request_id The request's correlation id (already sent on the wire by the caller).
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no refusal; rejects when the
+   * refusal handler rejects the entry.
+   * @example
+   * ```
+   * // called from trackDoorToggle; not part of the public API
+   * declare const request_id: string;
+   * const p = this.trackSilenceSettled(this.doorPending, request_id);
+   * ```
+   */
+  private trackSilenceSettled(pending: SilencePending, request_id: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.doorPending.delete(request_id);
+        pending.delete(request_id);
         resolve();
       }, CHAT_ERROR_WINDOW_MS);
       // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
@@ -2197,8 +2287,59 @@ export class WsClient {
           unref?: () => void;
         }
       ).unref?.();
-      this.doorPending.set(request_id, { resolve, reject, timer });
+      pending.set(request_id, { resolve, reject, timer });
     });
+  }
+
+  /** Answer a portal offer: pick destination `choice` or decline with `null`. Silence-based
+   * success like `toggleDoor`: the broadcast Event of the teleport's commit confirms an accept
+   * and a decline replies nothing; only a refusal replies (`portal_choice_error`), rejecting
+   * with the server's reason (`SessionPausedError` when the session pause refused the accept).
+   * @param offerId The offer being answered (`PortalOfferNotice.offerId`).
+   * @param choice The chosen option's `index`, or `null` to decline.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.choosePortal("offer-1", 0);
+   * ```
+   */
+  choosePortal(offerId: string, choice: number | null): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.portalPending, request_id);
+    this.send({ type: "choose_portal", request_id, offer_id: offerId, choice });
+    return p;
+  }
+
+  /** Ask the server to re-issue the offer for a token standing in a portal-choice region. The
+   * offer arrives through `WsClientHandlers.onPortalOffer`; a refusal rejects with the server's
+   * reason like `choosePortal`.
+   * @param token The token that stands in the portal region.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.openPortal("token-1");
+   * ```
+   */
+  openPortal(token: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.portalPending, request_id);
+    this.send({ type: "open_portal", request_id, token });
+    return p;
   }
 
   /** Request a door toggle on the named wall. Resolves/rejects like `sendChatMessage`:

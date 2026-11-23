@@ -25,6 +25,7 @@ export type { PathErrorReason } from "./generated/PathErrorReason";
 export type { ResyncSource } from "./generated/ResyncSource";
 export type { WsErrorCode } from "./generated/WsErrorCode";
 export type { Audience } from "./generated/Audience";
+export type { PortalOfferOption } from "./generated/PortalOfferOption";
 
 // Derived scene channels
 export type { FootprintsPayload } from "./generated/FootprintsPayload";
@@ -165,6 +166,7 @@ export type { RegionTrigger } from "./generated/engine/RegionTrigger";
 export type { TriggerEvent } from "./generated/engine/TriggerEvent";
 export type { TriggerEffect } from "./generated/engine/TriggerEffect";
 export type { PortalTarget } from "./generated/engine/PortalTarget";
+export type { PortalOption } from "./generated/engine/PortalOption";
 export type { NoticeAudience } from "./generated/engine/NoticeAudience";
 export type { AmbientLightMode } from "./generated/engine/AmbientLightMode";
 export type { AmbientLightOverride } from "./generated/engine/AmbientLightOverride";

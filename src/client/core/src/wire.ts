@@ -31,7 +31,7 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
-import type { CombatsPayload, DoorState, ServerConfig, TlsStatus } from "@shadowcat/types";
+import type { CombatsPayload, DoorState, PortalOfferOption, ServerConfig, TlsStatus } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -1195,6 +1195,40 @@ export type ServerMsg =
       message: string;
     }
   | {
+      /** A portal region offered `token` a choice of destinations. Out-of-band (no seq, never
+       * buffered or resynced) and addressed: only a GM connection and, when `gm_only` is false,
+       * the connection of `owner` receive it. Carries no coordinates and no destination
+       * scene unless the GM marked the option `reveal_scene`. */
+      type: "portal_offer";
+      /** Identifies the offer in `choose_portal`. */
+      offer_id: string;
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token that may take a portal. */
+      token: string;
+      /** The GM-authored heading, if any. */
+      prompt: string | null;
+      /** The destinations in display order. */
+      options: PortalOfferOption[];
+      /** True when only GM connections receive the frame. */
+      gm_only: boolean;
+      /** The token's effective owner, the one non-GM recipient of a public offer. */
+      owner: string | null;
+    }
+  | {
+      /** A `choose_portal` or `open_portal` request was refused. Addressed to the originating
+       * connection only; never broadcast. For a non-GM caller `message` is ONE uniform wording
+       * across every refusal reason; a GM caller may receive a specific diagnostic. */
+      type: "portal_choice_error";
+      /** The refused request's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+      /** `paused` when the session pause refused an accept; omitted or null otherwise. DECLARED
+       * optional for the same reason as `reject.detail`. */
+      reason?: z.infer<typeof RejectReasonSchema> | null;
+    }
+  | {
       /** The outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`.
        * Addressed to the originating connection only; never broadcast — a merge that
        * committed additionally arrives as the ordinary broadcast `event` echo. */
@@ -1481,6 +1515,29 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("door_toggle_error"),
     request_id: z.string(),
     message: z.string(),
+  }),
+  z.object({
+    type: z.literal("portal_offer"),
+    offer_id: z.string(),
+    scene: z.string(),
+    token: z.string(),
+    prompt: z.string().nullable(),
+    options: z.array(
+      z.object({
+        index: int,
+        label: z.string(),
+        destination_name: z.string().nullable(),
+        available: z.boolean(),
+      }),
+    ),
+    gm_only: z.boolean(),
+    owner: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("portal_choice_error"),
+    request_id: z.string(),
+    message: z.string(),
+    reason: RejectReasonSchema.nullish(),
   }),
   z.object({
     type: z.literal("move_stream"),
@@ -2186,6 +2243,27 @@ export type ClientMsg =
       wall_id: string;
       /** The target state; a non-GM may name `closed`/`open` only. */
       to: DoorState;
+    }
+  | {
+      /** The answer to a `portal_offer`: pick destination `choice` or decline with `null`. An
+       * offer answers once. A refusal replies `portal_choice_error` correlated by `request_id`;
+       * success is confirmed by the broadcast `event` of the teleport's commit. */
+      type: "choose_portal";
+      /** Correlation token for `portal_choice_error`. */
+      request_id: string;
+      /** The offer being answered (`portal_offer.offer_id`). */
+      offer_id: string;
+      /** The chosen option's `index`, or `null` to decline. */
+      choice: number | null;
+    }
+  | {
+      /** Re-issue the offer for a token standing in a portal-choice region. The offer arrives
+       * as a `portal_offer`; a refusal replies `portal_choice_error`. */
+      type: "open_portal";
+      /** Correlation token for `portal_choice_error`. */
+      request_id: string;
+      /** The token that stands in the portal region. */
+      token: string;
     };
 
 /**
