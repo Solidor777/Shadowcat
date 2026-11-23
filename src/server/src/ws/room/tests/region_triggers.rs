@@ -1660,6 +1660,53 @@ async fn a_chained_portal_is_refused_after_one_hop() {
 }
 
 #[tokio::test]
+async fn a_portal_choice_at_a_teleport_destination_is_refused_as_chained() {
+    let h = movement_scene("unrestricted", false).await;
+    // The first region teleports into the second's cell, whose trigger list carries a
+    // `portal_choice`: the post-teleport re-fire passes `allow_teleport: false`, which refuses
+    // a choice exactly as it refuses a second fixed teleport.
+    place_region(
+        &h,
+        0x7E2,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 250.0, "y": 50.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+    place_region(
+        &h,
+        0x7E3,
+        (2, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "portal_choice", "prompt": null,
+                "options": [
+                    { "label": "Elsewhere", "target": { "x": 450.0, "y": 50.0 } }
+                ] } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        (250.0, 50.0),
+        "the token stays on the first destination"
+    );
+    let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("chained portal refused")),
+        "the refused choice surfaces as a GM-only notice, got {texts:?}"
+    );
+}
+
+#[tokio::test]
 async fn destination_enter_effects_fire_after_a_teleport() {
     let h = movement_scene("unrestricted", false).await;
     let actor_id = link_actor(&h, 0x7F0, vec![], json!({})).await;
@@ -2418,4 +2465,135 @@ async fn a_converted_circle_region_validates_and_fires_its_enter_trigger_once() 
     )
     .await;
     assert_eq!(texts, vec!["converted-enter".to_string()]);
+}
+
+/// Creates a GM-owned carrier token on `h`'s scene at `(x, y)` and an enabled region anchored
+/// to it. The region covers the unit square one cell to the carrier's right (offsets
+/// `[50, -50, 150, 50]` from its centre) and carries an enter and an exit notice.
+async fn place_carrier_with_aura(
+    h: &MovementHandle,
+    include_carrier: bool,
+    at: (f64, f64),
+) -> (Uuid, Uuid) {
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let carrier = crate::test_ids::test_uuid(0xA7A0);
+    let region_id = crate::test_ids::test_uuid(0xA7A1);
+    let mut token = wdoc(h.world_id, carrier, "token");
+    token.parent_id = Some(h.scene_id);
+    token.owner = Some(h.gm.user_id);
+    token.engine = Some(crate::ws::test_support::token_engine(at.0, at.1));
+    let mut region = wdoc(h.world_id, region_id, "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.permissions.default = DocRole::Observer;
+    region.engine = Some(json!({
+        "shape": { "kind": "rect", "points": [50.0, -50.0, 150.0, 50.0] },
+        "behavior": "terrain",
+        "cost": 1.0,
+        "enabled": true,
+        "anchor": { "token": carrier, "include_carrier": include_carrier },
+        "triggers": [
+            { "on": "enter", "effect": { "type": "chat_notice", "text": "aura-enter", "audience": "public" } },
+            { "on": "exit", "effect": { "type": "chat_notice", "text": "aura-exit", "audience": "public" } },
+        ],
+    }));
+    for doc in [token, region] {
+        h.room
+            .publish(
+                &h.repo,
+                &h.gm,
+                vec![Operation::Create { doc }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+    (carrier, region_id)
+}
+
+/// A GM drag of the carrier along x (the ungated publish path).
+async fn drag_carrier(h: &MovementHandle, carrier: Uuid, from_x: f64, to_x: f64) {
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: carrier,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/x".into(),
+                    old: json!(from_x),
+                    new: json!(to_x),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+}
+
+/// The notice texts on the region channel, in commit order.
+async fn notice_texts(h: &MovementHandle) -> Vec<String> {
+    region_notices(h).await.iter().map(notice_text).collect()
+}
+
+/// A carrier whose aura moves onto a stationary token fires that token's Enter once. A second
+/// carrier step with the token still inside fires nothing, and stepping away fires Exit.
+///
+/// Fails when `Room::fire_attached_region_triggers` is not called after a position commit
+/// (no notice ever fires: the stationary token never moved), when `enter_only` is dropped
+/// (the second step re-fires Enter), or when the occupancy basis is not the token's centre
+/// cell (the exit never fires).
+#[tokio::test]
+async fn a_carrier_drag_fires_enter_once_then_exit_on_a_token_that_did_not_move() {
+    let h = movement_scene("unrestricted", false).await;
+    // The stationary token sits at (50, 50): cell (0, 0). The aura covers the cell to the
+    // carrier's right, so a carrier centred at (-50, 50) covers cell (0, 0).
+    let (carrier, _) = place_carrier_with_aura(&h, false, (950.0, 50.0)).await;
+    assert!(notice_texts(&h).await.is_empty(), "far away: nothing fires");
+
+    drag_carrier(&h, carrier, 950.0, -50.0).await;
+    assert_eq!(notice_texts(&h).await, vec!["aura-enter".to_string()]);
+
+    // Still inside after a small step: the stored membership already names the region.
+    drag_carrier(&h, carrier, -50.0, -40.0).await;
+    assert_eq!(
+        notice_texts(&h).await,
+        vec!["aura-enter".to_string()],
+        "Enter does not re-fire while the token stays inside"
+    );
+
+    drag_carrier(&h, carrier, -40.0, 950.0).await;
+    let mut texts = notice_texts(&h).await;
+    texts.sort();
+    assert_eq!(
+        texts,
+        vec!["aura-enter".to_string(), "aura-exit".to_string()]
+    );
+}
+
+/// An executed move of the carrier fires the aura on the stationary token as well.
+///
+/// Fails when `execute_move` does not call `Room::fire_attached_region_triggers`.
+#[tokio::test]
+async fn a_carrier_move_executed_by_the_server_fires_the_aura_on_a_stationary_token() {
+    let h = movement_scene_with_speed("unrestricted", false, 6000.0).await;
+    let (carrier, _) = place_carrier_with_aura(&h, false, (-150.0, 50.0)).await;
+    h.room
+        .execute_move(
+            &h.repo,
+            &h.gm,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: carrier,
+                path: vec![(-150.0, 50.0), (-50.0, 50.0)],
+                ts: crate::ws::time::now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(notice_texts(&h).await, vec!["aura-enter".to_string()]);
 }

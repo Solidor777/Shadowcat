@@ -809,6 +809,11 @@ pub(crate) struct TriggerReport {
     /// footprint bleed past the center cell would otherwise register membership a
     /// center-keyed `Enter` never fired, and vice versa).
     pub occupancy: Vec<(i32, i32)>,
+    /// When `Some`, the only regions whose `Enter`/`Arrest` triggers may fire from `entered`;
+    /// `Exit` is never filtered. A carrier-move report sets it to the attached regions the
+    /// token has not yet entered, so a stationary token's `entered` centre cell cannot
+    /// re-fire the Enter triggers of an unrelated region it already occupies.
+    pub enter_only: Option<Vec<Uuid>>,
 }
 
 /// One fired (event, round, combatant, region, trigger-index) tuple — the
@@ -870,6 +875,20 @@ struct TurnRoundDedup {
 /// Entries otherwise live for the room's lifetime: one small set per combat
 /// that ever crossed a boundary.
 const MAX_TURN_ROUND_DEDUP_COMBATS: usize = 64;
+
+/// The token a teleport moves: what `Room::apply_teleport_to` reads of it. Bundled to keep
+/// that function under the >7-argument signature limit.
+struct TeleportSubject<'a> {
+    /// The token document id.
+    token: Uuid,
+    /// The token's current scene (`None` when it sits on no scene).
+    scene: Option<Uuid>,
+    /// The token's parsed engine body (position/elevation); `None` when it does not parse.
+    token_eng: Option<&'a eng::TokenEngine>,
+    /// The token's effective owner, whose `vfx_rate` bucket a carried VFX charges; `None`
+    /// admits uncharged.
+    effective_owner: Option<Uuid>,
+}
 
 /// The firing-plan input bundle for `Room::apply_region_trigger_effects` —
 /// what fires, the rows the secrecy forcing searches, the combat a
@@ -2261,11 +2280,14 @@ impl Room {
                 entered: outcome.entered_cells.clone(),
                 arrest_stop: outcome.arrested.then_some(outcome.stop),
                 occupancy: vec![stop_cell],
+                enter_only: None,
             },
             ts,
             true,
         )
         .await;
+        self.fire_attached_region_triggers(repo, ctx, token, ts, true)
+            .await;
 
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
@@ -2614,6 +2636,7 @@ impl Room {
             entered,
             arrest_stop,
             occupancy,
+            enter_only,
         } = report;
         let entered: &[(i32, i32)] = &entered;
         use crate::scene::regions;
@@ -2695,6 +2718,11 @@ impl Room {
             (regions, arrest_cell, exited, stale_rows)
         };
         let mut fired = regions::fired_triggers(&regions, entered, arrest_cell, &exited);
+        if let Some(only) = &enter_only {
+            // Enter/Arrest narrow to the named regions; an Exit pair (its region id is in
+            // `exited`) always stays.
+            fired.retain(|(id, _)| only.contains(id) || exited.contains(id));
+        }
         fired.extend(regions::fired_triggers(&stale_rows, &[], None, &exited));
         // The rows a notice's secrecy forcing searches: the scene table AND the stale
         // exit rows (an Exit-fired notice rides the identical rule).
@@ -2969,178 +2997,36 @@ impl Room {
 
         // --- Teleport: at most ONE per token per fire (a region's own trigger list could in
         // principle carry several teleports; only the FIRST wins — a second is silently ignored
-        // rather than double-moving the token, mirroring "one hop per move"). ---
+        // rather than double-moving the token, mirroring "one hop per move"). A `PortalChoice`
+        // is a kind of teleport: it shares the one-hop guard, so a fire that may not teleport
+        // refuses it with the same chained-portal failure. ---
         let mut teleported: Option<Uuid> = None;
+        let teleport_target = fired.iter().find_map(|(_, t)| match &t.effect {
+            eng::TriggerEffect::Teleport { target } => Some(target),
+            _ => None,
+        });
         if allow_teleport {
-            if let Some((_, trigger)) = fired
-                .iter()
-                .find(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
-            {
-                let eng::TriggerEffect::Teleport { target } = &trigger.effect else {
-                    unreachable!("the find matched a Teleport effect")
+            if let Some(target) = teleport_target {
+                let subject = TeleportSubject {
+                    token,
+                    scene,
+                    token_eng: token_eng.as_ref(),
+                    effective_owner,
                 };
-                // The destination scene: the target's own when it names one,
-                // else the token's current scene (a same-scene hop). A token
-                // on NO scene (reachable only from the turn/round fire site,
-                // whose token may sit outside every scene) can hop only to a
-                // named target.
-                let dest_scene = target.scene.or(scene);
-                // Scene existence AND same-world membership are checked here (fire time), never
-                // at ingress (`validate_engine_tree` is pure — no repository access). Without the
-                // world check, a cross-world (or otherwise wrong-world) portal target still
-                // passes `doc_type == "scene"` and only fails deep inside `commit_ops_locked`'s
-                // `check_command_scope` — which drops the WHOLE ops batch (every unrelated
-                // condition/resource/chat effect fired in the same pass) through the generic
-                // `tracing::debug!` arm below, with no GM notice. Checking it here instead routes
-                // the failure through `failures` like every other teleport refusal, so the
-                // batch's OTHER effects still commit and the GM is told specifically why the
-                // portal itself failed.
-                let scene_exists = match dest_scene {
-                    Some(dest) => match repo.get_document(dest).await {
-                        Ok(Some(doc)) => {
-                            doc.doc_type == "scene"
-                                && crate::data::document::world_of(&doc) == Some(self.world_id)
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                if !scene_exists {
-                    failures.push(match dest_scene {
-                        Some(dest) => format!("teleport target scene {dest} does not exist"),
-                        None => "the token is on no scene to teleport from".to_string(),
-                    });
-                } else if token_eng.is_none() {
-                    failures.push("token has no engine body to teleport".to_string());
-                } else {
-                    let Some(dest_scene) = dest_scene else {
-                        unreachable!("scene_exists is false for a None destination");
-                    };
-                    let t = token_eng.as_ref().expect("checked non-None above");
-                    let mut update_changes = Vec::new();
-                    update_changes.push(crate::data::command::FieldChange {
-                        path: "/engine/x".to_string(),
-                        old: serde_json::json!(t.x),
-                        new: serde_json::json!(target.x),
-                        remove: false,
-                    });
-                    update_changes.push(crate::data::command::FieldChange {
-                        path: "/engine/y".to_string(),
-                        old: serde_json::json!(t.y),
-                        new: serde_json::json!(target.y),
-                        remove: false,
-                    });
-                    if let Some(new_elev) = target.elevation {
-                        update_changes.push(crate::data::command::FieldChange {
-                            path: "/engine/elevation".to_string(),
-                            old: serde_json::json!(t.elevation),
-                            new: serde_json::json!(new_elev),
-                            remove: false,
-                        });
-                    }
-                    if Some(dest_scene) != scene {
-                        ops.push(Operation::Move {
-                            doc_id: token,
-                            parent_id: Some(dest_scene),
-                            old_parent_id: scene,
-                        });
-                        // Active-combat visibility: the budget decrement for the walk that
-                        // entered the portal already happened; this notice only makes the
-                        // scene-change visible.
-                        if let Some(source_scene) = scene {
-                            if self
-                                .scene
-                                .read()
-                                .await
-                                .active_combat_for_scene(source_scene)
-                                .is_some()
-                            {
-                                let notice = build_message_doc(
-                                    self.world_id,
-                                    ctx.user_id,
-                                    MessageDraft {
-                                        channel: "region".to_string(),
-                                        actor_owner: None,
-                                        audience: Audience::GmOnly,
-                                        kind: MessageKind::System,
-                                        content: vec![Segment::Text {
-                                            text: format!(
-                                                "Token {token} teleported off scene {source_scene} while an active combat is running there"
-                                            ),
-                                        }],
-                                        source: None,
-                                        system: None,
-                                    },
-                                    ts,
-                                );
-                                ops.push(Operation::Create { doc: notice });
-                            }
-                        }
-                    }
-                    ops.push(Operation::Update {
-                        doc_id: token,
-                        changes: update_changes,
-                    });
-                    // A carried `vfx` asset plays at BOTH ends of the hop — the source position
-                    // on the ORIGIN scene (where the token just vanished from) and the
-                    // destination position on `dest_scene` (where it now stands) — mirroring
-                    // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
-                    // out-of-band, no seq, one fresh id per broadcast). Charged against
-                    // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
-                    // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
-                    // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
-                    // into and out of a portal's trigger region cannot emit unlimited,
-                    // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
-                    // would (never-fork: one budget source per one-shot family). Keyed on the
-                    // token's effective owner: a GM-owned/NPC-moved token
-                    // (`effective_owner: None`) has no attributable player to charge and is
-                    // admitted uncharged, matching this codebase's broader pattern of GM actions
-                    // being less restricted than player ones; a player-owned token charges that
-                    // player's bucket exactly once per fire (one check covers both ends of the
-                    // hop, not two).
-                    if let Some(asset) = &target.vfx {
-                        let vfx_admitted = match effective_owner {
-                            Some(owner) => self.vfx_rate.check(owner, ts, 30),
-                            None => true,
-                        };
-                        if vfx_admitted {
-                            if let Some(source_scene) = scene {
-                                self.broadcast_aux(ServerMsg::Vfx {
-                                    scene: source_scene,
-                                    user: ctx.user_id,
-                                    asset: asset.clone(),
-                                    x: t.x,
-                                    y: t.y,
-                                    scale: None,
-                                    rotation: None,
-                                    duration_ms: None,
-                                    sound: None,
-                                    elevation: t.elevation,
-                                    id: Uuid::new_v4(),
-                                });
-                            }
-                            self.broadcast_aux(ServerMsg::Vfx {
-                                scene: dest_scene,
-                                user: ctx.user_id,
-                                asset: asset.clone(),
-                                x: target.x,
-                                y: target.y,
-                                scale: None,
-                                rotation: None,
-                                duration_ms: None,
-                                sound: None,
-                                elevation: target.elevation,
-                                id: Uuid::new_v4(),
-                            });
-                        }
-                    }
-                    teleported = Some(dest_scene);
+                match self
+                    .apply_teleport_to(repo, ctx, &subject, target, ts, &mut ops)
+                    .await
+                {
+                    Ok(dest_scene) => teleported = Some(dest_scene),
+                    Err(failure) => failures.push(failure),
                 }
             }
-        } else if fired
-            .iter()
-            .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
-        {
+        } else if fired.iter().any(|(_, t)| {
+            matches!(
+                t.effect,
+                eng::TriggerEffect::Teleport { .. } | eng::TriggerEffect::PortalChoice { .. }
+            )
+        }) {
             failures.push("chained portal refused (one hop per move)".to_string());
         }
 
@@ -3291,15 +3177,195 @@ impl Room {
                                 occupancy: entered.clone(),
                                 entered,
                                 arrest_stop: None,
+                                enter_only: None,
                             },
                             ts,
                             false,
                         ))
                         .await;
+                        // The teleported token may carry following regions: the zone arrived
+                        // with it. The attached pass is itself one-hop (`allow_teleport: false`).
+                        Box::pin(self.fire_attached_region_triggers(repo, ctx, token, ts, false))
+                            .await;
                     }
                 }
             }
         }
+    }
+
+    /// The ONE teleport implementation: moves the token described by `subject` to `target`
+    /// and returns the destination scene id, or the GM-notice failure line that refused it.
+    /// Appends the committing ops (a cross-scene `Move`, the active-combat notice for a token
+    /// leaving a combat's scene, the position `Update`) to `ops` and broadcasts the target's
+    /// `vfx` at both ends of the hop, charged once to the token owner's `vfx_rate` bucket.
+    /// Both a fixed `TriggerEffect::Teleport` and a chosen `PortalOption` apply through it, so
+    /// the two can never produce different ops for the same target.
+    ///
+    /// The destination scene's existence and same-world membership are checked here (fire
+    /// time), never at ingress (`validate_engine_tree` is pure — no repository access). A
+    /// wrong-world scene would otherwise pass `doc_type == "scene"` and fail deep inside
+    /// `commit_ops_locked`'s `check_command_scope`, dropping the whole batch with no GM
+    /// notice; returning the failure here lets the batch's other effects still commit.
+    ///
+    /// PRECONDITION: the caller commits `ops` under `publish_guard`.
+    async fn apply_teleport_to(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        subject: &TeleportSubject<'_>,
+        target: &eng::PortalTarget,
+        ts: i64,
+        ops: &mut Vec<Operation>,
+    ) -> Result<Uuid, String> {
+        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
+
+        let TeleportSubject {
+            token,
+            scene,
+            token_eng,
+            effective_owner,
+        } = *subject;
+        // The destination scene: the target's own when it names one, else the token's current
+        // scene (a same-scene hop). A token on NO scene (reachable only from the turn/round
+        // fire site, whose token may sit outside every scene) can hop only to a named target.
+        let dest_scene = target.scene.or(scene);
+        let scene_exists = match dest_scene {
+            Some(dest) => match repo.get_document(dest).await {
+                Ok(Some(doc)) => {
+                    doc.doc_type == "scene"
+                        && crate::data::document::world_of(&doc) == Some(self.world_id)
+                }
+                _ => false,
+            },
+            None => false,
+        };
+        let Some(dest_scene) = dest_scene.filter(|_| scene_exists) else {
+            return Err(match dest_scene {
+                Some(dest) => format!("teleport target scene {dest} does not exist"),
+                None => "the token is on no scene to teleport from".to_string(),
+            });
+        };
+        let Some(t) = token_eng else {
+            return Err("token has no engine body to teleport".to_string());
+        };
+        let mut update_changes = Vec::new();
+        update_changes.push(crate::data::command::FieldChange {
+            path: "/engine/x".to_string(),
+            old: serde_json::json!(t.x),
+            new: serde_json::json!(target.x),
+            remove: false,
+        });
+        update_changes.push(crate::data::command::FieldChange {
+            path: "/engine/y".to_string(),
+            old: serde_json::json!(t.y),
+            new: serde_json::json!(target.y),
+            remove: false,
+        });
+        if let Some(new_elev) = target.elevation {
+            update_changes.push(crate::data::command::FieldChange {
+                path: "/engine/elevation".to_string(),
+                old: serde_json::json!(t.elevation),
+                new: serde_json::json!(new_elev),
+                remove: false,
+            });
+        }
+        if Some(dest_scene) != scene {
+            ops.push(Operation::Move {
+                doc_id: token,
+                parent_id: Some(dest_scene),
+                old_parent_id: scene,
+            });
+            // Active-combat visibility: the budget decrement for the walk that
+            // entered the portal already happened; this notice only makes the
+            // scene-change visible.
+            if let Some(source_scene) = scene {
+                if self
+                    .scene
+                    .read()
+                    .await
+                    .active_combat_for_scene(source_scene)
+                    .is_some()
+                {
+                    let notice = build_message_doc(
+                        self.world_id,
+                        ctx.user_id,
+                        MessageDraft {
+                            channel: "region".to_string(),
+                            actor_owner: None,
+                            audience: Audience::GmOnly,
+                            kind: MessageKind::System,
+                            content: vec![Segment::Text {
+                                text: format!(
+                                    "Token {token} teleported off scene {source_scene} while an active combat is running there"
+                                ),
+                            }],
+                            source: None,
+                            system: None,
+                        },
+                        ts,
+                    );
+                    ops.push(Operation::Create { doc: notice });
+                }
+            }
+        }
+        ops.push(Operation::Update {
+            doc_id: token,
+            changes: update_changes,
+        });
+        // A carried `vfx` asset plays at BOTH ends of the hop — the source position
+        // on the ORIGIN scene (where the token just vanished from) and the
+        // destination position on `dest_scene` (where it now stands) — mirroring
+        // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
+        // out-of-band, no seq, one fresh id per broadcast). Charged against
+        // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
+        // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
+        // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
+        // into and out of a portal's trigger region cannot emit unlimited,
+        // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
+        // would (never-fork: one budget source per one-shot family). Keyed on the
+        // token's effective owner: a GM-owned/NPC-moved token
+        // (`effective_owner: None`) has no attributable player to charge and is
+        // admitted uncharged, matching this codebase's broader pattern of GM actions
+        // being less restricted than player ones; a player-owned token charges that
+        // player's bucket exactly once per fire (one check covers both ends of the
+        // hop, not two).
+        if let Some(asset) = &target.vfx {
+            let vfx_admitted = match effective_owner {
+                Some(owner) => self.vfx_rate.check(owner, ts, 30),
+                None => true,
+            };
+            if vfx_admitted {
+                if let Some(source_scene) = scene {
+                    self.broadcast_aux(ServerMsg::Vfx {
+                        scene: source_scene,
+                        user: ctx.user_id,
+                        asset: asset.clone(),
+                        x: t.x,
+                        y: t.y,
+                        scale: None,
+                        rotation: None,
+                        duration_ms: None,
+                        sound: None,
+                        elevation: t.elevation,
+                        id: Uuid::new_v4(),
+                    });
+                }
+                self.broadcast_aux(ServerMsg::Vfx {
+                    scene: dest_scene,
+                    user: ctx.user_id,
+                    asset: asset.clone(),
+                    x: target.x,
+                    y: target.y,
+                    scale: None,
+                    rotation: None,
+                    duration_ms: None,
+                    sound: None,
+                    elevation: target.elevation,
+                    id: Uuid::new_v4(),
+                });
+            }
+        }
+        Ok(dest_scene)
     }
 
     /// The placement/teleport fire site: token Creates and genuine position Updates in a
@@ -3346,11 +3412,66 @@ impl Room {
                     occupancy: cells.clone(),
                     entered: cells,
                     arrest_stop: None,
+                    enter_only: None,
                 });
             }
         }
+        let carriers: Vec<Uuid> = reports.iter().map(|r| r.token).collect();
         for report in reports {
             self.fire_region_triggers(repo, ctx, report, ts, true).await;
+        }
+        for carrier in carriers {
+            self.fire_attached_region_triggers(repo, ctx, carrier, ts, true)
+                .await;
+        }
+    }
+
+    /// The carrier-move fire site: after `carrier` committed a new position, fires the
+    /// triggers of the regions that follow it on every OTHER token of its scene, tokens that
+    /// did not move but that the zone moved onto or off of. Each occupant
+    /// (`SceneEcs::attached_occupants`) gets one `TriggerReport` whose occupancy is its centre
+    /// cell, so `fire_region_triggers`'s unconditional membership diff yields `Exit` for
+    /// regions the zone left; `Enter` fires only for attached regions the token's stored
+    /// membership does not name yet (`TriggerReport::enter_only`), so a second carrier step
+    /// with the token still inside fires nothing. A carrier with no attached region is a
+    /// single index lookup.
+    ///
+    /// Called after the carrier's own report at every position-commit site:
+    /// `execute_move`, `fire_placement_triggers` (placements, GM teleports and drags) and
+    /// the post-teleport re-fire in `fire_region_triggers`. `allow_teleport` is `false` only
+    /// from that last site, so teleport effects cannot chain across carriers.
+    ///
+    /// PRECONDITION: caller holds `publish_guard`.
+    pub(crate) async fn fire_attached_region_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        carrier: Uuid,
+        ts: i64,
+        allow_teleport: bool,
+    ) {
+        let occupants = self.scene.read().await.attached_occupants(carrier);
+        for occ in occupants {
+            let entered = if occ.enter_regions.is_empty() {
+                Vec::new()
+            } else {
+                vec![occ.cell]
+            };
+            self.fire_region_triggers(
+                repo,
+                ctx,
+                TriggerReport {
+                    scene: occ.scene,
+                    token: occ.token,
+                    entered,
+                    arrest_stop: None,
+                    occupancy: vec![occ.cell],
+                    enter_only: Some(occ.enter_regions),
+                },
+                ts,
+                allow_teleport,
+            )
+            .await;
         }
     }
 

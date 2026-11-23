@@ -39,11 +39,11 @@ pub use combat::{
 };
 pub use geometry::{
     AmbientLightMode, AmbientLightOverride, CompoundShapePart, DoorState, DrawingEngine,
-    DrawingShape, EffectiveWallFlags, ElevationBand, Fill, NoticeAudience, PortalTarget,
-    RegionAnchor, RegionEngine, RegionGeometry, RegionOcclusion, RegionShape, RegionTrigger, Seg,
-    Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
-    WallProximity, WallSense, WallSightTier, MAX_PROXIMITY_CELLS, MAX_REGION_SHAPE_PARTS,
-    MAX_TRIGGER_ID_CHARS,
+    DrawingShape, EffectiveWallFlags, ElevationBand, Fill, NoticeAudience, PortalOption,
+    PortalTarget, RegionAnchor, RegionEngine, RegionGeometry, RegionOcclusion, RegionShape,
+    RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent,
+    WallDirection, WallEngine, WallProximity, WallSense, WallSightTier, MAX_PORTAL_LABEL_CHARS,
+    MAX_PORTAL_OPTIONS, MAX_PROXIMITY_CELLS, MAX_REGION_SHAPE_PARTS, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{

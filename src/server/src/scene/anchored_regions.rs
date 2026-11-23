@@ -67,7 +67,6 @@ impl SceneEcs {
     /// The ids of the enabled regions anchored to `carrier` on the carrier's own scene, sorted.
     /// Empty (the common case) when `carrier` is not a scene token or nothing follows it; callers
     /// that react to a carrier move use that as the cheap guard before any geometry work.
-    #[cfg(test)]
     pub(crate) fn attached_regions_of(&self, carrier: Uuid) -> Vec<Uuid> {
         let Some(scene) = self
             .index
@@ -92,4 +91,87 @@ impl SceneEcs {
         out.sort();
         out
     }
+
+    /// The tokens a carrier's move may have carried a following region onto or off of: every
+    /// OTHER token on the carrier's scene, with its centre cell and the attached regions that
+    /// cover that cell while the token's stored membership (`SceneEcs::region_membership_of`)
+    /// does not name them, the regions an `Enter` is owed for. Empty when nothing follows
+    /// `carrier` (`attached_regions_of`), the common case. The carrier itself is not listed: its
+    /// own move or placement report already evaluates its regions at the new pose. Sorted by
+    /// token id so the firing order is deterministic.
+    pub(crate) fn attached_occupants(&self, carrier: Uuid) -> Vec<AttachedOccupant> {
+        let attached = self.attached_regions_of(carrier);
+        if attached.is_empty() {
+            return Vec::new();
+        }
+        let Some(scene) = self
+            .index
+            .get(&carrier)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|ent| ent.doc.parent_id)
+        else {
+            return Vec::new();
+        };
+        let Some(&cell_size) = self.scene_grid_sizes().get(&scene) else {
+            return Vec::new();
+        };
+        let grid = self.resolve_grid_shape(scene, cell_size);
+        let mut tokens: Vec<Uuid> = self
+            .world
+            .query::<&SceneEntity>()
+            .iter()
+            .filter(|e| {
+                e.doc.doc_type == "token" && e.doc.parent_id == Some(scene) && e.doc.id != carrier
+            })
+            .map(|e| e.doc.id)
+            .collect();
+        tokens.sort();
+        let mut out = Vec::new();
+        for token in tokens {
+            let Some(pos) = self.token_position(token) else {
+                continue;
+            };
+            let cell = grid.cell_of(pos);
+            let elevation = self
+                .index
+                .get(&token)
+                .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+                .and_then(|ent| self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc))
+                .and_then(|t| t.elevation);
+            let rows = self
+                .trigger_regions(
+                    scene,
+                    super::elevation::elevation_or_ground(elevation),
+                    Some(token),
+                )
+                .unwrap_or_default();
+            let member = self.region_membership_of(token);
+            let enter_regions: Vec<Uuid> = rows
+                .iter()
+                .filter(|r| attached.contains(&r.region_id) && r.cells.contains(&cell))
+                .filter(|r| member.is_none_or(|m| !m.contains(&r.region_id)))
+                .map(|r| r.region_id)
+                .collect();
+            out.push(AttachedOccupant {
+                scene,
+                token,
+                cell,
+                enter_regions,
+            });
+        }
+        out
+    }
+}
+
+/// One token evaluated by `SceneEcs::attached_occupants` after a carrier moved.
+pub(crate) struct AttachedOccupant {
+    /// The scene shared by the carrier and the token.
+    pub scene: Uuid,
+    /// The token that did not move.
+    pub token: Uuid,
+    /// The token's centre cell, the occupancy basis for its membership diff.
+    pub cell: regions::Cell,
+    /// The attached regions covering `cell` whose `Enter` triggers are owed: the token's stored
+    /// membership does not name them yet. Empty when every covering region was already entered.
+    pub enter_regions: Vec<Uuid>,
 }

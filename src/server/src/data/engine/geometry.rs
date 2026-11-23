@@ -766,6 +766,52 @@ pub enum TriggerEffect {
         /// display-truncates further — see `EmoteView`'s doc).
         text: String,
     },
+    /// Offer the entering token's owner (or a GM) a list of destinations instead of moving the
+    /// token unconditionally. A fixed `Teleport` is the zero-prompt case; this is the asked
+    /// case, so a one-option list still asks. Shares `Teleport`'s one-hop rule: a fire that
+    /// may not teleport refuses it as a chained portal.
+    PortalChoice {
+        /// Heading shown above the options (`chat::MAX_MESSAGE_CHARS`-bounded); `None` shows
+        /// none.
+        #[serde(default)]
+        prompt: Option<String>,
+        /// The destinations, `1..=MAX_PORTAL_OPTIONS` of them, in display order.
+        options: Vec<PortalOption>,
+    },
+}
+
+/// Most options one `TriggerEffect::PortalChoice` may list.
+pub const MAX_PORTAL_OPTIONS: usize = 8;
+
+/// Most characters in one `PortalOption::label`.
+pub const MAX_PORTAL_LABEL_CHARS: usize = 120;
+
+/// One destination of a `TriggerEffect::PortalChoice`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{PortalOption, PortalTarget};
+///
+/// let option = PortalOption {
+///     label: "The Cellar".to_string(),
+///     target: PortalTarget { scene: None, x: 4.0, y: 4.0, elevation: None, vfx: None },
+///     reveal_scene: false,
+/// };
+/// assert!(!option.reveal_scene);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct PortalOption {
+    /// What the chooser shows (non-empty, `MAX_PORTAL_LABEL_CHARS`-bounded).
+    pub label: String,
+    /// Where choosing this option sends the token.
+    pub target: PortalTarget,
+    /// Whether the chooser also shows the destination scene's real name; `false` shows only
+    /// `label`.
+    #[serde(default)]
+    pub reveal_scene: bool,
 }
 
 /// A teleport's destination. `scene: None` = the same scene the portal fired
@@ -1229,6 +1275,32 @@ impl RegionEngine {
                             "scrolling_text text exceeds {} chars",
                             crate::chat::MAX_MESSAGE_CHARS
                         ));
+                    }
+                }
+                TriggerEffect::PortalChoice { prompt, options } => {
+                    if let Some(prompt) = prompt {
+                        if prompt.chars().count() > crate::chat::MAX_MESSAGE_CHARS {
+                            return Err(format!(
+                                "portal_choice prompt exceeds {} chars",
+                                crate::chat::MAX_MESSAGE_CHARS
+                            ));
+                        }
+                    }
+                    if options.is_empty() || options.len() > MAX_PORTAL_OPTIONS {
+                        return Err(format!(
+                            "portal_choice needs 1 to {MAX_PORTAL_OPTIONS} options"
+                        ));
+                    }
+                    for option in options {
+                        if option.label.is_empty() {
+                            return Err("portal_choice option label must be non-empty".to_string());
+                        }
+                        if option.label.chars().count() > MAX_PORTAL_LABEL_CHARS {
+                            return Err(format!(
+                                "portal_choice option label exceeds {MAX_PORTAL_LABEL_CHARS} chars"
+                            ));
+                        }
+                        option.target.validate()?;
                     }
                 }
             }
