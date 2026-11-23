@@ -40,6 +40,9 @@ The offer carries labels only, never coordinates.
 - A choice teleports the token the same way a fixed Teleport does. A choice is refused
   where the region does not allow teleport. A player sees only "portal rejected"; the
   GM sees the reason.
+- A teleport, fixed or chosen, ends the token's walking animation at once. The token
+  can be moved again straight away; it does not wait for the walk into the portal to
+  finish playing.
 - While the session is [paused](/guides/session-pause), a player cannot accept a
   choice. Declining and opening still work.
 

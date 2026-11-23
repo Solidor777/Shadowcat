@@ -591,3 +591,70 @@ async fn a_chosen_destination_that_offers_another_portal_is_refused_as_chained()
     let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
     assert!(texts.iter().any(|t| t.contains("chained portal refused")));
 }
+
+/// Moves the player token one cell down from where a teleport left it, through the real
+/// `execute_move` moving-lock check.
+async fn move_from_teleport_target(
+    h: &MovementHandle,
+) -> Result<crate::ws::room::MoveExecution, DataError> {
+    h.room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![(450.0, 450.0), (450.0, 550.0)],
+                ts: now(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+}
+
+/// Fails when a fixed teleport trigger leaves the walk's moving lock in place. The 0.001
+/// cells/sec animation speed makes the lock window far longer than the test.
+#[tokio::test]
+async fn a_move_right_after_a_fixed_teleport_is_accepted() {
+    let h = movement_scene_with_speed("unrestricted", false, 0.001).await;
+    place_region(
+        &h,
+        0x8B0,
+        (1, 0),
+        "terrain",
+        json!([{ "on": "enter", "effect": { "type": "teleport",
+            "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": null, "vfx": null } } }]),
+    )
+    .await;
+    move_token(&h, vec![h.start, h.adj]).await;
+    assert_eq!(token_xy(&h).await, (450.0, 450.0));
+    move_from_teleport_target(&h)
+        .await
+        .expect("the teleport ended the token's active stream");
+    assert_eq!(token_xy(&h).await, (450.0, 550.0));
+}
+
+/// Fails when answering a portal offer leaves the walk's moving lock in place.
+#[tokio::test]
+async fn a_move_right_after_a_chosen_portal_hop_is_accepted() {
+    let h = movement_scene_with_speed("unrestricted", false, 0.001).await;
+    place_region(
+        &h,
+        0x8B1,
+        (1, 0),
+        "terrain",
+        choice_triggers(json!([plain_option("North room", 450.0, 450.0)])),
+    )
+    .await;
+    let (mut rx, _) = h.room.subscribe();
+    move_token(&h, vec![h.start, h.adj]).await;
+    let offer = offers(&mut rx).remove(0);
+    h.room
+        .handle_choose_portal(&h.repo, &h.player, offer.offer_id, Some(0), now())
+        .await
+        .unwrap();
+    assert_eq!(token_xy(&h).await, (450.0, 450.0));
+    move_from_teleport_target(&h)
+        .await
+        .expect("the chosen hop ended the token's active stream");
+}
