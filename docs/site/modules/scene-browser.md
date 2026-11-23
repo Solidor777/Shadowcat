@@ -12,6 +12,7 @@ players render).
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `scene-browser:panel` | `shadowcat.panel` | `SceneBrowserPanel` | order 6, icon 🗺️, labelKey `sceneBrowser.tab`, **gmOnly**, launcher-closed |
+| `scene-browser:tour` | `shadowcat.tour` | none (tour data) | `scene-browser.intro`: GM audience, manual (replay only, because the panel is closed by default); steps on the anchors `scene-browser.panel`, `scene-browser.create`, `scene-browser.list`, and `scene-browser.actions` (first scene row; skipped while no scene exists) |
 
 ## Components
 
