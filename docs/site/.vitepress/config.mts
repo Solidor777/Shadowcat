@@ -72,6 +72,7 @@ export default defineConfig({
             { text: "sheet-playlist", link: "/modules/sheet-playlist" },
             { text: "vfx", link: "/modules/vfx" },
             { text: "ducking", link: "/modules/ducking" },
+            { text: "onboarding", link: "/modules/onboarding" },
           ],
         },
       ],
