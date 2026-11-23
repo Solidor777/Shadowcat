@@ -492,13 +492,18 @@ export interface UiStatePatch {
   modules?: Record<string, Record<string, unknown> | null>;
 }
 
+/** Options for `putUiState`. */
+export interface PutUiStateOptions {
+  /** When true, sets `fetch`'s `keepalive` flag so the request can outlive a page unload;
+   * used by `flushOnUnload`. */
+  keepalive?: boolean;
+}
+
 /** Writes a partial UI-state patch (see `UiStatePatch` for the merge rule).
  * Throws on a non-2xx response.
  * @param patch - The leaf fields/keys to write; anything absent is untouched
  *   server-side.
  * @param opts - Write options.
- * @param opts.keepalive - When true, sets `fetch`'s `keepalive` flag so the
- *   request can outlive a page unload — used by `flushOnUnload`.
  * @example
  * ```ts
  * import { putUiState } from "@shadowcat/core";
@@ -508,10 +513,7 @@ export interface UiStatePatch {
  */
 export async function putUiState(
   patch: UiStatePatch,
-  opts: {
-    /** See the `@param opts.keepalive` doc above. */
-    keepalive?: boolean;
-  } = {},
+  opts: PutUiStateOptions = {},
 ): Promise<void> {
   // `keepalive` lets the request outlive a page unload (the patch is within
   // the server's 64KB merged cap, under keepalive's body limit).
