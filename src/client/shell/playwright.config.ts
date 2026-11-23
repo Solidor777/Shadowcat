@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "./e2e-support/egress-window";
 import { pickLanAddress } from "./e2e-support/lan-address";
+import { resolveE2ePorts } from "./e2e-support/ports";
 import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
@@ -37,16 +38,23 @@ const bin = path.join(
  * test server, so the origin is genuinely insecure with no network setup on any CI OS. */
 const LAN_HOST = "shadowcat.test";
 
+/** Every test-server port, derived from `SHADOWCAT_E2E_PORT_BASE` (unset gives the default ports),
+ * so checkouts that run the suite at once can use disjoint ports. */
+const PORTS = resolveE2ePorts(process.env);
+
+/** Port of the loopback test server the plain projects target. */
+const LOOPBACK_PORT = PORTS.loopback;
+
 /** Port of the non-loopback test server the `lan-plain-http` project targets. */
-const LAN_PORT = 32000;
+const LAN_PORT = PORTS.lan;
 
 /** Port of the test server the built-in-HTTPS projects target: bound beyond loopback with TLS on
  * its default (`auto`), so one port answers both `https://` and plain `http://`. */
-const HTTPS_PORT = 32001;
+const HTTPS_PORT = PORTS.https;
 
 /** Port of the loopback test server the `media-range-loopback` project targets: a server of its own
  * because it runs with a short egress window, which no other spec may share. */
-const MEDIA_RANGE_PORT = 32002;
+const MEDIA_RANGE_PORT = PORTS.mediaRange;
 
 /** The `egress_window_secs` the windowed servers run with, as the environment string
  * (`MEDIA_RANGE_EGRESS_WINDOW_SECS`, the one value the play-through spec also reads). */
@@ -56,7 +64,7 @@ const EGRESS_WINDOW_ENV = String(MEDIA_RANGE_EGRESS_WINDOW_SECS);
  * default (`auto`) so one port answers both `https://` (h2) and plain `http://` (h1), and with a
  * short egress window so a response left idle across a media element's read-ahead gap is really
  * cut. */
-const LONG_AUDIO_PORT = 32003;
+const LONG_AUDIO_PORT = PORTS.longAudio;
 
 /** How the servers that run the short egress window route their standard output. The server logs
  * its egress cut as a `warn` line (`connection cut: ...` or `response stream cut: ...`) on
@@ -418,10 +426,10 @@ export default defineConfig({
     {
       command: `"${bin}"`,
       cwd: repoRoot,
-      url: "http://127.0.0.1:31999/health",
+      url: `http://127.0.0.1:${LOOPBACK_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: "127.0.0.1:31999" },
+      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${LOOPBACK_PORT}` },
     },
     {
       // The documented LAN configuration: a bind beyond loopback. Server policy keyed on a
@@ -455,7 +463,7 @@ export default defineConfig({
   // failures so passing runs write nothing. The CI job uploads `test-results/`
   // on failure — dropping that upload step silently re-blinds this setting.
   use: {
-    baseURL: "http://127.0.0.1:31999",
+    baseURL: `http://127.0.0.1:${LOOPBACK_PORT}`,
     trace: "retain-on-failure",
   },
 });

@@ -141,6 +141,29 @@ describe("playwright.config LAN address handling", () => {
   });
 });
 
+describe("playwright.config port base", () => {
+  /** Every port the config binds a server to, and every port a project's base URL names. */
+  function usedPorts(config: PlaywrightTestConfig): { binds: number[]; targets: number[] } {
+    const binds = [config.webServer ?? []].flat().map((s) => Number(String(s.env?.SHADOWCAT_BIND).split(":")[1]));
+    const urls = [config.use?.baseURL, ...(config.projects ?? []).map((p) => p.use?.baseURL)];
+    const targets = urls.filter((u): u is string => u !== undefined).map((u) => Number(new URL(u).port));
+    return { binds, targets };
+  }
+
+  it("binds exactly the historical ports when the base is unset", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined, SHADOWCAT_E2E_PORT_BASE: undefined });
+    expect(usedPorts(config).binds.sort()).toEqual([31999, 32000, 32001, 32002, 32003]);
+  });
+
+  it("moves every server bind and every project target together, leaving none on a historical port", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined, SHADOWCAT_E2E_PORT_BASE: "40000" });
+    const { binds, targets } = usedPorts(config);
+    expect(binds.sort()).toEqual([39999, 40000, 40001, 40002, 40003]);
+    for (const port of targets) expect(binds, `a project targets port ${port} with no server`).toContain(port);
+    expect(new Set(targets).size).toBe(5);
+  });
+});
+
 /** The `--project` patterns each CI job passes to `playwright test`, read from the workflow file. */
 function ciProjectPatterns(): Map<string, string[]> {
   const workflow = readFileSync(fileURLToPath(new URL("../../../../.github/workflows/ci.yml", import.meta.url)), "utf8");
