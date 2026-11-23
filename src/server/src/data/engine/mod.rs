@@ -10,6 +10,7 @@
 
 pub mod asset_folder;
 pub mod audio;
+pub mod bars;
 pub mod combat;
 pub mod geometry;
 pub mod note;
@@ -24,6 +25,9 @@ pub use audio::{
     AudioChannel, AudioStateEngine, PlayingTrack, PlaylistEngine, PlaylistMode, PlaylistTrack,
     AUDIO_STATE_DOC_TYPE, MAX_PLAYING_TRACKS, MAX_PLAYLIST_FADE_MS, MAX_PLAYLIST_TRACKS,
     PLAYLIST_DOC_TYPE,
+};
+pub use bars::{
+    validate_bars, BarAttribute, BarDisplayMode, MAX_BAR_ATTRIBUTES, MAX_BAR_LABEL_CHARS,
 };
 pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,

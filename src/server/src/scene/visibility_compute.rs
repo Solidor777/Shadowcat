@@ -567,6 +567,9 @@ pub fn compute_derived(
                 .collect();
             serde_json::to_value(audibility::AudibilityPayload { scenes }).ok()
         }
+        // Each readable token's server-evaluated nameplate and bar numbers, per recipient
+        // (`SceneEcs::resolved_bars`) — the client receives numbers, never a bar's formula.
+        "bars" => serde_json::to_value(ecs.resolved_bars(ctx, world_defaults)).ok(),
         // Server-resolved combat resource numbers and movement budgets, per recipient — the
         // client evaluates and stores nothing (`SceneEcs::resolved_combats`'s own doc comment).
         "combat" => serde_json::to_value(ecs.resolved_combats(ctx, world_defaults)).ok(),

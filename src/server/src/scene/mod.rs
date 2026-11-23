@@ -8,6 +8,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 pub mod audibility;
+pub mod bars;
 pub(crate) mod elevation;
 pub(crate) mod emitters;
 pub mod explored;

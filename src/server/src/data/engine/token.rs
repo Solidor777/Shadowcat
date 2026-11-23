@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::bars::{validate_bars, BarAttribute, BarDisplayMode};
 use crate::data::engine::registries::FactionStance;
 use crate::data::engine::scene::LightEmission;
 
@@ -369,6 +370,8 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 ///     sound: None,
 ///     vfx: None,
 ///     disposition: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
 /// ```
@@ -435,6 +438,15 @@ pub struct TokenOverrides {
     /// neutral. Reuses `FactionStance`, the one three-value stance enum.
     #[serde(default)]
     pub disposition: Option<FactionStance>,
+    /// Per-token bar list: replaces the actor's `bars` entirely when present (wholesale, never
+    /// merged); at most `MAX_BAR_ATTRIBUTES` entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Per-token nameplate delivery override, replacing the actor's `nameplate_mode` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl TokenOverrides {
@@ -463,6 +475,9 @@ impl TokenOverrides {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "overrides.bars")?;
         }
         Ok(())
     }
@@ -1098,6 +1113,8 @@ impl AnimatedSource {
 ///     aura: None,
 ///     sound: None,
 ///     vfx: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(actor.display_name, "Goblin Scout");
 /// ```
@@ -1172,6 +1189,18 @@ pub struct ActorEngine {
     /// `TokenOverrides.vfx` replaces it wholesale).
     #[serde(default)]
     pub vfx: Option<VfxEmission>,
+    /// Attribute bars drawn on this actor's tokens, inherited by linked tokens (a per-token
+    /// `TokenOverrides.bars` replaces the list wholesale); at most `MAX_BAR_ATTRIBUTES`. Absent
+    /// means none. Delivered as evaluated numbers through the `"bars"` derived channel, never
+    /// as this authored form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Who receives the nameplate of this actor's tokens; absent means `BarDisplayMode::Hover`
+    /// (a per-token `TokenOverrides.nameplate_mode` replaces it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl ActorEngine {
@@ -1195,6 +1224,9 @@ impl ActorEngine {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "bars")?;
         }
         Ok(())
     }

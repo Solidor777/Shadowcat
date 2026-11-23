@@ -325,6 +325,7 @@ pub(super) fn ambient_region_doc(
 }
 
 mod audibility;
+mod bars;
 mod combat_index;
 mod cone_and_window;
 mod cost_parity;
