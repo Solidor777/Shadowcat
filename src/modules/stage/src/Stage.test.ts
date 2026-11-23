@@ -34,9 +34,11 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null; rulers: RemoteRulerPath[] } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null; rulers: RemoteRulerPath[]; outlineSegments: number } {
   return {
     rulers: [],
+    outlineSegments: 0,
+    drawBoundsOutline(lines: unknown[]) { this.outlineSegments = lines.length; },
     destroyed: false,
     clearColor: null,
     gridColor: null,
@@ -135,6 +137,25 @@ test("the ghost-other-levels toggle is GM-only", async () => {
   });
   await vi.waitFor(() => expect(player.container.querySelector(".stage-host")).toBeTruthy());
   expect(player.queryByTestId("ghost-other-levels")).toBeNull();
+});
+
+test("the authored-rectangle outline shows for the GM on a padded scene only", async () => {
+  const padded = sceneDocs({ grid: { kind: "square", size: 100 }, bounds: { width: 10, height: 8 }, padding: 2 });
+  const unpadded = sceneDocs({ grid: { kind: "square", size: 100 }, bounds: { width: 10, height: 8 } });
+  const run = async (role: "gm" | "player", documents: ReadableDocuments): Promise<number> => {
+    const backend = fakeBackend();
+    const view = render(Stage, {
+      props: { createBackend: async () => backend },
+      context: setAppContextForTest({ role, documents, subscribeScene: () => ({ unsubscribe() {} }) }),
+    });
+    await vi.waitFor(() => expect(view.container.querySelector(".stage-host")).toBeTruthy());
+    await vi.waitFor(() => expect(backend.tick).not.toBeNull());
+    view.unmount();
+    return backend.outlineSegments;
+  };
+  expect(await run("gm", padded)).toBe(4);
+  expect(await run("player", padded)).toBe(0);
+  expect(await run("gm", unpadded)).toBe(0);
 });
 
 test("a backend-init failure logs through the injected logger, not silently", async () => {

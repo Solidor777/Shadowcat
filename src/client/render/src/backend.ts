@@ -30,6 +30,11 @@ export interface DisplayBackend {
    * @param lines The grid line segments to draw, in scene coordinates.
    * @param color Line color, `0xRRGGBB`. */
   drawGrid(lines: LineSeg[], color: number): void;
+  /** Replace the scene-bounds outline (scene coords), drawn in the grid layer above the grid lines
+   * and separately from them so a camera-driven grid redraw never erases it.
+   * @param lines The outline segments to draw, in scene coordinates; empty clears the outline.
+   * @param color Line color, `0xRRGGBB`. */
+  drawBoundsOutline(lines: LineSeg[], color: number): void;
   /** Apply the visibility mask (the mask slot). Empty `visible` = identity
    * (full visibility → transparent overlay).
    * @param input The fog/mask state to render — see `VisibilityInput`. */

@@ -592,6 +592,31 @@ test("a tool that does not handle pointerdown falls back to camera pan", () => {
   expect(backend.camera!.x).toBe(40); // panned by the screen delta
 });
 
+test("setAuthoredBounds draws the authored rectangle's outline; null clears it; setGrid redraws it", () => {
+  const { engine, backend } = makeEngine(); // square / 100
+  engine.start();
+  expect(backend.boundsOutline).toEqual([]);
+
+  engine.setAuthoredBounds({ width: 10, height: 6 });
+  expect(backend.boundsOutline[0]).toEqual({ x1: 0, y1: 0, x2: 1000, y2: 0 });
+  expect(backend.boundsOutline).toHaveLength(4);
+
+  engine.setGrid({ kind: "square", size: 50 });
+  expect(backend.boundsOutline[0]).toEqual({ x1: 0, y1: 0, x2: 500, y2: 0 });
+
+  engine.setAuthoredBounds(null);
+  expect(backend.boundsOutline).toEqual([]);
+});
+
+test("a camera redraw leaves the bounds outline alone", () => {
+  const { engine, backend } = makeEngine();
+  engine.start();
+  engine.setAuthoredBounds({ width: 4, height: 4 });
+  engine.setViewport(300, 200);
+  engine.applyCamera();
+  expect(backend.boundsOutline).toHaveLength(4);
+});
+
 test("snap delegates to the active grid; setGrid changes it", () => {
   const { engine } = makeEngine(); // square / 100
   expect(engine.snap({ x: 140, y: 160 })).toEqual({ x: 150, y: 150 });
