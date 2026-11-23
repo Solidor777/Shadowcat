@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, BarsLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
 import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -292,6 +292,11 @@ export interface AppContext {
    * movement gate collides with, stated by the server. Getter — reactive when read through a
    * `documents.subscribe` bridge, and `EMPTY_FOOTPRINTS` until the first frame arrives. */
   footprints: FootprintLookup;
+  /** The server's resolved token nameplates and bars, from the `"bars"` derived channel. The
+   * server evaluated every number and decided who receives each value; the client draws what
+   * arrives and `EMPTY_BARS` until the first frame. Getter — reactive when read through a
+   * `documents.subscribe` bridge. */
+  bars: BarsLookup;
   /** The scene THIS client renders + subscribes to. Players follow
    * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
    * reactive when read through a `documents.subscribe` bridge. */

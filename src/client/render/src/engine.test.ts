@@ -1,5 +1,5 @@
 import { test, expect, describe, it, vi } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS } from "@shadowcat/core";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS, parseBars, EMPTY_BARS } from "@shadowcat/core";
 import { RenderEngine, MockBackend, RULER_STALE_MS } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
@@ -2179,6 +2179,57 @@ describe("idle-skip", () => {
     settings.tokenFx = false;
     backend.runTicker(16);
     expect(backend.renderCount).toBe(1); // the re-reconcile's setToken marked dirty
+  });
+
+  it("a nameplatesAndBars flip re-reconciles the token view and drops the plate on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true };
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "always", bars: [] } } } } });
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => settings, bars: () => bars,
+    });
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16);
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+    settings.nameplatesAndBars = false;
+    backend.runTicker(16);
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+  });
+
+  it("reapplyBars projects a newly arrived bars frame without a store commit", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    let bars = EMPTY_BARS;
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 }, bars: () => bars,
+    });
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+    bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "always", bars: [] } } } } });
+    engine.reapplyBars();
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+  });
+
+  it("a pointer move over a token reveals its hover nameplate and leaving the canvas hides it", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const bars = parseBars({ scenes: { s1: { tokens: { t1: { nameplate: "Goblin", nameplate_mode: "hover", bars: [] } } } } });
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 }, bars: () => bars,
+    });
+    engine.setViewport(400, 400);
+    engine.start();
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
+    const center = engine.camera.sceneToScreen({ x: 0, y: 0 });
+    engine.dispatchPointerMove(center, { pointerId: 1 } as PointerEvent);
+    expect(backend.tokens.get("t1")!.nameplate).toBe("Goblin");
+    engine.clearHoveredToken();
+    expect(backend.tokens.get("t1")!.nameplate).toBeUndefined();
   });
 
   it("maps fpsCap uncapped to a 0 frame cap", () => {

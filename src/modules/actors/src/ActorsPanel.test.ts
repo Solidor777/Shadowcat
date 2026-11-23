@@ -999,3 +999,29 @@ describe("ActorsPanel — movement tags", () => {
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.movement).toEqual([]);
   });
 });
+
+describe("ActorsPanel — token quick-edit section", () => {
+  function twoTokens() {
+    const actor = buildActorDoc(
+      "w1",
+      "Goblin",
+      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null },
+      "act1",
+    );
+    const t1 = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    const t2 = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 0 }, { w: 100, h: 100 }, "tok2");
+    return storeWith(actor, t1, t2);
+  }
+
+  it("shows for exactly one selected token and for no other selection size", () => {
+    for (const [ids, shown] of [[[], false], [["tok1"], true], [["tok1", "tok2"], false]] as const) {
+      const tokenSelection = new TokenSelection();
+      tokenSelection.set([...ids]);
+      const { unmount } = render(ActorsPanel, {
+        context: setAppContextForTest({ role: "gm", world: "w1", documents: twoTokens(), dispatchIntent: vi.fn(), tokenSelection, canEdit: () => true }),
+      });
+      expect(screen.queryByTestId("token-quick-edit") !== null, ids.join()).toBe(shown);
+      unmount();
+    }
+  });
+});

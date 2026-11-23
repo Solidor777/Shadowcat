@@ -1,5 +1,6 @@
-import type { Module } from "@shadowcat/core";
+import { TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import ToolRail from "./ToolRail.svelte";
+import { sceneToolsTour } from "./tour";
 
 /** First-party canvas tools module. Contributes the tool rail into core-ui's toolrail
  * surface; owns place/select/move tools. Depends on core-ui (the toolrail provider) and
@@ -19,5 +20,6 @@ export const sceneTools: Module = {
       contract: "shadowcat.surface:toolrail",
       component: ToolRail,
     });
+    ctx.contributions.contribute({ id: "scene-tools:tour", contract: TOUR_CONTRACT, component: null, tour: sceneToolsTour });
   },
 };

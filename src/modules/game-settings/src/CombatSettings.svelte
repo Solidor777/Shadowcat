@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { resolveSettingProvenance, type WireDocument, type WorldSettingsEngine, type CombatDefaults, type ExpiryNotice, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
-  import { parseFormula } from "@shadowcat/formula";
+  import { coerceFormula } from "@shadowcat/formula";
 
   /** CombatSettings props. */
   interface Props {
@@ -149,19 +149,13 @@
       lifecycleRemove(leaf);
       return;
     }
-    const n = Number(trimmed);
-    if (Number.isFinite(n) && trimmed !== "") {
-      lifecycleErrors[leaf] = null;
-      lifecycleSet(leaf, n);
-      return;
-    }
-    const parsed = parseFormula(trimmed);
-    if ("error" in parsed) {
-      lifecycleErrors[leaf] = parsed.detail;
+    const coerced = coerceFormula(trimmed);
+    if (typeof coerced === "object") {
+      lifecycleErrors[leaf] = coerced.detail;
       return;
     }
     lifecycleErrors[leaf] = null;
-    lifecycleSet(leaf, trimmed);
+    lifecycleSet(leaf, coerced);
   }
 
   let lifecycleErrors = $state<Record<string, string | null>>({ onCombatEnd: null, onTurnEnd: null, onAdvance: null });

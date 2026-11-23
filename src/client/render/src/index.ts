@@ -4,6 +4,7 @@ export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, merg
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";
+export type { TokenBarsHost } from "./token-view";
 export { DrawingView, drawingShapeSpec } from "./drawing-view";
 export { TemplateView, templateShapeSpec } from "./template-view";
 export { WallView } from "./wall-view";

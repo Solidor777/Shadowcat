@@ -319,6 +319,21 @@ export interface TokenNodeSpec {
     /** Wedge length, in scene units. */
     radius: number;
   };
+  /** The token's nameplate text, drawn upright ABOVE the token, or absent for none. Present only
+   * while the server delivers a nameplate to this viewer AND its mode is revealing now
+   * (`TokenView.toSpec`); the text is the server's name or the client's fallback label. */
+  nameplate?: string;
+  /** The token's attribute bars, stacked BELOW the token in order, or absent for none. Each bar
+   * is a fill fraction already clamped to `[0,1]` and a packed color — the backend never sees
+   * the raw current/max numbers. Present only for the bars revealing now. */
+  bars?: {
+    /** The bar's label. */
+    label: string;
+    /** Filled fraction, `current / max` clamped to `[0,1]` (`0` when `max` is not positive). */
+    fraction: number;
+    /** Fill color, packed `0xRRGGBB`. */
+    color: number;
+  }[];
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

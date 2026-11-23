@@ -1,5 +1,5 @@
 import type { WireDocument, ReadableDocuments, FootprintLookup } from "@shadowcat/core";
-import { resolveTokenBox, resolveRegionGeometry } from "@shadowcat/core";
+import { resolveTokenBox, tokenBoxContains, resolveRegionGeometry } from "@shadowcat/core";
 import type { Point, ShapeNodeSpec } from "@shadowcat/render";
 import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat/render";
 
@@ -31,17 +31,7 @@ import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat
 export function topTokenAt(tokens: WireDocument[], p: Point, store: ReadableDocuments, footprints: FootprintLookup): string | null {
   let hit: string | null = null;
   for (const t of tokens) {
-    const box = resolveTokenBox(t, store, footprints);
-    if (box.w <= 0 || box.h <= 0) continue;
-    const dx = p.x - box.x;
-    const dy = p.y - box.y;
-    const hw = box.w / 2;
-    const hh = box.h / 2;
-    const inside =
-      box.shape === "circle"
-        ? (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1
-        : Math.abs(dx) <= hw && Math.abs(dy) <= hh;
-    if (inside) hit = t.id;
+    if (tokenBoxContains(resolveTokenBox(t, store, footprints), p)) hit = t.id;
   }
   return hit;
 }

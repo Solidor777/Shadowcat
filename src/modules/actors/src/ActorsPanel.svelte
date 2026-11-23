@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type FacingVision, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type TokenEngine, type LightEmission, type VisionAssignment, type VisionMode, type FacingVision, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission, type BarAttribute, type BarDisplayMode } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
@@ -13,9 +13,12 @@
   import TokenMovementControl from "./TokenMovementControl.svelte";
   import TokenDispositionControl from "./TokenDispositionControl.svelte";
   import TokenIdentityHiddenControl from "./TokenIdentityHiddenControl.svelte";
-  import TokenElevationControl from "./TokenElevationControl.svelte";
+  import TokenQuickEdit from "./TokenQuickEdit.svelte";
   import TokenRotationLockControl from "./TokenRotationLockControl.svelte";
   import TokenEmissionControl from "./TokenEmissionControl.svelte";
+  import TokenBarsControl from "./TokenBarsControl.svelte";
+  import BarsEditor from "./BarsEditor.svelte";
+  import BarModeSelect from "./BarModeSelect.svelte";
   import TokenVisualControl from "./TokenVisualControl.svelte";
 
   const ctx = getAppContext();
@@ -115,6 +118,11 @@
   /** The create form's pending movement-type tags (empty = the new actor has none). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingMovement = $state<string[]>([]);
+  /** The create form's pending attribute bars (empty = the new actor draws none). Read via
+   * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingBars = $state<BarAttribute[]>([]);
+  /** The create form's pending nameplate mode (`null` = the server default, hover). */
+  let pendingNameplateMode = $state<BarDisplayMode | null>(null);
 
   // The visual-kind editor is a child component; it reports its current built visual (or null
   // when incomplete) via `onBuild`, and the host consumes it at create time + resets it after.
@@ -151,8 +159,7 @@
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
    * the movement-tag override control (`TokenMovementControl`), the disposition override control
    * (`TokenDispositionControl`), the GM-only secret-identity toggle
-   * (`TokenIdentityHiddenControl`), the elevation control
-   * (`TokenElevationControl`), the rotation-lock control (`TokenRotationLockControl`), the
+   * (`TokenIdentityHiddenControl`), the rotation-lock control (`TokenRotationLockControl`), the
    * facing-vision control (`TokenFacingVisionControl`), and the per-token emission/visual override controls
    * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
@@ -161,6 +168,11 @@
     if (ids.size === 0) return null;
     return ctx.documents.query("token").find((t) => ids.has(t.id))?.id ?? null;
   });
+
+  /** The selected token's id when exactly one token is selected, else `null`: the quick-edit
+   * section (`TokenQuickEdit`: elevation, condition toggles, bar nudges) acts on one token, and
+   * its condition palette follows the whole selection, so it renders only for a single one. */
+  const quickEditTokenId = $derived(ctx.tokenSelection.ids.size === 1 ? selectedTokenId : null);
 
   /** The id of the first token on the viewed scene linked to actor `actorId` (`engine.actor_id`),
    * or `null` when the actor has no token there. Drives the row's "locate on scene" action and
@@ -331,6 +343,63 @@
     ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/movement", old: movementOf(a), value: next }])]);
   }
 
+  /** The actor row's raw stored attribute bars (`engine.bars`), or `null` when the key is absent.
+   * This RAW read is the OCC pre-image for `commitBars`'s update.
+   * @param a The actor document to read.
+   * @returns The raw stored bar list, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row bars editor
+   * declare const a: WireDocument;
+   * barsOf(a); // a.engine.bars ?? null
+   * ```
+   */
+  const barsOf = (a: WireDocument): BarAttribute[] | null =>
+    (a.engine as ActorEngine | undefined)?.bars ?? null;
+
+  /** Dispatch a whole-payload `/engine/bars` update on actor `a` (the list is one nested value,
+   * so one write carries every bar's change). `old` is the raw stored list; an empty list
+   * normalizes to `null` (canonical absent — matches the create form).
+   * @param a The actor document.
+   * @param next The new bar list.
+   * @example
+   * ```
+   * // private helper; wired to the per-row bars editor's onCommit
+   * declare const a: WireDocument;
+   * commitBars(a, []);
+   * ```
+   */
+  function commitBars(a: WireDocument, next: BarAttribute[]): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/bars", old: barsOf(a), value: next.length > 0 ? $state.snapshot(next) : null }])]);
+  }
+
+  /** The actor row's raw stored nameplate mode (`engine.nameplate_mode`), or `null` when absent.
+   * @param a The actor document to read.
+   * @returns The raw stored mode, or `null` when absent (the server treats absent as hover).
+   * @example
+   * ```
+   * // private helper; read by the per-row nameplate-mode select
+   * declare const a: WireDocument;
+   * nameplateModeOf(a); // a.engine.nameplate_mode ?? null
+   * ```
+   */
+  const nameplateModeOf = (a: WireDocument): BarDisplayMode | null =>
+    (a.engine as ActorEngine | undefined)?.nameplate_mode ?? null;
+
+  /** Dispatch a `/engine/nameplate_mode` update on actor `a`; `old` is the raw stored mode.
+   * @param a The actor document.
+   * @param next The chosen mode.
+   * @example
+   * ```
+   * // private helper; wired to the per-row nameplate-mode select
+   * declare const a: WireDocument;
+   * commitNameplateMode(a, "always");
+   * ```
+   */
+  function commitNameplateMode(a: WireDocument, next: BarDisplayMode): void {
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/nameplate_mode", old: nameplateModeOf(a), value: next }])]);
+  }
+
   // Rows come from two sources — a store-resolved document and a search hit
   // (`WireSearchHit.document`, a full `WireDocument` clone) — and `permissions` is non-optional on
   // both. Structural guarantee at each end: server-side, ingress
@@ -428,6 +497,8 @@
       sound: $state.snapshot(pendingSound),
       vfx: $state.snapshot(pendingVfx),
       ...(pendingFacing ? { facing_vision: $state.snapshot(pendingFacing) } : {}),
+      ...(pendingBars.length > 0 ? { bars: $state.snapshot(pendingBars) } : {}),
+      ...(pendingNameplateMode ? { nameplate_mode: pendingNameplateMode } : {}),
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -443,6 +514,8 @@
     pendingFacing = null;
     pendingLight = null;
     pendingMovement = [];
+    pendingBars = [];
+    pendingNameplateMode = null;
     pendingAura = null;
     pendingSound = null;
     pendingVfx = null;
@@ -450,11 +523,11 @@
   }
 </script>
 
-<section class="actors">
+<section class="actors" data-tour="actors.panel">
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
-  <TokenElevationControl tokenId={selectedTokenId} />
+  <TokenQuickEdit tokenId={quickEditTokenId} />
   <TokenRotationLockControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
@@ -464,15 +537,17 @@
   <TokenDispositionControl tokenId={selectedTokenId} />
   <TokenIdentityHiddenControl tokenId={selectedTokenId} />
   <TokenEmissionControl tokenId={selectedTokenId} />
+  <TokenBarsControl tokenId={selectedTokenId} />
   <TokenVisualControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
+    data-tour="actors.search"
     type="search"
     placeholder={t("actors.search")}
     aria-label={t("actors.search")}
     bind:value={query}
   />
-  <ul class="list">
+  <ul class="list" data-tour="actors.list">
     {#each visibleActors as a (a.id)}
       {@const locatedId = locatedTokenId(a.id)}
       <li>
@@ -559,6 +634,18 @@
             <span>{t("actors.movementTags")}</span>
             <MovementTagsEditor value={movementOf(a) ?? []} onCommit={(next) => commitMovement(a, next)} />
           </div>
+          <!-- Per-row nameplate mode and attribute-bar editor; commit /engine/nameplate_mode and
+               whole-payload /engine/bars updates with the raw stored values as the OCC pre-image. -->
+          <div class="bars-edit" aria-label={t("actors.bars")}>
+            <span>{t("actors.bars")}</span>
+            <label>{t("actors.nameplateMode")}
+              <BarModeSelect
+                value={nameplateModeOf(a) ?? "hover"} label={t("actors.nameplateMode")} testId="actor-nameplate-mode"
+                onChange={(mode) => mode !== null && commitNameplateMode(a, mode)}
+              />
+            </label>
+            <BarsEditor bars={barsOf(a) ?? []} onCommit={(next) => commitBars(a, next)} />
+          </div>
           <!-- Per-row carried-light toggle + editor; commits whole-payload /engine/light updates. -->
           <label>
             <input
@@ -634,6 +721,16 @@
     <div class="movement-edit">
       <span>{t("actors.movementTags")}</span>
       <MovementTagsEditor value={pendingMovement} onCommit={(next) => (pendingMovement = next)} />
+    </div>
+    <div class="bars-edit">
+      <span>{t("actors.bars")}</span>
+      <label>{t("actors.nameplateMode")}
+        <BarModeSelect
+          value={pendingNameplateMode ?? "hover"} label={t("actors.nameplateMode")} testId="create-nameplate-mode"
+          onChange={(mode) => (pendingNameplateMode = mode)}
+        />
+      </label>
+      <BarsEditor bars={pendingBars} onCommit={(next) => (pendingBars = next)} />
     </div>
     {#if ctx.role === "gm"}
       <label>
@@ -732,6 +829,7 @@
     flex-direction: column;
     gap: 2px;
   }
+  .bars-edit,
   .movement-edit {
     display: flex;
     flex-direction: column;

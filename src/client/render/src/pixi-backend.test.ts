@@ -1214,3 +1214,48 @@ describe("PixiBackend.drawEmotes", () => {
     }
   });
 });
+
+describe("PixiBackend.updateTokenPlate", () => {
+  const base: TokenNodeSpec = { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: "https://example.test/t.png" } as never, borderColor: null, badges: [], shape: "square", perceived: false };
+  const plateOf = (node: TokenNodeLike): Container | null => (node as unknown as { plate: Container | null }).plate;
+  const callPlate = (backend: unknown, node: TokenNodeLike, spec: TokenNodeSpec): void =>
+    (backend as { updateTokenPlate(n: TokenNodeLike, s: TokenNodeSpec): void }).updateTokenPlate(node, spec);
+
+  test("a spec with a nameplate and two bars draws one text, and a track plus label per bar, upright on the container", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    callPlate(backend, node, { ...base, nameplate: "Goblin", bars: [{ label: "HP", fraction: 0.5, color: 0xff0000 }, { label: "MP", fraction: 0, color: 0x0000ff }] });
+    const plate = plateOf(node)!;
+    expect(plate.parent).toBe(node.container);
+    expect(plate.children).toHaveLength(5);
+    expect((plate.children[0] as Text).text).toBe("Goblin");
+    expect((plate.children[0] as Text).anchor.y).toBeCloseTo(1);
+    // The first bar's fill is the track plus one fill rect; the empty bar draws the track only.
+    expect(pathActions(plate.children[1] as unknown as GraphicsInstructionLog).filter((a) => a === "rect")).toHaveLength(2);
+    expect(pathActions(plate.children[3] as unknown as GraphicsInstructionLog).filter((a) => a === "rect")).toHaveLength(1);
+  });
+
+  test("an unchanged spec keeps the same container; a changed one rebuilds it; absent plates destroy it", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec = { ...base, nameplate: "Goblin" };
+    callPlate(backend, node, spec);
+    const first = plateOf(node)!;
+    callPlate(backend, node, { ...spec });
+    expect(plateOf(node)).toBe(first);
+    callPlate(backend, node, { ...spec, nameplate: "Orc" });
+    expect(plateOf(node)).not.toBe(first);
+    expect(first.destroyed).toBe(true);
+    const second = plateOf(node)!;
+    callPlate(backend, node, base);
+    expect(plateOf(node)).toBeNull();
+    expect(second.destroyed).toBe(true);
+  });
+
+  test("a token that never had a plate leaves nothing behind", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    callPlate(backend, node, base);
+    expect(plateOf(node)).toBeNull();
+  });
+});

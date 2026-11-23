@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::data::document::{DocRole, Visibility};
+use crate::data::engine::BarDisplayMode;
 use crate::scene::bars::{BarsPayload, TokenBars};
 
 /// The GM's context.
@@ -326,7 +327,11 @@ fn a_secret_identity_token_nameplate_is_blank_for_a_non_owner_and_named_for_the_
         linked_token(json!({ "identity_hidden": true })),
         actor(Some("Real Name"), json!({ "nameplate_mode": "always" })),
     );
-    assert_eq!(entry_for(&ecs, &stranger()), None);
+    // The nameplate is delivered (mode `always`) but names nothing: the entry carries the mode
+    // and no text, and the client draws its own fallback label.
+    let blank = entry_for(&ecs, &stranger()).expect("a delivered nameplate keeps its entry");
+    assert_eq!(blank.nameplate, None);
+    assert_eq!(blank.nameplate_mode, Some(BarDisplayMode::Always));
     assert_eq!(
         entry_for(&ecs, &owner()).unwrap().nameplate.as_deref(),
         Some("Real Name")
@@ -335,6 +340,27 @@ fn a_secret_identity_token_nameplate_is_blank_for_a_non_owner_and_named_for_the_
         entry_for(&ecs, &gm()).unwrap().nameplate.as_deref(),
         Some("Real Name")
     );
+}
+
+#[test]
+fn the_entry_states_the_delivered_nameplate_mode_and_each_bars_mode() {
+    // Mutation: dropping `nameplate_mode` from the entry, or `mode` from a bar, fails this.
+    let ecs = ecs_with(
+        linked_token(json!({})),
+        actor(
+            Some("Actor Name"),
+            json!({
+                "bars": [bar_json("HP", "hp.value", "hp.max", "always")],
+                "nameplate_mode": "owner",
+            }),
+        ),
+    );
+    let seen_by_stranger = entry_for(&ecs, &stranger()).unwrap();
+    assert_eq!(seen_by_stranger.nameplate, None);
+    assert_eq!(seen_by_stranger.nameplate_mode, None);
+    assert_eq!(seen_by_stranger.bars[0].mode, BarDisplayMode::Always);
+    let seen_by_owner = entry_for(&ecs, &owner()).unwrap();
+    assert_eq!(seen_by_owner.nameplate_mode, Some(BarDisplayMode::Owner));
 }
 
 #[test]

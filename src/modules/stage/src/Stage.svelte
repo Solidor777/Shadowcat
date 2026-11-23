@@ -188,6 +188,8 @@
         viewedSceneId: () => ctx.viewedSceneId,
         viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
+        bars: () => ctx.bars,
+        nameplateFallbackLabel: () => ctx.t("token.nameplateFallback"),
         selectedTokens: () => ctx.tokenSelection.ids,
         ghostOtherLevels: () => ghostOtherLevels,
         // A token's facing is shown only to a viewer who may turn it (GM always; a player for
@@ -283,6 +285,8 @@
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
+      // A "bars" frame is the same kind of commit-less change as a footprints frame.
+      let lastBars = ctx.bars;
       // Token selection is client-local UI state (no document write either) — same explicit
       // re-projection so the selection highlight fx tracks the click.
       let lastSelectionKey = [...ctx.tokenSelection.ids].sort().join(" ");
@@ -304,6 +308,11 @@
           if (fp !== lastFootprints) {
             lastFootprints = fp;
             e.reapplyFootprints();
+          }
+          const barsNow = ctx.bars; // tracks the session's bars $state
+          if (barsNow !== lastBars) {
+            lastBars = barsNow;
+            e.reapplyBars();
           }
           // Iterating the SvelteSet tracks it; a membership change re-projects the tokens.
           const selKey = [...ctx.tokenSelection.ids].sort().join(" ");
@@ -621,6 +630,7 @@
       engine.dispatchPointerDown(local(e), e);
     }, { signal });
     canvas.addEventListener("pointermove", (e) => engine.dispatchPointerMove(local(e), e), { signal });
+    canvas.addEventListener("pointerleave", () => engine.clearHoveredToken(), { signal });
     const up = (e: PointerEvent): void => engine.dispatchPointerUp(local(e), e);
     canvas.addEventListener("pointerup", up, { signal });
     canvas.addEventListener("pointercancel", up, { signal });
@@ -636,6 +646,7 @@
 
 <div
   class="stage-host"
+  data-tour="stage.canvas"
   bind:this={host}
   data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
   data-render-scale={String(perfBudget.renderScale)}
@@ -665,6 +676,7 @@
     <select
       class="gm-view"
       data-testid="gm-view-select"
+      data-tour="stage.gm-view"
       aria-label="GM vision mode"
       bind:value={gmView}
       onchange={applyGmView}

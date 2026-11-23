@@ -1,5 +1,6 @@
-import type { Module } from "@shadowcat/core";
+import { TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import Stage from "./Stage.svelte";
+import { stageTour } from "./tour";
 
 /** Canvas stage panel: hosts the engine-owned PixiJS render surface. Requires
  * core-ui's stage region; contributes Stage into it. */
@@ -13,5 +14,6 @@ export const stage: Module = {
   },
   register(ctx) {
     ctx.contributions.contribute({ id: "stage:stage", contract: "shadowcat.surface:stage", component: Stage });
+    ctx.contributions.contribute({ id: "stage:tour", contract: TOUR_CONTRACT, component: null, tour: stageTour });
   },
 };

@@ -161,6 +161,126 @@ itself; a tool whose click needs `AppContext`-only seams (`ctx.vfx.play`,
 `$effect`, where `getAppContext()` is available (the `@shadowcat/module-vfx`
 package's `FxToolPanel` is the worked example of that second shape).
 
+## Contributing a guided tour
+
+A module can ship a short guided tour of its own UI. A tour is plain data: you
+contribute it under `TOUR_CONTRACT` (`shadowcat.tour`) and mark the elements it
+points at with `data-tour` anchors. The [onboarding](/modules/onboarding) module
+is the engine that offers, draws and records tours; your module never imports
+it. If onboarding is not enabled in the world, your tour stays inert and costs
+nothing.
+
+A tour is a `TourMeta`:
+
+```ts
+import { TOUR_CONTRACT, type Module, type TourMeta } from "@shadowcat/core";
+
+const tour: TourMeta = {
+  id: "example-tours.intro",
+  labelKey: "example-tours.tour.name",
+  version: 1,
+  audience: "any",
+  scope: "global",
+  trigger: "first-use",
+  steps: [
+    {
+      target: "example-tours.panel",
+      titleKey: "example-tours.tour.panel.title",
+      bodyKey: "example-tours.tour.panel.body",
+      placement: "left",
+    },
+    {
+      target: "example-tours.roll-button",
+      titleKey: "example-tours.tour.roll.title",
+      bodyKey: "example-tours.tour.roll.body",
+      placement: "bottom",
+    },
+  ],
+};
+
+export const exampleTours: Module = {
+  manifest: {
+    id: "example-tours",
+    version: "0.1.0",
+    dependencies: {},
+    requires: [],
+    provides: [],
+  },
+  register(ctx) {
+    ctx.i18n.addMessages("en", {
+      "example-tours.tour.name": "Example tour",
+      "example-tours.tour.panel.title": "The example panel",
+      "example-tours.tour.panel.body": "This panel holds everything the module does.",
+      "example-tours.tour.roll.title": "Roll",
+      "example-tours.tour.roll.body": "Press this to make a roll.",
+    });
+    ctx.contributions.contribute({
+      id: "example-tours:tour",
+      contract: TOUR_CONTRACT,
+      component: null,
+      tour,
+    });
+  },
+};
+```
+
+The registry validates the tour when you contribute it, and `contribute` throws on
+a malformed one (an unknown key, no steps, a bad enum value, an empty id or key).
+Every field is required:
+
+| Field | Meaning |
+|---|---|
+| `id` | Namespaced tour id. It is the key the user's done-state is stored under, so keep it stable. |
+| `labelKey` | i18n key for the tour's name, shown in the "Replay tours" list. |
+| `version` | Positive integer. Raise it to offer the tour again to users who finished an older version. |
+| `audience` | `"gm"` and `"player"` match that world role exactly (a spectator matches neither). `"admin"` matches a server admin. `"any"` matches everyone. |
+| `scope` | `"global"` records done-state once per account. `"world"` records it once per world, for a tour that differs between worlds. |
+| `trigger` | `"first-use"` offers the tour automatically. `"manual"` runs it only from the replay list. |
+| `steps` | At least one step: `target`, `titleKey`, `bodyKey` and `placement` (`"top"`, `"bottom"`, `"left"`, `"right"` or `"center"`). |
+
+Choose `"manual"` for a tour of a panel that starts closed. The tour needs its
+target on screen, and a closed panel has none, so an automatic offer would have
+nothing to point at.
+
+### Anchors
+
+A step's `target` is an **anchor id**, never a CSS selector. The id is the value
+of a `data-tour` attribute, so a tour cannot reach into another module's markup.
+An id may use letters, digits and `.`, `_`, `:`, `-` only; any other character
+fails validation. Namespace ids with your module id.
+
+Put the attribute on an element your own component renders. Anchor ids are
+matched by their first match in document order:
+
+```svelte
+<section class="example-panel" data-tour="example-tours.panel">
+  <button type="button" data-tour="example-tours.roll-button">Roll</button>
+</section>
+```
+
+A contribution rendered through a `<Surface>` host can also set
+`tourAnchor: "example-tours.panel"` on the contribution itself. The surface then
+wraps the component in a `display: contents` element carrying the attribute, and
+the engine measures that wrapper's first element child. A panel or scene tool is
+not rendered through `<Surface>`, so for those put `data-tour` on the component's
+own root.
+
+A step whose anchor is not mounted is **skipped**, not failed. That makes a tour
+safe when a module is disabled or the user cannot see a control. A GM-only step
+simply disappears for a player, because the element is never rendered for them.
+A tour with no mountable step is never offered, and "Replay" tells the user that
+the tour has nothing to show on the current screen.
+
+### What the engine does with your tour
+
+- It offers at most **one** automatic tour per session, in module registration
+  order, as a toast with Start, Not now and Don't ask again. Tours that were not
+  offered wait for a later session or the replay list.
+- A finished or skipped tour (Skip, Done or Escape) records its `version` as done
+  and is not offered again until you raise the version. Not now records nothing.
+- A server operator can switch off all automatic offers with `onboarding_enabled`
+  (see the [hosting guide](/guides/hosting)). Replay still works.
+
 ## Styling and theming
 
 The host UI is themed by CSS custom properties ("tokens") on the document root.

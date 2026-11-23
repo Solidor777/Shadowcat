@@ -36,6 +36,25 @@ describe("resolveAuto", () => {
   });
 });
 
+describe("nameplatesAndBars", () => {
+  it("is on in every named preset", () => {
+    expect(PRESETS.mobile.nameplatesAndBars).toBe(true);
+    expect(PRESETS.balanced.nameplatesAndBars).toBe(true);
+    expect(PRESETS.quality.nameplatesAndBars).toBe(true);
+  });
+  it("round-trips a persisted override and drops a wrong-typed one", () => {
+    const off = parsePersisted(serializePersisted({ preset: "custom", overrides: { nameplatesAndBars: false } }));
+    expect(off.overrides.nameplatesAndBars).toBe(false);
+    const bad = parsePersisted(JSON.stringify({ preset: "custom", overrides: { nameplatesAndBars: "no", fpsCap: 60 } }));
+    expect(bad.overrides).toEqual({ fpsCap: 60 });
+  });
+  it("a custom preset layers the override onto balanced", () => {
+    const s = effectiveSettings({ preset: "custom", overrides: { nameplatesAndBars: false } }, {});
+    expect(s.nameplatesAndBars).toBe(false);
+    expect(s.tokenFx).toBe(true);
+  });
+});
+
 describe("textureBudgetBytes", () => {
   it("is smaller on mobile than on balanced/quality (a floor on GPU memory, not a ceiling raise)", () => {
     expect(PRESETS.mobile.textureBudgetBytes).toBeLessThan(PRESETS.balanced.textureBudgetBytes);

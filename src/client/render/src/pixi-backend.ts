@@ -70,6 +70,13 @@ interface TokenNode {
   /** Identity key of the last-applied `tokenSpec.fx` (`updateTokenFx`'s memo, same discipline as
    * `auraKey`): an unchanged key short-circuits the filter rebuild. */
   fxKey: string;
+  /** The nameplate text and attribute bars, drawn by `updateTokenPlate` as an upright child of
+   * the non-rotating `container` ordered above the art (nameplate over the token's top edge, bars
+   * stacked under its bottom edge), or `null` while the last-applied spec had neither. */
+  plate: Container | null;
+  /** Identity key of the last-applied `tokenSpec.nameplate`/`bars` plus the token size
+   * (`updateTokenPlate`'s memo): an unchanged key short-circuits the rebuild. */
+  plateKey: string;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -874,6 +881,7 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenAura(node, tokenSpec);
     this.updateTokenFacing(node, tokenSpec);
     this.updateTokenFx(node, tokenSpec);
+    this.updateTokenPlate(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -898,7 +906,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", textureUrls: [] };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateKey: "", textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -1310,6 +1318,52 @@ export class PixiBackend implements DisplayBackend {
       node.container.addChildAt(node.aura, 0); // below visualContainer: art draws over the aura
     }
     node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
+  }
+
+  /** Redraw (or remove) `node`'s nameplate and attribute bars. The nameplate is centered over the
+   * token's top edge; the bars stack under its bottom edge, each a dark track with a fill of
+   * `fraction` of the token's width in the bar's color and its label centered on it. Everything
+   * is a child of one `Container` on the non-rotating `container`, so it stays upright, and is
+   * sized from `tokenSpec.w`/`h` only (no grid math). Memoized by `plateKey`; an absent
+   * nameplate and bars destroy the container.
+   * @param node The token render node whose plate to redraw.
+   * @param tokenSpec The resolved token spec; `.nameplate`, `.bars`, `.w` and `.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenPlate(node, tokenSpec);
+   * ```
+   */
+  private updateTokenPlate(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const { nameplate, bars, w, h } = tokenSpec;
+    const key = nameplate === undefined && bars === undefined ? "" : JSON.stringify([nameplate ?? null, bars ?? null, w, h]);
+    if (node.plateKey === key) return;
+    node.plateKey = key;
+    node.plate?.destroy({ children: true });
+    node.plate = null;
+    if (key === "") return;
+    const plate = new Container();
+    const barHeight = Math.max(6, Math.min(w, h) * 0.12);
+    if (nameplate !== undefined) {
+      const text = new Text({ text: nameplate, style: { fontSize: Math.max(12, barHeight * 1.6), fontFamily: "sans-serif", fill: 0xffffff, stroke: { color: 0x000000, width: 3 } } });
+      text.anchor.set(0.5, 1);
+      text.position.set(0, -h / 2 - 2);
+      plate.addChild(text);
+    }
+    (bars ?? []).forEach((bar, i) => {
+      const y = h / 2 + 2 + i * (barHeight + 2);
+      const track = new Graphics();
+      track.rect(-w / 2, y, w, barHeight).fill({ color: 0x000000, alpha: 0.6 });
+      if (bar.fraction > 0) track.rect(-w / 2, y, w * bar.fraction, barHeight).fill({ color: bar.color });
+      const label = new Text({ text: bar.label, style: { fontSize: barHeight, fontFamily: "sans-serif", fill: 0xffffff, stroke: { color: 0x000000, width: 2 } } });
+      label.anchor.set(0.5);
+      label.position.set(0, y + barHeight / 2);
+      plate.addChild(track, label);
+    });
+    node.container.addChild(plate);
+    node.plate = plate;
   }
 
   /** Redraw (or remove) `node`'s facing wedge: a translucent pie slice of `facing.arc` degrees

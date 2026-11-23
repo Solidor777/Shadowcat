@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController, NotConnectedError, resolveViewedScene } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, EMPTY_BARS, CombatController, NotConnectedError, resolveViewedScene } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { Dice3DBridge } from "../dice3dInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
@@ -158,6 +158,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     // `resolveViewedScene` answer (snapshotted at construction).
     viewedSceneId: over.viewedSceneId !== undefined ? over.viewedSceneId : resolveViewedScene(documents),
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
+    bars: over.bars ?? EMPTY_BARS,
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),

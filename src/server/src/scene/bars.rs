@@ -75,16 +75,27 @@ pub struct SceneBars {
 /// ```
 /// use shadowcat::scene::bars::TokenBars;
 ///
-/// let token = TokenBars { nameplate: Some("Goblin".to_string()), bars: Vec::new() };
+/// use shadowcat::data::engine::BarDisplayMode;
+///
+/// let token = TokenBars {
+///     nameplate: Some("Goblin".to_string()),
+///     nameplate_mode: Some(BarDisplayMode::Always),
+///     bars: Vec::new(),
+/// };
 /// assert_eq!(token.nameplate.as_deref(), Some("Goblin"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct TokenBars {
     /// The name this recipient sees for the token, resolved from the documents as this
-    /// recipient receives them; `None` when the nameplate mode withholds it, or when the
-    /// recipient receives no name (the client supplies its own fallback label).
+    /// recipient receives them; `None` when the recipient receives no name even though the
+    /// nameplate is delivered (the client supplies its own fallback label), and when the
+    /// nameplate is not delivered at all.
     pub nameplate: Option<String>,
+    /// The resolved nameplate mode when the nameplate is delivered to this recipient, `None`
+    /// when it is not. The client draws a nameplate only when this is `Some`, and reveals it
+    /// per the mode.
+    pub nameplate_mode: Option<eng::BarDisplayMode>,
     /// The bars delivered to this recipient, in authored order.
     pub bars: Vec<ResolvedBar>,
 }
@@ -96,11 +107,14 @@ pub struct TokenBars {
 /// ```
 /// use shadowcat::scene::bars::ResolvedBar;
 ///
+/// use shadowcat::data::engine::BarDisplayMode;
+///
 /// let bar = ResolvedBar {
 ///     label: "HP".to_string(),
 ///     current: 4.0,
 ///     max: 10.0,
 ///     color: "#cc2222".to_string(),
+///     mode: BarDisplayMode::Always,
 /// };
 /// assert!(bar.current <= bar.max);
 /// ```
@@ -115,6 +129,9 @@ pub struct ResolvedBar {
     pub max: f64,
     /// Fill colour, a css `#rrggbb` string.
     pub color: String,
+    /// The bar's authored mode; the client reveals a delivered bar per this mode (`Always`
+    /// and `Owner` draw continuously, `Hover` on hover or selection).
+    pub mode: eng::BarDisplayMode,
 }
 
 /// The nameplate-relevant text of an actor-shaped document: its envelope `name` and the
@@ -206,8 +223,8 @@ impl SceneEcs {
         // already removed what it hides, including the link a linked token resolves its actor by.
         let seen_token = filter_properties(token, &token_access).ok()?;
 
-        let nameplate = nameplate_mode
-            .delivered_to(trusted)
+        let nameplate_delivered = nameplate_mode.delivered_to(trusted);
+        let nameplate = nameplate_delivered
             .then(|| self.nameplate_for(&seen_token, host, &actor_access, linked))
             .flatten();
 
@@ -233,10 +250,15 @@ impl SceneEcs {
                     current,
                     max,
                     color: bar.color.clone(),
+                    mode: bar.mode,
                 });
             }
         }
-        (nameplate.is_some() || !bars.is_empty()).then_some(TokenBars { nameplate, bars })
+        (nameplate_delivered || !bars.is_empty()).then_some(TokenBars {
+            nameplate,
+            nameplate_mode: nameplate_delivered.then_some(nameplate_mode),
+            bars,
+        })
     }
 
     /// The name `seen_token`'s recipient is entitled to, resolved in the client's own order
