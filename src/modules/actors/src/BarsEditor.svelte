@@ -5,8 +5,8 @@
   // carries every bar's change. A formula is checked with `parseFormula` for an inline error
   // only; the server stays the authority on what a formula means.
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { parseFormula } from "@shadowcat/formula";
-  import { MAX_BARS, MAX_BAR_LABEL_CHARS, type BarAttribute, type BarDisplayMode, type Formula } from "@shadowcat/core";
+  import { coerceFormula } from "@shadowcat/formula";
+  import { MAX_BARS, MAX_BAR_LABEL_CHARS, type BarAttribute, type BarDisplayMode } from "@shadowcat/core";
   import BarModeSelect from "./BarModeSelect.svelte";
 
   const ctx = getAppContext();
@@ -22,24 +22,6 @@
   /** Inline error text keyed `<index>:<field>`, set by a rejected edit and cleared by the next
    * accepted one. */
   let errors = $state<Record<string, string | null>>({});
-
-  /** Coerces a text input into a `Formula`: a finite numeric literal becomes a number, else a
-   * valid formula string is kept trimmed, else `null`.
-   * @param text The raw input value.
-   * @returns The coerced `Formula`, or `null` when `text` is neither a number nor a valid formula.
-   * @example
-   * ```
-   * coerceFormula("2"); // 2
-   * ```
-   */
-  function coerceFormula(text: string): Formula | null {
-    const trimmed = text.trim();
-    const n = Number(trimmed);
-    if (trimmed !== "" && Number.isFinite(n)) return n;
-    const parsed = parseFormula(trimmed);
-    if ("error" in parsed) return null;
-    return trimmed;
-  }
 
   /** Replaces bar `index` with `patch` merged over it and commits the list.
    * @param index The bar's position.
@@ -82,8 +64,9 @@
    */
   function commitFormula(index: number, field: "current" | "max", text: string): void {
     const coerced = coerceFormula(text);
-    errors[`${index}:${field}`] = coerced === null ? t("actors.barInvalidFormula", { detail: text.trim() }) : null;
-    if (coerced !== null) patchBar(index, { [field]: coerced });
+    const invalid = typeof coerced === "object";
+    errors[`${index}:${field}`] = invalid ? t("actors.barInvalidFormula", { detail: text.trim() }) : null;
+    if (!invalid) patchBar(index, { [field]: coerced });
   }
 
   /** Appends a default bar.
