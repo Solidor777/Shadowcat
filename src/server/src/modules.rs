@@ -48,6 +48,11 @@ struct ModuleManifestMirror {
     /// Declared server-side validators, compiled once by `sandbox::registry::ValidatorRegistry`.
     #[serde(default)]
     validators: Vec<ValidatorDecl>,
+    /// Declared module-placed effects, each parsed and validated individually at scan so one
+    /// invalid declaration drops itself and never the module (fail-open discovery, the
+    /// `systemDefaults` posture).
+    #[serde(default)]
+    placements: Vec<serde_json::Value>,
 }
 
 /// The `engines` object of a community module manifest.
@@ -92,6 +97,233 @@ pub struct ValidatorDecl {
     /// `sandbox::registry::compile_one`'s traversal check, the same guard
     /// `http::module_routes::serve_module_file` uses.
     pub wasm: std::path::PathBuf,
+}
+
+/// Who may place a declared effect (`PlacementDecl::who`). A GM may always place, whatever this
+/// says.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::PlacementWho;
+///
+/// let who: PlacementWho = serde_json::from_str("\"caster_owner\"").unwrap();
+/// assert_eq!(who, PlacementWho::CasterOwner);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementWho {
+    /// Only a GM.
+    Gm,
+    /// Any player seated in the world.
+    Player,
+    /// A player whose request names a caster token, on the placement's scene, that the sender
+    /// effectively owns (`SceneEcs::token_scene_and_effective_owner`).
+    CasterOwner,
+}
+
+/// The region kinds a placement may carry; the same three `scene::regions::parse_one_shape`
+/// recognizes.
+const PLACEMENT_SHAPE_KINDS: [&str; 3] = ["circle", "rect", "polygon"];
+
+/// Serde default for `PlacementDecl::behavior`.
+///
+/// # Examples
+///
+/// ```text
+/// default_placement_behavior() == "terrain"
+/// ```
+fn default_placement_behavior() -> String {
+    "terrain".into()
+}
+
+/// Serde default for `PlacementDecl::cost`.
+///
+/// # Examples
+///
+/// ```text
+/// default_placement_cost() == 1.0
+/// ```
+fn default_placement_cost() -> f64 {
+    1.0
+}
+
+/// One module-declared placeable effect. The effect set (`behavior`, `cost`, `triggers`,
+/// `elevation`) lives here, in server-held manifest data; a placement request supplies only the
+/// area, so a client can never choose what a placement does. `Room::place_effect` turns a
+/// declaration plus a validated area into a region document.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::{PlacementDecl, PlacementWho};
+///
+/// let decl: PlacementDecl = serde_json::from_value(serde_json::json!({
+///     "id": "fireball",
+///     "who": "player",
+///     "shapes": ["circle"],
+///     "maxExtent": 12.0,
+///     "triggers": [{ "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }]
+/// }))
+/// .unwrap();
+/// assert_eq!(decl.who, PlacementWho::Player);
+/// assert!(decl.validate().is_ok());
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlacementDecl {
+    /// The declaration id a request names, unique within its module.
+    pub id: String,
+    /// Display name for the placed region's document.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Who may place it.
+    pub who: PlacementWho,
+    /// The `RegionShape` kinds a request's area may use.
+    pub shapes: Vec<String>,
+    /// The largest bounding-box side of a request's area, in scene units.
+    pub max_extent: f64,
+    /// The region's `RegionEngine::behavior`.
+    #[serde(default = "default_placement_behavior")]
+    pub behavior: String,
+    /// The region's `RegionEngine::cost`.
+    #[serde(default = "default_placement_cost")]
+    pub cost: f64,
+    /// The region's `RegionEngine::triggers`, the effects the placement carries.
+    #[serde(default)]
+    pub triggers: Vec<crate::data::engine::RegionTrigger>,
+    /// The region's `RegionEngine::elevation`.
+    #[serde(default)]
+    pub elevation: Option<crate::data::engine::ElevationBand>,
+}
+
+impl PlacementDecl {
+    /// The region body this declaration produces for `shape`: the declaration's effect set
+    /// around the requested area. The caller validates the result with `RegionEngine::validate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::RegionShape;
+    /// use shadowcat::modules::PlacementDecl;
+    ///
+    /// let decl: PlacementDecl = serde_json::from_value(serde_json::json!({
+    ///     "id": "zone", "who": "gm", "shapes": ["rect"], "maxExtent": 5.0
+    /// }))
+    /// .unwrap();
+    /// let shape = RegionShape { kind: "rect".into(), points: vec![0.0, 0.0, 1.0, 1.0] };
+    /// let region = decl.region_engine(shape);
+    /// assert!(region.enabled && region.triggers.is_empty());
+    /// ```
+    pub fn region_engine(
+        &self,
+        shape: crate::data::engine::RegionShape,
+    ) -> crate::data::engine::RegionEngine {
+        crate::data::engine::RegionEngine {
+            shape: crate::data::engine::RegionGeometry::Single(shape),
+            behavior: self.behavior.clone(),
+            cost: self.cost,
+            cost_by_tag: std::collections::BTreeMap::new(),
+            enabled: true,
+            triggers: self.triggers.clone(),
+            elevation: self.elevation,
+            ambient_override: None,
+            occludes: None,
+            anchor: None,
+        }
+    }
+
+    /// Whether this declaration is well formed: a bounded non-empty id, at least one known shape
+    /// kind, a finite positive `max_extent`, and an effect set that passes
+    /// `RegionEngine::validate` around a probe shape. Run at module scan; a failing declaration
+    /// is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::modules::PlacementDecl;
+    ///
+    /// let bad: PlacementDecl = serde_json::from_value(serde_json::json!({
+    ///     "id": "zone", "who": "gm", "shapes": ["blob"], "maxExtent": 5.0
+    /// }))
+    /// .unwrap();
+    /// assert!(bad.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.is_empty() || self.id.chars().count() > crate::data::engine::MAX_TRIGGER_ID_CHARS
+        {
+            return Err("placement id must be 1..=MAX_TRIGGER_ID_CHARS chars".into());
+        }
+        if self.shapes.is_empty()
+            || self
+                .shapes
+                .iter()
+                .any(|k| !PLACEMENT_SHAPE_KINDS.contains(&k.as_str()))
+        {
+            return Err(
+                "placement shapes must be a non-empty list of circle, rect or polygon".into(),
+            );
+        }
+        if !self.max_extent.is_finite() || self.max_extent <= 0.0 {
+            return Err("placement maxExtent must be a finite positive number".into());
+        }
+        let probe = crate::data::engine::RegionShape {
+            kind: "circle".into(),
+            points: vec![0.0, 0.0, 1.0],
+        };
+        self.region_engine(probe).validate()
+    }
+
+    /// Whether `shape` is an area this declaration admits: an allowed kind whose bounding-box
+    /// side is within `max_extent`. Structural validity (point counts, finite coordinates) is
+    /// `RegionEngine::validate`'s job, run on the built region.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::RegionShape;
+    /// use shadowcat::modules::PlacementDecl;
+    ///
+    /// let decl: PlacementDecl = serde_json::from_value(serde_json::json!({
+    ///     "id": "zone", "who": "gm", "shapes": ["circle"], "maxExtent": 4.0
+    /// }))
+    /// .unwrap();
+    /// let small = RegionShape { kind: "circle".into(), points: vec![0.0, 0.0, 2.0] };
+    /// let large = RegionShape { kind: "circle".into(), points: vec![0.0, 0.0, 2.5] };
+    /// assert!(decl.admits(&small));
+    /// assert!(!decl.admits(&large));
+    /// ```
+    pub fn admits(&self, shape: &crate::data::engine::RegionShape) -> bool {
+        self.shapes.contains(&shape.kind)
+            && shape_extent(shape).is_some_and(|e| e <= self.max_extent)
+    }
+}
+
+/// The largest bounding-box side of `shape` in scene units, or `None` when its point list does not
+/// match its kind. A circle's side is its diameter.
+///
+/// # Examples
+///
+/// ```text
+/// shape_extent(circle [0, 0, 2]) == Some(4.0)
+/// shape_extent(rect [0, 0, 3, 1]) == Some(3.0)
+/// ```
+fn shape_extent(shape: &crate::data::engine::RegionShape) -> Option<f64> {
+    let p = &shape.points;
+    match shape.kind.as_str() {
+        "circle" if p.len() == 3 => Some(p[2].abs() * 2.0),
+        "rect" if p.len() == 4 => Some((p[2] - p[0]).abs().max((p[3] - p[1]).abs())),
+        "polygon" if p.len() >= 6 && p.len().is_multiple_of(2) => {
+            let mut lo = (f64::INFINITY, f64::INFINITY);
+            let mut hi = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+            for c in p.chunks(2) {
+                lo = (lo.0.min(c[0]), lo.1.min(c[1]));
+                hi = (hi.0.max(c[0]), hi.1.max(c[1]));
+            }
+            Some((hi.0 - lo.0).max(hi.1 - lo.1))
+        }
+        _ => None,
+    }
 }
 
 /// A world's enablement record for one installed module: whether it is enabled at all, and
@@ -192,6 +424,7 @@ pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 ///     system_defaults: None,
 ///     provides_system: false,
 ///     validators: vec![],
+///     placements: vec![],
 /// };
 /// assert_eq!(m.id, "example-mod");
 /// assert!(!m.provides_system);
@@ -223,6 +456,9 @@ pub struct InstalledModule {
     /// (`ValidatorRegistry::load_error_for`), never here — discovery always succeeds for a
     /// structurally valid manifest regardless of whether its validators compile.
     pub validators: Vec<ValidatorDecl>,
+    /// This module's valid declared placeable effects (`PlacementDecl`); an invalid declaration
+    /// is warned and dropped at scan, never failing the module.
+    pub placements: Vec<PlacementDecl>,
 }
 
 /// Scan each module folder under `modules_dir`, parsing and validating its manifest. An invalid
@@ -325,6 +561,7 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
                 arr.iter()
                     .any(|e| e.get("contract").and_then(|c| c.as_str()) == Some(SYSTEM_CONTRACT))
             });
+        let placements = valid_placements(&dir, mirror.placements);
         out.push(InstalledModule {
             id: folder_id,
             requirements: mirror.requirements,
@@ -334,9 +571,42 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
             system_defaults,
             provides_system,
             validators: mirror.validators,
+            placements,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Parses each raw `placements` entry into a `PlacementDecl`, keeping those that deserialize,
+/// pass `PlacementDecl::validate` and carry an id not already kept; every other entry is warned
+/// about (naming `dir`) and dropped.
+///
+/// # Examples
+///
+/// ```text
+/// valid_placements(dir, [good, bad, good-with-same-id]) == [good]
+/// ```
+fn valid_placements(dir: &Path, raw: Vec<serde_json::Value>) -> Vec<PlacementDecl> {
+    let mut out: Vec<PlacementDecl> = Vec::new();
+    for value in raw {
+        let decl = match serde_json::from_value::<PlacementDecl>(value) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(dir = %dir.display(), error = %e, "module.json placement is not a valid PlacementDecl; ignored");
+                continue;
+            }
+        };
+        if let Err(e) = decl.validate() {
+            tracing::warn!(dir = %dir.display(), id = %decl.id, error = %e, "module.json placement failed validation; ignored");
+            continue;
+        }
+        if out.iter().any(|d| d.id == decl.id) {
+            tracing::warn!(dir = %dir.display(), id = %decl.id, "module.json declares a placement id twice; the later one is ignored");
+            continue;
+        }
+        out.push(decl);
+    }
     out
 }
 
@@ -417,6 +687,7 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
 ///     system_defaults: None,
 ///     provides_system: false,
 ///     validators: vec![],
+///     placements: vec![],
 /// };
 /// assert!(!engine_compat_ok(&m)); // fails closed without engines.shadowcat
 /// assert!(engine_compat_ok(&InstalledModule { engines_shadowcat: Some("*".into()), ..m }));

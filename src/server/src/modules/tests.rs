@@ -118,6 +118,83 @@ fn manifest_invalid_system_defaults_are_dropped_but_the_module_still_loads() {
     assert!(found.iter().all(|m| m.system_defaults.is_none()));
 }
 
+const PLACEMENT_TRIGGER: &str =
+    r#"[{"on":"enter","effect":{"type":"condition_add","condition":"burning"}}]"#;
+
+#[test]
+fn manifest_placements_are_extracted_with_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "spells",
+        &format!(
+            r#"{{"id":"spells","version":"1.0.0","placements":[{{"id":"ball","who":"caster_owner","shapes":["circle"],"maxExtent":12,"triggers":{PLACEMENT_TRIGGER}}}]}}"#
+        ),
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(found[0].placements.len(), 1);
+    let p = &found[0].placements[0];
+    assert_eq!(p.id, "ball");
+    assert_eq!(p.who, PlacementWho::CasterOwner);
+    assert_eq!(p.behavior, "terrain");
+    assert_eq!(p.cost, 1.0);
+    assert_eq!(p.triggers.len(), 1);
+}
+
+#[test]
+fn manifest_invalid_and_duplicate_placements_are_dropped_but_the_module_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "spells",
+        &format!(
+            r#"{{"id":"spells","version":"1.0.0","placements":[
+              {{"id":"ok","who":"player","shapes":["circle"],"maxExtent":5,"triggers":{PLACEMENT_TRIGGER}}},
+              {{"id":"ok","who":"gm","shapes":["circle"],"maxExtent":5}},
+              {{"id":"unknown-field","who":"gm","shapes":["circle"],"maxExtent":5,"bogus":1}},
+              {{"id":"no-shapes","who":"gm","shapes":[],"maxExtent":5}},
+              {{"id":"bad-shape","who":"gm","shapes":["blob"],"maxExtent":5}},
+              {{"id":"zero-extent","who":"gm","shapes":["circle"],"maxExtent":0}},
+              {{"id":"bad-who","who":"everyone","shapes":["circle"],"maxExtent":5}},
+              "not an object"
+            ]}}"#
+        ),
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(
+        found.len(),
+        1,
+        "fail-open discovery: the module still loads"
+    );
+    let ids: Vec<&str> = found[0].placements.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, ["ok"], "only the first valid declaration survives");
+    assert_eq!(found[0].placements[0].who, PlacementWho::Player);
+}
+
+#[test]
+fn a_placement_admits_only_its_declared_kinds_within_its_extent() {
+    let decl: PlacementDecl = serde_json::from_str(
+        r#"{"id":"z","who":"player","shapes":["circle","rect"],"maxExtent":10}"#,
+    )
+    .unwrap();
+    let circle = |r: f64| crate::data::engine::RegionShape {
+        kind: "circle".into(),
+        points: vec![0.0, 0.0, r],
+    };
+    assert!(decl.admits(&circle(5.0)), "diameter 10 is at the limit");
+    assert!(!decl.admits(&circle(5.1)), "diameter 10.2 exceeds it");
+    let rect = crate::data::engine::RegionShape {
+        kind: "rect".into(),
+        points: vec![0.0, 0.0, 10.0, 4.0],
+    };
+    assert!(decl.admits(&rect));
+    let polygon = crate::data::engine::RegionShape {
+        kind: "polygon".into(),
+        points: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+    };
+    assert!(!decl.admits(&polygon), "polygon is not declared");
+}
+
 #[test]
 fn a_module_without_the_system_contract_does_not_provide_system() {
     let dir = tempfile::tempdir().unwrap();

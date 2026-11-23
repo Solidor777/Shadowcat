@@ -1061,6 +1061,37 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::PlaceEffect { request_id, module, placement, scene_id, shape, caster }) => {
+                                    // The placement's authorization, area clamp and commit live in
+                                    // `Room::place_effect`. Reply shape mirrors `ToggleDoor`: `None`
+                                    // on success (the broadcast `Event` of the region Create is the
+                                    // confirmation); a rejection is a correlated `PlaceEffectError`
+                                    // to this connection only. Spends the shared per-user write
+                                    // budget before any module scan.
+                                    if let Some(err_frame) = handle_place_effect(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &state.config.modules_path(),
+                                        &state.ws.module_scan_cache,
+                                        &message_rate,
+                                        crate::ws::room::PlaceEffectInputs {
+                                            request_id,
+                                            module,
+                                            placement,
+                                            scene_id,
+                                            shape,
+                                            caster,
+                                            ts: now_millis(),
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::ChoosePortal { request_id, offer_id, choice }) => {
                                     // The answer's validation + commit live in
                                     // `Room::handle_choose_portal`; success is the broadcast
@@ -2000,6 +2031,41 @@ async fn handle_toggle_door(
         Err(e) => Some(ServerMsg::DoorToggleError {
             request_id,
             message: crate::ws::room::door_toggle_wire_message(&e, ctx.world_role),
+        }),
+    }
+}
+
+/// Resolve and apply a module-placed effect request (`ClientMsg::PlaceEffect`). The gate and
+/// commit live in `Room::place_effect`; this wrapper owns the rate check and the reply shape: on
+/// success NOTHING is returned (the broadcast `Event` of the region Create is the confirmation);
+/// on rejection a `PlaceEffectError` to this connection only, whose message is role-conditioned
+/// through `place_effect_wire_message`.
+///
+/// # Examples
+///
+/// ```text
+/// let reply = handle_place_effect(&room, repo, &ctx, &modules_dir, &cache, &rate, req).await;
+/// ```
+async fn handle_place_effect(
+    room: &crate::ws::room::Room,
+    repo: &dyn crate::data::repository::Repository,
+    ctx: &crate::data::membership::PermissionContext,
+    modules_dir: &std::path::Path,
+    cache: &Arc<crate::modules::ModuleScanCache>,
+    rate: &crate::ws::PingRateLimiter,
+    req: crate::ws::room::PlaceEffectInputs,
+) -> Option<ServerMsg> {
+    let request_id = req.request_id;
+    let result = if rate.check(ctx.user_id, req.ts, crate::ws::MESSAGE_RATE_PER_MIN) {
+        room.place_effect(repo, ctx, modules_dir, cache, req).await
+    } else {
+        Err(crate::ws::room::PlaceEffectError::RateLimited)
+    };
+    match result {
+        Ok(()) => None,
+        Err(e) => Some(ServerMsg::PlaceEffectError {
+            request_id,
+            message: crate::ws::room::place_effect_wire_message(&e, ctx.world_role),
         }),
     }
 }

@@ -26,6 +26,8 @@ use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 use crate::ws::PingRateLimiter;
 
+mod placement;
+pub(crate) use placement::{place_effect_wire_message, PlaceEffectError, PlaceEffectInputs};
 mod portal;
 pub(crate) use portal::{portal_choice_wire_message, PortalChoiceError};
 

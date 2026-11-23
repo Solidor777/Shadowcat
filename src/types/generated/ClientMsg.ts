@@ -7,6 +7,7 @@ import type { Operation } from "./Operation";
 import type { ResourceOp } from "./ResourceOp";
 import type { WireRecalcOp } from "./WireRecalcOp";
 import type { DoorState } from "./engine/DoorState";
+import type { RegionShape } from "./engine/RegionShape";
 
 /**
  * Client -> server frames.
@@ -488,7 +489,31 @@ wall_id: string,
  * wall currently `Locked` refuses a non-GM in either direction); a GM may also
  * set/clear `Locked`.
  */
-to: DoorState, } | { "type": "choose_portal", 
+to: DoorState, } | { "type": "place_effect", 
+/**
+ * Correlation token for `PlaceEffectError`.
+ */
+request_id: string, 
+/**
+ * The installed module's folder id that declares the placement.
+ */
+module: string, 
+/**
+ * The `PlacementDecl::id` within that module.
+ */
+placement: string, 
+/**
+ * The scene the region is created on.
+ */
+scene_id: string, 
+/**
+ * The area the sender chose, scene units.
+ */
+shape: RegionShape, 
+/**
+ * The caster token, required when the declaration's `who` is `caster_owner`.
+ */
+caster?: string, } | { "type": "choose_portal", 
 /**
  * Correlation token for `PortalChoiceError`.
  */

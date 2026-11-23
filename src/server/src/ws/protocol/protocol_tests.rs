@@ -341,6 +341,37 @@ fn move_request_round_trip() {
 }
 
 #[test]
+fn place_effect_frames_round_trip_and_the_caster_is_optional() {
+    let wire = r#"{"type":"place_effect","request_id":"00000000-0000-0000-0000-000000000001","module":"spells","placement":"ball","scene_id":"00000000-0000-0000-0000-000000000002","shape":{"kind":"circle","points":[0,0,3]}}"#;
+    let msg: ClientMsg = serde_json::from_str(wire).unwrap();
+    match &msg {
+        ClientMsg::PlaceEffect {
+            module,
+            placement,
+            caster,
+            ..
+        } => {
+            assert_eq!(module, "spells");
+            assert_eq!(placement, "ball");
+            assert!(caster.is_none());
+        }
+        other => panic!("expected PlaceEffect, got {other:?}"),
+    }
+    let back = serde_json::to_string(&msg).unwrap();
+    assert!(back.contains("\"type\":\"place_effect\""), "got {back}");
+    // A frame cannot carry an effect set: unknown behaviour fields are not part of the shape.
+    assert!(!back.contains("triggers") && !back.contains("behavior"));
+
+    let err = ServerMsg::PlaceEffectError {
+        request_id: Uuid::from_u128(1),
+        message: "placement rejected".into(),
+    };
+    assert!(serde_json::to_string(&err)
+        .unwrap()
+        .contains("\"type\":\"place_effect_error\""));
+}
+
+#[test]
 fn move_stream_round_trips_and_is_tagged() {
     let in_samples = vec![PosSample {
         t_ms: 0.0,
