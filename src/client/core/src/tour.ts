@@ -66,6 +66,9 @@ export interface TourStep {
 export interface TourMeta {
   /** Namespaced tour id, e.g. `"core-ui.gm-start"`; the key under which done-state is stored. */
   id: string;
+  /** i18n key for the tour's name, resolved by the engine where tours are listed (the replay
+   * list in settings). */
+  labelKey: string;
   /** Positive integer; bumping it re-offers the tour to users who finished an older version. */
   version: number;
   /** Who the tour is for. */
@@ -92,6 +95,7 @@ export const TourStepSchema = z
 export const TourMetaSchema = z
   .object({
     id: z.string().min(1),
+    labelKey: z.string().min(1),
     version: z.number().int().positive(),
     audience: z.enum(["gm", "player", "admin", "any"]),
     scope: z.enum(["global", "world"]),
@@ -110,6 +114,7 @@ export const TourMetaSchema = z
  *
  * const tour = validateTourMeta({
  *   id: "example.intro",
+ *   labelKey: "example.tour.name",
  *   version: 1,
  *   audience: "any",
  *   scope: "global",

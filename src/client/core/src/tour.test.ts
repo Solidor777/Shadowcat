@@ -7,6 +7,7 @@ import type { TourMeta } from "./tour";
 function tour(over: Partial<TourMeta> = {}): TourMeta {
   return {
     id: "example.intro",
+    labelKey: "example.tour.name",
     version: 1,
     audience: "any",
     scope: "global",
@@ -23,6 +24,7 @@ describe("validateTourMeta", () => {
 
   test.each([
     ["empty id", { id: "" }],
+    ["empty labelKey", { labelKey: "" }],
     ["zero version", { version: 0 }],
     ["fractional version", { version: 1.5 }],
     ["unknown audience", { audience: "everyone" }],
