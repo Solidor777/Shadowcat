@@ -269,10 +269,6 @@ so they wait for a ruling rather than shipping with the uncontested batch.
 Each item below is real, small and unbuilt. None was deferred on a lane's own authority: a lane
 reported it and stopped. Each stays here until the owner rules to build it now or to defer it.
 
-- TODO: An instanced token's embedded actor copy still shows `source.id` to a player who may not
-  read the actor: hiding it means redacting a structural field, which the structural-field
-  invariant test forbids. Needs a ruling on whether the copy's origin id may be redacted. (S-M,
-  design question)
 - TODO: The trash `empty all` confirmation shows no entry count. (S)
 - TODO: The streamed `MoveStream` vision path has no test for a wall carrying a `proximity` tier;
   it inherits the tier from the shared wall collectors but nothing pins that. (S)

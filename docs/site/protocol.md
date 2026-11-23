@@ -54,8 +54,11 @@ The server validates (permissions, OCC, schema), applies, and broadcasts a
 [`WireCommand`](/api/ts/types/_shadowcat_core.WireCommand.html) inside an
 `event` frame whose `intent_id` echoes yours — or answers `reject` with a
 reason. **Broadcasts are filtered per recipient before transmission**: fields a
-user may not see are stripped server-side and never cross the wire
-(ARCHITECTURE invariant — redact-then-send, never send-then-hide).
+user may not see are stripped server-side and never cross the wire. Stripping is
+the default for game state, not an absolute: where fidelity needs it, game-state
+data is sent and hidden by the client's rendering (fog, redaction). Personal user
+information (IP addresses, account details, credentials) is never sent to a
+recipient who may not see it, whatever the cost to the experience.
 
 ## Frame catalog — server → client
 
@@ -92,7 +95,15 @@ Every `ServerMsg` variant:
 | `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
 | `audio_error` | An `audio_transport` op was refused (not GM, unknown id, over cap, invalid gain) — connection-local, never broadcast |
 | `presence` | Out-of-band: a member's live-connection count crossed zero (`user`, `online`); transitions only, the starting snapshot is `welcome.online_users` |
-| `member_profile` | Out-of-band: a member changed their colour, pronouns or avatar (`user`, `colour`, `pronouns`, `has_avatar`), sent to every world they are seated in; avatar bytes come from the avatar route |
+| `member_profile` | Out-of-band: a member's roster row (`user`, `username`, `colour`, `pronouns`, `has_avatar`), sent when they change their colour, pronouns or avatar (to every world they are seated in) and when they are seated in a world (to that world's live connections). A client adds a member it has not listed and updates one it has; avatar bytes come from the avatar route |
+| `modules_changed` | Out-of-band, no payload: a GM changed the world's enabled-module set; every connection re-fetches the set and reconciles its loaded modules |
+| `explored_fog_reset` | Out-of-band: a GM reset explored fog (`scene`, optional `user`, optional `level`); the receiving connection re-evaluates its `"vision"` channel |
+| `scrolling_text` | Out-of-band: a region-triggered floating text over a token (`scene`, `token`, `text`, `gm_only`); a `gm_only` frame reaches GM connections only |
+| `door_toggle_error` | A `toggle_door` request was refused; carries `request_id` and a `message` that is one uniform wording for a non-GM caller |
+| `place_effect_error` | A `place_effect` request was refused; carries `request_id` and a `message` that is one uniform wording for a non-GM caller |
+| `portal_offer` | Out-of-band: a portal region fired for a token (`offer_id`, `scene`, `token`, optional `prompt`, `options`, `gm_only`, `owner`); delivered to GM connections and, unless `gm_only`, to the token's effective owner |
+| `portal_choice_error` | A `choose_portal` or `open_portal` request was refused; carries `request_id`, a `message` that is one uniform wording for a non-GM caller, and `reason` (`paused` when the session pause refused it) |
+| `present_note` | Out-of-band: the GM presented a note (`note_id`, `presented_by`); carries no note content, so a recipient who cannot read the note cannot open it |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
