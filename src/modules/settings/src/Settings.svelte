@@ -101,11 +101,11 @@
   }
 </script>
 
-<section class="panel">
+<section class="panel" data-tour="settings.panel">
   <h2>{t("settings.title")}</h2>
   <p>{t("settings.role", { role })}</p>
   <label>{t("settings.language")}
-    <select value={locale()} onchange={(e) => i18n.setLocale(e.currentTarget.value)}>
+    <select data-tour="settings.language" value={locale()} onchange={(e) => i18n.setLocale(e.currentTarget.value)}>
       {#each i18n.locales as loc (loc)}<option value={loc}>{loc}</option>{/each}
     </select>
   </label>

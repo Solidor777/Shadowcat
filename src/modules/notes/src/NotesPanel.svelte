@@ -62,12 +62,13 @@
   }
 </script>
 
-<section class="notes" data-testid="notes-panel">
+<section class="notes" data-testid="notes-panel" data-tour="notes.panel">
   <h3>{t("notes.tab")}</h3>
   <input
     class="search"
     type="search"
     data-testid="notes-search"
+    data-tour="notes.search"
     placeholder={t("notes.search")}
     aria-label={t("notes.search")}
     bind:value={query}

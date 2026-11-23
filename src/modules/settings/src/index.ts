@@ -1,4 +1,5 @@
-import { PANEL_CONTRACT, SETTINGS_SECTION_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, SETTINGS_SECTION_CONTRACT, TOUR_CONTRACT, type Module } from "@shadowcat/core";
+import { settingsTour } from "./tour";
 import Settings from "./Settings.svelte";
 import KeybindingsSection from "./KeybindingsSection.svelte";
 import BackupManager from "./BackupManager.svelte";
@@ -30,6 +31,7 @@ export const settings: Module = {
       component: Settings,
       panel: { icon: "🔧", labelKey: "settings.tab" },
     });
+    ctx.contributions.contribute({ id: "settings:tour", contract: TOUR_CONTRACT, component: null, tour: settingsTour });
     ctx.contributions.contribute({
       id: "settings:keybindings",
       contract: SETTINGS_SECTION_CONTRACT,

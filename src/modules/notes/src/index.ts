@@ -1,5 +1,6 @@
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import NotesPanel from "./NotesPanel.svelte";
+import { notesTour } from "./tour";
 
 /** Note tree + search panel. Requires the panel-manager's contract; contributes NotesPanel
  * launcher-closed by default. Not `gmOnly` — players read shared notes and author private
@@ -20,5 +21,6 @@ export const notes: Module = {
       component: NotesPanel,
       panel: { icon: "📓", labelKey: "notes.tab" },
     });
+    ctx.contributions.contribute({ id: "notes:tour", contract: TOUR_CONTRACT, component: null, tour: notesTour });
   },
 };
