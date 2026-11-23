@@ -26,6 +26,9 @@ use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 use crate::ws::PingRateLimiter;
 
+mod portal;
+pub(crate) use portal::{portal_choice_wire_message, PortalChoiceError};
+
 /// The room-facing result of a server-authoritative token move. Production code reads only
 /// `frame` (the wire `MoveStream`, already registered in the room's in-flight registry); the
 /// other fields restate a subset of `frame`'s content for direct test assertion against the
@@ -782,6 +785,11 @@ pub struct Room {
     /// locked across an `.await`... the firing pass holds `publish_guard`,
     /// which serializes every updater anyway.
     turn_round_dedup: Mutex<HashMap<Uuid, TurnRoundDedup>>,
+    /// Pending portal offers, one per token (`ws::room::portal`): token id → its live offer. Held
+    /// in memory only, because an offer is a moment: a restart drops it and `OpenPortal` recovers
+    /// it. A `std::sync::Mutex` never held across an `.await`; every writer also holds
+    /// `publish_guard`, which makes an answer's validate-then-consume atomic.
+    portal_offers: std::sync::Mutex<HashMap<Uuid, portal::PortalOffer>>,
 }
 
 /// One firing report: the token that entered, the scene it happened in, the cells it
@@ -890,6 +898,14 @@ struct TeleportSubject<'a> {
     effective_owner: Option<Uuid>,
 }
 
+/// The one hop a fire applies: a fixed destination, or a choice that registers an offer.
+enum HopEffect<'a> {
+    /// A `TriggerEffect::Teleport` target, applied at once.
+    Fixed(&'a eng::PortalTarget),
+    /// A `TriggerEffect::PortalChoice`, offered to the token's owner and the GMs.
+    Choice(portal::PortalSource<'a>),
+}
+
 /// The firing-plan input bundle for `Room::apply_region_trigger_effects` —
 /// what fires, the rows the secrecy forcing searches, the combat a
 /// `ResourceDelta` resolves against, and the one-hop teleport guard. Bundled
@@ -961,6 +977,7 @@ impl Room {
             resync_floor_enforced_flag: resync_floor_enforced,
             vfx_rate,
             turn_round_dedup: Mutex::new(HashMap::new()),
+            portal_offers: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1173,6 +1190,7 @@ impl Room {
                 CellSet,
                 CellSet,
                 crate::scene::GridKind,
+                uuid::Uuid,
             )> = Vec::new();
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
@@ -1332,6 +1350,10 @@ impl Room {
                                     [target].into_iter().collect(),
                                     mask,
                                     settings.grid_kind,
+                                    crate::scene::explored::explored_fog_key(
+                                        settings.fog_pooling,
+                                        ctx.user_id,
+                                    ),
                                 ));
                             }
                         }
@@ -1346,11 +1368,12 @@ impl Room {
                 (uuid::Uuid, String),
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, level, move_cells, visible, grid_kind) in revealed_pending {
+            for (scene_id, level, move_cells, visible, grid_kind, explored_key) in revealed_pending
+            {
                 let explored = match explored_cache.entry((scene_id, level.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let set = match repo.get_explored(scene_id, &level, ctx.user_id).await {
+                        let set = match repo.get_explored(scene_id, &level, explored_key).await {
                             Ok(Some(blob)) => {
                                 crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
@@ -1833,6 +1856,10 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The `explored_fog` row the Revealed union reads: the mover's own row under
+        // `FogPooling::Individual`, the shared sentinel row under `Shared` — the same key
+        // `ws::conn::enrich_vision_explored` accumulates into.
+        let explored_key: Uuid;
         // The mover's resolved level id (`""` = ground/a level-less scene), captured under the
         // first guard: explored memory is keyed per level, so the Revealed union reads the
         // mover's OWN floor's memory — a floor the token is not on grants nothing.
@@ -1898,6 +1925,8 @@ impl Room {
             // below, so the movement gate's mask is level-scoped to this SAME mover floor.
             let mover_elevation = scene.token_mover_elevation(token);
             grid_kind = settings.grid_kind;
+            explored_key =
+                crate::scene::explored::explored_fog_key(settings.fog_pooling, ctx.user_id);
             mover_level = crate::scene::elevation::level_of(
                 &scene.scene_levels(token_scene),
                 mover_elevation,
@@ -1994,7 +2023,7 @@ impl Room {
         let visible = if is_revealed {
             let mut union = visible_cells;
             let explored = match repo
-                .get_explored(token_scene, &mover_level, ctx.user_id)
+                .get_explored(token_scene, &mover_level, explored_key)
                 .await
             {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
@@ -2617,6 +2646,11 @@ impl Room {
     ///   teleported OFF its combat's scene keeps its combatant record and turn but moves
     ///   unbudgeted there (a portal is a legitimate escape), made visible by a GM-only notice
     ///   when an active combat runs on the source scene.
+    /// - `PortalChoice` (on `Enter`): shares the one-hop slot with `Teleport` (the first of the
+    ///   two in the fired list wins). With `allow_teleport` it moves nothing: it registers a
+    ///   per-token offer (`offer_portal`) and broadcasts `ServerMsg::PortalOffer` to the token's
+    ///   owner and the GMs. The owner's answer (`handle_choose_portal`) runs the chosen target
+    ///   back through this funnel as a synthetic `Teleport`, so it shares `apply_teleport_to`.
     ///
     /// `allow_teleport` is a FUNCTION parameter rather than a `TriggerReport` field by
     /// deliberate choice: the report describes the entry EVENT (scene, token, cells, arrest),
@@ -2999,27 +3033,49 @@ impl Room {
         // principle carry several teleports; only the FIRST wins — a second is silently ignored
         // rather than double-moving the token, mirroring "one hop per move"). A `PortalChoice`
         // is a kind of teleport: it shares the one-hop guard, so a fire that may not teleport
-        // refuses it with the same chained-portal failure. ---
+        // refuses it with the same chained-portal failure. A fixed teleport applies now; a
+        // choice only registers an offer (`Room::offer_portal`), and its hop applies later,
+        // through this same funnel, when the offer is answered. ---
         let mut teleported: Option<Uuid> = None;
-        let teleport_target = fired.iter().find_map(|(_, t)| match &t.effect {
-            eng::TriggerEffect::Teleport { target } => Some(target),
+        let hop = fired.iter().find_map(|(region_id, t)| match &t.effect {
+            eng::TriggerEffect::Teleport { target } => Some(HopEffect::Fixed(target)),
+            eng::TriggerEffect::PortalChoice { prompt, options } if portal::offers_portal(t) => {
+                // Secrecy: an unresolvable row fails closed to GM-only, as for a notice.
+                let visible_to_all = secrecy_rows
+                    .iter()
+                    .find(|r| &r.region_id == region_id)
+                    .map(|r| r.visible_to_all)
+                    .unwrap_or(false);
+                Some(HopEffect::Choice(portal::PortalSource {
+                    region_id: *region_id,
+                    visible_to_all,
+                    prompt: prompt.as_ref(),
+                    options,
+                }))
+            }
             _ => None,
         });
         if allow_teleport {
-            if let Some(target) = teleport_target {
-                let subject = TeleportSubject {
-                    token,
-                    scene,
-                    token_eng: token_eng.as_ref(),
-                    effective_owner,
-                };
-                match self
-                    .apply_teleport_to(repo, ctx, &subject, target, ts, &mut ops)
-                    .await
-                {
-                    Ok(dest_scene) => teleported = Some(dest_scene),
-                    Err(failure) => failures.push(failure),
+            match hop {
+                Some(HopEffect::Fixed(target)) => {
+                    let subject = TeleportSubject {
+                        token,
+                        scene,
+                        token_eng: token_eng.as_ref(),
+                        effective_owner,
+                    };
+                    match self
+                        .apply_teleport_to(repo, ctx, &subject, target, ts, &mut ops)
+                        .await
+                    {
+                        Ok(dest_scene) => teleported = Some(dest_scene),
+                        Err(failure) => failures.push(failure),
+                    }
                 }
+                Some(HopEffect::Choice(source)) => {
+                    self.offer_portal(repo, &token_doc, source, ts).await;
+                }
+                None => {}
             }
         } else if fired.iter().any(|(_, t)| {
             matches!(

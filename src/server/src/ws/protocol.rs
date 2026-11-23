@@ -556,6 +556,65 @@ pub enum ClientMsg {
         /// set/clear `Locked`.
         to: DoorState,
     },
+    /// The answer to a `ServerMsg::PortalOffer`: pick destination `choice` (an index into the
+    /// offer's options) or decline with `None`. Handled by `ws::room::Room::handle_choose_portal`,
+    /// which accepts only the token's effective owner or a GM, and only while the offer is
+    /// unexpired and the token still stands in the offering region. An offer answers once,
+    /// whether accepted or declined. A refusal replies `PortalChoiceError`, correlated by
+    /// `request_id`; success is confirmed by the broadcast `Event` of the teleport's commit
+    /// (a decline commits nothing and replies nothing). A non-GM's accept is refused while the
+    /// session is paused (`ws::session_pause::blocks_msg`).
+    ChoosePortal {
+        /// Correlation token for `PortalChoiceError`.
+        request_id: Uuid,
+        /// The offer being answered (`ServerMsg::PortalOffer::offer_id`).
+        offer_id: Uuid,
+        /// The chosen option's `PortalOfferOption::index`, or `None` to decline.
+        choice: Option<u32>,
+    },
+    /// Re-issue the portal offer for a token standing in a `PortalChoice` region, so a player
+    /// who declined or lost the offer need not step out and back in. Handled by
+    /// `ws::room::Room::handle_open_portal` under the same owner-or-GM rule as `ChoosePortal`.
+    /// The offer arrives as a `ServerMsg::PortalOffer`; a refusal replies `PortalChoiceError`.
+    OpenPortal {
+        /// Correlation token for `PortalChoiceError`.
+        request_id: Uuid,
+        /// The token that stands in the portal region.
+        token: Uuid,
+    },
+}
+
+/// One option of a `ServerMsg::PortalOffer`: what the chooser shows for one destination. The
+/// destination's coordinates are never sent, only this index, which `ClientMsg::ChoosePortal`
+/// answers with.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PortalOfferOption;
+///
+/// let option = PortalOfferOption {
+///     index: 0,
+///     label: "The Cellar".to_string(),
+///     destination_name: None,
+///     available: true,
+/// };
+/// let json = serde_json::to_value(&option).unwrap();
+/// assert_eq!(json["label"], "The Cellar");
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct PortalOfferOption {
+    /// Position in the authored option list; the value `ChoosePortal::choice` carries.
+    pub index: u32,
+    /// The GM-authored label.
+    pub label: String,
+    /// The destination scene's real name; present only when the option's `reveal_scene` is set
+    /// and the scene resolved at offer time.
+    pub destination_name: Option<String>,
+    /// False when the destination scene no longer exists in this world; the chooser shows the
+    /// option disabled.
+    pub available: bool,
 }
 
 /// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves
@@ -784,8 +843,8 @@ pub enum RejectReason {
     /// Anything else: structurally invalid payload, an absent target, or an
     /// internal failure — not retryable without changing the request.
     Invalid,
-    /// The session is paused and the refused request is a token move or a combat control, which
-    /// a non-GM member may not make until the GM resumes.
+    /// The session is paused and the refused request is a token move, a portal choice that moves
+    /// a token, or a combat control, which a non-GM member may not make until the GM resumes.
     Paused,
 }
 
@@ -1559,6 +1618,45 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Player-presentable failure text (role-conditioned — see the variant doc).
         message: String,
+    },
+    /// A portal region fired a `TriggerEffect::PortalChoice` for `token`: the destinations the
+    /// answerer may pick from. Out-of-band (no seq, never buffered or resynced) and ADDRESSED:
+    /// `egress_loop` delivers it only to a GM connection and, when `gm_only` is false, to the
+    /// connection of `owner` (`ws::conn::portal_offer_admitted`). `gm_only` is set when the
+    /// firing region is not visible to every world member, so a secret portal never reveals
+    /// itself to a player. A new offer for a token replaces its previous one.
+    PortalOffer {
+        /// Identifies the offer in `ClientMsg::ChoosePortal`.
+        offer_id: Uuid,
+        /// The scene the token stands on.
+        scene: Uuid,
+        /// The token that may take a portal.
+        token: Uuid,
+        /// The GM-authored heading, if any.
+        prompt: Option<String>,
+        /// The destinations in display order.
+        options: Vec<PortalOfferOption>,
+        /// True when only GM connections receive the frame.
+        gm_only: bool,
+        /// The token's effective owner, the one non-GM recipient of a public offer; `None` for
+        /// a token with no owner.
+        owner: Option<Uuid>,
+    },
+    /// A `ChoosePortal` or `OpenPortal` was refused. Addressed to the originating connection
+    /// only; never broadcast. For a non-GM caller `message` is ONE uniform wording across every
+    /// refusal reason, so a distinguishable wording cannot disclose whether an offer, a token
+    /// or a portal exists (`DoorToggleError`'s own discipline); a GM caller may receive a
+    /// variant-specific diagnostic. `reason` is `Some(RejectReason::Paused)` when the session
+    /// pause refused the answer.
+    PortalChoiceError {
+        /// The refused request's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned — see the variant doc).
+        message: String,
+        /// `Some(RejectReason::Paused)` when the session pause refused the answer; `None` for
+        /// every other refusal, whose wording stays uniform.
+        #[serde(default)]
+        reason: Option<RejectReason>,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory, `mover_vision` and `mover_light`; observers receive only the position samples

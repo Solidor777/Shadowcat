@@ -4,7 +4,6 @@
 //! exercised end to end in the `ws_convergence` integration test.
 
 use super::*;
-use crate::ws::protocol::ClientMsg;
 use crate::ws::ruler::{
     canonical, deserialize_points, origin_admissible, points_admissible, MAX_RULER_ORIGIN_BYTES,
     MAX_RULER_POINTS, RULER_RATE_PER_MIN,
@@ -109,7 +108,7 @@ fn canonical_stops_carry_no_points_and_empty_updates_are_stops() {
     assert_eq!(canonical(Vec::new(), false), (Vec::new(), false));
 }
 
-/// Through the production parse (`serde_json::from_str::<ClientMsg>`): a frame with exactly
+/// Through the production parse (`client_frame::parse_client_msg`): a frame with exactly
 /// `MAX_RULER_POINTS` vertices deserializes, and one with a vertex more fails to deserialize.
 #[test]
 fn over_cap_points_make_a_client_msg_fail_to_deserialize() {
@@ -121,8 +120,8 @@ fn over_cap_points_make_a_client_msg_fail_to_deserialize() {
         })
         .to_string()
     };
-    assert!(serde_json::from_str::<ClientMsg>(&frame(MAX_RULER_POINTS)).is_ok());
-    assert!(serde_json::from_str::<ClientMsg>(&frame(MAX_RULER_POINTS + 1)).is_err());
+    assert!(crate::ws::conn::client_frame::parse_client_msg(&frame(MAX_RULER_POINTS)).is_ok());
+    assert!(crate::ws::conn::client_frame::parse_client_msg(&frame(MAX_RULER_POINTS + 1)).is_err());
 }
 
 /// The `deserialize_points` visitor on its own accepts exactly `MAX_RULER_POINTS` vertices and

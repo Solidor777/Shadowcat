@@ -8,6 +8,7 @@ import type { LightSample } from "./LightSample";
 import type { MergeErrorKind } from "./MergeErrorKind";
 import type { MergeOutcome } from "./MergeOutcome";
 import type { PathErrorReason } from "./PathErrorReason";
+import type { PortalOfferOption } from "./PortalOfferOption";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
@@ -392,7 +393,49 @@ request_id: string,
 /**
  * Player-presentable failure text (role-conditioned — see the variant doc).
  */
-message: string, } | { "type": "move_stream", 
+message: string, } | { "type": "portal_offer", 
+/**
+ * Identifies the offer in `ClientMsg::ChoosePortal`.
+ */
+offer_id: string, 
+/**
+ * The scene the token stands on.
+ */
+scene: string, 
+/**
+ * The token that may take a portal.
+ */
+token: string, 
+/**
+ * The GM-authored heading, if any.
+ */
+prompt: string | null, 
+/**
+ * The destinations in display order.
+ */
+options: Array<PortalOfferOption>, 
+/**
+ * True when only GM connections receive the frame.
+ */
+gm_only: boolean, 
+/**
+ * The token's effective owner, the one non-GM recipient of a public offer; `None` for
+ * a token with no owner.
+ */
+owner: string | null, } | { "type": "portal_choice_error", 
+/**
+ * The refused request's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned — see the variant doc).
+ */
+message: string, 
+/**
+ * `Some(RejectReason::Paused)` when the session pause refused the answer; `None` for
+ * every other refusal, whose wording stays uniform.
+ */
+reason: RejectReason | null, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */

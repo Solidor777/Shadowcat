@@ -3567,10 +3567,12 @@ mod door_toggle;
 mod movement_budget;
 
 mod mover_light;
+mod portal_choice;
 mod presence;
 mod region_triggers;
 mod rotation_gate;
 mod session_pause;
+mod shared_fog;
 
 // ---------- Room::disable_faulting_validator_locked ----------
 
