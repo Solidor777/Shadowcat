@@ -21,6 +21,8 @@ fn fresh_rate() -> crate::ws::PingRateLimiter {
 struct PlaceFixture {
     /// The repository.
     repo: std::sync::Arc<SqliteRepository>,
+    /// The registry that holds the world's room.
+    rooms: Arc<crate::ws::room::RoomRegistry>,
     /// The world's room.
     room: Arc<crate::ws::room::Room>,
     /// The GM's context.
@@ -59,6 +61,8 @@ async fn place_fixture(enable: bool) -> PlaceFixture {
             { "id": "gm_zone", "who": "gm", "shapes": ["circle"], "maxExtent": 10.0, "triggers": trigger },
             { "id": "open_zone", "who": "player", "shapes": ["circle", "rect"], "maxExtent": 10.0, "triggers": trigger, "label": "Open zone" },
             { "id": "cast_zone", "who": "caster_owner", "shapes": ["circle"], "maxExtent": 10.0, "triggers": trigger },
+            { "id": "ranged_zone", "who": "player", "shapes": ["circle"], "maxExtent": 10.0, "maxRangeCells": 3.0, "triggers": trigger },
+            { "id": "timed_zone", "who": "player", "shapes": ["circle"], "maxExtent": 10.0, "durationSecs": 60, "triggers": trigger },
         ]
     });
     std::fs::write(module.join("module.json"), manifest.to_string()).unwrap();
@@ -100,7 +104,8 @@ async fn place_fixture(enable: bool) -> PlaceFixture {
         .unwrap();
     }
 
-    let room = RoomRegistry::new()
+    let rooms = Arc::new(RoomRegistry::new());
+    let room = rooms
         .get_or_create(repo.as_ref(), world.id)
         .await
         .unwrap()
@@ -136,6 +141,7 @@ async fn place_fixture(enable: bool) -> PlaceFixture {
 
     PlaceFixture {
         repo,
+        rooms,
         room,
         gm,
         owner,
@@ -157,6 +163,18 @@ impl PlaceFixture {
         shape: crate::data::engine::RegionShape,
         caster: Option<Uuid>,
     ) -> Option<ServerMsg> {
+        self.place_at(ctx, placement, shape, caster, 0).await
+    }
+
+    /// `place`, committed at server time `ts`.
+    async fn place_at(
+        &self,
+        ctx: &PermissionContext,
+        placement: &str,
+        shape: crate::data::engine::RegionShape,
+        caster: Option<Uuid>,
+        ts: i64,
+    ) -> Option<ServerMsg> {
         handle_place_effect(
             &self.room,
             self.repo.as_ref(),
@@ -171,7 +189,7 @@ impl PlaceFixture {
                 scene_id: self.scene_id,
                 shape,
                 caster,
-                ts: 0,
+                ts,
             },
         )
         .await
@@ -194,6 +212,14 @@ fn circle(r: f64) -> crate::data::engine::RegionShape {
     crate::data::engine::RegionShape {
         kind: "circle".into(),
         points: vec![0.0, 0.0, r],
+    }
+}
+
+/// A circle of radius `r` centred at `(x, 50)`, the same row as the fixture token at `(50, 50)`.
+fn circle_at(x: f64, r: f64) -> crate::data::engine::RegionShape {
+    crate::data::engine::RegionShape {
+        kind: "circle".into(),
+        points: vec![x, 50.0, r],
     }
 }
 
@@ -368,4 +394,200 @@ async fn the_shared_write_budget_limits_placement_requests() {
         }
     }
     assert!(refused >= 1, "the budget must eventually refuse");
+}
+
+#[tokio::test]
+async fn a_ranged_placement_admits_an_area_within_the_caster_range() {
+    let f = place_fixture(true).await;
+    // The caster stands at x=50; 3 cells of 100 units reach x=350 exactly.
+    let res = f
+        .place(
+            &f.owner,
+            "ranged_zone",
+            circle_at(350.0, 3.0),
+            Some(f.token_id),
+        )
+        .await;
+    assert!(
+        res.is_none(),
+        "an area centred at the range limit is admitted; got {res:?}"
+    );
+    assert_eq!(f.regions().await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_ranged_placement_refuses_a_player_beyond_range_with_the_uniform_wording() {
+    let f = place_fixture(true).await;
+    let res = f
+        .place(
+            &f.owner,
+            "ranged_zone",
+            circle_at(351.0, 3.0),
+            Some(f.token_id),
+        )
+        .await;
+    assert_eq!(refusal(res), "placement rejected");
+    assert!(f.regions().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_ranged_placement_needs_an_owned_caster_even_when_who_is_player() {
+    let f = place_fixture(true).await;
+    // Omitting the caster must not sidestep the limit.
+    let none = f
+        .place(&f.owner, "ranged_zone", circle_at(60.0, 1.0), None)
+        .await;
+    assert_eq!(refusal(none), "placement rejected");
+    // A token the sender does not own is no measuring point.
+    let foreign = f
+        .place(
+            &f.other,
+            "ranged_zone",
+            circle_at(60.0, 1.0),
+            Some(f.token_id),
+        )
+        .await;
+    assert_eq!(refusal(foreign), "placement rejected");
+    assert!(f.regions().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_gm_beyond_range_gets_the_specific_reason_and_a_gm_without_a_caster_is_unlimited() {
+    let f = place_fixture(true).await;
+    let far = f
+        .place(
+            &f.gm,
+            "ranged_zone",
+            circle_at(900.0, 3.0),
+            Some(f.token_id),
+        )
+        .await;
+    assert_eq!(refusal(far), "the area is out of range of the caster");
+    assert!(f.regions().await.is_empty());
+    let no_caster = f
+        .place(&f.gm, "ranged_zone", circle_at(900.0, 3.0), None)
+        .await;
+    assert!(
+        no_caster.is_none(),
+        "a GM may place without naming a caster; got {no_caster:?}"
+    );
+    assert_eq!(f.regions().await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_placement_with_no_range_declared_is_not_range_limited() {
+    let f = place_fixture(true).await;
+    let res = f
+        .place(
+            &f.owner,
+            "cast_zone",
+            circle_at(5000.0, 3.0),
+            Some(f.token_id),
+        )
+        .await;
+    assert!(res.is_none(), "no maxRangeCells, no limit; got {res:?}");
+}
+
+#[tokio::test]
+async fn a_timed_placement_stamps_its_expiry_and_the_sweep_removes_it_at_that_time() {
+    let f = place_fixture(true).await;
+    assert!(f
+        .place_at(&f.other, "timed_zone", circle(3.0), None, 1_000)
+        .await
+        .is_none());
+    assert!(f
+        .place_at(&f.other, "open_zone", circle(3.0), None, 1_000)
+        .await
+        .is_none());
+    let regions = f.regions().await;
+    let timed = regions
+        .iter()
+        .find(|r| r.system["placement"]["id"] == "timed_zone")
+        .unwrap();
+    assert_eq!(timed.system["placement"]["expires_at"], 61_000);
+    let permanent = regions
+        .iter()
+        .find(|r| r.system["placement"]["id"] == "open_zone")
+        .unwrap();
+    assert!(
+        permanent.system["placement"].get("expires_at").is_none(),
+        "no duration declared, no stamp"
+    );
+
+    let early = f
+        .room
+        .expire_due_placements(f.repo.as_ref(), 60_999)
+        .await
+        .unwrap();
+    assert_eq!(
+        early, 0,
+        "one millisecond before the stamp nothing is removed"
+    );
+    assert_eq!(f.regions().await.len(), 2);
+
+    let on_time = f
+        .room
+        .expire_due_placements(f.repo.as_ref(), 61_000)
+        .await
+        .unwrap();
+    assert_eq!(on_time, 1);
+    let left = f.regions().await;
+    assert_eq!(left.len(), 1);
+    assert_eq!(
+        left[0].system["placement"]["id"], "open_zone",
+        "only the timed region goes"
+    );
+    let again = f
+        .room
+        .expire_due_placements(f.repo.as_ref(), 10_000_000)
+        .await
+        .unwrap();
+    assert_eq!(again, 0, "a region without a stamp never expires");
+}
+
+#[tokio::test]
+async fn an_expiry_that_passed_while_the_room_was_gone_is_honoured_on_a_rehydrated_room() {
+    let f = place_fixture(true).await;
+    assert!(f
+        .place_at(&f.other, "timed_zone", circle(3.0), None, 1_000)
+        .await
+        .is_none());
+    // A fresh registry builds its room from the persisted documents alone, as after a restart.
+    let reborn = crate::ws::room::RoomRegistry::new()
+        .get_or_create(f.repo.as_ref(), f.world_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let removed = reborn
+        .expire_due_placements(f.repo.as_ref(), 61_000)
+        .await
+        .unwrap();
+    assert_eq!(removed, 1, "the stamp lives in the region document");
+    assert!(f.regions().await.is_empty());
+}
+
+#[tokio::test]
+async fn the_background_sweep_removes_an_expired_region_without_any_request() {
+    let f = place_fixture(true).await;
+    let now = crate::ws::time::now_millis();
+    // Placed two minutes ago with a 60-second duration: already due.
+    assert!(f
+        .place_at(&f.other, "timed_zone", circle(3.0), None, now - 120_000)
+        .await
+        .is_none());
+    let (mut events, _) = f.room.subscribe();
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    crate::ws::room::spawn_placement_expiry_sweep(
+        f.rooms.clone(),
+        f.repo.clone(),
+        shutdown,
+        std::time::Duration::from_millis(20),
+    );
+    let event = tokio::time::timeout(std::time::Duration::from_secs(30), events.recv())
+        .await
+        .expect("the sweep commits a delete")
+        .unwrap();
+    assert!(matches!(event, crate::ws::room::RoomEvent::Event(_)));
+    assert!(f.regions().await.is_empty());
+    stop.send(true).unwrap();
 }
