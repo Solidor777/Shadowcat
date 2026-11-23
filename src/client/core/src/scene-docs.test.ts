@@ -360,7 +360,7 @@ test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an
 });
 
 test("buildConditionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
-  const conditions: Record<string, Condition> = { dead: { name: "Dead", icon: "💀" } };
+  const conditions: Record<string, Condition> = { dead: { name: "Dead", icon: "💀", overlay: false } };
   const d = buildConditionRegistryDoc("w1", conditions, "creg1");
   expect(d.doc_type).toBe("condition-registry");
   expect(d.parent_id).toBeNull();

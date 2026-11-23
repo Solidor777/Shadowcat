@@ -282,6 +282,10 @@ export interface TokenNodeSpec {
    * `resolveConditions`, then an elevation chip (`↑n`/`↓n`) when the token is off the ground
    * plane (`TokenView.toSpec`). */
   badges: string[];
+  /** The glyph of the token's overlay condition — the first condition flagged `overlay` in
+   * effective order — drawn large and centered over the art, below the badge chips, or absent
+   * for none. The condition's badge chip is still present in `badges`. */
+  overlayIcon?: string;
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
   /** `true` = the token is perceived ONLY through a creature sense (tremorsense & kin), so its
@@ -304,8 +308,9 @@ export interface TokenNodeSpec {
   };
   /** Built-in art effects (see `TokenFx`), composed by the backend onto the token's visual
    * container — the fx rotate with the art; the badge chips stay clean. Fully pre-resolved by
-   * `TokenView.toSpec` (condition-registry fx folded in condition array order, then the
-   * selection highlight); absent or empty for no effects. */
+   * `TokenView.toSpec` (condition-registry fx folded in condition array order, the
+   * creature-sense marker tint when `perceived`, then the selection highlight); absent or empty
+   * for no effects. */
   fx?: TokenFx[];
   /** The token's facing-vision wedge, drawn ON the rotating `visualContainer` (so it turns with
    * the token), or absent for none. Present only for a viewer entitled to see the token's facing

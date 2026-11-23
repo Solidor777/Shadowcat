@@ -31,6 +31,12 @@ const SELECTION_HIGHLIGHT_COLOR = 0xffd400;
 /** See `SELECTION_HIGHLIGHT_COLOR`. */
 const SELECTION_HIGHLIGHT_STRENGTH = 0.4;
 
+/** The marker tint of a token revealed only through a creature sense: a cool cyan, distinct from
+ * the selection highlight's gold, so a player reads the token as sensed rather than seen. */
+const PERCEIVED_FX_COLOR = 0x4fc3ff;
+/** See `PERCEIVED_FX_COLOR`; partial so the art stays readable under the tint. */
+const PERCEIVED_FX_STRENGTH = 0.35;
+
 /** The GM's ghost-other-levels rendering: desaturated + faded, so a token on another floor
  * reads as context rather than as an actionable piece on the currently-viewed one. */
 const GHOST_FX: TokenFx[] = [{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }];
@@ -767,8 +773,13 @@ export class TokenView {
     const fx: TokenFx[] = this.tokenFx()
       ? conditions.flatMap((c) => (c.fx ? conditionFxEntries(c.fx) : []))
       : [];
-    // The selection signifier appends after every condition fx, so the highlight reads on top of
-    // condition tints (a selected poisoned token reads as selected first).
+    // A creature-sense-revealed token carries the reserved marker tint. It sits outside the
+    // `tokenFx` gate like the selection highlight: it is the only cue that a token drawn through
+    // fog is sensed, so the performance budget must not shed it.
+    const perceived = this.perceived().has(doc.id);
+    if (perceived) fx.push({ kind: "tint", color: PERCEIVED_FX_COLOR, strength: PERCEIVED_FX_STRENGTH });
+    // The selection signifier appends after every non-selection fx, so the highlight reads on top
+    // of condition and sense tints (a selected poisoned token reads as selected first).
     if (this.selectedTokens().has(doc.id)) fx.push({ kind: "highlight", color: SELECTION_HIGHLIGHT_COLOR, strength: SELECTION_HIGHLIGHT_STRENGTH });
     // Ghost-other-levels: only meaningful when a level is actually being viewed AND this
     // token resolves to a DIFFERENT one — a level-less scene (`resolvedLevelOf` returns
@@ -802,8 +813,11 @@ export class TokenView {
       borderColor,
       badges,
       shape: box.shape,
-      perceived: this.perceived().has(doc.id),
+      perceived,
     };
+    // The first overlay condition in effective order also draws large; its badge stays.
+    const overlayCondition = conditions.find((c) => c.overlay);
+    if (overlayCondition) spec.overlayIcon = overlayCondition.icon;
     if (aura) spec.aura = aura;
     if (fx.length > 0) spec.fx = fx;
     const facing = this.facingWedge(doc);

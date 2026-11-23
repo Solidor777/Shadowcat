@@ -313,6 +313,10 @@ interface ConditionDisplayEntry {
    * unfolded), or absent for none — folding into the token's render fx is `TokenView.toSpec`'s
    * job, so display-only consumers can ignore this. */
   fx: Condition["fx"];
+  /** `true` when the registry marks the condition as an overlay (a stored entry with no
+   * `overlay` key reads as `false`); `TokenView.toSpec` renders the first overlay condition in
+   * effective order as one large centered glyph, in addition to its badge. */
+  overlay: boolean;
 }
 
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
@@ -320,7 +324,7 @@ interface ConditionDisplayEntry {
  * never a render error (fail-closed). The single read-through every condition consumer uses.
  * @param token The token to resolve effective conditions for.
  * @param store The document store to resolve the actor + condition registry against.
- * @returns Display entries `{id, name, icon, fx}`, one per effective condition id that IS present in
+ * @returns Display entries `{id, name, icon, fx, overlay}`, one per effective condition id that IS present in
  * the world's condition registry (an unregistered id is dropped, not the whole list); `[]` for a
  * raw/dangling token, or when none of the token's condition ids are registered.
  * @example
@@ -329,7 +333,7 @@ interface ConditionDisplayEntry {
  *
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null }, ...]
+ * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null, overlay: false }, ...]
  * ```
  */
 export function resolveConditions(token: WireDocument, store: ReadableDocuments): ConditionDisplayEntry[] {
@@ -340,7 +344,7 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
   const out: ConditionDisplayEntry[] = [];
   for (const id of eff.conditions) {
     const c = map[id];
-    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx });
+    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx, overlay: c.overlay === true });
   }
   return out;
 }

@@ -468,6 +468,7 @@ export const en: Messages = {
   "conditions.desaturate": "Desaturate",
   "conditions.highlight": "Highlight",
   "conditions.clearHighlight": "Clear highlight",
+  "conditions.overlay": "Large overlay",
   "conditions.add": "Add condition",
   "conditions.remove": "Remove",
   "conditions.selectHint": "Select a token to toggle conditions.",

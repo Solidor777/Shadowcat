@@ -25,7 +25,7 @@ describe("ConditionsPanel", () => {
 
   it("does not dispatch a create when a registry already exists either", async () => {
     const dispatchIntent = vi.fn();
-    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"));
+    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1"));
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
     await Promise.resolve();
     expect(dispatchIntent.mock.calls.some((c) => (c[0] as WireOperation[])[0]?.op === "create")).toBe(false);
@@ -35,7 +35,7 @@ describe("ConditionsPanel", () => {
     const dispatchIntent = vi.fn();
     const actor = actorDoc("act1", []);
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
-    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"), actor, token);
+    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1"), actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
     render(ConditionsPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, dispatchIntent, tokenSelection, canEdit: () => false }) });
@@ -47,7 +47,7 @@ describe("ConditionsPanel", () => {
     const dispatchIntent = vi.fn();
     const actor = actorDoc("act1", []);
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
-    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"), actor, token);
+    const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1"), actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
     render(ConditionsPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, dispatchIntent, tokenSelection, canEdit: () => true }) });
@@ -64,7 +64,7 @@ describe("ConditionsPanel", () => {
     const editableToken = buildTokenFromActor("w1", "scene1", editableActor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-editable");
     const nonEditableToken = buildTokenFromActor("w1", "scene1", nonEditableActor, "link", { x: 100, y: 0 }, { w: 100, h: 100 }, "tok-non-editable");
     const store = storeWith(
-      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"),
+      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1"),
       editableActor,
       nonEditableActor,
       editableToken,
@@ -102,7 +102,7 @@ describe("ConditionsPanel", () => {
     const nonEditableActor = actorDoc("act-non-editable", ["dead"]);
     const nonEditableToken = buildTokenFromActor("w1", "scene1", nonEditableActor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-non-editable");
     const store = storeWith(
-      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"),
+      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1"),
       nonEditableActor,
       nonEditableToken,
     );
@@ -130,7 +130,7 @@ describe("ConditionsPanel", () => {
 
   it("reads the raw stored value as `old` on a SECOND edit to the same field (OCC regression)", async () => {
     const dispatchIntent = vi.fn();
-    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1");
     const store = storeWith(registry);
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
@@ -159,7 +159,7 @@ describe("ConditionsPanel", () => {
 
   it("editing a condition's fx dispatches a whole-fx update, old read raw (null while unset)", async () => {
     const dispatchIntent = vi.fn();
-    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢" } }, "creg1"));
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", overlay: false } }, "creg1"));
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
     await fireEvent.change(screen.getByLabelText("conditions.tint"), { target: { value: "#66ff66" } });
@@ -180,9 +180,20 @@ describe("ConditionsPanel", () => {
     ]);
   });
 
+  it("ticking the overlay checkbox dispatches an overlay update with the raw stored value as old", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { stunned: { name: "Stunned", icon: "💫", overlay: false } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.click(screen.getByLabelText("conditions.overlay"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/stunned/overlay", old: false, new: true }] },
+    ]);
+  });
+
   it("clearing the last fx field writes null (no effect), not an empty shell", async () => {
     const dispatchIntent = vi.fn();
-    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } }, "creg1"));
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } }, "creg1"));
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
     await fireEvent.click(screen.getByLabelText("conditions.clearTint"));
@@ -193,7 +204,7 @@ describe("ConditionsPanel", () => {
 
   it("clearing one of several fx fields keeps the others", async () => {
     const dispatchIntent = vi.fn();
-    const store = storeWith(buildConditionRegistryDoc("w1", { hasted: { name: "Hasted", icon: "⚡", fx: { tint: "#66ff66", highlight: "#ffee00" } } }, "creg1"));
+    const store = storeWith(buildConditionRegistryDoc("w1", { hasted: { name: "Hasted", icon: "⚡", fx: { tint: "#66ff66", highlight: "#ffee00" }, overlay: false } }, "creg1"));
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
     await fireEvent.click(screen.getByLabelText("conditions.clearHighlight"));

@@ -138,7 +138,7 @@ test("a token with no faction has a null border", () => {
 test("resolves condition icon glyphs into token badges via the registry", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" }, prone: { name: "Prone", icon: "🛌" } }, "creg1");
+  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false }, prone: { name: "Prone", icon: "🛌", overlay: false } }, "creg1");
   const actor = buildActorDoc(
     "w1",
     "G",
@@ -634,9 +634,9 @@ function storeWithFxToken(
 test("condition fx folds into the TokenNodeSpec in condition array order, colors packed, at the condition strength", () => {
   const { store, backend } = storeWithFxToken(
     {
-      poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } },
-      blinded: { name: "Blinded", icon: "🙈", fx: { desaturate: true } },
-      hasted: { name: "Hasted", icon: "⚡", fx: { highlight: "#ffee00" } },
+      poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false },
+      blinded: { name: "Blinded", icon: "🙈", fx: { desaturate: true }, overlay: false },
+      hasted: { name: "Hasted", icon: "⚡", fx: { highlight: "#ffee00" }, overlay: false },
     },
     ["poisoned", "blinded", "hasted"],
   );
@@ -650,7 +650,7 @@ test("condition fx folds into the TokenNodeSpec in condition array order, colors
 
 test("one condition's fx fields fold tint → desaturate → highlight", () => {
   const { store, backend } = storeWithFxToken(
-    { cursed: { name: "Cursed", icon: "🕸", fx: { highlight: "#ffffff", desaturate: true, tint: "#102030" } } },
+    { cursed: { name: "Cursed", icon: "🕸", fx: { highlight: "#ffffff", desaturate: true, tint: "#102030" }, overlay: false } },
     ["cursed"],
   );
   new TokenView(store, new AssetResolver(), backend).reconcile();
@@ -663,19 +663,19 @@ test("one condition's fx fields fold tint → desaturate → highlight", () => {
 
 test("a malformed fx color contributes no entry (fail closed), and no conditions means no fx", () => {
   const { store, backend } = storeWithFxToken(
-    { broken: { name: "Broken", icon: "🕸", fx: { tint: "green", highlight: "#fff" } } },
+    { broken: { name: "Broken", icon: "🕸", fx: { tint: "green", highlight: "#fff" }, overlay: false } },
     ["broken"],
   );
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
-  const plain = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  const plain = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
   new TokenView(plain.store, new AssetResolver(), plain.backend).reconcile();
   expect(plain.backend.tokens.get("tok1")!.fx).toBeUndefined();
 });
 
 test("a selected token's spec appends the selection highlight after every condition fx", () => {
   const { store, backend } = storeWithFxToken(
-    { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+    { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } },
     ["poisoned"],
   );
   const selected = new Set<string>(["tok1"]);
@@ -687,7 +687,7 @@ test("a selected token's spec appends the selection highlight after every condit
 });
 
 test("an unselected token (or a view with no selection source) gains no highlight", () => {
-  const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
   const selected = new Set<string>(["someone-else"]);
   new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
@@ -703,13 +703,68 @@ describe("tokenFx budget", () => {
     // Same fixture shape as the condition-fx tests above: a condition that carries fx, with
     // the token additionally selected (the selection highlight is the one exempt entry).
     const { store, backend } = storeWithFxToken(
-      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } },
       ["poisoned"],
     );
     const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, undefined, () => new Set(["tok1"]), undefined, () => false);
     view.reconcile();
     const spec = view.specOf("tok1")!;
     expect(spec.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+  });
+});
+
+describe("creature-sense marker fx", () => {
+  const MARKER = { kind: "tint", color: 0x4fc3ff, strength: 0.35 };
+  const perceivedTok1 = (): ReadonlySet<string> => new Set(["tok1"]);
+
+  it("a perceived token gets the reserved tint; an unperceived one does not", () => {
+    const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀", overlay: false } }, ["dead"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1);
+    view.reconcile();
+    expect(view.specOf("tok1")!.fx).toEqual([MARKER]);
+    const plain = new TokenView(store, new AssetResolver(), new MockBackend(), () => null, () => null, undefined, () => new Set());
+    plain.reconcile();
+    expect(plain.specOf("tok1")!.fx).toBeUndefined();
+  });
+
+  it("survives tokenFx off, which sheds condition fx", () => {
+    const { store, backend } = storeWithFxToken({ poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } }, ["poisoned"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1, undefined, undefined, () => false);
+    view.reconcile();
+    expect(view.specOf("tok1")!.fx).toEqual([MARKER]);
+  });
+
+  it("sits after condition fx and before the selection highlight", () => {
+    const { store, backend } = storeWithFxToken({ poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" }, overlay: false } }, ["poisoned"]);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, perceivedTok1, () => new Set(["tok1"]));
+    view.reconcile();
+    const fx = view.specOf("tok1")!.fx!;
+    expect(fx).toEqual([{ kind: "tint", color: 0x66ff66, strength: 0.5 }, MARKER, { kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+    expect(fx[fx.length - 1].kind).toBe("highlight");
+  });
+});
+
+describe("overlay condition", () => {
+  const registry = {
+    prone: { name: "Prone", icon: "🛌", overlay: false },
+    stunned: { name: "Stunned", icon: "💫", overlay: true },
+    dead: { name: "Dead", icon: "💀", overlay: true },
+  };
+
+  it("picks the first overlay condition in effective order and keeps every badge", () => {
+    const { store, backend } = storeWithFxToken(registry, ["prone", "dead", "stunned"]);
+    const view = new TokenView(store, new AssetResolver(), backend);
+    view.reconcile();
+    const spec = view.specOf("tok1")!;
+    expect(spec.overlayIcon).toBe("💀");
+    expect(spec.badges).toEqual(["🛌", "💀", "💫"]);
+  });
+
+  it("omits overlayIcon when no active condition is flagged", () => {
+    const { store, backend } = storeWithFxToken(registry, ["prone"]);
+    const view = new TokenView(store, new AssetResolver(), backend);
+    view.reconcile();
+    expect(view.specOf("tok1")!.overlayIcon).toBeUndefined();
   });
 });
 

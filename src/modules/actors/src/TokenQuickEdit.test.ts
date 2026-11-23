@@ -35,7 +35,7 @@ function setup(delivered: (typeof hpDelivered)[]) {
   const actor = buildActorDoc("w1", "G", actorEngine, "act1");
   actor.system = { hp: { value: 7, max: 10 } };
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
-  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+  const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1");
   const tokenSelection = new TokenSelection();
   tokenSelection.set(["tok1"]);
   const bars = parseBars({ scenes: { scene1: { tokens: { tok1: { nameplate: "G", nameplate_mode: "always", bars: delivered } } } } });

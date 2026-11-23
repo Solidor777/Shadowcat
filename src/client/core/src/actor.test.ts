@@ -233,9 +233,18 @@ describe("resolveTokenActor disposition", () => {
 describe("resolveConditions", () => {
   it("resolves effective condition ids through the world registry, dropping unknown ids", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["dead", "ghost"] }, "act1");
-    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀", fx: undefined }]);
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀", fx: undefined, overlay: false }]);
+  });
+
+  it("carries the registry overlay flag per entry, reading an absent flag as false", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["dead", "stunned"] }, "act1");
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false }, stunned: { name: "Stunned", icon: "💫", overlay: true } }, "creg1");
+    // A stored entry predating the flag has no `overlay` key at all.
+    delete (registry.engine as { conditions: Record<string, { overlay?: boolean }> }).conditions.dead.overlay;
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveConditions(token, storeWith(actor, registry)).map((c) => c.overlay)).toEqual([false, true]);
   });
 
   it("carries the registry's authored fx payload through to the display entry", () => {
@@ -243,13 +252,13 @@ describe("resolveConditions", () => {
     const fx = { tint: "#66ff66", desaturate: true };
     const registry = buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "poisoned", name: "Poisoned", icon: "🤢", fx }]);
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "poisoned", name: "Poisoned", icon: "🤢", fx, overlay: false }]);
   });
 
   it("is fail-closed when the actor's engine conditions is absent (redacted or hand-built doc)", () => {
     const actor = buildActorDoc("w1", NAME, eng, "act1");
     delete (actor.engine as { conditions?: string[] }).conditions; // simulate a stripped field
-    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
+    const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀", overlay: false } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
     expect(() => resolveConditions(token, storeWith(actor, registry))).not.toThrow();
     expect(resolveConditions(token, storeWith(actor, registry))).toEqual([]);
