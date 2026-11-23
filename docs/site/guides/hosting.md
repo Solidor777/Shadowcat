@@ -440,7 +440,9 @@ entries older than `trash_retention` days. `"never"` turns the sweep off, and
 An administrator can see the trash under **Settings → Trash** (or through
 `GET /api/admin/trash`). It lists each item, with a **Delete permanently** button
 per item (`DELETE /api/admin/trash/{entry_id}`) and an **Empty trash** button
-(`POST /api/admin/trash/empty`). Both ask for confirmation first.
+(`POST /api/admin/trash/empty`). Both ask for confirmation first. The **Empty trash**
+confirmation states how many items are listed. When the list has more pages than are
+loaded, it says "or more", because the count is then a lower bound.
 
 Recovery is manual. Stop the server, then move `item` back to the path in
 `manifest.json`.

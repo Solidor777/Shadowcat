@@ -123,7 +123,8 @@
   }
 
   /**
-   * Permanently removes every entry after an explicit confirm dialog, then reloads the list and
+   * Permanently removes every entry after an explicit confirm dialog that names how many entries
+   * are listed (a lower bound while more pages exist), then reloads the list and
    * shows how much was removed. Declining the dialog changes no state.
    * @returns Resolves once `emptied`/`emptyError`/`entries` reflect the outcome; never rejects.
    * @example
@@ -137,7 +138,10 @@
       { t },
       {
         titleKey: "settings.trash.emptyTitle",
-        messageKey: "settings.trash.emptyConfirm",
+        // The list is paginated: a full last page means the trash may hold more than the
+        // loaded entries, so the count is then stated as a lower bound.
+        messageKey: hasMore ? "settings.trash.emptyConfirmMore" : "settings.trash.emptyConfirm",
+        messageParams: { n: entries.length },
         confirmLabelKey: "settings.trash.emptyAll",
         cancelLabelKey: "settings.trash.cancel",
         danger: true,
