@@ -1,5 +1,6 @@
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import SceneBrowserPanel from "./SceneBrowserPanel.svelte";
+import { sceneBrowserTour } from "./tour";
 
 /** GM scene browser: scene list with background thumbnails, create, configure (deep-links
  * the game-settings per-scene section), local view (GM roam), and activate (sets the scene players
@@ -20,5 +21,6 @@ export const sceneBrowser: Module = {
       component: SceneBrowserPanel,
       panel: { icon: "🗺️", labelKey: "sceneBrowser.tab", gmOnly: true },
     });
+    ctx.contributions.contribute({ id: "scene-browser:tour", contract: TOUR_CONTRACT, component: null, tour: sceneBrowserTour });
   },
 };

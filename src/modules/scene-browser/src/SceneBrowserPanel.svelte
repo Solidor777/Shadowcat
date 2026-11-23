@@ -213,7 +213,7 @@
   }
 </script>
 
-<section class="scene-browser" aria-label={t("sceneBrowser.title")}>
+<section class="scene-browser" aria-label={t("sceneBrowser.title")} data-tour="scene-browser.panel">
   <h3>{t("sceneBrowser.title")}</h3>
   {#if roaming}
     <p class="hint">
@@ -221,7 +221,7 @@
       <button type="button" onclick={followActive}>{t("sceneBrowser.followActive")}</button>
     </p>
   {/if}
-  <ul class="list">
+  <ul class="list" data-tour="scene-browser.list">
     {#each scenes as scene, i (scene.id)}
       <li class:active={scene.id === activeSceneId} class:viewed={scene.id === viewedSceneId}>
         <button
@@ -244,7 +244,7 @@
           {#if scene.id === activeSceneId}<span class="badge">{t("sceneBrowser.activeBadge")}</span>{/if}
           {#if scene.id === viewedSceneId && scene.id !== activeSceneId}<span class="badge">{t("sceneBrowser.viewingBadge")}</span>{/if}
         </span>
-        <div class="actions">
+        <div class="actions" data-tour={i === 0 ? "scene-browser.actions" : undefined}>
           <button type="button" onclick={() => activate(scene.id)} disabled={!ws || scene.id === activeSceneId}>{t("sceneBrowser.activate")}</button>
           <button type="button" onclick={() => view(scene.id)}>{t("sceneBrowser.view")}</button>
           <button type="button" onclick={() => configure(scene.id)}>{t("sceneBrowser.configure")}</button>
@@ -262,7 +262,7 @@
       </li>
     {/each}
   </ul>
-  <button type="button" class="create" onclick={create}>{t("sceneBrowser.create")}</button>
+  <button type="button" class="create" data-tour="scene-browser.create" onclick={create}>{t("sceneBrowser.create")}</button>
 </section>
 
 {#snippet assetPicker(selected: string | null, onPick: (id: string | null) => void)}
