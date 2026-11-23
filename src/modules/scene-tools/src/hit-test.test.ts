@@ -85,25 +85,25 @@ const regionEngine = (over: Partial<RegionEngine> = {}): RegionEngine => ({
 
 test("topRegionAt: a rect region hits inside its bbox and misses outside", () => {
   const region = buildRegionDoc("w1", "scene1", regionEngine(), "r1");
-  expect(topRegionAt([region], { x: 5, y: 5 })).toBe("r1");
-  expect(topRegionAt([region], { x: 50, y: 50 })).toBeNull();
+  expect(topRegionAt([region], { x: 5, y: 5 }, fakeStore([region]))).toBe("r1");
+  expect(topRegionAt([region], { x: 50, y: 50 }, fakeStore([region]))).toBeNull();
 });
 
 test("topRegionAt: a circle region hits inside its radius and misses outside", () => {
   const region = buildRegionDoc("w1", "scene1", regionEngine({ shape: { kind: "circle", points: [0, 0, 5] } }), "r1");
-  expect(topRegionAt([region], { x: 0, y: 0 })).toBe("r1");
-  expect(topRegionAt([region], { x: 10, y: 10 })).toBeNull();
+  expect(topRegionAt([region], { x: 0, y: 0 }, fakeStore([region]))).toBe("r1");
+  expect(topRegionAt([region], { x: 10, y: 10 }, fakeStore([region]))).toBeNull();
 });
 
 test("topRegionAt: overlapping regions pick the topmost (last-in-order) on containment", () => {
   const a = buildRegionDoc("w1", "scene1", regionEngine(), "a");
   const b = buildRegionDoc("w1", "scene1", regionEngine(), "b");
-  expect(topRegionAt([a, b], { x: 5, y: 5 })).toBe("b");
+  expect(topRegionAt([a, b], { x: 5, y: 5 }, fakeStore([a, b]))).toBe("b");
 });
 
 test("topRegionAt: a malformed shape (bad point count) never renders or picks", () => {
   const region = buildRegionDoc("w1", "scene1", regionEngine({ shape: { kind: "rect", points: [0, 0, 10] } }), "r1");
-  expect(topRegionAt([region], { x: 5, y: 5 })).toBeNull();
+  expect(topRegionAt([region], { x: 5, y: 5 }, fakeStore([region]))).toBeNull();
 });
 
 test("topRegionAt: a compound region hits its additive parts but never a hole", () => {
@@ -121,9 +121,18 @@ test("topRegionAt: a compound region hits its additive parts but never a hole", 
     }),
     "r1",
   );
-  expect(topRegionAt([compound], { x: 5, y: 5 })).toBe("r1");
-  expect(topRegionAt([compound], { x: 25, y: 25 })).toBe("r1");
-  expect(topRegionAt([compound], { x: 3, y: 3 })).toBeNull();
+  expect(topRegionAt([compound], { x: 5, y: 5 }, fakeStore([compound]))).toBe("r1");
+  expect(topRegionAt([compound], { x: 25, y: 25 }, fakeStore([compound]))).toBe("r1");
+  expect(topRegionAt([compound], { x: 3, y: 3 }, fakeStore([compound]))).toBeNull();
+});
+
+test("topRegionAt: an anchored region is picked at its carrier, never at its stored offsets; a dormant one is never picked", () => {
+  const carrier = buildTokenDoc("w1", "scene1", { x: 500, y: 500, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "t1");
+  const region = buildRegionDoc("w1", "scene1", regionEngine({ anchor: { token: "t1", include_carrier: false, follow_rotation: false } }), "r1");
+  const store = fakeStore([carrier, region]);
+  expect(topRegionAt([region], { x: 505, y: 505 }, store)).toBe("r1"); // offsets (0..10) + carrier (500,500)
+  expect(topRegionAt([region], { x: 5, y: 5 }, store)).toBeNull(); // where the raw offsets would sit
+  expect(topRegionAt([region], { x: 505, y: 505 }, fakeStore([region]))).toBeNull(); // carrier missing: dormant
 });
 
 // --- topDrawingAt ---

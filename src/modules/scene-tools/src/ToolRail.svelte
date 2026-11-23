@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, actorDisplayName, resolveTokenActor, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type RegionAnchor, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -403,6 +403,56 @@
     const old = eng.elevation ?? null;
     if (next === old) return;
     editSelected("/engine/elevation", old, next);
+  }
+
+  /** One entry of the "Follows token" picker. */
+  interface RegionCarrierOption {
+    /** The token document id the option selects. */
+    id: string;
+    /** The option's visible text. */
+    label: string;
+  }
+
+  /** The tokens on the edited region's own scene, as `{ id, label }` options for the "Follows
+   * token" picker (a carrier must be a token on the region's scene). The label is the
+   * redaction-safe display name (`actorDisplayName`), falling back to a short id.
+   * @param region The region document open in the editor.
+   * @returns The scene's tokens, in document order.
+   * @example
+   * ```
+   * declare const region: WireDocument;
+   * regionCarrierOptions(region); // [{ id: "t1", label: "Goblin" }]
+   * ```
+   */
+  function regionCarrierOptions(region: WireDocument): RegionCarrierOption[] {
+    return ctx.documents
+      .query("token")
+      .filter((tok) => tok.parent_id === region.parent_id)
+      .map((tok) => ({ id: tok.id, label: actorDisplayName(resolveTokenActor(tok, ctx.documents) ?? {}, tok.id.slice(0, 8)) }));
+  }
+
+  /** Apply a "Follows token" edit to the open region: the carrier picker (`tokenId` set; an empty
+   * string detaches) or one of the two flag checkboxes (`patch`). The flags are kept when the
+   * carrier changes. The shape conversion lives in `ToolController.setRegionAnchor`.
+   * @param eng The edited region's engine body (the current anchor is the base of the change).
+   * @param tokenId The picked carrier id, `""` to detach, or `undefined` to keep the current one.
+   * @param patch Flag changes to merge into the anchor.
+   * @example
+   * ```
+   * declare const eng: RegionEngine;
+   * editRegionAnchor(eng, "t1", {}); // attach to token t1
+   * ```
+   */
+  function editRegionAnchor(eng: RegionEngine, tokenId: string | undefined, patch: Partial<RegionAnchor>): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    if (tokenId === "") {
+      controller.setRegionAnchor(doc.id, null);
+      return;
+    }
+    const token = tokenId ?? eng.anchor?.token;
+    if (!token) return;
+    controller.setRegionAnchor(doc.id, { include_carrier: false, follow_rotation: false, ...eng.anchor, ...patch, token });
   }
 
   /** The senses a region can occlude, in editor order; each is a `RegionOcclusion` key. */
@@ -1220,6 +1270,42 @@
             {t(OCCLUDE_LABEL[sense])}
           </label>
         {/each}
+        <!-- Attach the region to a token on this scene. Picking a token or ticking a flag
+             re-expresses the stored shape so the region does not move on the canvas. A list
+             (not a pointer gesture) so it works on touch. -->
+        <label>
+          {t("tools.regionFollowToken")}
+          <select
+            data-testid="region-follow-token"
+            value={eng.anchor?.token ?? ""}
+            onchange={(e) => editRegionAnchor(eng, e.currentTarget.value, {})}
+          >
+            <option value="">{t("tools.regionFollowNone")}</option>
+            {#each regionCarrierOptions(editingDoc) as opt (opt.id)}
+              <option value={opt.id}>{opt.label}</option>
+            {/each}
+          </select>
+        </label>
+        {#if eng.anchor}
+          <label>
+            <input
+              type="checkbox"
+              data-testid="region-follow-include-carrier"
+              checked={eng.anchor.include_carrier}
+              onchange={(e) => editRegionAnchor(eng, undefined, { include_carrier: e.currentTarget.checked })}
+            />
+            {t("tools.regionFollowIncludeCarrier")}
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              data-testid="region-follow-rotation"
+              checked={eng.anchor.follow_rotation}
+              onchange={(e) => editRegionAnchor(eng, undefined, { follow_rotation: e.currentTarget.checked })}
+            />
+            {t("tools.regionFollowRotation")}
+          </label>
+        {/if}
         <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {:else if editingDoc && controller.editingEntity?.kind === "drawing"}
