@@ -200,6 +200,8 @@
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p, g) => session.moveRequest(s, tid, p, g),
     toggleDoor: (s, w, to) => session.toggleDoor(s, w, to),
+    placeEffect: (module, placement, sceneId, shape, caster) =>
+      session.placeEffect(module, placement, sceneId, shape, caster),
     onPing: (cb) => session.onPing(cb),
     onEmote: (cb) => session.onEmote(cb),
     onScrollingText: (cb) => session.onScrollingText(cb),

@@ -1,6 +1,6 @@
 import { getContext, setContext } from "svelte";
 import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, BarsLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, PortalOfferNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
-import type { TlsStatus, WorldRole } from "@shadowcat/types";
+import type { RegionShape, TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -398,6 +398,15 @@ export interface AppContext {
    * `door_toggle_error`, which rejects this promise with the server's player-presentable
    * reason). */
   toggleDoor: (sceneId: string, wallId: string, to: DoorState) => Promise<void>;
+  /** Ask the server to place a module-declared effect (`placements` in the module manifest) over
+   * the area `shape`. The request carries the area and the caster only; the effect set is the
+   * manifest's and the server authorizes the sender against the declaration's `who`, so no
+   * client input chooses what a placement does. Resolution is silence-based like `toggleDoor`:
+   * the broadcast Event of the region create confirms success; only a rejection replies (a
+   * correlated `place_effect_error`, which rejects this promise with the server's
+   * player-presentable reason). `caster` is required when the declaration's `who` is
+   * `caster_owner`. */
+  placeEffect: (module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string) => Promise<void>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
   onPing: (cb: (msg: {
     /** Scene the ping was placed on. */

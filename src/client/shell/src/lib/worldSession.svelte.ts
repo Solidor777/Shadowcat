@@ -90,7 +90,7 @@ import {
   type RulerNotice,
   UserModuleSettings,
 } from "@shadowcat/core";
-import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
+import type { DoorState, WorldRole, InstalledModuleInfo, RegionShape, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
 import type { HooksEmitApi, MemberProfile } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
@@ -1503,6 +1503,28 @@ export class WorldSession {
   toggleDoor(sceneId: string, wallId: string, to: DoorState): Promise<void> {
     if (!this.#ws) return Promise.reject(new NotConnectedError());
     return this.#ws.toggleDoor(sceneId, wallId, to);
+  }
+
+  /** Request a module-placed effect over an area. Thin delegate to `WsClient.placeEffect`;
+   * rejects immediately when there is no live transport. Resolution is silence-based like
+   * `toggleDoor`: the broadcast Event of the region create confirms success and only a
+   * rejection replies (`place_effect_error`).
+   * @param module The installed module's folder id that declares the placement.
+   * @param placement The placement declaration id within that module.
+   * @param sceneId The scene the region is created on.
+   * @param shape The area the player chose, scene units.
+   * @param caster The caster token id, required when the declaration's `who` is `caster_owner`.
+   * @returns Resolves (void) once the placement is accepted; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }, "tok-1");
+   * ```
+   */
+  placeEffect(module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.placeEffect(module, placement, sceneId, shape, caster);
   }
 
   /** GM-only roll correction. Resolves/rejects with the correlated outcome.

@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { DoorState, FalloffCurve, PortalOfferOption, RejectReason } from "@shadowcat/types";
+import type { DoorState, FalloffCurve, PortalOfferOption, RegionShape, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -789,6 +789,10 @@ export class WsClient {
    * refusal-only reply shape as `doorPending` (`portal_choice_error` is the only reply), kept
    * as its own map so the two families' error frames never cross-correlate. */
   private portalPending: SilencePending = new Map();
+  /** In-flight module-placed effect requests, keyed by request_id — the same refusal-only reply
+   * shape as `doorPending` (`place_effect_error` is the only reply), kept as its own map so the
+   * families' error frames never cross-correlate. */
+  private placePending: SilencePending = new Map();
   /** In-flight merge intents (`MergePull`/`MergePush`/`MergeRevert`), keyed by request_id. Unlike
    * `combatPending`/`chatPending`, a merge intent's reply IS a correlated frame carrying real
    * payload (`ServerMsg::MergeResult`'s `outcome`) — the same one-shot request/reply shape as
@@ -998,6 +1002,11 @@ export class WsClient {
       p.reject(new NotConnectedError(reason));
     }
     this.portalPending.clear();
+    for (const p of this.placePending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new NotConnectedError(reason));
+    }
+    this.placePending.clear();
     // Combat intents were sent on a socket that will not answer; whether the intent landed is
     // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
     for (const p of this.combatPending.values()) {
@@ -1484,6 +1493,17 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.doorPending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "place_effect_error": {
+        // A refused module placement: reject the correlated request with the server's
+        // role-conditioned wording (uniform for a non-GM).
+        const p = this.placePending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.placePending.delete(msg.request_id);
           p.reject(new Error(msg.message));
         }
         break;
@@ -2370,6 +2390,37 @@ export class WsClient {
     const request_id = randomUuid();
     const p = this.trackDoorToggle(request_id);
     this.send({ type: "toggle_door", request_id, scene_id: sceneId, wall_id: wallId, to });
+    return p;
+  }
+
+  /** Ask the server to place a module-declared effect over an area. Silence-based success like
+   * `toggleDoor`: the broadcast Event of the region create confirms it and only a refusal replies
+   * (`place_effect_error`), rejecting with the server's reason (uniform "placement rejected" for
+   * a non-GM). The frame carries the area and the caster only; the effect set is the module
+   * manifest's, applied by the server, so no client input can choose what a placement does.
+   * @param module The installed module's folder id that declares the placement.
+   * @param placement The placement declaration id within that module.
+   * @param sceneId The scene the region is created on.
+   * @param shape The area the player chose, scene units.
+   * @param caster The caster token id, required when the declaration's `who` is `caster_owner`.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.placeEffect("spells", "fireball", "scene-1", { kind: "circle", points: [0, 0, 3] }, "token-1");
+   * ```
+   */
+  placeEffect(module: string, placement: string, sceneId: string, shape: RegionShape, caster?: string): Promise<void> {
+    const request_id = randomUuid();
+    const p = this.trackSilenceSettled(this.placePending, request_id);
+    this.send({ type: "place_effect", request_id, module, placement, scene_id: sceneId, shape, ...(caster ? { caster } : {}) });
     return p;
   }
 

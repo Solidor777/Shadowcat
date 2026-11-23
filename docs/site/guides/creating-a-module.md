@@ -367,6 +367,56 @@ passes its id; every call is scoped to the module that received the context.
 
 Values are opaque JSON; the engine never interprets them.
 
+## Placing effects on a player's behalf
+
+A module can let a player place an area that carries effects, for example a spell whose
+area the player chooses. The effects are never the player's to choose: the module
+declares them in its manifest, and the **server** authorises each placement against that
+declaration. No module code runs on the server for this.
+
+Declare each placeable effect under `placements` in `module.json`:
+
+```json
+"placements": [
+  {
+    "id": "fireball",
+    "label": "Fireball",
+    "who": "caster_owner",
+    "shapes": ["circle"],
+    "maxExtent": 12,
+    "behavior": "terrain",
+    "cost": 1,
+    "triggers": [
+      { "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }
+    ]
+  }
+]
+```
+
+- `id` names the declaration within your module.
+- `who` says who may place it: `gm`, `player` (any player in the world) or
+  `caster_owner` (the request must name a caster token on the scene that the sender
+  effectively owns). A GM may always place.
+- `shapes` lists the allowed area kinds (`circle`, `rect`, `polygon`) and `maxExtent` is
+  the largest bounding-box side of the area, in scene units.
+- `behavior`, `cost`, `triggers` and `elevation` are the region's effect set, exactly as
+  the region document defines them. The server builds the region from these and
+  validates it before creating it.
+
+A declaration that does not parse or validate is dropped with a warning in the server
+log; the rest of the module still loads.
+
+From the client, send only the area through `ctx.placeEffect`:
+
+```ts
+await ctx.placeEffect("my-module", "fireball", sceneId, { kind: "circle", points: [x, y, 3] }, casterTokenId);
+```
+
+The promise rejects with the server's reason when the placement is refused. A player
+sees the single wording "placement rejected" for every refusal; a GM sees the specific
+reason. The placed region lasts until a GM deletes it. If your module also declares a
+validator, it still judges the created region and can refuse it.
+
 ## Install, enable, dev loop
 
 **Install** (production): build, then copy `dist/index.js` + `module.json` (plus
