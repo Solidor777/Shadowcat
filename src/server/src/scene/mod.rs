@@ -15,6 +15,7 @@ pub(crate) mod emitters;
 pub mod explored;
 pub mod footprint;
 pub(crate) mod grid_shape;
+pub use grid_shape::SceneBounds;
 pub mod lighting;
 pub(crate) mod move_exec;
 pub(crate) mod move_stream;
@@ -187,7 +188,7 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 ///     movement_restriction: MovementRestriction::Visible,
 ///     movement_model: MovementModel::GridStepped,
 ///     partial_cell_leniency: false,
-///     bounds: (100.0, 100.0),
+///     bounds: shadowcat::scene::SceneBounds { cells: (100.0, 100.0), padding_cells: 0.0 },
 ///     grid_kind: GridKind::Square,
 ///     fog_pooling: FogPooling::Individual,
 ///     auto_rotate_tokens: false,
@@ -222,11 +223,9 @@ pub struct ResolvedScene {
     /// corner qualifies; strict samples the center only (`point_qualifies`
     /// is the shared per-point decision for all arms).
     pub partial_cell_leniency: bool,
-    /// Scene dimensions (width, height) measured in grid units (cells), continuous — never world
-    /// units, and not required to be integral. Always finite `> 0` (default
-    /// `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle, after
-    /// `GridShape::world_extent` converts it.
-    pub bounds: (f64, f64),
+    /// Scene dimensions (width, height) in grid cells plus the margin around them (see
+    /// `SceneBounds`). The navmesh's outer rectangle, after `GridShape::world_extent` converts it.
+    pub bounds: SceneBounds,
     /// The scene's cell geometry family. Decides the `GridShape` implementation, the coordinate
     /// system of persisted explored fog, and — because it is part of `ResolvedScene` — the
     /// visibility cache's own invalidation key.
@@ -1869,7 +1868,8 @@ impl SceneEcs {
     /// // No scene document hydrated: resolves to the engine-literal defaults.
     /// let ecs = SceneEcs::new();
     /// let resolved = ecs.resolve_scene(uuid::Uuid::new_v4());
-    /// assert_eq!(resolved.bounds, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(resolved.bounds.cells, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(resolved.bounds.padding_cells, 0.0);
     /// ```
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World and system layers share one overlay shape: each contributes
@@ -1976,15 +1976,13 @@ impl SceneEcs {
             .and_then(|v| v.facing_turn_rule)
             .unwrap_or(d_turn_rule);
 
-        // Scene bounds: per-scene, no world default — a fixed finite fallback. A
-        // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
-        let bounds = s
-            .and_then(|s| s.bounds.as_ref())
-            .filter(|b| {
-                b.width.is_finite() && b.width > 0.0 && b.height.is_finite() && b.height > 0.0
-            })
-            .map(|b| (b.width, b.height))
-            .unwrap_or(DEFAULT_SCENE_BOUNDS_UNITS);
+        // Scene bounds: per-scene, no world default — a fixed finite fallback. A degenerate axis
+        // or margin fails closed inside `SceneBounds::resolve`.
+        let bounds = SceneBounds::resolve(
+            s.and_then(|s| s.bounds.as_ref())
+                .map(|b| (b.width, b.height)),
+            s.and_then(|s| s.padding),
+        );
 
         ResolvedScene {
             los_restriction: los,

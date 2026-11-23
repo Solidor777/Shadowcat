@@ -69,6 +69,7 @@ fn scene_doc(world: Uuid, playlist: Uuid, gain: f64) -> crate::data::document::D
         },
         background: None,
         bounds: None,
+        padding: None,
         snap_to_grid: None,
         vision: None,
         lighting: None,

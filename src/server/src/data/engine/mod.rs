@@ -58,7 +58,7 @@ pub use scene::{
     Perception, RenderHint, SceneDimensions, SceneEngine, SceneLevel, SceneLightingOverrides,
     SceneVisionOverrides, SessionState, VisionMode, VisionModesEngine, WorldSceneDefaults,
     WorldSettingsEngine, MAX_LEVEL_ID_CHARS, MAX_RENDER_TREATMENT_CHARS, MAX_SCENE_LEVELS,
-    MAX_SESSION_MESSAGE_CHARS,
+    MAX_SCENE_PADDING_CELLS, MAX_SESSION_MESSAGE_CHARS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,

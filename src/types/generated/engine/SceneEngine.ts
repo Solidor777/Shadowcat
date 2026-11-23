@@ -12,6 +12,7 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
  * `bounds` = the authored play-area rectangle in grid units, which the
  * continuous router and the per-player vision/lighting path both read;
  * absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+ * `padding` adds a margin around it.
  *
  * # Examples
  *
@@ -22,6 +23,7 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
  *     grid: Grid { kind: "square".to_string(), size: 50.0, distance: None },
  *     background: None,
  *     bounds: None,
+ *     padding: None,
  *     snap_to_grid: None,
  *     vision: None,
  *     lighting: None,
@@ -50,6 +52,14 @@ background: string | null,
  * they can see, not only where a route may run.
  */
 bounds: SceneDimensions | null, 
+/**
+ * A uniform margin around `bounds`, in grid cells, on all four sides; absent and `0` are the
+ * same (no margin). Tokens may stand in it and routes, sight and light cross it, because
+ * `GridShape::world_extent` adds it to the envelope every consumer of `bounds` reads — so a
+ * positive margin widens what a player is told they can see. Ingress admits finite values in
+ * `0..=MAX_SCENE_PADDING_CELLS`.
+ */
+padding: number | null, 
 /**
  * Scene-level snap-to-grid toggle, independent of `movementModel`.
  * Absent ⇒ derived default resolved at read time (false for a

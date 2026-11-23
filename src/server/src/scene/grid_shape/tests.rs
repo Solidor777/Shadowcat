@@ -1,6 +1,14 @@
 use super::*;
 use crate::scene::pathfinding::DiagonalRule;
 
+/// A `SceneBounds` with no margin: the shape every test written before the margin existed means.
+fn unpadded(cells: (f64, f64)) -> SceneBounds {
+    SceneBounds {
+        cells,
+        padding_cells: 0.0,
+    }
+}
+
 #[test]
 fn each_shape_reports_its_own_kind() {
     // Discrimination: fails if either impl returns the other's kind, which would make the
@@ -1180,14 +1188,14 @@ fn each_shapes_envelope_starts_at_its_own_origin_cells_lower_left_extreme() {
 
     // Discrimination: fails if `world_extent` returns an origin-anchored rectangle on hex, or if
     // the square arm gains a spurious negative margin from a shared normalisation path.
-    let s = sq.world_extent((8.0, 6.0));
+    let s = sq.world_extent(unpadded((8.0, 6.0)));
     assert_eq!(
         s.min,
         (0.0, 0.0),
         "a square block's origin cell starts AT the origin"
     );
 
-    let h = hx.world_extent((8.0, 6.0));
+    let h = hx.world_extent(unpadded((8.0, 6.0)));
     let (cx, cy) = hx.cell_center((0, 0));
     assert_eq!(
         cy, 0.0,
@@ -1222,7 +1230,7 @@ fn square_world_extent_wholly_contains_every_cell_of_the_integer_block() {
         rule: DiagonalRule::Chebyshev,
     };
     let (w, h) = (8.0_f64, 5.0_f64);
-    let e = g.world_extent((w, h));
+    let e = g.world_extent(unpadded((w, h)));
     let (ex, ey) = e.max;
     let half = g.cell / 2.0;
     for i in 0..w as i32 {
@@ -1261,7 +1269,7 @@ fn hex_world_extent_contains_every_cell_centre_and_the_far_cells_vertices() {
     // — every check is derived from `cell_center` plus the pointy-top half-extents.
     let g = HexGrid { size: 50.0 };
     let (w, h) = (9.0_f64, 7.0_f64);
-    let e = g.world_extent((w, h));
+    let e = g.world_extent(unpadded((w, h)));
     let (ex, ey) = e.max;
     let half_x = g.size * 3.0_f64.sqrt() / 2.0;
     for q in 0..w as i32 {
@@ -1305,7 +1313,7 @@ fn hex_world_extent_contains_the_origin_cells_whole_polygon() {
     //   far vertices outside while every origin vertex stays inside.
     let g = HexGrid { size: 50.0 };
     let (w, h) = (9.0_f64, 7.0_f64);
-    let e = g.world_extent((w, h));
+    let e = g.world_extent(unpadded((w, h)));
     let inside = |p: (f64, f64)| {
         p.0 >= e.min.0 - 1e-9
             && p.1 >= e.min.1 - 1e-9
@@ -1333,7 +1341,7 @@ fn hex_world_extent_exceeds_the_bounds_size_product_on_both_axes() {
     // Discrimination: fails if the hex impl falls back to the square formula.
     let g = HexGrid { size: 50.0 };
     let (w, h) = (40.0_f64, 40.0_f64);
-    let (ex, ey) = g.world_extent((w, h)).max;
+    let (ex, ey) = g.world_extent(unpadded((w, h))).max;
     assert!(
         ex > w * g.size,
         "hex extent x {ex} must exceed {}",
@@ -1388,14 +1396,17 @@ fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell
         rule: DiagonalRule::Chebyshev,
     };
     let hx = HexGrid { size: 20.0 };
-    for e in [sq.world_extent((0.25, 0.25)), hx.world_extent((0.25, 0.25))] {
+    for e in [
+        sq.world_extent(unpadded((0.25, 0.25))),
+        hx.world_extent(unpadded((0.25, 0.25))),
+    ] {
         assert!(
             e.width() > 0.0 && e.height() > 0.0,
             "extent must stay positive, got {e:?}"
         );
     }
     // Square cell (0,0) spans one cell per axis, so a quarter-cell rectangle cannot contain it.
-    let sq_e = sq.world_extent((0.25, 0.25));
+    let sq_e = sq.world_extent(unpadded((0.25, 0.25)));
     assert!(
         sq_e.width() < sq.cell && sq_e.height() < sq.cell,
         "the square envelope {sq_e:?} must not cover cell (0,0)'s own {} span",
@@ -1413,7 +1424,7 @@ fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell
     // rather than letting a rounded 2 push it past a pitch. Measured on the corner, not the
     // span, because the span carries the origin-side half-extent that the clamp does not
     // govern.
-    let hx_far = hx.world_extent((1.25, 0.25)).max;
+    let hx_far = hx.world_extent(unpadded((1.25, 0.25))).max;
     assert!(
         hx_far.0 < hx.size * 3.0_f64.sqrt(),
         "the hex envelope's far corner x {} must be under one hex pitch",
@@ -1424,7 +1435,7 @@ fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell
     // onto the origin hex's own bounding box — half the flats across in x and the circumradius
     // in y, on each side of the origin. Derived from `cell_vertices`, so the expectation comes
     // from the shape's geometry rather than restating the impl's constants.
-    let sub = hx.world_extent((0.25, 0.25));
+    let sub = hx.world_extent(unpadded((0.25, 0.25)));
     let verts = hx.cell_vertices((0, 0), hx.size);
     let vmin = verts
         .iter()
@@ -1447,7 +1458,7 @@ fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell
     // (which varies continuously with the bound) cannot describe this regime.
     assert_eq!(
         sub,
-        hx.world_extent((0.75, 0.9)),
+        hx.world_extent(unpadded((0.75, 0.9))),
         "two sub-one-cell bounds must yield one hex envelope"
     );
     // The disagreement itself, pinned rather than only fenced off: the linear rule answers
@@ -1459,7 +1470,7 @@ fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell
     // domain and only the COLUMN axis is out, so the exclusion is attributable to one arm; at
     // `(0.25, 0.25)` both arms exclude and a mutation to either would leave the conjunction
     // unchanged.
-    let clamped = hx.world_extent((0.25, 1.0));
+    let clamped = hx.world_extent(unpadded((0.25, 1.0)));
     let origin = hx.cell_center((0, 0));
     assert!(
         !extent_rule_says_inside(
@@ -1534,7 +1545,7 @@ fn a_fractional_bound_below_half_a_cell_leaves_its_partial_column_outside() {
         cell: 20.0,
         rule: DiagonalRule::Chebyshev,
     };
-    let sx = sq.world_extent((w, h)).max.0;
+    let sx = sq.world_extent(unpadded((w, h))).max.0;
     for i in 0..partial {
         assert!(
             sq.cell_center((i, last_row)).0 <= sx + 1e-9,
@@ -1547,7 +1558,7 @@ fn a_fractional_bound_below_half_a_cell_leaves_its_partial_column_outside() {
     );
 
     let hx = HexGrid { size: 50.0 };
-    let hxx = hx.world_extent((w, h)).max.0;
+    let hxx = hx.world_extent(unpadded((w, h))).max.0;
     for q in 0..partial {
         assert!(
             hx.cell_center((q, last_row)).0 <= hxx + 1e-9,
@@ -1557,7 +1568,7 @@ fn a_fractional_bound_below_half_a_cell_leaves_its_partial_column_outside() {
     // The row-0 pair: the SAME column at the SAME row flips on the block's height alone,
     // which no row-independent extent can produce. Both halves clear the integer-block loop's
     // own strongest bound, so each fails on its own rather than being masked by it.
-    let short_x = hx.world_extent((w, short_h)).max.0;
+    let short_x = hx.world_extent(unpadded((w, short_h))).max.0;
     assert!(
         hx.cell_center((partial, 0)).0 <= hxx,
         "the tall block's shear reaches hex column {partial} at row 0, extent {hxx}"
@@ -1722,7 +1733,7 @@ fn the_extent_membership_rule_predicts_every_cells_coverage_over_a_bounds_sweep(
                             if bounds.0 <= 0.0 || bounds.1 <= 0.0 {
                                 continue;
                             }
-                            let e = shape.world_extent(bounds);
+                            let e = shape.world_extent(unpadded(bounds));
                             let (ex, ey) = e.max;
                             let tol = TOL_CELLS * scale;
                             // The min side: the envelope's lower-left corner IS the origin
@@ -1825,8 +1836,8 @@ fn both_shapes_answer_a_degenerate_bound_with_the_same_refused_envelope() {
     let hx = HexGrid { size: 50.0 };
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
         for pair in [(bad, 5.0), (5.0, bad), (bad, bad)] {
-            let s = sq.world_extent(pair);
-            let h = hx.world_extent(pair);
+            let s = sq.world_extent(unpadded(pair));
+            let h = hx.world_extent(unpadded(pair));
             assert_eq!(s, h, "the two shapes disagree on {pair:?}: {s:?} vs {h:?}");
             assert!(
                 s.width() <= 0.0 || s.height() <= 0.0,
@@ -1834,4 +1845,98 @@ fn both_shapes_answer_a_degenerate_bound_with_the_same_refused_envelope() {
             );
         }
     }
+}
+
+#[test]
+fn a_zero_margin_leaves_both_extents_exactly_as_before() {
+    // Discrimination: fails if a zero margin perturbs either shape's rectangle, which would move
+    // every stored scene's navmesh, vision bound and lit mask.
+    let sq = SquareGrid {
+        cell: 50.0,
+        rule: DiagonalRule::Chebyshev,
+    };
+    let hx = HexGrid { size: 50.0 };
+    let b = unpadded((10.0, 10.0));
+    assert_eq!(sq.world_extent(b).min, (0.0, 0.0));
+    assert_eq!(sq.world_extent(b).max, (500.0, 500.0));
+    let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+    assert_eq!(hx.world_extent(b).min, (-half_x, -50.0));
+}
+
+#[test]
+fn a_square_margin_moves_every_edge_out_by_that_many_cells() {
+    // Discrimination: fails if the margin is applied to `max` only, or scaled by anything but the
+    // cell size.
+    let sq = SquareGrid {
+        cell: 50.0,
+        rule: DiagonalRule::Chebyshev,
+    };
+    let e = sq.world_extent(SceneBounds {
+        cells: (10.0, 10.0),
+        padding_cells: 2.0,
+    });
+    assert_eq!(e.min, (-100.0, -100.0));
+    assert_eq!(e.max, (600.0, 600.0));
+}
+
+#[test]
+fn a_hex_margin_is_that_many_hexes_on_each_axis() {
+    // Discrimination: fails if x and y share one spacing, or if the margin skips either corner.
+    let hx = HexGrid { size: 50.0 };
+    let bare = hx.world_extent(unpadded((10.0, 10.0)));
+    let padded = hx.world_extent(SceneBounds {
+        cells: (10.0, 10.0),
+        padding_cells: 2.0,
+    });
+    let step_x = 50.0 * 3.0_f64.sqrt();
+    let step_y = 50.0 * 1.5;
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    assert!(close(bare.min.0 - padded.min.0, 2.0 * step_x));
+    assert!(close(bare.min.1 - padded.min.1, 2.0 * step_y));
+    assert!(close(padded.max.0 - bare.max.0, 2.0 * step_x));
+    assert!(close(padded.max.1 - bare.max.1, 2.0 * step_y));
+}
+
+#[test]
+fn a_margin_never_rescues_a_degenerate_rectangle_and_a_bad_margin_adds_nothing() {
+    // Discrimination: the first arm fails if the margin makes a refused rectangle routable; the
+    // second fails if a hand-built negative or non-finite margin shrinks or grows the envelope.
+    let sq = SquareGrid {
+        cell: 50.0,
+        rule: DiagonalRule::Chebyshev,
+    };
+    let hx = HexGrid { size: 50.0 };
+    for shape in [&sq as &dyn GridShape, &hx as &dyn GridShape] {
+        let refused = shape.world_extent(SceneBounds {
+            cells: (0.0, 5.0),
+            padding_cells: 3.0,
+        });
+        assert_eq!(refused, REFUSED_EXTENT);
+        let bare = shape.world_extent(unpadded((5.0, 5.0)));
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let e = shape.world_extent(SceneBounds {
+                cells: (5.0, 5.0),
+                padding_cells: bad,
+            });
+            assert_eq!(e, bare, "margin {bad} must resolve to none");
+        }
+    }
+}
+
+#[test]
+fn resolve_falls_back_per_leaf_and_never_trusts_a_bad_margin() {
+    // Discrimination: fails if a bad margin survives resolution, or if a good margin is dropped
+    // when the size is degenerate.
+    let r = SceneBounds::resolve(Some((0.0, 5.0)), Some(4.0));
+    assert_eq!(r.cells, crate::scene::DEFAULT_SCENE_BOUNDS_UNITS);
+    assert_eq!(r.padding_cells, 4.0);
+    assert_eq!(SceneBounds::resolve(None, None).padding_cells, 0.0);
+    assert_eq!(
+        SceneBounds::resolve(Some((3.0, 4.0)), Some(f64::NAN)).padding_cells,
+        0.0
+    );
+    assert_eq!(
+        SceneBounds::resolve(Some((3.0, 4.0)), None).cells,
+        (3.0, 4.0)
+    );
 }

@@ -413,10 +413,16 @@ pub struct SceneLevel {
     pub background: Option<String>,
 }
 
+/// The largest `SceneEngine::padding`, in grid cells. The padded envelope feeds area-capped
+/// scans (the lit mask, the visibility cache), so an unbounded margin would be a cost lever;
+/// ingress rejects a larger value rather than clamping it.
+pub const MAX_SCENE_PADDING_CELLS: f64 = 100.0;
+
 /// A scene's engine-owned config (mirrors the client's `SceneEngine`).
 /// `bounds` = the authored play-area rectangle in grid units, which the
 /// continuous router and the per-player vision/lighting path both read;
 /// absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+/// `padding` adds a margin around it.
 ///
 /// # Examples
 ///
@@ -427,6 +433,7 @@ pub struct SceneLevel {
 ///     grid: Grid { kind: "square".to_string(), size: 50.0, distance: None },
 ///     background: None,
 ///     bounds: None,
+///     padding: None,
 ///     snap_to_grid: None,
 ///     vision: None,
 ///     lighting: None,
@@ -452,6 +459,13 @@ pub struct SceneEngine {
     /// they can see, not only where a route may run.
     #[serde(default)]
     pub bounds: Option<SceneDimensions>,
+    /// A uniform margin around `bounds`, in grid cells, on all four sides; absent and `0` are the
+    /// same (no margin). Tokens may stand in it and routes, sight and light cross it, because
+    /// `GridShape::world_extent` adds it to the envelope every consumer of `bounds` reads — so a
+    /// positive margin widens what a player is told they can see. Ingress admits finite values in
+    /// `0..=MAX_SCENE_PADDING_CELLS`.
+    #[serde(default)]
+    pub padding: Option<f64>,
     /// Scene-level snap-to-grid toggle, independent of `movementModel`.
     /// Absent ⇒ derived default resolved at read time (false for a
     /// continuous scene, true otherwise) — reading this field alone is NOT
@@ -601,6 +615,13 @@ impl SceneEngine {
         if let Some(bg) = &self.background {
             crate::data::engine::geometry::validate_asset_ref(bg)
                 .map_err(|m| format!("background: {m}"))?;
+        }
+        if let Some(p) = self.padding {
+            if !(0.0..=MAX_SCENE_PADDING_CELLS).contains(&p) {
+                return Err(format!(
+                    "padding must be finite and within 0..={MAX_SCENE_PADDING_CELLS} cells"
+                ));
+            }
         }
         if let Some(c) = &self.combat {
             c.validate("combat")?;

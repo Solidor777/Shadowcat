@@ -191,7 +191,15 @@ pub(crate) trait GridShape {
     /// `min = max = (0.0, 0.0)` from both impls, which every consumer's span guard refuses, rather
     /// than two shapes disagreeing about degenerate input. `normalize_bounds_cells` is where that
     /// whole class is refused, once, for both.
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent;
+    ///
+    /// **The authored margin.** `bounds.padding_cells` widens the envelope on all four sides, by
+    /// that many cells' world spacing per axis: `world_units_per_cell` on both square axes, and on
+    /// hex `√3·size` in x and `1.5·size` in y (the axial neighbour spacings), so "n cells" is n
+    /// hexes on each hex axis. With a margin of `0.0` every statement above holds unchanged; with
+    /// a margin, `min` moves down by it and `max` up by it, and every consumer listed above sees
+    /// the larger rectangle, so what a player is told they can see and route through widens by the
+    /// margin. A degenerate `bounds.cells` still yields `REFUSED_EXTENT`, margin or not.
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent;
     /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
     /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
     /// `route ⊆ gate-allowed` invariant. `SquareGrid` returns the existing `DiagonalRule`-based
@@ -412,16 +420,17 @@ impl GridShape for SquareGrid {
         self.cell
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent {
         // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so cell (0,0)'s own lower-left corner
         // IS the origin and a w × h block spans exactly (w*cell, h*cell) from it, with no shear and
-        // no overhang.
-        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+        // no overhang. The margin moves each edge out by `padding_cells` cells.
+        let Some((w, h)) = normalize_bounds_cells(bounds.cells) else {
             return REFUSED_EXTENT;
         };
+        let pad = sanitize_padding_cells(bounds.padding_cells) * self.cell;
         WorldExtent {
-            min: (0.0, 0.0),
-            max: (w * self.cell, h * self.cell),
+            min: (-pad, -pad),
+            max: (w * self.cell + pad, h * self.cell + pad),
         }
     }
 
@@ -797,26 +806,31 @@ impl GridShape for HexGrid {
         self.size * 3.0_f64.sqrt()
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
+    fn world_extent(&self, bounds: SceneBounds) -> WorldExtent {
         // The far corner of the axial block is cell (w-1, h-1): `axial_to_pixel` is monotone
         // increasing in q on x, and in r on BOTH axes (the shear), so that cell maximises each
         // coordinate. The near corner is cell (0,0), which `axial_to_pixel` places AT the origin,
         // so it minimises each coordinate. Both corners then move out by the same pointy-top
         // half-extents — √3/2·size across the flats (x) and the circumradius `size` to a vertex
         // (y) — so each extreme hex's own far vertices are inside.
-        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+        // The margin then moves every edge out by `padding_cells` axial-neighbour spacings: √3·size
+        // in x, 1.5·size in y.
+        let Some((w, h)) = normalize_bounds_cells(bounds.cells) else {
             return REFUSED_EXTENT;
         };
+        let padding = sanitize_padding_cells(bounds.padding_cells);
         let qmax = (w - 1.0).max(0.0);
         let rmax = (h - 1.0).max(0.0);
         let sqrt3 = 3.0_f64.sqrt();
         let half_x = self.size * sqrt3 / 2.0;
         let half_y = self.size;
+        let pad_x = padding * self.size * sqrt3;
+        let pad_y = padding * self.size * 1.5;
         WorldExtent {
-            min: (-half_x, -half_y),
+            min: (-half_x - pad_x, -half_y - pad_y),
             max: (
-                self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + half_x,
-                self.size * 1.5 * rmax + half_y,
+                self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + half_x + pad_x,
+                self.size * 1.5 * rmax + half_y + pad_y,
             ),
         }
     }
@@ -846,6 +860,66 @@ pub(crate) const REFUSED_EXTENT: WorldExtent = WorldExtent {
     max: (0.0, 0.0),
 };
 
+/// A scene's resolved size: the authored play-area rectangle plus the uniform margin around it,
+/// both in grid cells. `GridShape::world_extent` is the one place that turns it into world units,
+/// so no consumer adds the margin on its own.
+///
+/// Compared whole (`PartialEq`): `ResolvedScene` carries it, and every cache keyed on the resolved
+/// settings therefore misses when only the margin changes.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::SceneBounds;
+///
+/// let b = SceneBounds { cells: (10.0, 8.0), padding_cells: 2.0 };
+/// assert_eq!(b, SceneBounds::resolve(Some((10.0, 8.0)), Some(2.0)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneBounds {
+    /// Authored width and height in grid cells, continuous, never world units. Finite `> 0` on a
+    /// resolved value (`DEFAULT_SCENE_BOUNDS_UNITS` when the scene authors none).
+    pub cells: (f64, f64),
+    /// Margin added on all four sides, in grid cells; `0.0` is no margin. Finite `>= 0` on a
+    /// resolved value.
+    pub padding_cells: f64,
+}
+
+impl SceneBounds {
+    /// Resolve authored values: a non-finite or non-positive axis (or no authored size) falls to
+    /// `DEFAULT_SCENE_BOUNDS_UNITS`, and a non-finite or negative margin falls to `0.0`. Both fail
+    /// toward the smaller envelope, which reveals less.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::{SceneBounds, DEFAULT_SCENE_BOUNDS_UNITS};
+    ///
+    /// let b = SceneBounds::resolve(Some((f64::NAN, 5.0)), Some(-1.0));
+    /// assert_eq!(b.cells, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// assert_eq!(b.padding_cells, 0.0);
+    /// ```
+    pub fn resolve(cells: Option<(f64, f64)>, padding_cells: Option<f64>) -> Self {
+        Self {
+            cells: cells
+                .and_then(normalize_bounds_cells)
+                .unwrap_or(crate::scene::DEFAULT_SCENE_BOUNDS_UNITS),
+            padding_cells: sanitize_padding_cells(padding_cells.unwrap_or(0.0)),
+        }
+    }
+}
+
+/// A margin in cells admitted to the range `world_extent` computes over: finite and `>= 0`, else
+/// `0.0`. The one rule behind `SceneBounds::resolve` and `world_extent`, so a hand-built
+/// `SceneBounds` cannot widen an envelope the resolver would not.
+fn sanitize_padding_cells(padding_cells: f64) -> f64 {
+    if padding_cells.is_finite() && padding_cells >= 0.0 {
+        padding_cells
+    } else {
+        0.0
+    }
+}
+
 /// Admit an authored `bounds_cells` pair to the range every `world_extent` impl computes over —
 /// both axes finite and strictly positive — or `None` for anything else.
 ///
@@ -860,8 +934,8 @@ pub(crate) const REFUSED_EXTENT: WorldExtent = WorldExtent {
 ///
 /// Non-finite and non-positive are the SAME input class here, not two: `0.0` and a negative axis
 /// reach the two impls exactly as `NaN` does and split them exactly as far apart. Both are
-/// unreachable from a scene document — `SceneEcs::resolve_scene`'s bounds filter rejects
-/// non-finite and non-positive alike, substituting `DEFAULT_SCENE_BOUNDS_UNITS` — so this refusal
+/// unreachable from a scene document — `SceneBounds::resolve` (through `SceneEcs::resolve_scene`)
+/// rejects non-finite and non-positive alike, substituting `DEFAULT_SCENE_BOUNDS_UNITS` — so this refusal
 /// is the trait's own contract rather than a live guard, and it must cover the whole class or the
 /// contract is only true of part of it.
 ///
