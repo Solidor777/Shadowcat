@@ -665,9 +665,10 @@ async fn handle_socket(
                         match frame {
                             Message::Text(t) => {
                                 let parsed = serde_json::from_str::<ClientMsg>(t.as_str());
-                                // A paused session refuses a non-GM's move request and combat
-                                // intents here, before any handler resolves them, so one rule
-                                // (`session_pause::blocks_msg`) decides for all nine.
+                                // A paused session refuses a non-GM's move request, accepting
+                                // portal choice and combat intents here, before any handler
+                                // resolves them, so one rule (`session_pause::blocks_msg`)
+                                // decides for all of them.
                                 if let Ok(m) = &parsed {
                                     if let Some(f) =
                                         crate::ws::session_pause::msg_refusal(&room, &ctx, m).await
@@ -1055,6 +1056,38 @@ async fn handle_socket(
                                     )
                                     .await
                                     {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::ChoosePortal { request_id, offer_id, choice }) => {
+                                    // The answer's validation + commit live in
+                                    // `Room::handle_choose_portal`; success is the broadcast
+                                    // `Event` of the teleport (a decline commits nothing). A
+                                    // refusal is a correlated `PortalChoiceError` to this
+                                    // connection only.
+                                    let outcome = room
+                                        .handle_choose_portal(
+                                            repo.as_ref(),
+                                            &ctx,
+                                            offer_id,
+                                            choice,
+                                            now_millis(),
+                                        )
+                                        .await;
+                                    if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::OpenPortal { request_id, token }) => {
+                                    // Success is the addressed `PortalOffer` broadcast.
+                                    let outcome = room
+                                        .handle_open_portal(repo.as_ref(), &ctx, token, now_millis())
+                                        .await;
+                                    if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
                                         if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
                                             break;
                                         }
@@ -1560,6 +1593,35 @@ async fn handle_reset_explored_fog(
 /// own per-connection decisions in `egress_loop` without requiring a full connection/room fixture.
 fn scrolling_text_admitted(gm_only: bool, world_role: crate::data::document::WorldRole) -> bool {
     !gm_only || world_role == crate::data::document::WorldRole::Gm
+}
+
+/// Whether `egress_loop` may deliver a `ServerMsg::PortalOffer` to a connection of `user_id`
+/// holding `world_role`: every GM, and — for an offer that is not `gm_only` — the token's
+/// effective `owner`. Anyone else never receives the frame, so a player who does not control the
+/// token cannot see the destinations, and a secret portal never reaches a non-GM. A pure
+/// predicate for the same reason `scrolling_text_admitted` is.
+fn portal_offer_admitted(
+    gm_only: bool,
+    owner: Option<Uuid>,
+    user_id: Uuid,
+    world_role: crate::data::document::WorldRole,
+) -> bool {
+    world_role == crate::data::document::WorldRole::Gm || (!gm_only && owner == Some(user_id))
+}
+
+/// The refusal frame for a portal request's outcome: `None` on success, else a correlated
+/// `PortalChoiceError` whose text is role-conditioned through `portal_choice_wire_message`
+/// (uniform for a non-GM).
+fn portal_error_frame(
+    request_id: Uuid,
+    outcome: Result<(), crate::ws::room::PortalChoiceError>,
+    ctx: &crate::data::membership::PermissionContext,
+) -> Option<ServerMsg> {
+    outcome.err().map(|e| ServerMsg::PortalChoiceError {
+        request_id,
+        message: crate::ws::room::portal_choice_wire_message(&e, ctx.world_role),
+        reason: None,
+    })
 }
 
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
@@ -2889,6 +2951,16 @@ async fn egress_loop<S>(
                                 // admit/drop decision lives in `scrolling_text_admitted`, a pure
                                 // predicate pinned by its own unit test.
                                 if scrolling_text_admitted(*gm_only, ctx.world_role) {
+                                    send_plain(&mut sink, inner.as_ref()).await.is_err()
+                                } else {
+                                    false
+                                }
+                            }
+                            ServerMsg::PortalOffer { gm_only, owner, .. } => {
+                                // Addressed delivery: only the connections
+                                // `portal_offer_admitted` names ever see the frame; the rest
+                                // drop it silently.
+                                if portal_offer_admitted(*gm_only, *owner, ctx.user_id, ctx.world_role) {
                                     send_plain(&mut sink, inner.as_ref()).await.is_err()
                                 } else {
                                     false

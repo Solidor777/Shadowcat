@@ -1,11 +1,12 @@
 //! The whole-session pause rule: while the world-settings document's `session.paused` is set, a
-//! non-GM member can neither move tokens nor use combat controls. Everything else (chat, dice,
-//! pings, doors, scene edits, sheets, notes) stays allowed, and a GM is never refused.
+//! non-GM member can neither move tokens (including by choosing a portal destination) nor use
+//! combat controls. Everything else (chat, dice, pings, doors, scene edits, sheets, notes) stays
+//! allowed, and a GM is never refused.
 //!
 //! Every refusal path reads this module's one rule, so the paths cannot disagree: the
 //! `ClientMsg::Intent` arm asks `intent_refusal` (token position writes and combat-family
-//! documents, classified by `class_of`), and the typed requests (`MoveRequest` and the eight
-//! combat intents) ask `msg_refusal` (classified by `blocks_msg`). A new engine document type
+//! documents, classified by `class_of`), and the typed requests (`MoveRequest`, an accepting
+//! `ChoosePortal` and the eight combat intents) ask `msg_refusal` (classified by `blocks_msg`). A new engine document type
 //! must be added to `DOC_TYPE_CLASSES`; a test fails until it is.
 //!
 //! Server-authored writes (`WriteOrigin::CombatTransition`, region triggers) are never routed
@@ -90,12 +91,17 @@ pub(crate) fn blocks_intent_op(doc_type: &str, position_write: bool) -> bool {
     }
 }
 
-/// Whether a paused session refuses a typed client request: a `MoveRequest` or one of the eight
-/// combat intents.
+/// Whether a paused session refuses a typed client request: a `MoveRequest`, one of the eight
+/// combat intents, or a `ChoosePortal` that picks a destination (it teleports the token, a
+/// position write like a move). Declining an offer moves nothing and stays allowed.
 pub(crate) fn blocks_msg(msg: &ClientMsg) -> bool {
     matches!(
         msg,
         ClientMsg::MoveRequest { .. }
+            | ClientMsg::ChoosePortal {
+                choice: Some(_),
+                ..
+            }
             | ClientMsg::CombatStart { .. }
             | ClientMsg::CombatPause { .. }
             | ClientMsg::CombatEnd { .. }
@@ -115,11 +121,24 @@ pub(crate) fn session_of(doc: Option<&Document>) -> SessionState {
         .unwrap_or_default()
 }
 
-/// The correlated refusal frame for a blocked typed request: `MoveError` for a move, `CombatError`
-/// for a combat intent, both carrying `RejectReason::Paused`. `None` when `msg` is not blocked.
+/// The correlated refusal frame for a blocked typed request: `MoveError` for a move,
+/// `PortalChoiceError` for a portal choice, `CombatError` for a combat intent, each carrying
+/// `RejectReason::Paused`. `None` when `msg` is not blocked.
 fn paused_reply(msg: &ClientMsg) -> Option<ServerMsg> {
     let message = "the game is paused".to_string();
     let reason = Some(RejectReason::Paused);
+    if let ClientMsg::ChoosePortal {
+        request_id,
+        choice: Some(_),
+        ..
+    } = msg
+    {
+        return Some(ServerMsg::PortalChoiceError {
+            request_id: *request_id,
+            message,
+            reason,
+        });
+    }
     let request_id = match msg {
         ClientMsg::MoveRequest { request_id, .. }
         | ClientMsg::CombatStart { request_id, .. }

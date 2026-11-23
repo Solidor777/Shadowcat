@@ -488,4 +488,24 @@ wall_id: string,
  * wall currently `Locked` refuses a non-GM in either direction); a GM may also
  * set/clear `Locked`.
  */
-to: DoorState, };
+to: DoorState, } | { "type": "choose_portal", 
+/**
+ * Correlation token for `PortalChoiceError`.
+ */
+request_id: string, 
+/**
+ * The offer being answered (`ServerMsg::PortalOffer::offer_id`).
+ */
+offer_id: string, 
+/**
+ * The chosen option's `PortalOfferOption::index`, or `None` to decline.
+ */
+choice: number | null, } | { "type": "open_portal", 
+/**
+ * Correlation token for `PortalChoiceError`.
+ */
+request_id: string, 
+/**
+ * The token that stands in the portal region.
+ */
+token: string, };

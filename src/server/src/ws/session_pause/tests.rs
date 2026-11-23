@@ -1,5 +1,6 @@
 //! The session pause's pure classification: every engine document type is classified, and the
-//! typed-request predicate names exactly the move request and the eight combat intents.
+//! typed-request predicate names exactly the move request, an accepting portal choice and the
+//! eight combat intents.
 
 use super::*;
 use crate::data::engine::ENGINE_DOC_TYPES;
@@ -117,7 +118,25 @@ fn blocks_msg_names_the_move_and_combat_requests_only() {
         assert!(blocks_msg(m), "{m:?} is a move or combat control");
         assert!(paused_reply(m).is_some());
     }
+    // An accepting portal choice teleports the token, a position write like a move.
+    let accept = ClientMsg::ChoosePortal {
+        request_id: id,
+        offer_id: id,
+        choice: Some(0),
+    };
+    assert!(blocks_msg(&accept));
+    assert!(paused_reply(&accept).is_some());
     let free = [
+        // Declining an offer moves nothing; asking for an offer commits nothing.
+        ClientMsg::ChoosePortal {
+            request_id: id,
+            offer_id: id,
+            choice: None,
+        },
+        ClientMsg::OpenPortal {
+            request_id: id,
+            token: id,
+        },
         ClientMsg::ToggleDoor {
             request_id: id,
             scene_id: id,
@@ -151,6 +170,16 @@ fn paused_replies_are_correlated_and_typed() {
     assert!(matches!(
         mv,
         Some(ServerMsg::MoveError { request_id, reason: Some(RejectReason::Paused), .. })
+            if request_id == id
+    ));
+    let portal = paused_reply(&ClientMsg::ChoosePortal {
+        request_id: id,
+        offer_id: Uuid::nil(),
+        choice: Some(1),
+    });
+    assert!(matches!(
+        portal,
+        Some(ServerMsg::PortalChoiceError { request_id, reason: Some(RejectReason::Paused), .. })
             if request_id == id
     ));
     let combat = paused_reply(&ClientMsg::CombatAdvance {

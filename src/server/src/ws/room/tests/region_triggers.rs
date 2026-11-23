@@ -13,7 +13,7 @@ use serde_json::json;
 
 /// Region engine body whose rect covers exactly `cell` of a size-100 square grid
 /// (cell-center containment), carrying `triggers`.
-fn trigger_region_engine(
+pub(super) fn trigger_region_engine(
     cell: (i32, i32),
     behavior: &str,
     triggers: serde_json::Value,
@@ -29,7 +29,7 @@ fn trigger_region_engine(
 }
 
 /// Creates a GM-owned region doc on `h`'s scene.
-async fn place_region(
+pub(super) async fn place_region(
     h: &MovementHandle,
     id: u128,
     cell: (i32, i32),
@@ -108,7 +108,7 @@ async fn link_actor(
 }
 
 /// The committed `message` documents on the region channel, in commit order.
-async fn region_notices(h: &MovementHandle) -> Vec<Document> {
+pub(super) async fn region_notices(h: &MovementHandle) -> Vec<Document> {
     let mut docs = h.repo.query_documents(h.world_id, "message").await.unwrap();
     docs.retain(|d| {
         d.engine
@@ -120,7 +120,7 @@ async fn region_notices(h: &MovementHandle) -> Vec<Document> {
 }
 
 /// The text body of a single-segment system notice.
-fn notice_text(doc: &Document) -> String {
+pub(super) fn notice_text(doc: &Document) -> String {
     let engine: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
     match &engine.content[0] {
         Segment::Text { text } => text.clone(),
@@ -134,7 +134,7 @@ fn notice_engine(doc: &Document) -> MessageEngine {
 }
 
 /// Moves `h`'s player token along `path`.
-async fn move_token(h: &MovementHandle, path: Vec<(f64, f64)>) {
+pub(super) async fn move_token(h: &MovementHandle, path: Vec<(f64, f64)>) {
     h.room
         .execute_move(
             &h.repo,
@@ -1220,7 +1220,9 @@ async fn place_scene(h: &MovementHandle, id: u128) -> Uuid {
 }
 
 /// Every persisted command on `h`'s world, in seq order.
-async fn committed_events(h: &MovementHandle) -> Vec<crate::data::snapshot::StoredCommand> {
+pub(super) async fn committed_events(
+    h: &MovementHandle,
+) -> Vec<crate::data::snapshot::StoredCommand> {
     crate::data::repository::Repository::events_since(&h.repo, h.world_id, 0)
         .await
         .unwrap()

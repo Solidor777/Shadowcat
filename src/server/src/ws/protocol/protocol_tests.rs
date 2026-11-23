@@ -919,6 +919,80 @@ fn welcome_carries_caps_role_and_requirements() {
 }
 
 #[test]
+fn portal_frames_round_trip_snake_case() {
+    let accept = ClientMsg::ChoosePortal {
+        request_id: Uuid::from_u128(1),
+        offer_id: Uuid::from_u128(2),
+        choice: Some(3),
+    };
+    let v = serde_json::to_value(&accept).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "type": "choose_portal",
+            "request_id": Uuid::from_u128(1),
+            "offer_id": Uuid::from_u128(2),
+            "choice": 3,
+        })
+    );
+    assert!(matches!(
+        serde_json::from_value::<ClientMsg>(v).unwrap(),
+        ClientMsg::ChoosePortal {
+            choice: Some(3),
+            ..
+        }
+    ));
+    let decline: ClientMsg = serde_json::from_value(serde_json::json!({
+        "type": "choose_portal",
+        "request_id": Uuid::from_u128(1),
+        "offer_id": Uuid::from_u128(2),
+        "choice": null,
+    }))
+    .unwrap();
+    assert!(matches!(
+        decline,
+        ClientMsg::ChoosePortal { choice: None, .. }
+    ));
+    let open = serde_json::to_value(ClientMsg::OpenPortal {
+        request_id: Uuid::from_u128(1),
+        token: Uuid::from_u128(4),
+    })
+    .unwrap();
+    assert_eq!(open["type"], "open_portal");
+
+    let offer = ServerMsg::PortalOffer {
+        offer_id: Uuid::from_u128(2),
+        scene: Uuid::from_u128(5),
+        token: Uuid::from_u128(4),
+        prompt: None,
+        options: vec![PortalOfferOption {
+            index: 0,
+            label: "The Cellar".into(),
+            destination_name: None,
+            available: true,
+        }],
+        gm_only: false,
+        owner: None,
+    };
+    let v = serde_json::to_value(&offer).unwrap();
+    assert_eq!(v["type"], "portal_offer");
+    assert_eq!(v["options"][0]["label"], "The Cellar");
+    assert!(
+        v["options"][0].get("target").is_none(),
+        "the frame never carries a destination target"
+    );
+    let err = ServerMsg::PortalChoiceError {
+        request_id: Uuid::nil(),
+        message: "portal rejected".into(),
+        reason: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&err).unwrap()["type"],
+        "portal_choice_error"
+    );
+}
+
+#[test]
 fn toggle_door_frames_round_trip_snake_case() {
     // The intent: `{"type":"toggle_door", request_id, scene_id, wall_id, to}` with the
     // `DoorState` spelled snake_case.
