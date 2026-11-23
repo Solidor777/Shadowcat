@@ -1660,6 +1660,53 @@ async fn a_chained_portal_is_refused_after_one_hop() {
 }
 
 #[tokio::test]
+async fn a_portal_choice_at_a_teleport_destination_is_refused_as_chained() {
+    let h = movement_scene("unrestricted", false).await;
+    // The first region teleports into the second's cell, whose trigger list carries a
+    // `portal_choice`: the post-teleport re-fire passes `allow_teleport: false`, which refuses
+    // a choice exactly as it refuses a second fixed teleport.
+    place_region(
+        &h,
+        0x7E2,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 250.0, "y": 50.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+    place_region(
+        &h,
+        0x7E3,
+        (2, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "portal_choice", "prompt": null,
+                "options": [
+                    { "label": "Elsewhere", "target": { "x": 450.0, "y": 50.0 } }
+                ] } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        (250.0, 50.0),
+        "the token stays on the first destination"
+    );
+    let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("chained portal refused")),
+        "the refused choice surfaces as a GM-only notice, got {texts:?}"
+    );
+}
+
+#[tokio::test]
 async fn destination_enter_effects_fire_after_a_teleport() {
     let h = movement_scene("unrestricted", false).await;
     let actor_id = link_actor(&h, 0x7F0, vec![], json!({})).await;
