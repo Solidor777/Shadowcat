@@ -25,8 +25,9 @@ contribute their tours under. It **requires** `shadowcat.settings-section` and
 
 ## Shipped tours
 
-Seven first-party tours ship, each declared by the module that owns the screen it
-points at. Every tour is version 1, audience `any`, scope `global`.
+Eight first-party tours ship, each declared by the module that owns the screen it
+points at. Every tour is version 1 and scope `global`. Seven are audience `any`;
+the scene browser's is audience `gm`.
 
 | Tour id | Module | Trigger | Steps (anchor ids) |
 |---|---|---|---|
@@ -37,10 +38,12 @@ points at. Every tour is version 1, audience `any`, scope `global`.
 | `actors.intro` | `actors` | **replay only** | `actors.panel`, `actors.search`, `actors.list`, `actors.quick-edit` (skipped until exactly one token is selected) |
 | `notes.intro` | `notes` | **replay only** | `notes.panel`, `notes.search` |
 | `settings.intro` | `settings` | **replay only** | `settings.panel`, `settings.language` |
+| `scene-browser.intro` | `scene-browser` | **replay only**, GM only | `scene-browser.panel`, `scene-browser.create`, `scene-browser.list`, `scene-browser.actions` (the first scene row's action buttons; skipped while the world has no scene) |
 
-The actors, notes and settings panels start closed, so their anchors are not on
-screen at first run and an automatic offer would have nothing to point at. Those
-three tours run only from **Replay tours**, with the panel open.
+The actors, notes, settings and scene browser panels start closed, so their anchors
+are not on screen at first run and an automatic offer would have nothing to point
+at. Those four tours run only from **Replay tours**, with the panel open. The scene
+browser tour is listed only for a GM.
 
 ## When a tour is offered
 

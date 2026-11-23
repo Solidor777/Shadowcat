@@ -490,6 +490,15 @@ string-keyed spellings.
   a browser: build your module, stage its output as an installed module, spawn
   `test_server --modules-dir <staged-dir>`, log in, and assert the HTTP surface
   (`GET /api/modules`, the enable route, and the static entry serve).
+- **Browser end-to-end specs inside a Shadowcat checkout**: the Playwright
+  loopback server starts with `SHADOWCAT_MODULES_DIR` pointing at
+  `src/client/shell/e2e-support/fixture-modules/`. Each folder there is a
+  test-only installed module (`module.json` plus a plain `index.js`) that a spec
+  enables through the module manager. The folder is outside `dist/` and the
+  release binary, and no world enables a fixture unless a spec does. The
+  `vision-kind-fixture` module there registers a custom vision treatment on
+  `VISION_TREATMENT_CONTRACT`. A reused loopback server keeps the environment it
+  started with, so restart it when you add a fixture folder.
 
 ## Reference
 

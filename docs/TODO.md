@@ -269,17 +269,10 @@ so they wait for a ruling rather than shipping with the uncontested batch.
 Each item below is real, small and unbuilt. None was deferred on a lane's own authority: a lane
 reported it and stopped. Each stays here until the owner rules to build it now or to defer it.
 
-- TODO: The roster frames carry no snapshot — `ServerMsg::Presence` is transition-only, so a
-  client that connects late shows every other member's dot as unknown until that member's next
-  connect or disconnect, and a profile edit (colour, pronouns, avatar) reaches other clients only
-  at reconnect. Shape: put the online set and the profile fields in the `Welcome` roster and add a
-  live profile frame. (M)
 - TODO: An instanced token's embedded actor copy still shows `source.id` to a player who may not
   read the actor: hiding it means redacting a structural field, which the structural-field
   invariant test forbids. Needs a ruling on whether the copy's origin id may be redacted. (S-M,
   design question)
-- TODO: A GM scene-creation guided tour in the `scene-browser` module (the first-party tours cover
-  stage, scene tools, actors, chat, dice, notes and settings only). (S)
 - TODO: The trash `empty all` confirmation shows no entry count. (S)
 - TODO: The streamed `MoveStream` vision path has no test for a wall carrying a `proximity` tier;
   it inherits the tier from the shared wall collectors but nothing pins that. (S)

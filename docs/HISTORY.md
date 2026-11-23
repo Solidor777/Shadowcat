@@ -3934,3 +3934,6 @@ once, at the end of the campaign; the items that only CI or a device can confirm
   notifications, and the `DocFolderTree` shared by assets and tables.
 - **Gates**: `lint:route-prefix`, `lint:walk-sites` and `check:svelte-runtime` are in the
   `.claude/CLAUDE.md` gate table beside the earlier gates.
+- **Live player list**: `Welcome.online_users` seeds the online set from `Room::presence_online`, and `ServerMsg::MemberProfile` (colour, pronouns, whether an avatar exists) is broadcast to every live room of each world the member is seated in when the profile or avatar changes, so a late joiner sees correct dots and a profile edit shows without a reconnect.
+- **Scene-creation tour**: the `scene-browser` module contributes `scene-browser.intro` (GM audience, replay only, four steps; the actions step is skipped while no scene exists) and the `data-tour` anchors it points at.
+- **Vision fixture module**: `vision-kind-fixture` under `src/client/shell/e2e-support/fixture-modules/` registers a custom treatment on `VISION_TREATMENT_CONTRACT`; the Playwright loopback server discovers it through `SHADOWCAT_MODULES_DIR`, and it stays out of `dist/` and the release binary.
