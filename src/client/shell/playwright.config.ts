@@ -34,6 +34,10 @@ const bin = path.join(
   process.platform === "win32" ? "shadowcat.exe" : "shadowcat",
 );
 
+/** The installed-module root of the loopback server: test-only modules, one folder each, kept beside
+ * the e2e support code so they never enter the client build or the release binary. */
+const FIXTURE_MODULES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "e2e-support", "fixture-modules");
+
 /** A hostname that is not loopback, so a browser treats an `http://` page on it as NOT a secure
  * context, exactly as it does for a LAN address. `--host-resolver-rules` maps it to the loopback
  * test server, so the origin is genuinely insecure with no network setup on any CI OS. */
@@ -445,7 +449,9 @@ export default defineConfig({
       url: `http://127.0.0.1:${LOOPBACK_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${LOOPBACK_PORT}` },
+      // `SHADOWCAT_MODULES_DIR` points discovery at the test-only fixture modules, which no
+      // world enables unless a spec does and which are not part of `dist/` or the binary.
+      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${LOOPBACK_PORT}`, SHADOWCAT_MODULES_DIR: FIXTURE_MODULES_DIR },
     },
     {
       // The documented LAN configuration: a bind beyond loopback. Server policy keyed on a
