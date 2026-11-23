@@ -11,6 +11,7 @@ token-visual and ownership details. Also the pick source for the place tool
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `actors:panel` | `shadowcat.panel` | `ActorsPanel` | order 2, icon 👥, labelKey `actors.tab`, launcher-closed |
+| `actors:tour` | `shadowcat.tour` | none | tour `actors.intro`, manual (replay only; anchors `actors.panel`, `actors.search`, `actors.list`, `actors.quick-edit`) |
 
 ## Components
 

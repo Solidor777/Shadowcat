@@ -12,6 +12,7 @@ claiming the same singleton contract.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `chat-composer:main` | `shadowcat.surface:chat.composer` | `Composer` | — |
+| `chat-composer:tour` | `shadowcat.tour` | none | tour `chat-composer.dice`, first use (anchors `chat-composer.input`, `chat-composer.roll-mode`, `chat-composer.doc-link`) |
 
 ## Components
 

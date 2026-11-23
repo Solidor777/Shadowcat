@@ -415,7 +415,9 @@ works in two steps:
 If the restore cannot be applied (the backup is missing or damaged), the start
 leaves the database as it was, writes `restore-failed.json` beside it with the
 reason, and serves the existing data. The pending marker is removed either way,
-so the next start does not retry.
+so the next start does not retry. In **Settings → Backups** a banner reports the
+failure until an admin presses **Dismiss**, which moves `restore-failed.json` to the
+trash (`DELETE /api/admin/backups/restore-failed`).
 
 ### Trash
 

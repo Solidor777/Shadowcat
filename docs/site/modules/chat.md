@@ -12,6 +12,7 @@ neither filled, so it lands independently of them.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `chat:panel` | `shadowcat.panel` | `ChatPanel` | order 0, icon 💬, labelKey `chat.tab`, defaultPlacement docked-right, live unread badge |
+| `chat:tour` | `shadowcat.tour` | none | tour `chat.intro`, first use (anchors `chat.panel`, `chat.channels`, `chat.messages`) |
 
 ## Components
 

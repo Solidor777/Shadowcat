@@ -12,6 +12,7 @@ itself lives in `src/client/render`, not in this module.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `stage:stage` | `shadowcat.surface:stage` | `Stage` | — |
+| `stage:tour` | `shadowcat.tour` | none | tour `stage.intro`, first use (anchors `stage.canvas`, `stage.gm-view`) |
 
 ## Components
 

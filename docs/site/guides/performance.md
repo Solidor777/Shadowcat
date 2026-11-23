@@ -20,6 +20,7 @@ current value.
 | Render scale | 0.75 | 1 | 1 |
 | Antialiasing | off | on | on |
 | Token effects | off | on | on |
+| Token nameplates and bars | on | on | on |
 | Lighting quality | Static (no sweeps) | Full | Full |
 | Visual effects | off | on | on |
 | 3D dice | off | on | on |
@@ -50,6 +51,12 @@ whichever preset is resolved, without forcing you onto a custom preset.
   highlights). Their cost scales with the token count; off drops them all
   except the selection highlight, which is bounded by how many tokens you
   have selected.
+- **Token nameplates and bars** — the name labels and resource bars drawn on
+  tokens (see [Token bars and nameplates](/guides/tokens#bars-and-nameplates)).
+  Their cost scales with the token count. Off drops every nameplate and bar from
+  the stage on this device; the bar and nameplate settings on the actors are not
+  changed, and the data still reaches the client. It applies live. It is on in
+  all three presets.
 - **Lighting quality** — the cosmetic darkness/tint overlay. "Static" keeps
   the overlay but snaps moving lights to their final frame (no per-frame
   interpolation); "Off" skips the overlay entirely. This never changes what

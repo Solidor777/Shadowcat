@@ -15,7 +15,23 @@ registry) exists.
 
 ## Components
 
-- `Entry.svelte` — the combined login / setup / world-select flow.
+- `Entry.svelte` — the combined login / setup / welcome / world-select flow.
+- `views/Welcome.svelte` — the one-screen welcome described below.
+
+## Welcome screen
+
+After the first administrator account is created on a new server, the flow shows
+a welcome screen before login: the heading "Your server is ready", a line telling
+the admin to sign in with the account just made, then create a world and invite
+players, a "Read the hosting guide" link, and a Continue button that leads to the
+login form. The link opens the hosting guide in the project's online repository in
+a new tab, because no world, and so no served guide, exists yet.
+
+The screen shows only straight after setup, and only while the server's
+`onboarding_enabled` setting is on (the default; see the
+[hosting guide](/guides/hosting)). With the setting off, setup goes straight to
+login. The value comes from `GET /api/config`. See
+[onboarding](/modules/onboarding) for the guided tours that follow in the world.
 
 ## Contracts & seams
 

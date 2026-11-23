@@ -12,6 +12,7 @@ Create, per-row Delete/Move-to, and expand/collapse.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `notes:panel` | `shadowcat.panel` | `NotesPanel` | order 3, launcher-closed, icon 📓 |
+| `notes:tour` | `shadowcat.tour` | none | tour `notes.intro`, manual (replay only; anchors `notes.panel`, `notes.search`) |
 
 ## Components
 
