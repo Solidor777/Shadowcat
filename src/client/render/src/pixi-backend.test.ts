@@ -472,6 +472,58 @@ describe("PixiBackend.updateTokenAura", () => {
   });
 });
 
+describe("PixiBackend.updateTokenOverlay", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
+  const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
+  interface OverlayNode extends TokenNodeLike {
+    /** Mirror of `TokenNode.overlay` — read to assert the glyph's text, size, order and lifetime. */
+    overlay: { text: string; style: { fontSize: number }; destroyed: boolean } | null;
+  }
+  const run = (backend: PixiBackendTokenInternals, node: TokenNodeLike, spec: TokenNodeSpec): void =>
+    (backend as unknown as { updateTokenOverlay(n: TokenNodeLike, s: TokenNodeSpec): void }).updateTokenOverlay(node, spec);
+
+  test("draws the glyph directly above the art, sized to 60% of the smaller side", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const overlay = node.overlay!;
+    expect(overlay.text).toBe("💫");
+    expect(overlay.style.fontSize).toBe(30);
+    expect(node.container.children.indexOf(overlay as never)).toBe(node.container.children.indexOf(node.visualContainer) + 1);
+  });
+
+  test("a later aura insert keeps the glyph directly above the art", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    expect(node.container.children.indexOf(node.overlay as never)).toBe(node.container.children.indexOf(node.visualContainer) + 1);
+  });
+
+  test("an absent overlayIcon destroys the glyph and drops the reference", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const overlay = node.overlay!;
+    run(backend, node, { ...base, visual: imageVisual });
+    expect(node.overlay).toBeNull();
+    expect(overlay.destroyed).toBe(true);
+    expect(node.container.children.length).toBe(1); // visualContainer only
+  });
+
+  test("an unchanged glyph and size keeps the same Text; a changed glyph rebuilds it", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1") as OverlayNode;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    const first = node.overlay;
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💫" });
+    expect(node.overlay).toBe(first);
+    run(backend, node, { ...base, visual: imageVisual, overlayIcon: "💀" });
+    expect(node.overlay).not.toBe(first);
+    expect(node.overlay!.text).toBe("💀");
+  });
+});
+
 describe("PixiBackend.updateTokenFx", () => {
   const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };

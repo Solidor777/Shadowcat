@@ -10,8 +10,9 @@ import type { ConditionFx } from "./ConditionFx";
  * ```
  * use shadowcat::data::engine::Condition;
  *
- * let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None };
+ * let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None, overlay: false };
  * assert!(condition.fx.is_none()); // no built-in token-art effect declared
+ * assert!(!condition.overlay); // renders as a badge chip only
  * ```
  */
 export type Condition = { 
@@ -29,4 +30,11 @@ icon: string,
  * order). Presentational only — the server never reads it. Absent = no
  * fx.
  */
-fx?: ConditionFx, };
+fx?: ConditionFx, 
+/**
+ * `true` marks the condition as an overlay: the first overlay condition in a token's
+ * effective condition order also renders as one large centered glyph over the token, in
+ * addition to its badge chip. Presentational only — the server never reads it. Absent =
+ * `false`.
+ */
+overlay: boolean, };

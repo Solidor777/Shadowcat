@@ -27,7 +27,7 @@
    * (`apply_intent`) rejects an `Update` whose `old` doesn't match the actual stored value,
    * so a hardcoded `old: null` would only be valid for the field's first write.
    * @param id The condition's registry key.
-   * @param patch The fields to change (name and/or icon).
+   * @param patch The fields to change (name, icon and/or overlay).
    * @example
    * ```
    * // private function; not part of the public API — invoked from the GM editor row's
@@ -84,7 +84,7 @@
   function add(): void {
     if (!registry) return;
     const id = randomUuid();
-    const c: Condition = { name: "New condition", icon: "⭐" };
+    const c: Condition = { name: "New condition", icon: "⭐", overlay: false };
     ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/conditions/${id}`, old: null, value: c }])]);
   }
   /** GM registry editor: deletes a condition entry from the registry map.
@@ -131,6 +131,10 @@
               <button type="button" aria-label={t("conditions.clearHighlight")} onclick={() => setFx(id, "highlight", undefined)}>×</button>
             {/if}
           </span>
+          <label class="overlay">
+            <input type="checkbox" checked={c.overlay === true} onchange={(e) => update(id, { overlay: e.currentTarget.checked })} />
+            {t("conditions.overlay")}
+          </label>
           <button type="button" onclick={() => remove(id)}>{t("conditions.remove")}</button>
         </li>
       {/each}
@@ -170,7 +174,8 @@
     min-width: 32px;
     padding: 0;
   }
-  .desaturate {
+  .desaturate,
+  .overlay {
     display: flex;
     align-items: center;
     gap: var(--space-1);

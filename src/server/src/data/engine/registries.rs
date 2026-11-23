@@ -267,8 +267,9 @@ impl FactionRegistryEngine {
 /// ```
 /// use shadowcat::data::engine::Condition;
 ///
-/// let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None };
+/// let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None, overlay: false };
 /// assert!(condition.fx.is_none()); // no built-in token-art effect declared
+/// assert!(!condition.overlay); // renders as a badge chip only
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -285,6 +286,12 @@ pub struct Condition {
     #[serde(default)]
     #[ts(optional)]
     pub fx: Option<ConditionFx>,
+    /// `true` marks the condition as an overlay: the first overlay condition in a token's
+    /// effective condition order also renders as one large centered glyph over the token, in
+    /// addition to its badge chip. Presentational only — the server never reads it. Absent =
+    /// `false`.
+    #[serde(default)]
+    pub overlay: bool,
 }
 
 impl Condition {
@@ -397,6 +404,7 @@ impl ConditionRegistryEngine {
                     name: name.to_string(),
                     icon: icon.to_string(),
                     fx: None,
+                    overlay: false,
                 },
             );
         }

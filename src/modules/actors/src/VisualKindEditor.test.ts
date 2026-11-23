@@ -186,7 +186,7 @@ describe("VisualKindEditor", () => {
     };
     render(VisualKindEditor, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
-      props: { conditionOptions: [["prone", { name: "Prone", icon: "⬇️" }]], onBuild, initial },
+      props: { conditionOptions: [["prone", { name: "Prone", icon: "⬇️", overlay: false }]], onBuild, initial },
     });
 
     expect((screen.getByLabelText("actors.visualKind") as HTMLSelectElement).value).toBe("faces");

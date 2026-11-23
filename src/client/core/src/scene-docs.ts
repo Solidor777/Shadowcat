@@ -1049,7 +1049,7 @@ export function buildFactionRegistryDoc(worldId: string, factions: Record<string
  * import { buildConditionRegistryDoc } from "@shadowcat/core";
  *
  * const doc = buildConditionRegistryDoc("world-1", {
- *   prone: { name: "Prone", icon: "🔻" },
+ *   prone: { name: "Prone", icon: "🔻", overlay: false },
  * });
  * doc.doc_type; // "condition-registry"
  * ```

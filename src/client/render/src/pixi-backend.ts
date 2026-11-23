@@ -50,6 +50,13 @@ interface TokenNode {
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
   badgeKey: string;
+  /** The large centered overlay-condition glyph, drawn by `updateTokenOverlay` as a `container`
+   * child ordered directly above `visualContainer` (the badge chips stay on top), or `null` while
+   * the last-applied spec had no `overlayIcon`. */
+  overlay: Text | null;
+  /** `tokenSpec.overlayIcon` plus the token size of the last-applied spec (`updateTokenOverlay`'s
+   * memo): an unchanged key short-circuits the rebuild. */
+  overlayKey: string;
   /** The aura disc, drawn by `updateTokenAura` as a `container` child ordered BELOW
    * `visualContainer` (the art draws over it; badges stay on top), or `null` while the last-applied
    * spec had no aura. */
@@ -878,6 +885,7 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenGeneratedFrame(node, tokenSpec);
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
+    this.updateTokenOverlay(node, tokenSpec);
     this.updateTokenAura(node, tokenSpec);
     this.updateTokenFacing(node, tokenSpec);
     this.updateTokenFx(node, tokenSpec);
@@ -906,7 +914,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateKey: "", textureUrls: [] };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", overlay: null, overlayKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateKey: "", textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -1283,6 +1291,36 @@ export class PixiBackend implements DisplayBackend {
       node.container.addChild(txt);
       return txt;
     });
+  }
+
+  /** Redraw (or remove) `node`'s overlay-condition glyph: one `Text` centered on the token's
+   * origin, sized to 60% of the smaller token side. A direct child of the non-rotating outer
+   * `container`, inserted directly above `visualContainer`: it draws over the art and under every
+   * badge chip, so the condition list stays legible. Guarded by `overlayKey` (glyph + size); an
+   * absent `overlayIcon` destroys the `Text` and drops the reference.
+   * @param node The token render node whose overlay glyph to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.overlayIcon`/`.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenOverlay(node, tokenSpec);
+   * ```
+   */
+  private updateTokenOverlay(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const glyph = tokenSpec.overlayIcon;
+    const size = Math.min(tokenSpec.w, tokenSpec.h) * 0.6;
+    const key = glyph ? `${glyph}:${size}` : "";
+    if (node.overlayKey === key) return;
+    node.overlayKey = key;
+    node.overlay?.destroy();
+    node.overlay = null;
+    if (!glyph) return;
+    const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
+    txt.anchor.set(0.5);
+    node.container.addChildAt(txt, node.container.getChildIndex(node.visualContainer) + 1);
+    node.overlay = txt;
   }
 
   /** Redraw (or remove) `node`'s aura disc: a filled ellipse of `tokenSpec.aura.radius` scene

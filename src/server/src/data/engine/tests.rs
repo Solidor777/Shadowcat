@@ -1715,6 +1715,27 @@ fn condition_without_fx_deserializes_with_none() {
 }
 
 #[test]
+fn condition_overlay_defaults_false_and_round_trips() {
+    // An entry with no `overlay` key reads as `false`; an authored `true` survives a round trip.
+    let typed: ConditionRegistryEngine = serde_json::from_value(json!({ "conditions": {
+        "dead": { "name": "Dead", "icon": "💀" },
+        "stunned": { "name": "Stunned", "icon": "💫", "overlay": true }
+    } }))
+    .unwrap();
+    assert!(!typed.conditions["dead"].overlay);
+    assert!(typed.conditions["stunned"].overlay);
+    let v = serde_json::to_value(&typed).unwrap();
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+    assert_eq!(v["conditions"]["stunned"]["overlay"], json!(true));
+}
+
+#[test]
+fn condition_overlay_wrong_type_is_rejected() {
+    let v = json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀", "overlay": "yes" } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_err());
+}
+
+#[test]
 fn condition_fx_unknown_field_is_rejected() {
     let v = json!({ "conditions": { "dead": {
         "name": "Dead", "icon": "💀", "fx": { "bogus": 1 }
