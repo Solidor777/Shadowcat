@@ -523,7 +523,7 @@
   }
 </script>
 
-<section class="actors">
+<section class="actors" data-tour="actors.panel">
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
@@ -541,12 +541,13 @@
   <TokenVisualControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
+    data-tour="actors.search"
     type="search"
     placeholder={t("actors.search")}
     aria-label={t("actors.search")}
     bind:value={query}
   />
-  <ul class="list">
+  <ul class="list" data-tour="actors.list">
     {#each visibleActors as a (a.id)}
       {@const locatedId = locatedTokenId(a.id)}
       <li>

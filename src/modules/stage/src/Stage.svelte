@@ -646,6 +646,7 @@
 
 <div
   class="stage-host"
+  data-tour="stage.canvas"
   bind:this={host}
   data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
   data-render-scale={String(perfBudget.renderScale)}
@@ -675,6 +676,7 @@
     <select
       class="gm-view"
       data-testid="gm-view-select"
+      data-tour="stage.gm-view"
       aria-label="GM vision mode"
       bind:value={gmView}
       onchange={applyGmView}

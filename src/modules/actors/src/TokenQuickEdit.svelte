@@ -98,7 +98,7 @@
 </script>
 
 {#if token}
-  <section class="token-quick-edit" data-testid="token-quick-edit">
+  <section class="token-quick-edit" data-testid="token-quick-edit" data-tour="actors.quick-edit">
     <h4>{t("actors.quickEdit")}</h4>
     <TokenElevationControl {tokenId} />
     <ConditionTogglePalette />

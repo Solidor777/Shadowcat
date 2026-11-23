@@ -1,5 +1,6 @@
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import ActorsPanel from "./ActorsPanel.svelte";
+import { actorsTour } from "./tour";
 
 /** Actor create/list/pick panel. Requires the panel-manager's contract;
  * contributes ActorsPanel launcher-closed by default. */
@@ -19,5 +20,6 @@ export const actors: Module = {
       component: ActorsPanel,
       panel: { icon: "👥", labelKey: "actors.tab" },
     });
+    ctx.contributions.contribute({ id: "actors:tour", contract: TOUR_CONTRACT, component: null, tour: actorsTour });
   },
 };

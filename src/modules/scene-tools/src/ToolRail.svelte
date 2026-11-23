@@ -716,7 +716,7 @@
 </script>
 
 
-<div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
+<div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")} data-tour="scene-tools.rail">
   {#each visibleTools as tool (tool.id)}
     <button
       type="button"
@@ -724,6 +724,7 @@
       class:active={controller.active === tool.id}
       aria-pressed={controller.active === tool.id}
       data-testid="tool-{tool.id}"
+      data-tour="scene-tools.{tool.id}"
       data-moves-frozen={movesFrozen && MOVE_TOOLS.includes(tool.id) ? "true" : undefined}
       title={movesFrozen && MOVE_TOOLS.includes(tool.id) ? t("tools.paused") : tool.label}
       onclick={() => controller.toggle(tool.id)}
