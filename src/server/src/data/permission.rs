@@ -1322,6 +1322,15 @@ fn role_floor(role: DocRole) -> BTreeSet<String> {
     s
 }
 
+/// Whether `user` holds the token owner floor on `doc`: `doc` is a token and `user` is
+/// its effective owner (the per-token `owner` override, else the linked actor's owner —
+/// see `effective_owner`). The one test behind both the `DocRole::Owner` floor in
+/// `effective_role` and the `cap::DELETE` grant in `resolve_access`, so the two cannot
+/// disagree on who an owner is. No other `doc_type` has an owner floor.
+fn holds_token_owner_floor(user: Uuid, doc: &Document, effective_owner: Option<Uuid>) -> bool {
+    doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user)
+}
+
 /// The document-level role this actor effectively holds, or `None` when they
 /// hold the unconditional GM/admin all-access short-circuit — no single role
 /// applies, because every capability is granted regardless. Shared by
@@ -1344,15 +1353,19 @@ fn effective_role(
     // Owner < Observer < None, so `min` only ever strengthens — a document's
     // own stronger grant is never downgraded by this floor.
     //
-    // READ + WRITE_FIELDS is the BUILT-IN floor (`role_floor`) only. The floored
-    // role is the same role that then selects additive capability grants, so an
-    // effective owner also picks up `permissions.capabilities.by_role[Owner]` and
-    // the world's `by_role[Owner]` — up to and including DELETE /
-    // MANAGE_EMBEDDED / EDIT_PERMISSIONS if a deployment grants them there.
-    // Intended: it is exactly what a stamped `permissions.users[user] = Owner`
-    // yields, so inherited and stamped ownership cannot diverge. Nothing widens
-    // out of the box (the shipped `by_role` maps are empty); a deployment that
-    // populates `by_role[Owner]` is choosing to hand every Owner that capability.
+    // The token owner floor is READ + WRITE_FIELDS (`role_floor`) plus DELETE of
+    // that token (added in `resolve_access` from `holds_token_owner_floor`, so it
+    // follows the same owner test and never reaches a stamped Owner or any other
+    // doc_type). MANAGE_EMBEDDED and EDIT_PERMISSIONS are not in the floor. The
+    // floored role is the same role that then selects additive capability grants,
+    // so an effective owner also picks up `permissions.capabilities.by_role[Owner]`
+    // and the world's `by_role[Owner]` — up to and including MANAGE_EMBEDDED /
+    // EDIT_PERMISSIONS if a deployment grants them there. Intended: it is exactly
+    // what a stamped `permissions.users[user] = Owner` yields for those
+    // capabilities, so inherited and stamped ownership cannot diverge. Nothing
+    // else widens out of the box (the shipped `by_role` maps are empty); a
+    // deployment that populates `by_role[Owner]` is choosing to hand every Owner
+    // that capability.
     //
     // CONSEQUENCE a deployment must weigh before granting `by_role[Owner] ⊇
     // EDIT_PERMISSIONS`: that reaches `/owner`, so an effective owner can write
@@ -1362,7 +1375,7 @@ fn effective_role(
     // also lock the GM out of the document entirely. Parity with a stamped owner
     // holds exactly; the Owner POPULATION is "every player with an assigned actor", not a
     // hand-enumerated set.
-    let owner_floor = doc.doc_type == TOKEN_DOC_TYPE && effective_owner == Some(user);
+    let owner_floor = holds_token_owner_floor(user, doc, effective_owner);
     let floor = |r: DocRole| {
         if owner_floor {
             r.min(DocRole::Owner)
@@ -1442,6 +1455,12 @@ pub fn resolve_access(
         };
     };
     let mut caps = role_floor(role);
+    // A token's effective owner may delete that token. The grant is keyed on the
+    // token owner floor, not on `DocRole::Owner`: a stamped `permissions.users`
+    // Owner on a token, or an Owner of any other doc_type, gains nothing here.
+    if holds_token_owner_floor(user, doc, effective_owner) {
+        caps.insert(cap::DELETE.to_string());
+    }
     if let Some(extra) = doc.permissions.capabilities.by_role.get(&role) {
         caps.extend(extra.iter().cloned());
     }

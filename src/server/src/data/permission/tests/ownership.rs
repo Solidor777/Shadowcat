@@ -163,8 +163,12 @@ fn effective_ownership_grants_the_owner_floor_and_the_owner_or_gm_tier() {
         "an effective owner holds the DocRole::Owner floor"
     );
     assert!(
-        !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::DELETE),
-        "the BUILT-IN floor stops at WRITE_FIELDS — no re-assigning or deleting. \
+        a_player.has(cap::DELETE),
+        "an effective owner may delete the token"
+    );
+    assert!(
+        !a_player.has(cap::EDIT_PERMISSIONS) && !a_player.has(cap::MANAGE_EMBEDDED),
+        "the BUILT-IN floor stops at WRITE_FIELDS + DELETE — no re-assigning. \
          Additive `by_role[Owner]` grants can widen past it; see \
          `world_by_role_owner_grants_reach_an_inheriting_owner`"
     );
@@ -180,7 +184,38 @@ fn effective_ownership_grants_the_owner_floor_and_the_owner_or_gm_tier() {
     // Non-vacuity: same token, same call, different user.
     let a_stranger = resolve_access(stranger, WorldRole::Player, &token, owner);
     assert!(a_stranger.has(cap::READ) && !a_stranger.has(cap::WRITE_FIELDS));
+    assert!(!a_stranger.has(cap::DELETE));
     assert!(!a_stranger.is_owner);
+}
+
+#[test]
+fn the_token_delete_grant_follows_effective_ownership_only() {
+    use crate::data::document::CapabilityGrants;
+    let player = crate::test_ids::test_uuid(1);
+    // A stamped Owner on a token who is not its effective owner gains no DELETE.
+    let mut stamped = token_linked_to(None);
+    stamped.permissions.users.insert(player, DocRole::Owner);
+    assert!(!resolve_access(player, WorldRole::Player, &stamped, None).has(cap::DELETE));
+
+    // The same user as the per-token owner does.
+    let mut owned = token_linked_to(None);
+    owned.owner = Some(player);
+    let owner = effective_owner(&owned, None);
+    assert!(resolve_access(player, WorldRole::Player, &owned, owner).has(cap::DELETE));
+    assert!(resolve_access_world(
+        player,
+        WorldRole::Player,
+        &owned,
+        &CapabilityGrants::default(),
+        owner
+    )
+    .has(cap::DELETE));
+
+    // A non-token doc_type never grants DELETE to its owner, even as Owner role.
+    let mut actor = actor_owned_by(crate::test_ids::test_uuid(42), Some(player));
+    actor.permissions.users.insert(player, DocRole::Owner);
+    let actor_owner = effective_owner(&actor, None);
+    assert!(!resolve_access(player, WorldRole::Player, &actor, actor_owner).has(cap::DELETE));
 }
 
 #[test]

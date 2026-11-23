@@ -1684,6 +1684,8 @@ fn condition_registry_seed_content() {
     for (id, name, icon) in expect {
         let c = &s.conditions[*id];
         assert_eq!((c.name.as_str(), c.icon.as_str()), (*name, *icon));
+        // Only the two incapacitation conditions draw as a token overlay.
+        assert_eq!(c.overlay, matches!(*id, "dead" | "unconscious"), "{id}");
     }
     let v = serde_json::to_value(&s).unwrap();
     assert!(validate_engine("condition-registry", Some(&v)).is_ok());

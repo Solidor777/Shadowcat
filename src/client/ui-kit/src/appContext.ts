@@ -197,6 +197,8 @@ export interface AppContext {
    * controls. **GM ⇒ always true, unconditionally.** Never derives a delete affordance from
    * `doc.owner` — the `owner` field is a separate ownership OVERRIDE, distinct from the
    * DocRole `owner` grant `grantAuthor` sets, which is what actually carries `core:delete`.
+   * The one exception is a token: its effective owner (the per-token `owner` override, else the
+   * linked actor's owner) holds `core:delete` on that token and nothing else.
    * Advisory-only — the server re-checks independently at `apply_intent`.
    * @param doc - The document the caller wants to delete.
    * @returns Whether delete controls should render as enabled. */

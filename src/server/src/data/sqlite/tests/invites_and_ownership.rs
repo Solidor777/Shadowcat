@@ -511,6 +511,83 @@ async fn the_owner_capability_floor_is_scoped_to_tokens() {
     );
 }
 
+/// A player-context `Delete` of `doc` through `apply_intent`.
+async fn try_delete(
+    r: &SqliteRepository,
+    world: Uuid,
+    user: Uuid,
+    doc: Document,
+    ts: i64,
+) -> Result<crate::data::snapshot::StoredCommand, DataError> {
+    use crate::data::membership::PermissionContext;
+    r.apply_intent(
+        &PermissionContext {
+            user_id: user,
+            world_role: WorldRole::Player,
+        },
+        world,
+        vec![Operation::Delete { doc }],
+        ts,
+        WriteOrigin::Client,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_tokens_effective_owner_may_delete_it_and_nothing_else() {
+    let (r, gm, w, p1, p2) = ownership_fixture().await;
+    // Owner through the linked actor.
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let linked = owned_token_doc(w, Some(actor.id));
+    // Owner through the per-token `owner` override, no actor link.
+    let mut direct = owned_token_doc(w, None);
+    direct.id = crate::test_ids::test_uuid(7001);
+    direct.owner = Some(p1);
+    // A wall whose `owner` is p1: provenance only, no capability.
+    let mut wall = world_doc(7002, w, serde_json::json!({}));
+    wall.doc_type = "wall".into();
+    wall.engine = crate::data::document::tests::default_test_engine("wall");
+    wall.owner = Some(p1);
+    wall.permissions.default = crate::data::document::DocRole::Observer;
+    gm_create(
+        &r,
+        gm,
+        w,
+        vec![actor.clone(), linked.clone(), direct.clone(), wall.clone()],
+        1,
+    )
+    .await;
+
+    // A non-owner player is refused, and the token survives.
+    let denied = try_delete(&r, w, p2, linked.clone(), 2).await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a non-owner must not delete a token, got {denied:?}"
+    );
+    assert!(r.get_document(linked.id).await.unwrap().is_some());
+
+    // The owner still cannot delete their actor or a wall they own.
+    for (doc, what) in [(actor.clone(), "actor"), (wall.clone(), "wall")] {
+        let denied = try_delete(&r, w, p1, doc.clone(), 3).await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "an owner must not delete their {what}, got {denied:?}"
+        );
+        assert!(r.get_document(doc.id).await.unwrap().is_some());
+    }
+
+    // The owner deletes the token they own through the actor link, and the
+    // one they own by override.
+    try_delete(&r, w, p1, linked.clone(), 4)
+        .await
+        .expect("the actor's owner may delete the linked token");
+    assert!(r.get_document(linked.id).await.unwrap().is_none());
+    try_delete(&r, w, p1, direct.clone(), 5)
+        .await
+        .expect("the per-token owner may delete that token");
+    assert!(r.get_document(direct.id).await.unwrap().is_none());
+}
+
 #[tokio::test]
 async fn a_removal_carrying_a_new_value_is_rejected_at_ingress() {
     // `remove: true` deletes the key; `new` is unused. The pairing has no

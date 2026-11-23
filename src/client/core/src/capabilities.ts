@@ -61,7 +61,7 @@ function roleFloor(role: string): string[] {
  * already returns early for a GM before reaching this function.
  * @param worldGrants The world's default per-role/per-user capability grants.
  * @param isEffectiveOwner Whether `userId` is the effective owner of a TOKEN document
- * (see `effectiveOwner`); floors the resolved role at `"owner"`. Defaults
+ * (see `effectiveOwner`); floors the resolved role at `"owner"` and grants `"core:delete"`. Defaults
  * to `false` — pass `true` only for `doc_type === "token"`, mirroring the `owner_floor`
  * local inside the server's `data::permission::effective_role`, which applies this floor
  * to no other `doc_type`.
@@ -82,14 +82,17 @@ export function resolveCaps(
   worldGrants: Grants,
   isEffectiveOwner = false,
 ): Set<string> {
-  // Mirrors the server's `effective_role` owner floor: effective ownership of a
-  // TOKEN floors the user at `owner` (read + write_fields). Callers pass
-  // `isEffectiveOwner` only for a token (see `worldSession.canEdit`) — on every
-  // other doc_type `owner` grants no capability. `DocRole` is ordered
-  // owner < observer < none, so the floor only strengthens.
+  // Mirrors the server's token owner floor (`effective_role` + `resolve_access`):
+  // effective ownership of a TOKEN floors the user at `owner` (read + write_fields)
+  // and grants `core:delete` on that token. Callers pass `isEffectiveOwner` only
+  // for a token (see `worldSession.canEdit`) — on every other doc_type `owner`
+  // grants no capability. `DocRole` is ordered owner < observer < none, so the
+  // floor only strengthens. The delete grant keys on `isEffectiveOwner`, not on
+  // the resolved `owner` role, as on the server.
   const stored = perms.users[userId] ?? perms.default;
   const docRole = isEffectiveOwner ? "owner" : stored;
   const caps = new Set<string>(roleFloor(docRole));
+  if (isEffectiveOwner) caps.add("core:delete");
   for (const c of perms.capabilities.by_role[docRole] ?? []) caps.add(c);
   for (const c of perms.capabilities.by_user[userId] ?? []) caps.add(c);
   for (const c of worldGrants.by_role[docRole] ?? []) caps.add(c);

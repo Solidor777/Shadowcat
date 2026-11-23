@@ -373,7 +373,8 @@ impl ConditionRegistryEngine {
     }
 
     /// Default nine-condition emoji-glyph world seed. The engine definition —
-    /// the client's conditions UI renders whatever the registry holds.
+    /// the client's conditions UI renders whatever the registry holds. `dead` and
+    /// `unconscious` carry `overlay: true` (drawn over the token art); the rest are badges.
     ///
     /// # Examples
     ///
@@ -383,6 +384,8 @@ impl ConditionRegistryEngine {
     /// let s = ConditionRegistryEngine::seed();
     /// assert_eq!(s.conditions.len(), 9);
     /// assert_eq!(s.conditions["dead"].icon, "💀");
+    /// assert!(s.conditions["dead"].overlay && s.conditions["unconscious"].overlay);
+    /// assert!(!s.conditions["prone"].overlay);
     /// ```
     pub fn seed() -> Self {
         let entries: [(&str, &str, &str); 9] = [
@@ -404,7 +407,7 @@ impl ConditionRegistryEngine {
                     name: name.to_string(),
                     icon: icon.to_string(),
                     fx: None,
-                    overlay: false,
+                    overlay: matches!(id, "dead" | "unconscious"),
                 },
             );
         }

@@ -791,6 +791,44 @@ test("canDelete: a GM may always delete; the author of a grantAuthor'd document 
   expect(session.canDelete(observed)).toBe(false);
 });
 
+test("canDelete: a token's effective owner may delete it; a non-owner, and an owner's actor or wall, may not", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty grants
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const actor = actorWith({});
+  actor.owner = "u-self";
+  const tokenBody = { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false };
+  const linked = buildTokenDoc("w1", "s1", tokenBody, "tok-linked");
+  const direct = buildTokenDoc("w1", "s1", { ...tokenBody, actor_id: null }, "tok-direct");
+  const wall = { ...actorWith({ default: "observer" }), id: "wall1", doc_type: "wall", owner: "u-self" };
+  session.dispatchIntent([
+    { op: "create", doc: actor },
+    { op: "create", doc: linked },
+    { op: "create", doc: direct },
+  ]);
+
+  // Owner through the linked actor.
+  expect(session.canDelete(session.documents.get("tok-linked")!)).toBe(true);
+  // A token with no owner at all: not deletable by this player.
+  expect(session.canDelete(session.documents.get("tok-direct")!)).toBe(false);
+  // Owner through the per-token override.
+  session.dispatchIntent([
+    { op: "update", doc_id: "tok-direct", changes: [{ path: "/owner", old: null, new: "u-self" }] },
+  ]);
+  expect(session.canDelete(session.documents.get("tok-direct")!)).toBe(true);
+  // Re-owning the actor away revokes the inherited grant.
+  session.dispatchIntent([
+    { op: "update", doc_id: "act1", changes: [{ path: "/owner", old: "u-self", new: "u-other" }] },
+  ]);
+  expect(session.canDelete(session.documents.get("tok-linked")!)).toBe(false);
+  // The owner's actor and wall carry no delete.
+  expect(session.canDelete(session.documents.get("act1")!)).toBe(false);
+  expect(session.canDelete(wall as WireDocument)).toBe(false);
+});
+
 test("canDelete: a GM bypasses the capability check", async () => {
   const { connect, push } = pushConnect([]);
   const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
