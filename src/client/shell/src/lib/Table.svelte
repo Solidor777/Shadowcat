@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, StageView, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, SnapModePreference, StageView, TemplatesController, TemplateModalHost, NotificationHost, DialogHost, PortalChooser, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t, plural, compare } from "@shadowcat/ui-kit";
   import type { TlsStatus } from "@shadowcat/types";
   import { consoleLogger } from "@shadowcat/core";
@@ -223,6 +223,12 @@
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     notes: { present: (noteId) => session.presentNote(noteId) },
+    portal: {
+      onOffer: (cb) => session.onPortalOffer(cb),
+      choose: (offerId, choice) => session.choosePortal(offerId, choice),
+      decline: (offerId) => session.choosePortal(offerId, null),
+      open: (token) => session.openPortal(token),
+    },
     hooks: session.hooks,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     moduleStatus: session.moduleStatus,
@@ -250,3 +256,4 @@
 <TemplateModalHost controller={templates} />
 <NotificationHost />
 <DialogHost />
+<PortalChooser />

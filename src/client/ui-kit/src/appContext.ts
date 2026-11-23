@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, WireAudience, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, Notification, NotificationProgress, CombatApi, AudioApi, VfxPlayRequest, VfxNotice, PortalOfferNotice, CoreHooks, DoorState, ResetExploredFogOptions, RulerNotice, ModuleStatusEntry, ModuleManifest } from "@shadowcat/core";
 import type { TlsStatus, WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -543,6 +543,29 @@ export interface AppContext {
      * @param noteId The `note` document to present.
      * @returns Resolves once accepted; rejects with the server's reason otherwise. */
     present(noteId: string): Promise<void>;
+  };
+  /** Portal seam: subscribe to the destination offers the server addresses to this connection,
+   * answer or decline one, and ask the server to re-issue the offer for a token. The client
+   * holds no destination data beyond what an offer carries and decides nothing about who may
+   * see or answer one: the server addresses the offer and refuses every unauthorized answer. */
+  portal: {
+    /** Subscribe to portal offers; returns an unsubscribe.
+     * @param cb Called with each offer.
+     * @returns A function that removes this listener. */
+    onOffer(cb: (msg: PortalOfferNotice) => void): () => void;
+    /** Pick destination `choice` of an offer.
+     * @param offerId The offer being answered.
+     * @param choice The chosen option's `index`.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    choose(offerId: string, choice: number): Promise<void>;
+    /** Decline an offer.
+     * @param offerId The offer being answered.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    decline(offerId: string): Promise<void>;
+    /** Ask the server to re-issue the offer for a token standing in a portal-choice region.
+     * @param token The token that stands in the portal region.
+     * @returns Resolves once no refusal arrives; rejects with the server's reason otherwise. */
+    open(token: string): Promise<void>;
   };
   /** Emit surface onto the shared `HookBus` for statically-declared (`CoreHooks`) hook names —
    * a component-facing counterpart to `ModuleContext.hooks`, which a module's `register` uses
