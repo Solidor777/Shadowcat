@@ -809,6 +809,11 @@ pub(crate) struct TriggerReport {
     /// footprint bleed past the center cell would otherwise register membership a
     /// center-keyed `Enter` never fired, and vice versa).
     pub occupancy: Vec<(i32, i32)>,
+    /// When `Some`, the only regions whose `Enter`/`Arrest` triggers may fire from `entered`;
+    /// `Exit` is never filtered. A carrier-move report sets it to the attached regions the
+    /// token has not yet entered, so a stationary token's `entered` centre cell cannot
+    /// re-fire the Enter triggers of an unrelated region it already occupies.
+    pub enter_only: Option<Vec<Uuid>>,
 }
 
 /// One fired (event, round, combatant, region, trigger-index) tuple — the
@@ -2261,11 +2266,14 @@ impl Room {
                 entered: outcome.entered_cells.clone(),
                 arrest_stop: outcome.arrested.then_some(outcome.stop),
                 occupancy: vec![stop_cell],
+                enter_only: None,
             },
             ts,
             true,
         )
         .await;
+        self.fire_attached_region_triggers(repo, ctx, token, ts, true)
+            .await;
 
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
@@ -2614,6 +2622,7 @@ impl Room {
             entered,
             arrest_stop,
             occupancy,
+            enter_only,
         } = report;
         let entered: &[(i32, i32)] = &entered;
         use crate::scene::regions;
@@ -2695,6 +2704,11 @@ impl Room {
             (regions, arrest_cell, exited, stale_rows)
         };
         let mut fired = regions::fired_triggers(&regions, entered, arrest_cell, &exited);
+        if let Some(only) = &enter_only {
+            // Enter/Arrest narrow to the named regions; an Exit pair (its region id is in
+            // `exited`) always stays.
+            fired.retain(|(id, _)| only.contains(id) || exited.contains(id));
+        }
         fired.extend(regions::fired_triggers(&stale_rows, &[], None, &exited));
         // The rows a notice's secrecy forcing searches: the scene table AND the stale
         // exit rows (an Exit-fired notice rides the identical rule).
@@ -3291,11 +3305,16 @@ impl Room {
                                 occupancy: entered.clone(),
                                 entered,
                                 arrest_stop: None,
+                                enter_only: None,
                             },
                             ts,
                             false,
                         ))
                         .await;
+                        // The teleported token may carry following regions: the zone arrived
+                        // with it. The attached pass is itself one-hop (`allow_teleport: false`).
+                        Box::pin(self.fire_attached_region_triggers(repo, ctx, token, ts, false))
+                            .await;
                     }
                 }
             }
@@ -3346,11 +3365,66 @@ impl Room {
                     occupancy: cells.clone(),
                     entered: cells,
                     arrest_stop: None,
+                    enter_only: None,
                 });
             }
         }
+        let carriers: Vec<Uuid> = reports.iter().map(|r| r.token).collect();
         for report in reports {
             self.fire_region_triggers(repo, ctx, report, ts, true).await;
+        }
+        for carrier in carriers {
+            self.fire_attached_region_triggers(repo, ctx, carrier, ts, true)
+                .await;
+        }
+    }
+
+    /// The carrier-move fire site: after `carrier` committed a new position, fires the
+    /// triggers of the regions that follow it on every OTHER token of its scene, tokens that
+    /// did not move but that the zone moved onto or off of. Each occupant
+    /// (`SceneEcs::attached_occupants`) gets one `TriggerReport` whose occupancy is its centre
+    /// cell, so `fire_region_triggers`'s unconditional membership diff yields `Exit` for
+    /// regions the zone left; `Enter` fires only for attached regions the token's stored
+    /// membership does not name yet (`TriggerReport::enter_only`), so a second carrier step
+    /// with the token still inside fires nothing. A carrier with no attached region is a
+    /// single index lookup.
+    ///
+    /// Called after the carrier's own report at every position-commit site:
+    /// `execute_move`, `fire_placement_triggers` (placements, GM teleports and drags) and
+    /// the post-teleport re-fire in `fire_region_triggers`. `allow_teleport` is `false` only
+    /// from that last site, so teleport effects cannot chain across carriers.
+    ///
+    /// PRECONDITION: caller holds `publish_guard`.
+    pub(crate) async fn fire_attached_region_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        carrier: Uuid,
+        ts: i64,
+        allow_teleport: bool,
+    ) {
+        let occupants = self.scene.read().await.attached_occupants(carrier);
+        for occ in occupants {
+            let entered = if occ.enter_regions.is_empty() {
+                Vec::new()
+            } else {
+                vec![occ.cell]
+            };
+            self.fire_region_triggers(
+                repo,
+                ctx,
+                TriggerReport {
+                    scene: occ.scene,
+                    token: occ.token,
+                    entered,
+                    arrest_stop: None,
+                    occupancy: vec![occ.cell],
+                    enter_only: Some(occ.enter_regions),
+                },
+                ts,
+                allow_teleport,
+            )
+            .await;
         }
     }
 
