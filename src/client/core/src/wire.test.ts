@@ -685,6 +685,17 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
     combat_result: { type: "combat_result", request_id: "r", seq: 1 },
     door_toggle_error: { type: "door_toggle_error", request_id: "r", message: "x" },
+    portal_offer: {
+      type: "portal_offer",
+      offer_id: "o",
+      scene: "s",
+      token: "t",
+      prompt: null,
+      options: [{ index: 0, label: "x", destination_name: null, available: true }],
+      gm_only: false,
+      owner: null,
+    },
+    portal_choice_error: { type: "portal_choice_error", request_id: "r", message: "x" },
     merge_result: {
       type: "merge_result",
       request_id: "r",

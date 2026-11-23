@@ -148,6 +148,12 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     },
     vfx: over.vfx ?? { play: () => {}, onVfx: () => () => {} },
     notes: over.notes ?? { present: () => Promise.resolve() },
+    portal: over.portal ?? {
+      onOffer: () => () => {},
+      choose: () => Promise.resolve(),
+      decline: () => Promise.resolve(),
+      open: () => Promise.resolve(),
+    },
     // Identity passthrough (no listener, no cancellation): a test opting into pre-send
     // interception overrides this with its own emitter.
     hooks: over.hooks ?? { emitMutate: (_name, payload) => Promise.resolve(payload) },

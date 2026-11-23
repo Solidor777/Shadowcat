@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, reanchorRegion, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionAnchor, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, reanchorRegion, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type PortalTarget, type PortalOption, type RegionEngine, type RegionAnchor, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -496,6 +496,13 @@ export class ToolController {
    * reordering `regionTriggers` mid-pick cannot redirect the write onto an unrelated trigger
    * that happens to sit at the same index. `null` exactly when `pickingPortalRow` is `null`. */
   #pickingTrigger: RegionTrigger | null = null;
+  /** The `portal_choice` option index the pick in progress targets, or `null` when it targets a
+   * `teleport` trigger's own target. Read by `ToolRail`'s editor to show the in-progress prompt
+   * on the matching option's pick button. Set and cleared together with `pickingPortalRow`. */
+  pickingPortalOption = $state<number | null>(null);
+  /** The option OBJECT a `portal_choice` pick targets, the same stable-identity rule as
+   * `#pickingTrigger`: `endPickPortalTarget` writes only while the trigger still holds it. */
+  #pickingOption: PortalOption | null = null;
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -572,24 +579,41 @@ export class ToolController {
    * `#pickOriginalScene` with the FIRST pick's already-roamed-to destination scene rather than
    * the true original, stranding the GM's view on an intermediate scene with no way back
    * through this feature.
-   * @param row Index into `regionTriggers` of the `teleport` trigger being edited.
+   * @param row Index into `regionTriggers` of the `teleport` or `portal_choice` trigger being
+   * edited.
+   * @param option For a `portal_choice` trigger, the index of the option whose target is picked;
+   * omitted for a `teleport` trigger.
    * @example
    * ```
    * declare const controller: ToolController;
    * controller.beginPickPortalTarget(0);
+   * controller.beginPickPortalTarget(1, 2);
    * ```
    */
-  beginPickPortalTarget(row: number): void {
+  beginPickPortalTarget(row: number, option?: number): void {
     const trig = this.regionTriggers[row];
-    if (!trig || trig.effect.type !== "teleport") return;
+    if (!trig) return;
+    let target: PortalTarget;
+    let picked: PortalOption | null = null;
+    if (trig.effect.type === "teleport" && option === undefined) {
+      target = trig.effect.target;
+    } else if (trig.effect.type === "portal_choice" && option !== undefined) {
+      picked = trig.effect.options[option] ?? null;
+      if (!picked) return;
+      target = picked.target;
+    } else {
+      return;
+    }
     if (this.pickingPortalRow !== null) this.endPickPortalTarget(null);
     this.#pickOriginalScene = this.ctx.viewedSceneId?.() ?? null;
-    const targetScene = trig.effect.target.scene;
+    const targetScene = target.scene;
     if (targetScene && targetScene !== this.#pickOriginalScene) {
       this.ctx.setGmViewedScene?.(targetScene);
     }
     this.pickingPortalRow = row;
+    this.pickingPortalOption = picked ? option! : null;
     this.#pickingTrigger = trig;
+    this.#pickingOption = picked;
     this.ctx.scene.setActiveTool({
       onPointerDown: (p: Point) => {
         this.endPickPortalTarget(p);
@@ -615,12 +639,18 @@ export class ToolController {
    */
   endPickPortalTarget(pos: Point | null): void {
     const pickedTrig = this.#pickingTrigger;
+    const pickedOption = this.#pickingOption;
     this.pickingPortalRow = null;
+    this.pickingPortalOption = null;
     this.#pickingTrigger = null;
+    this.#pickingOption = null;
     if (pickedTrig && pos && this.regionTriggers.includes(pickedTrig)) {
-      if (pickedTrig.effect.type === "teleport") {
+      if (pickedTrig.effect.type === "teleport" && !pickedOption) {
         pickedTrig.effect.target.x = pos.x;
         pickedTrig.effect.target.y = pos.y;
+      } else if (pickedTrig.effect.type === "portal_choice" && pickedOption && pickedTrig.effect.options.includes(pickedOption)) {
+        pickedOption.target.x = pos.x;
+        pickedOption.target.y = pos.y;
       }
     }
     if (this.#pickOriginalScene !== null) {

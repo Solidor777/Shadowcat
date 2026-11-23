@@ -61,6 +61,7 @@ import {
   type PathResult,
   type MoveStream,
   type VfxNotice,
+  type PortalOfferNotice,
   type PresentNoteNotice,
   type VfxPlayRequest,
   type ResetExploredFogOptions,
@@ -292,6 +293,8 @@ export class WorldSession {
   #vfxListeners = new Set<(msg: VfxNotice) => void>();
   /** `onPresentNote` subscriber set. */
   #presentNoteListeners = new Set<(msg: PresentNoteNotice) => void>();
+  /** `onPortalOffer` subscriber set. */
+  #portalOfferListeners = new Set<(msg: PortalOfferNotice) => void>();
   /** `onScrollingText` subscriber set. */
   #scrollingTextListeners = new Set<
     (msg: {
@@ -1109,6 +1112,55 @@ export class WorldSession {
     return () => this.#scrollingTextListeners.delete(cb);
   }
 
+  /** Subscribe to portal offers the server addressed to this connection; returns an
+   * unsubscribe. No scene filter: the server decides who receives an offer, and a token's
+   * owner must see it whichever scene they are viewing.
+   * @param cb Called with each offer.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * const off = session.onPortalOffer(({ offerId, options }) => console.log(offerId, options.length));
+   * off();
+   * ```
+   */
+  onPortalOffer(cb: (msg: PortalOfferNotice) => void): () => void {
+    this.#portalOfferListeners.add(cb);
+    return () => this.#portalOfferListeners.delete(cb);
+  }
+
+  /** Answer a portal offer: pick destination `choice` or decline with `null`. Thin delegate to
+   * `WsClient.choosePortal`; rejects immediately when there is no live transport.
+   * @param offerId The offer being answered.
+   * @param choice The chosen option's `index`, or `null` to decline.
+   * @returns Resolves (void) once the answer is accepted; rejects with the server's reason
+   * otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.choosePortal("offer-1", 0);
+   * ```
+   */
+  choosePortal(offerId: string, choice: number | null): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.choosePortal(offerId, choice);
+  }
+
+  /** Ask the server to re-issue the portal offer for `token`. Thin delegate to
+   * `WsClient.openPortal`; rejects immediately when there is no live transport.
+   * @param token The token standing in a portal-choice region.
+   * @returns Resolves (void) once no refusal arrives; rejects with the server's reason otherwise.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.openPortal("token-1");
+   * ```
+   */
+  openPortal(token: string): Promise<void> {
+    if (!this.#ws) return Promise.reject(new NotConnectedError());
+    return this.#ws.openPortal(token);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -1703,6 +1755,9 @@ export class WorldSession {
           // that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
+        },
+        onPortalOffer: (msg) => {
+          for (const cb of this.#portalOfferListeners) cb(msg);
         },
         onScrollingText: (msg) => {
           // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a

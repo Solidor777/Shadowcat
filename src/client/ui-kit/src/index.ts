@@ -24,6 +24,7 @@ export type { ContextMenuItem, ContextMenuRequest, ContextMenuTrigger, ContextMe
 export { EscapeCoordinator, escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
 export { trapFocus } from "./focusTrap";
 export { default as DialogHost } from "./DialogHost.svelte";
+export { default as PortalChooser } from "./PortalChooser.svelte";
 export { confirmDialog } from "./confirmDialog";
 export type { ConfirmOptions } from "./confirmDialog";
 export { promptDialog } from "./promptDialog";
