@@ -1319,6 +1319,11 @@ pub enum ServerMsg {
         /// `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
         /// role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
         role_capabilities: crate::data::document::RoleCapabilities,
+        /// The members with at least one live connection in this world at send time, read from
+        /// the same `Room::presence_online` state the `Presence` frames' transitions maintain.
+        /// Includes the receiving user (their own connection is counted before this frame is
+        /// built). Sent to every member, the audience the member roster already reaches.
+        online_users: Vec<Uuid>,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
@@ -1470,14 +1475,29 @@ pub enum ServerMsg {
     /// (`Room::presence_connect`/`presence_disconnect`). Out-of-band (no seq, never
     /// buffered/resynced), mirroring `ScenePing`, and delivered to every connection in the room:
     /// the audience the member roster in `Welcome` already reaches, and online status is no more
-    /// sensitive than membership. Transitions only, with no snapshot frame: a client learns
-    /// the presence of a user who was already online before it connected at that user's next
-    /// transition.
+    /// sensitive than membership. Transitions only: the snapshot a late joiner needs rides on
+    /// `Welcome::online_users`.
     Presence {
         /// The member whose presence changed.
         user: Uuid,
         /// `true` when the member's first connection opened, `false` when the last one closed.
         online: bool,
+    },
+    /// A member changed their account profile (colour, pronouns or avatar). Out-of-band (no seq,
+    /// never buffered/resynced), mirroring `Presence`, and delivered to every connection in each
+    /// world the member is seated in: the audience `http::routes::list_members` already
+    /// reaches with the same three fields. It carries the roster's own projection, so a client
+    /// applies it exactly as it applies a roster read. A client fetches avatar bytes from the
+    /// avatar route, never from this frame.
+    MemberProfile {
+        /// The member whose profile changed.
+        user: Uuid,
+        /// Colour accent as `#rrggbb`, or `None` when unset.
+        colour: Option<String>,
+        /// Pronouns text, or `None` when unset.
+        pronouns: Option<String>,
+        /// Whether the member has an avatar.
+        has_avatar: bool,
     },
     /// A relayed emote: the sender's transient glyph over a token. Out-of-band
     /// (no seq, never buffered/resynced), mirroring `ScenePing`.

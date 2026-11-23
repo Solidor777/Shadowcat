@@ -88,6 +88,8 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * @param world The world id.
  * @param user The member's account id.
  * @param hasAvatar The roster's `has_avatar` flag for that member.
+ * @param version Optional cache-busting counter appended as `?v=`. A live profile change bumps it
+ * so an image element re-requests the bytes: the URL is otherwise the same after a replacement.
  * @returns The avatar URL, or `null` when `hasAvatar` is false.
  * @example
  * ```ts
@@ -96,9 +98,15 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * const url = avatarUrl("00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002", true);
  * ```
  */
-export function avatarUrl(world: string, user: string, hasAvatar: boolean | undefined): string | null {
+export function avatarUrl(
+  world: string,
+  user: string,
+  hasAvatar: boolean | undefined,
+  version?: number,
+): string | null {
   if (!hasAvatar) return null;
-  return apiPath(`/api/worlds/${encodeURIComponent(world)}/members/${encodeURIComponent(user)}/avatar`);
+  const base = apiPath(`/api/worlds/${encodeURIComponent(world)}/members/${encodeURIComponent(user)}/avatar`);
+  return version === undefined ? base : `${base}?v=${version}`;
 }
 
 /** The values `updateProfile` stores. */

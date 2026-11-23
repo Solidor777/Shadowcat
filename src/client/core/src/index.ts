@@ -106,6 +106,7 @@ export type {
   PresentNoteNotice,
   ResetExploredFogOptions,
   ExploredFogResetNotice,
+  MemberProfileNotice,
   RulerNotice,
   SubscriptionHandle,
   SceneFrame,

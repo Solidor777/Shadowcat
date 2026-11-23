@@ -141,6 +141,14 @@ describe("wire drift guard — message discriminants", () => {
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
   });
+  it("Welcome online_users and the member_profile frame match ts-rs", () => {
+    type W = Extract<ServerMsg, { type: "welcome" }>;
+    type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
+    expectTypeOf<W["online_users"]>().toEqualTypeOf<T["online_users"]>();
+    type P = Extract<ServerMsg, { type: "member_profile" }>;
+    type TP = Extract<Ts.ServerMsg, { type: "member_profile" }>;
+    expectTypeOf<P>().toEqualTypeOf<TP>();
+  });
   it("Welcome role_capabilities matches ts-rs", () => {
     type W = Extract<ServerMsg, { type: "welcome" }>;
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
@@ -280,6 +288,7 @@ describe("parseServerMsg", () => {
         capability_requirements: [],
         contract_declarations: [],
         schema_declarations: [],
+        online_users: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -302,6 +311,7 @@ describe("parseServerMsg", () => {
         capability_requirements: [{ path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] }],
         contract_declarations: [],
         schema_declarations: [],
+        online_users: [],
       }),
     );
     expect(m?.type).toBe("welcome");
@@ -645,6 +655,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       capability_requirements: [],
       contract_declarations: [],
       schema_declarations: [],
+      online_users: [],
     },
     event: {
       type: "event",
@@ -669,6 +680,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
     modules_changed: { type: "modules_changed" },
     presence: { type: "presence", user: "u", online: true },
+    member_profile: { type: "member_profile", user: "u", colour: "#336699", pronouns: null, has_avatar: true },
     scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",

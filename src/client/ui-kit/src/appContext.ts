@@ -232,9 +232,9 @@ export interface AppContext {
    * has nothing set. */
   memberProfiles: Map<string, MemberProfile>;
   /** userId → whether that member currently has a live connection to this world, kept current by
-   * the server's presence transitions. Transitions only: a member already online before this
-   * client connected has no entry until their next transition, so an absent key means unknown,
-   * never offline. */
+   * the server's presence transitions and seeded from each Welcome's online set. Once the roster
+   * has loaded every member has an entry; before that, an absent key means unknown, never
+   * offline. */
   presence: ReadonlyMap<string, boolean>;
   /** Translate a key to the active locale's string. */
   t: TFunc;

@@ -89,6 +89,7 @@ class WelcomingSocket {
           capability_requirements: [],
           contract_declarations: [],
           schema_declarations: [],
+          online_users: [],
         }),
       });
     }, 0);

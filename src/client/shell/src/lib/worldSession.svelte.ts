@@ -395,10 +395,14 @@ export class WorldSession {
    * `members`; only members with something set have an entry. Mutated in place like `members`. */
   readonly memberProfiles = new SvelteMap<string, MemberProfile>();
   /** userId → whether that member currently has a live connection, set from the server's
-   * `presence` transition frames. Mutated in place like `members`, so the reference captured
-   * into AppContext at mount stays valid. Not reset on reconnect and never seeded from a
-   * snapshot (the server sends none): an absent key means unknown, not offline. */
+   * `presence` transition frames and re-seeded from each Welcome's `online_users` snapshot.
+   * Mutated in place like `members`, so the reference captured into AppContext at mount stays
+   * valid. Once the roster read lands every member has an entry; before it, an absent key
+   * means unknown, not offline. */
   readonly presence = new SvelteMap<string, boolean>();
+  /** Counter appended to a live-updated avatar URL (`avatarUrl`'s `version`) so an image
+   * element re-requests bytes whose URL did not change. */
+  #profileVersion = 0;
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
    * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
@@ -1807,6 +1811,17 @@ export class WorldSession {
           void this.reconcileInstalledModules();
         },
         onPresence: (user, online) => this.presence.set(user, online),
+        // The frame carries the roster's own projection, so it lands in `memberProfiles`
+        // exactly as a roster read does: a member with nothing set has no entry. The version
+        // query busts the image cache, as the avatar URL is the same after a replacement.
+        onMemberProfile: (p) => {
+          const avatar = avatarUrl(this.world ?? "", p.user, p.hasAvatar, ++this.#profileVersion);
+          if (p.colour || p.pronouns || avatar) {
+            this.memberProfiles.set(p.user, { colour: p.colour, pronouns: p.pronouns, avatar });
+          } else {
+            this.memberProfiles.delete(p.user);
+          }
+        },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
         onConnectFailure: (n) => this.opts.onConnectFailure?.(n),
         onVfx: (msg) => {
@@ -1944,6 +1959,11 @@ export class WorldSession {
       this.#requirements = w.capability_requirements;
       this.#roleCaps = w.role_capabilities;
       this.#serverVersion = w.server_version;
+      // Replace the presence map with this Welcome's snapshot, synchronously and before any
+      // await: a `presence` transition frame arrives after this Welcome in socket order, so it
+      // applies on top of the snapshot, and a reconnect drops entries the old connection left.
+      this.presence.clear();
+      for (const user of w.online_users) this.presence.set(user, true);
       // Snapshot BEFORE any await below: a scene subscription added while this
       // Welcome's async chain is still in flight (module activation / external-module
       // load / member fetch) already self-establishes via `subscribeScene`'s own
@@ -2002,6 +2022,9 @@ export class WorldSession {
               avatar,
             });
           }
+          // The snapshot is complete, so a member it did not list is offline. A `presence`
+          // frame that landed during the roster await already has an entry and is kept.
+          if (!this.presence.has(m.user)) this.presence.set(m.user, false);
         }
       } catch (e) {
         this.#logger.warn("member list fetch failed", e);

@@ -115,6 +115,11 @@ test("avatarUrl names the world-scoped route only when the member has an avatar"
   expect(avatarUrl("w1", "u1", undefined)).toBeNull();
 });
 
+test("avatarUrl appends the cache-busting version only when one is given", () => {
+  expect(avatarUrl("w1", "u1", true, 3)).toBe("/api/worlds/w1/members/u1/avatar?v=3");
+  expect(avatarUrl("w1", "u1", false, 3)).toBeNull();
+});
+
 test("listUsers surfaces the server's reason on the non-admin 403", async () => {
   vi.stubGlobal(
     "fetch",
