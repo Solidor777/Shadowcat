@@ -31,7 +31,14 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
-import type { CombatsPayload, DoorState, PortalOfferOption, ServerConfig, TlsStatus } from "@shadowcat/types";
+import type {
+  CombatsPayload,
+  DoorState,
+  PortalOfferOption,
+  RegionShape,
+  ServerConfig,
+  TlsStatus,
+} from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -1195,6 +1202,18 @@ export type ServerMsg =
       message: string;
     }
   | {
+      /** A `place_effect` request was rejected. Addressed to the originating connection only;
+       * never broadcast. For a non-GM caller `message` is ONE uniform wording ("placement
+       * rejected") across every refusal reason, so a refusal never discloses whether a module,
+       * declaration, scene or token exists; a GM caller may receive a variant-specific
+       * diagnostic. Success is confirmed by the broadcast `event` of the region create. */
+      type: "place_effect_error";
+      /** The refused request's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text (role-conditioned). */
+      message: string;
+    }
+  | {
       /** A portal region offered `token` a choice of destinations. Out-of-band (no seq, never
        * buffered or resynced) and addressed: only a GM connection and, when `gm_only` is false,
        * the connection of `owner` receive it. Carries no coordinates and no destination
@@ -1513,6 +1532,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("door_toggle_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
+    type: z.literal("place_effect_error"),
     request_id: z.string(),
     message: z.string(),
   }),
@@ -2243,6 +2267,27 @@ export type ClientMsg =
       wall_id: string;
       /** The target state; a non-GM may name `closed`/`open` only. */
       to: DoorState;
+    }
+  | {
+      /** A module-placed effect request: place the effect set the named module declared in its
+       * manifest over the area `shape`. The frame carries the area only: behavior, cost and
+       * triggers come from the manifest on the server, never from the client. The server checks
+       * the sender against the declaration's `who`, clamps the area to its limits and creates
+       * one region. Success is confirmed by the broadcast `event` of the create; a rejection
+       * replies `place_effect_error` correlated by `request_id`. */
+      type: "place_effect";
+      /** Correlation token for `place_effect_error`. */
+      request_id: string;
+      /** The installed module's folder id that declares the placement. */
+      module: string;
+      /** The placement declaration id within that module. */
+      placement: string;
+      /** The scene the region is created on. */
+      scene_id: string;
+      /** The area the sender chose, scene units. */
+      shape: RegionShape;
+      /** The caster token, required when the declaration's `who` is `caster_owner`. */
+      caster?: string;
     }
   | {
       /** The answer to a `portal_offer`: pick destination `choice` or decline with `null`. An

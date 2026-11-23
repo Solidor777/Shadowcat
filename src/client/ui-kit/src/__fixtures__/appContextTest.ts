@@ -101,6 +101,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     pathfind: over.pathfind ?? (() => Promise.reject(new NotConnectedError())),
     moveRequest: over.moveRequest ?? (() => Promise.reject(new NotConnectedError())),
     toggleDoor: over.toggleDoor ?? (() => Promise.reject(new Error("not connected"))),
+    placeEffect: over.placeEffect ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onEmote: over.onEmote ?? (() => () => {}),
     onRuler: over.onRuler ?? (() => () => {}),

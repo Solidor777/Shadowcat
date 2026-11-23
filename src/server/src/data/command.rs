@@ -404,6 +404,13 @@ pub enum WriteOrigin {
     /// constructing the op); scope, size, engine, containment, singleton, schema and OCC
     /// checks all run; never derivable from a wire frame.
     DoorToggle,
+    /// Server-authored module-placement write: per-op capability gates are skipped (the
+    /// `ClientMsg::PlaceEffect` handler, `ws::room::Room::place_effect`, already derived the
+    /// effect set from a module manifest declaration and vetted the sender against that
+    /// declaration's `who` before ever constructing the op); scope, size, engine,
+    /// containment, singleton, schema and OCC checks all run; never derivable from a wire
+    /// frame. It creates exactly one `region` document.
+    ModulePlacement,
 }
 
 impl WriteOrigin {
@@ -420,6 +427,7 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::TemplateMerge.is_server_authored());
     /// assert!(WriteOrigin::AudioTransport.is_server_authored());
     /// assert!(WriteOrigin::DoorToggle.is_server_authored());
+    /// assert!(WriteOrigin::ModulePlacement.is_server_authored());
     /// ```
     pub fn is_server_authored(&self) -> bool {
         matches!(
@@ -431,6 +439,7 @@ impl WriteOrigin {
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
                 | WriteOrigin::DoorToggle
+                | WriteOrigin::ModulePlacement
         )
     }
 
@@ -453,6 +462,7 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::TemplateMerge.skips_capability_gates());
     /// assert!(WriteOrigin::AudioTransport.skips_capability_gates());
     /// assert!(WriteOrigin::DoorToggle.skips_capability_gates());
+    /// assert!(WriteOrigin::ModulePlacement.skips_capability_gates());
     /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
     /// ```
     pub fn skips_capability_gates(&self) -> bool {
@@ -464,6 +474,7 @@ impl WriteOrigin {
                 | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
                 | WriteOrigin::DoorToggle
+                | WriteOrigin::ModulePlacement
         )
     }
 }

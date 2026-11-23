@@ -400,3 +400,12 @@ fn write_origin_door_toggle_skips_capability_gates() {
     assert!(WriteOrigin::DoorToggle.is_server_authored());
     assert!(WriteOrigin::DoorToggle.skips_capability_gates());
 }
+
+#[test]
+fn write_origin_module_placement_skips_capability_gates() {
+    // `Room::place_effect` derives the effect set from a manifest declaration and vets the
+    // sender against its `who` before constructing the op, so the write reaches `apply_intent`
+    // already authorized.
+    assert!(WriteOrigin::ModulePlacement.is_server_authored());
+    assert!(WriteOrigin::ModulePlacement.skips_capability_gates());
+}

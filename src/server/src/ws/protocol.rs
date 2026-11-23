@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
-use crate::data::engine::{AudioChannel, DoorState};
+use crate::data::engine::{AudioChannel, DoorState, RegionShape};
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
@@ -555,6 +555,29 @@ pub enum ClientMsg {
         /// wall currently `Locked` refuses a non-GM in either direction); a GM may also
         /// set/clear `Locked`.
         to: DoorState,
+    },
+    /// A module-placed effect request: place the effect set the named module declared
+    /// (`modules::PlacementDecl`) over the area `shape`. Handled by `ws::room::Room::place_effect`,
+    /// which resolves the declaration from the world's enabled modules, checks the sender against
+    /// the declaration's `who`, clamps `shape` to its limits and commits one `region` Create under
+    /// `WriteOrigin::ModulePlacement`. The frame carries the area only: behavior, cost and triggers
+    /// come from the manifest, never from the client. A rejection replies `PlaceEffectError`,
+    /// correlated by `request_id`; success is confirmed by the broadcast `Event` of the Create.
+    PlaceEffect {
+        /// Correlation token for `PlaceEffectError`.
+        request_id: Uuid,
+        /// The installed module's folder id that declares the placement.
+        module: String,
+        /// The `PlacementDecl::id` within that module.
+        placement: String,
+        /// The scene the region is created on.
+        scene_id: Uuid,
+        /// The area the sender chose, scene units.
+        shape: RegionShape,
+        /// The caster token, required when the declaration's `who` is `caster_owner`.
+        #[serde(default)]
+        #[ts(optional)]
+        caster: Option<Uuid>,
     },
     /// The answer to a `ServerMsg::PortalOffer`: pick destination `choice` (an index into the
     /// offer's options) or decline with `None`. Handled by `ws::room::Room::handle_choose_portal`,
@@ -1617,6 +1640,17 @@ pub enum ServerMsg {
         /// The refused toggle's correlation token.
         request_id: Uuid,
         /// Player-presentable failure text (role-conditioned — see the variant doc).
+        message: String,
+    },
+    /// A `PlaceEffect` request was rejected. Addressed to the originating connection only; never
+    /// broadcast. For a non-GM caller `message` is ONE uniform wording ("placement rejected")
+    /// across every refusal reason, so a refusal never discloses whether a module, declaration,
+    /// scene or token exists; a GM caller may receive a variant-specific diagnostic. Success is
+    /// confirmed by the broadcast `Event` of the region Create.
+    PlaceEffectError {
+        /// The refused request's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text (role-conditioned, see the variant doc).
         message: String,
     },
     /// A portal region fired a `TriggerEffect::PortalChoice` for `token`: the destinations the

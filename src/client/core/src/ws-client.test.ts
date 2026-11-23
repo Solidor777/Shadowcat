@@ -1660,6 +1660,54 @@ describe("WsClient", () => {
     await expect(p).rejects.toThrow(/client stopped/);
   });
 
+  it("placeEffect sends a place_effect frame carrying only the area and rejects on a correlated place_effect_error", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }, "tok-1");
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "place_effect")!);
+    expect(frame).toMatchObject({
+      type: "place_effect",
+      module: "spells",
+      placement: "fireball",
+      scene_id: "s1",
+      shape: { kind: "circle", points: [0, 0, 3] },
+      caster: "tok-1",
+    });
+    // The frame has no field through which a client could choose what the placement does.
+    expect(Object.keys(frame).sort()).toEqual(
+      ["caster", "module", "placement", "request_id", "scene_id", "shape", "type"].sort(),
+    );
+    expect(sent.some((s) => JSON.parse(s).type === "intent")).toBe(false);
+    onMessage(
+      JSON.stringify({ type: "place_effect_error", request_id: frame.request_id, message: "placement rejected" }),
+    );
+    await expect(p).rejects.toThrow(/placement rejected/);
+  });
+
+  it("placeEffect omits the caster field when none is given", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.placeEffect("spells", "zone", "s1", { kind: "circle", points: [0, 0, 1] });
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "place_effect")!);
+    expect("caster" in frame).toBe(false);
+    client.stop();
+    await expect(p).rejects.toThrow(/client stopped/);
+  });
+
   describe("Hello / seedWatermark", () => {
     it("sends Hello{last_seq: null} as the first frame on a first socket open", async () => {
       const sent: string[] = [];

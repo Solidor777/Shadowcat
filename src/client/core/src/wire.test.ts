@@ -685,6 +685,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
     combat_result: { type: "combat_result", request_id: "r", seq: 1 },
     door_toggle_error: { type: "door_toggle_error", request_id: "r", message: "x" },
+    place_effect_error: { type: "place_effect_error", request_id: "r", message: "x" },
     portal_offer: {
       type: "portal_offer",
       offer_id: "o",

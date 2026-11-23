@@ -393,6 +393,14 @@ request_id: string,
 /**
  * Player-presentable failure text (role-conditioned — see the variant doc).
  */
+message: string, } | { "type": "place_effect_error", 
+/**
+ * The refused request's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text (role-conditioned, see the variant doc).
+ */
 message: string, } | { "type": "portal_offer", 
 /**
  * Identifies the offer in `ClientMsg::ChoosePortal`.

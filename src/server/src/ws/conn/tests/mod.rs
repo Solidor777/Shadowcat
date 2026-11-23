@@ -14,6 +14,7 @@ mod combat_intents;
 mod door_toggle;
 mod join_refusal;
 mod mover_light;
+mod place_effect;
 mod portal_choice;
 mod refusal_drain;
 mod reset_explored_fog;
