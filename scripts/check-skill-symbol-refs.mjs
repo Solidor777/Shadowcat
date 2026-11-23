@@ -1572,9 +1572,6 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   "enum", "anyOf", "oneOf",
   // URL grammar terms from the standard the SSRF guard parses against.
   "userinfo",
-  // The filesystem RENAME syscall, whose backticks mark the one atomic operation apart from the
-  // same sentence's ordinary use of the word.
-  "rename",
   // A filesystem copy command named while explaining what this repo's code does NOT shell out to.
   "xcopy", "robocopy",
   // A transitive dependency this repo never names in its own manifest, and two cargo FEATURES of
@@ -1592,12 +1589,12 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   "minConsecutiveDelta",
   // Deliberate NEGATIVE citations, each in a sentence asserting the named thing does NOT exist:
   // no back-compat `*System` aliases (verified against `src/server/src/data/engine/`, which
-  // declares none of them), no sidebar `tab` field on a `Contribution`, no `TabbedSurface`
+  // declares none of them), no `TabbedSurface`
   // component, no `sys_f64` pointer-walk helper, no polyanya `blocked_layers` mechanism, and no
   // `rand` dependency (determinism by construction). The citation's own sentence is what makes
   // the claim true, not a pointer to a live declaration.
   "ActorSystem", "TokenSystem", "FactionRegistrySystem", "ConditionRegistrySystem", "RegionSystem",
-  "tab", "TabbedSurface", "sys_f64", "blocked_layers", "rand",
+  "TabbedSurface", "sys_f64", "blocked_layers", "rand",
 ]);
 
 // The name of something EXTERNAL that owns members: a crate, a package, or a type declared inside
@@ -1617,7 +1614,7 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Crates this repo depends on, named as the owner of whatever they expose.
   "tokio", "clap", "serde_json", "ammonia", "polyanya",
   // Rust primitive and std types.
-  "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
+  "f64", "i128", "Vec", "Option", "Some", "Result", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
   "SqlitePoolOptions", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
