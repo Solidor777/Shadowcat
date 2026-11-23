@@ -1208,6 +1208,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   elevation: null,
  *   ambient_override: null,
  *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1240,6 +1241,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *   elevation: null,
  *   ambient_override: null,
  *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);
@@ -1369,6 +1371,7 @@ export function buildRegionFromTemplate(worldId: string, template: WireDocument,
     elevation: engine.elevation ?? null,
     ambient_override: null,
     occludes: null,
+    anchor: null,
   };
   const region = buildRegionDoc(worldId, template.parent_id as string, regionEngine, id);
   return {

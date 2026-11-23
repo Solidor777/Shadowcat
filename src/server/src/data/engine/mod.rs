@@ -36,8 +36,8 @@ pub use combat::{
 pub use geometry::{
     AmbientLightMode, AmbientLightOverride, CompoundShapePart, DoorState, DrawingEngine,
     DrawingShape, EffectiveWallFlags, ElevationBand, Fill, NoticeAudience, PortalTarget,
-    RegionEngine, RegionGeometry, RegionOcclusion, RegionShape, RegionTrigger, Seg, Stroke,
-    TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
+    RegionAnchor, RegionEngine, RegionGeometry, RegionOcclusion, RegionShape, RegionTrigger, Seg,
+    Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
     WallProximity, WallSense, WallSightTier, MAX_PROXIMITY_CELLS, MAX_REGION_SHAPE_PARTS,
     MAX_TRIGGER_ID_CHARS,
 };

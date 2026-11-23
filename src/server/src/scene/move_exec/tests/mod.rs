@@ -812,7 +812,7 @@ fn impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell() {
     // move for a reason the test does not name, and a rect derived from the shape must be free
     // to move without that going unnoticed.
     let field = ecs
-        .region_field(scene_id, None, crate::scene::elevation::GROUND)
+        .region_field(scene_id, None, crate::scene::elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         field.is_impassable((1, 0)),
@@ -908,7 +908,7 @@ fn arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask() {
     // location, so the same loop pins the square-indexing claim the test is named for — a
     // square `floor(p/cell)` region lookup would consult (3,0) and find nothing.
     let field = ecs
-        .region_field(scene_id, None, crate::scene::elevation::GROUND)
+        .region_field(scene_id, None, crate::scene::elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         field.is_arrest((2, 0)),
@@ -2497,6 +2497,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("the fixture is routable for this footprint");
@@ -2563,6 +2564,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: crate::scene::elevation::GROUND,
+                token: None,
             },
         )
         .expect("the fixture is routable for this footprint");
@@ -2647,6 +2649,7 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             );
             if let Ok(r) = route {
@@ -3168,6 +3171,7 @@ fn router_preview_never_offers_a_route_the_executor_would_reject_through_a_one_w
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: crate::scene::elevation::GROUND,
+                token: None,
             },
         )
         .expect("a detour around the wall's end exists");
@@ -3198,6 +3202,99 @@ fn router_preview_never_offers_a_route_the_executor_would_reject_through_a_one_w
         !out.truncated,
         "every route the router offers must survive the gate"
     );
+}
+
+/// A scene with a carrier at (0,0) and a second token at (300,0), plus an impassable aura
+/// anchored to the carrier covering the carrier's neighbour cell to its right
+/// (`include_carrier` per the argument). Returns `(ecs, scene, carrier, other)`.
+fn scene_with_an_impassable_aura(include_carrier: bool) -> (SceneEcs, Uuid, Uuid, Uuid) {
+    let scene_id = crate::test_ids::test_uuid(10);
+    let carrier = crate::test_ids::test_uuid(11);
+    let other = crate::test_ids::test_uuid(13);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc(
+                10,
+                0,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
+            ),
+            entity_doc(
+                11,
+                10,
+                "token",
+                json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+            entity_doc(
+                13,
+                10,
+                "token",
+                json!({ "x": 300.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+            entity_doc(
+                12,
+                10,
+                "region",
+                json!({
+                    "shape": { "kind": "rect", "points": [50.0, -50.0, 150.0, 50.0] },
+                    "behavior": "impassable",
+                    "cost": 1.0,
+                    "enabled": true,
+                    "anchor": { "token": carrier.to_string(), "include_carrier": include_carrier },
+                }),
+            ),
+        ],
+        0,
+    );
+    (ecs, scene_id, carrier, other)
+}
+
+/// Moves `token` along `path` as a non-GM with no mask and returns the outcome.
+fn move_unmasked(ecs: &SceneEcs, scene: Uuid, token: Uuid, path: &[(f64, f64)]) -> MoveOutcome {
+    let visible = visible_grid(3);
+    execute_move(
+        ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        path,
+        false,
+        0.4,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_carrier_walks_through_its_own_impassable_aura_but_another_token_is_stopped_by_it() {
+    let (ecs, scene, carrier, other) = scene_with_an_impassable_aura(false);
+    // The aura sits on the cell right of the carrier (x in [50, 150] around the carrier at the
+    // origin), so the carrier's own step east enters it.
+    let own = move_unmasked(&ecs, scene, carrier, &[(0.0, 0.0), (100.0, 0.0)]);
+    assert!(!own.truncated, "the carrier is exempt from its own aura");
+    assert_eq!(own.stop, (100.0, 0.0));
+    // The aura is read at the carrier's position (0,0), so a second token stepping toward it
+    // is stopped at the aura's edge.
+    let blocked = move_unmasked(&ecs, scene, other, &[(300.0, 0.0), (200.0, 0.0)]);
+    assert!(blocked.truncated, "another token is stopped by the aura");
+    assert_eq!(blocked.stop, (300.0, 0.0));
+}
+
+#[test]
+fn include_carrier_makes_the_carrier_feel_its_own_impassable_aura() {
+    let (ecs, scene, carrier, _) = scene_with_an_impassable_aura(true);
+    let own = move_unmasked(&ecs, scene, carrier, &[(0.0, 0.0), (100.0, 0.0)]);
+    assert!(
+        own.truncated,
+        "include_carrier puts the carrier under its own aura"
+    );
+    assert_eq!(own.stop, (0.0, 0.0));
 }
 
 mod bearing;

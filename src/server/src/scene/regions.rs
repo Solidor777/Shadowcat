@@ -779,12 +779,13 @@ pub(crate) fn occluder_outline(
 }
 
 /// One memoized `occluder_outline` result for a region document. Reused only while the region's
-/// shape, the scene's cell size and its grid kind all still equal the values it was computed
-/// from, so a stale entry can never be served whichever path mutated the document (the same
-/// self-verifying shape as `SceneEcs`'s decoded-engine cache).
+/// resolved parts (absolute coordinates: an anchored region's carrier position is part of the
+/// key), the scene's cell size and its grid kind all still equal the values it was computed
+/// from, so a stale entry can never be served whichever path mutated the document or moved the
+/// carrier (the same self-verifying shape as `SceneEcs`'s decoded-engine cache).
 pub(crate) struct OccluderCacheEntry {
-    /// The region geometry the outline was computed from.
-    pub(crate) shape: crate::data::engine::RegionGeometry,
+    /// The resolved `(shape, hole)` parts the outline was computed from.
+    pub(crate) parts: Vec<(RegionShape, bool)>,
     /// The cell size the outline was computed at.
     pub(crate) cell: f64,
     /// The grid kind (square or hex) the outline was computed on.
@@ -847,6 +848,72 @@ fn parse_one_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionSha
         }
         _ => None,
     }
+}
+
+/// Translate (and, when `follow_rotation`, rotate) an anchored region's `(shape, hole)` part
+/// list from carrier-centre offsets into absolute scene coordinates. The ONE geometry step every
+/// anchored-region consumer shares (`SceneEcs::anchored_region_parts` calls it right after
+/// `parse_region_shape`), so the composed `RegionField`, the trigger identity rows and the
+/// occluder outlines translate identically.
+///
+/// `carrier_pos` is the carrier token's centre, `carrier_rotation` its `TokenEngine::rotation`
+/// in degrees (the same angle convention as `rotate_point`). Without `follow_rotation` every
+/// shape keeps its kind (a `Rect` stays a `Rect`, so a translated-only region rasterizes
+/// exactly as a static one of the same absolute shape). With it, a `Rect` becomes a four-vertex
+/// `Polygon` (a rotated rectangle is not axis-aligned); a `Circle` stays a `Circle`, rotated
+/// about the carrier's centre. A non-finite pose yields non-finite coordinates, which
+/// `rasterize` already fails closed on.
+pub(crate) fn anchored_parts(
+    parts: Vec<(RegionShape, bool)>,
+    carrier_pos: (f64, f64),
+    carrier_rotation: f64,
+    follow_rotation: bool,
+) -> Vec<(RegionShape, bool)> {
+    let (px, py) = carrier_pos;
+    // Offset -> absolute: optional rotation about the carrier's centre, then translation.
+    let place = |x: f64, y: f64| -> (f64, f64) {
+        let (x, y) = if follow_rotation {
+            rotate_point((x, y), carrier_rotation)
+        } else {
+            (x, y)
+        };
+        (x + px, y + py)
+    };
+    parts
+        .into_iter()
+        .map(|(shape, hole)| {
+            let placed = match shape {
+                RegionShape::Rect { x0, y0, x1, y1 } if !follow_rotation => RegionShape::Rect {
+                    x0: x0 + px,
+                    y0: y0 + py,
+                    x1: x1 + px,
+                    y1: y1 + py,
+                },
+                RegionShape::Rect { x0, y0, x1, y1 } => RegionShape::Polygon {
+                    points: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                        .into_iter()
+                        .map(|(x, y)| place(x, y))
+                        .collect(),
+                },
+                RegionShape::Circle { cx, cy, r } => {
+                    let (cx, cy) = place(cx, cy);
+                    RegionShape::Circle { cx, cy, r }
+                }
+                RegionShape::Polygon { points } => RegionShape::Polygon {
+                    points: points.into_iter().map(|(x, y)| place(x, y)).collect(),
+                },
+            };
+            (placed, hole)
+        })
+        .collect()
+}
+
+/// Rotate `p` about the origin by `degrees`, clockwise on a y-down canvas (the
+/// `TokenEngine::rotation` convention: the standard rotation matrix applied to `(x, y)` with
+/// `+y` pointing down the screen).
+fn rotate_point(p: (f64, f64), degrees: f64) -> (f64, f64) {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    (p.0 * cos - p.1 * sin, p.0 * sin + p.1 * cos)
 }
 
 /// One trigger-bearing region's identity row: which cells it covers, which

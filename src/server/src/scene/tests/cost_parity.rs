@@ -49,6 +49,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("routable");
@@ -137,6 +138,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                         budget_cells: None,
                         traits: traits.clone(),
                         elevation: elevation::GROUND,
+                        token: None,
                     },
                 )
                 .expect("routable");
@@ -220,6 +222,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");
@@ -300,6 +303,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
                         budget_cells: None,
                         traits: traits.clone(),
                         elevation: elevation::GROUND,
+                        token: None,
                     },
                 )
                 .expect("routable");
@@ -399,6 +403,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");
@@ -418,6 +423,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
                 budget_cells: None,
                 traits: exempt_traits(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");
@@ -500,6 +506,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
                 budget_cells: None,
                 traits: exempt_traits(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");
@@ -586,6 +593,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
                 budget_cells: None,
                 traits: exempt_traits(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a route around the band exists");
@@ -669,6 +677,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");
@@ -683,6 +692,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
                 budget_cells: None,
                 traits: exempt_traits(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("routable");

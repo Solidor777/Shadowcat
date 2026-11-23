@@ -442,7 +442,7 @@ pub(crate) fn execute_move(
     // Authoritative region field for the mover's floor: always the full field, never
     // viewer-filtered — this executor springs secret regions regardless of what the mover's
     // pathfind preview could see.
-    let Some(regions) = ecs.region_field(scene, None, mover_elevation) else {
+    let Some(regions) = ecs.region_field(scene, None, mover_elevation, Some(token)) else {
         return Err(MoveReject::SceneUnknown);
     };
 

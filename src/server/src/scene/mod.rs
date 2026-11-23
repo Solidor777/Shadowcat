@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+mod anchored_regions;
 pub mod audibility;
 pub(crate) mod elevation;
 pub(crate) mod emitters;
@@ -946,6 +947,7 @@ pub struct RouteRequester<'a> {
 ///     budget_cells: None,
 ///     traits: Default::default(),
 ///     elevation: 0.0,
+///     token: None,
 /// };
 /// assert_eq!(mover.footprint_radius, 0.4);
 /// ```
@@ -970,6 +972,10 @@ pub struct RouteMover {
     /// named-token request: the caller re-resolves it off the token exactly as `footprint_radius`
     /// is re-resolved.
     pub elevation: f64,
+    /// The named mover token, `None` for a token-less preview. Selects which token-anchored
+    /// regions exempt the mover (`RegionAnchor::include_carrier` unset), so the route and the
+    /// executor price a carrier against the same region set.
+    pub token: Option<Uuid>,
 }
 
 /// The per-world derived world. Writes are serialized by the caller
@@ -2759,7 +2765,7 @@ impl SceneEcs {
     ///     world_defaults: &defaults,
     ///     explored: None,
     /// };
-    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0 };
+    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0, token: None };
     /// // No scene document exists: the route is refused, not routed against a synthesized grid.
     /// let result = ecs.pathfind(requester, uuid::Uuid::new_v4(), (0.0, 0.0), &[], mover);
     /// assert!(result.is_err());
@@ -2784,6 +2790,7 @@ impl SceneEcs {
             budget_cells,
             traits,
             elevation,
+            token: mover_token,
         } = mover;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
@@ -2854,9 +2861,12 @@ impl SceneEcs {
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
-                let Some(regions) =
-                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
-                else {
+                let Some(regions) = self.region_field(
+                    scene,
+                    if is_gm { None } else { Some(user) },
+                    elevation,
+                    mover_token,
+                ) else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
                 pathfinding::find(
@@ -2882,9 +2892,12 @@ impl SceneEcs {
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
                 // paths. The per-requester field omits any region a non-GM cannot see (secret
                 // regions spring only at `move_exec`).
-                let Some(regions) =
-                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
-                else {
+                let Some(regions) = self.region_field(
+                    scene,
+                    if is_gm { None } else { Some(user) },
+                    elevation,
+                    mover_token,
+                ) else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
                 // An exempt mover's terrain does not force the weighted sub-path: the
@@ -3037,13 +3050,19 @@ impl SceneEcs {
     /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
     /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
     /// mirroring `pathfind`'s `PathFail::Invalid`.
+    ///
+    /// `mover` names the token whose movement the field is built for (`None` for a viewer-only
+    /// or token-less read): a region anchored to `mover` that leaves `include_carrier` unset is
+    /// omitted, so a carrier is never taxed or blocked by its own aura. A region anchored to a
+    /// carrier that does not resolve is dormant and contributes nothing.
     pub(crate) fn region_field(
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
         elevation: f64,
+        mover: Option<Uuid>,
     ) -> Option<regions::RegionField> {
-        self.region_field_if(scene, viewer, |band| {
+        self.region_field_if(scene, viewer, mover, |band| {
             elevation::band_contains(band, elevation)
         })
     }
@@ -3057,6 +3076,7 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
+        mover: Option<Uuid>,
         elevation_ok: impl Fn(Option<&eng::ElevationBand>) -> bool,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
@@ -3079,7 +3099,10 @@ impl SceneEcs {
             if !elevation_ok(region_eng.elevation.as_ref()) {
                 continue;
             }
-            let Some(parts) = regions::parse_region_shape(&region_eng.shape) else {
+            if anchored_regions::exempts_mover(&region_eng, mover) {
+                continue;
+            }
+            let Some(parts) = self.anchored_region_parts(scene, &region_eng) else {
                 continue;
             };
             let behavior = match region_eng.behavior.as_str() {
@@ -3126,7 +3149,7 @@ impl SceneEcs {
         levels: &[eng::SceneLevel],
         level: &str,
     ) -> BTreeMap<(i32, i32), regions::AmbientAdjustment> {
-        self.region_field_if(scene, None, |band| {
+        self.region_field_if(scene, None, None, |band| {
             elevation::band_overlaps_level(band, levels, level)
         })
         .map(regions::RegionField::into_ambient_map)
@@ -3150,10 +3173,15 @@ impl SceneEcs {
     /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
     /// Rows are sorted by region id so downstream effect application order is deterministic
     /// (entity-query order is unspecified).
+    ///
+    /// `mover` is the token the table is built for: a region anchored to it with
+    /// `include_carrier` unset is omitted, so a carrier standing in its own region fires
+    /// nothing and records no membership.
     pub(crate) fn trigger_regions(
         &self,
         scene: Uuid,
         elevation: f64,
+        mover: Option<Uuid>,
     ) -> Option<Vec<regions::TriggerRegion>> {
         // The `Option` contract (refuse a scene with no live document) is this
         // method's own; the shared builder refuses per-row on the same lookup.
@@ -3163,7 +3191,7 @@ impl SceneEcs {
             .query::<&SceneEntity>()
             .iter()
             .filter(|e| e.doc.doc_type == "region" && e.doc.parent_id == Some(scene))
-            .filter_map(|e| self.build_trigger_region(&e.doc, Some(elevation)))
+            .filter_map(|e| self.build_trigger_region(&e.doc, Some(elevation), mover))
             .collect();
         out.sort_by_key(|r| r.region_id);
         Some(out)
@@ -3194,7 +3222,7 @@ impl SceneEcs {
         if doc.doc_type != "region" {
             return None;
         }
-        self.build_trigger_region(doc, None)
+        self.build_trigger_region(doc, None, None)
     }
 
     /// The shared row-construction behind `trigger_regions` and `trigger_region_row` —
@@ -3203,11 +3231,14 @@ impl SceneEcs {
     /// rasterizable on its parent scene's live grid). `mover_elevation: Some(e)` applies
     /// the mover's-floor band filter (`elevation::band_contains`); `None` skips it (see
     /// `trigger_region_row` for why Exit firing must not re-filter). Returns `None` for
-    /// any document that fails those checks (fail-closed).
+    /// any document that fails those checks (fail-closed), including an anchored region whose
+    /// carrier does not resolve (dormant) and one `anchored_regions::exempts_mover` exempts
+    /// `mover` from.
     fn build_trigger_region(
         &self,
         doc: &Document,
         mover_elevation: Option<f64>,
+        mover: Option<Uuid>,
     ) -> Option<regions::TriggerRegion> {
         let scene = doc.parent_id?;
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
@@ -3220,7 +3251,10 @@ impl SceneEcs {
                 return None;
             }
         }
-        let parts = regions::parse_region_shape(&region_eng.shape)?;
+        if anchored_regions::exempts_mover(&region_eng, mover) {
+            return None;
+        }
+        let parts = self.anchored_region_parts(scene, &region_eng)?;
         let grid = self.resolve_grid_shape(scene, cell);
         let cells = regions::rasterize_compound(&parts, cell, &*grid)?;
         Some(regions::TriggerRegion {

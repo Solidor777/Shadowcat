@@ -664,6 +664,7 @@ fn pathfind_refuses_a_scene_with_no_document() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -2495,11 +2496,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     let s10 = crate::test_ids::test_uuid(10);
     let s11 = crate::test_ids::test_uuid(11);
     assert!(ecs
-        .region_field(s10, None, elevation::GROUND)
+        .region_field(s10, None, elevation::GROUND, None)
         .expect("scene exists")
         .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(!ecs
-        .region_field(s11, None, elevation::GROUND)
+        .region_field(s11, None, elevation::GROUND, None)
         .expect("scene exists")
         .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 
@@ -2510,11 +2511,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     });
 
     assert!(!ecs
-        .region_field(s10, None, elevation::GROUND)
+        .region_field(s10, None, elevation::GROUND, None)
         .expect("scene exists")
         .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
     assert!(ecs
-        .region_field(s11, None, elevation::GROUND)
+        .region_field(s11, None, elevation::GROUND, None)
         .expect("scene exists")
         .has_terrain_or_impassable(&std::collections::BTreeSet::new()));
 }
