@@ -244,9 +244,13 @@ user: string,
  */
 online: boolean, } | { "type": "member_profile", 
 /**
- * The member whose profile changed.
+ * The member the row describes.
  */
 user: string, 
+/**
+ * The member's username, the name the roster and chat show.
+ */
+username: string, 
 /**
  * Colour accent as `#rrggbb`, or `None` when unset.
  */

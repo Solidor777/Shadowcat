@@ -1966,9 +1966,18 @@ describe("WsClient", () => {
     });
     await client.start();
     onMessage(
-      JSON.stringify({ type: "member_profile", user: "u1", colour: "#336699", pronouns: null, has_avatar: true }),
+      JSON.stringify({
+        type: "member_profile",
+        user: "u1",
+        username: "Zara",
+        colour: "#336699",
+        pronouns: null,
+        has_avatar: true,
+      }),
     );
-    expect(received).toEqual([{ user: "u1", colour: "#336699", pronouns: null, hasAvatar: true }]);
+    expect(received).toEqual([
+      { user: "u1", username: "Zara", colour: "#336699", pronouns: null, hasAvatar: true },
+    ]);
   });
 });
 

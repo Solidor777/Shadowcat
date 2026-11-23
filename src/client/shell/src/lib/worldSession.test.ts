@@ -612,7 +612,7 @@ test("a member_profile frame updates memberProfiles in place with a cache-busted
   push(welcomeFrame);
   await vi.waitFor(() => expect(session.role).toBe("player"));
 
-  push({ type: "member_profile", user: "u9", colour: "#336699", pronouns: "they/them", has_avatar: true });
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: "#336699", pronouns: "they/them", has_avatar: true });
   await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(true));
   expect(session.memberProfiles.get("u9")).toEqual({
     colour: "#336699",
@@ -621,13 +621,35 @@ test("a member_profile frame updates memberProfiles in place with a cache-busted
   });
   const first = session.memberProfiles.get("u9")!.avatar;
 
-  push({ type: "member_profile", user: "u9", colour: "#336699", pronouns: null, has_avatar: true });
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: "#336699", pronouns: null, has_avatar: true });
   await vi.waitFor(() => expect(session.memberProfiles.get("u9")!.pronouns).toBeNull());
   expect(session.memberProfiles.get("u9")!.avatar).not.toBe(first);
 
-  push({ type: "member_profile", user: "u9", colour: null, pronouns: null, has_avatar: false });
+  push({ type: "member_profile", user: "u9", username: "Zara", colour: null, pronouns: null, has_avatar: false });
   await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(false));
   expect(session.memberProfiles).toBe(captured);
+});
+
+test("a member_profile frame for an unlisted member adds it to members and the roster as offline, and keeps a known presence", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const capturedMembers = session.members;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  expect(session.members.has("u7")).toBe(false);
+
+  push({ type: "member_profile", user: "u7", username: "Newcomer", colour: null, pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.members.get("u7")).toBe("Newcomer"));
+  expect(session.presence.get("u7")).toBe(false);
+  expect(session.members).toBe(capturedMembers);
+
+  // A later frame (a profile change) never resets a presence the member's own frame set.
+  push({ type: "presence", user: "u7", online: true });
+  await vi.waitFor(() => expect(session.presence.get("u7")).toBe(true));
+  push({ type: "member_profile", user: "u7", username: "Newcomer", colour: "#336699", pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u7")).toBe(true));
+  expect(session.presence.get("u7")).toBe(true);
 });
 
 test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {

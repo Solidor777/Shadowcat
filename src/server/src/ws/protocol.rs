@@ -1483,15 +1483,19 @@ pub enum ServerMsg {
         /// `true` when the member's first connection opened, `false` when the last one closed.
         online: bool,
     },
-    /// A member changed their account profile (colour, pronouns or avatar). Out-of-band (no seq,
-    /// never buffered/resynced), mirroring `Presence`, and delivered to every connection in each
-    /// world the member is seated in: the audience `http::routes::list_members` already
-    /// reaches with the same three fields. It carries the roster's own projection, so a client
-    /// applies it exactly as it applies a roster read. A client fetches avatar bytes from the
-    /// avatar route, never from this frame.
+    /// A member's roster row: sent when they change their account profile (colour, pronouns or
+    /// avatar) and when they are seated in a world (`RoomRegistry::announce_member_seated`).
+    /// Out-of-band (no seq, never buffered/resynced), mirroring `Presence`, and delivered to
+    /// every connection in each world the member is seated in (for a seating, the one world):
+    /// the audience `http::routes::list_members` already reaches with the same fields. It
+    /// carries the roster's own projection, so a client applies it exactly as it applies a
+    /// roster read: it adds a member the client has not listed and updates one it has. A client
+    /// fetches avatar bytes from the avatar route, never from this frame.
     MemberProfile {
-        /// The member whose profile changed.
+        /// The member the row describes.
         user: Uuid,
+        /// The member's username, the name the roster and chat show.
+        username: String,
         /// Colour accent as `#rrggbb`, or `None` when unset.
         colour: Option<String>,
         /// Pronouns text, or `None` when unset.
