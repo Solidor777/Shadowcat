@@ -683,6 +683,7 @@ export const en: Messages = {
   "gameSettings.scene.bounds": "Scene size (grid units)",
   "gameSettings.scene.boundsWidth": "Scene width (cells)",
   "gameSettings.scene.boundsHeight": "Scene height (cells)",
+  "gameSettings.scene.padding": "Margin around the scene (cells)",
   "sceneBrowser.tab": "Scenes",
   "sceneBrowser.title": "Scenes",
   "sceneBrowser.sceneLabel": "Scene {n}",

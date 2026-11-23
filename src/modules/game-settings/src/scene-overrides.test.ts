@@ -144,6 +144,37 @@ describe("per-scene overrides", () => {
     ]);
   });
 
+  it("the margin input shows 0 for an unauthored scene and writes /engine/padding with the real pre-image", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const input = screen.getByLabelText("gameSettings.scene.padding") as HTMLInputElement;
+    expect(input.value).toBe("0");
+    expect(input.max).toBe("100");
+    await fireEvent.change(input, { target: { value: "3" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/padding", old: null, new: 3 }] },
+    ]);
+  });
+
+  it("the margin input carries an authored margin as the pre-image of the next write", async () => {
+    const dispatchIntent = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", { padding: 2 }, "scene1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), dispatchIntent }) });
+
+    const input = screen.getByLabelText("gameSettings.scene.padding") as HTMLInputElement;
+    expect(input.value).toBe("2");
+    await fireEvent.change(input, { target: { value: "5" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "scene1", changes: [{ path: "/engine/padding", old: 2, new: 5 }] },
+    ]);
+  });
+
   it("setting movement model override writes to the selected scene doc", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");

@@ -9,7 +9,7 @@
     listAssets, queryScenesInCreationOrder,
     VISION_TREATMENT_CONTRACT,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type RenderHint, type Perception,
-    type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
+    type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, MAX_SCENE_PADDING_CELLS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
     type AudioOverlay, type Occlusion, type SceneAmbience, PLAYLIST_DOC_TYPE,
@@ -1331,6 +1331,14 @@
         <input type="number" min="1" step="1" aria-label={ctx.t("gameSettings.scene.boundsHeight")}
           value={ssys?.bounds?.height ?? DEFAULT_SCENE_BOUNDS.height}
           onchange={(e) => setBounds("height", Number((e.currentTarget as HTMLInputElement).value))} />
+      </label>
+      <!-- Scene margin: grid cells added on every side of the authored rectangle; 0 = none. -->
+      <label>
+        {ctx.t("gameSettings.scene.padding")}
+        <input type="number" min="0" max={MAX_SCENE_PADDING_CELLS} step="1"
+          aria-label={ctx.t("gameSettings.scene.padding")}
+          value={ssys?.padding ?? 0}
+          onchange={(e) => setScene("/engine/padding", ssys?.padding ?? null, Number((e.currentTarget as HTMLInputElement).value))} />
       </label>
 
       <div class="ambience">
