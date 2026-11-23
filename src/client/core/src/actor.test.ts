@@ -250,7 +250,7 @@ describe("resolveConditions", () => {
   it("carries the registry's authored fx payload through to the display entry", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["poisoned"] }, "act1");
     const fx = { tint: "#66ff66", desaturate: true };
-    const registry = buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx } }, "creg1");
+    const registry = buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx, overlay: false } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
     expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "poisoned", name: "Poisoned", icon: "🤢", fx, overlay: false }]);
   });
