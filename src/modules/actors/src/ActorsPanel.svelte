@@ -13,7 +13,7 @@
   import TokenMovementControl from "./TokenMovementControl.svelte";
   import TokenDispositionControl from "./TokenDispositionControl.svelte";
   import TokenIdentityHiddenControl from "./TokenIdentityHiddenControl.svelte";
-  import TokenElevationControl from "./TokenElevationControl.svelte";
+  import TokenQuickEdit from "./TokenQuickEdit.svelte";
   import TokenRotationLockControl from "./TokenRotationLockControl.svelte";
   import TokenEmissionControl from "./TokenEmissionControl.svelte";
   import TokenBarsControl from "./TokenBarsControl.svelte";
@@ -159,8 +159,7 @@
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
    * the movement-tag override control (`TokenMovementControl`), the disposition override control
    * (`TokenDispositionControl`), the GM-only secret-identity toggle
-   * (`TokenIdentityHiddenControl`), the elevation control
-   * (`TokenElevationControl`), the rotation-lock control (`TokenRotationLockControl`), the
+   * (`TokenIdentityHiddenControl`), the rotation-lock control (`TokenRotationLockControl`), the
    * facing-vision control (`TokenFacingVisionControl`), and the per-token emission/visual override controls
    * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
@@ -169,6 +168,11 @@
     if (ids.size === 0) return null;
     return ctx.documents.query("token").find((t) => ids.has(t.id))?.id ?? null;
   });
+
+  /** The selected token's id when exactly one token is selected, else `null`: the quick-edit
+   * section (`TokenQuickEdit`: elevation, condition toggles, bar nudges) acts on one token, and
+   * its condition palette follows the whole selection, so it renders only for a single one. */
+  const quickEditTokenId = $derived(ctx.tokenSelection.ids.size === 1 ? selectedTokenId : null);
 
   /** The id of the first token on the viewed scene linked to actor `actorId` (`engine.actor_id`),
    * or `null` when the actor has no token there. Drives the row's "locate on scene" action and
@@ -523,7 +527,7 @@
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
-  <TokenElevationControl tokenId={selectedTokenId} />
+  <TokenQuickEdit tokenId={quickEditTokenId} />
   <TokenRotationLockControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
