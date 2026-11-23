@@ -81,7 +81,14 @@ schema_declarations: Array<SchemaDeclaration>,
  * `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
  * role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
  */
-role_capabilities: RoleCapabilities, } | { "type": "event", 
+role_capabilities: RoleCapabilities, 
+/**
+ * The members with at least one live connection in this world at send time, read from
+ * the same `Room::presence_online` state the `Presence` frames' transitions maintain.
+ * Includes the receiving user (their own connection is counted before this frame is
+ * built). Sent to every member, the audience the member roster already reaches.
+ */
+online_users: Array<string>, } | { "type": "event", 
 /**
  * The committed, per-recipient-filtered command.
  */
@@ -235,7 +242,23 @@ user: string,
 /**
  * `true` when the member's first connection opened, `false` when the last one closed.
  */
-online: boolean, } | { "type": "emote", 
+online: boolean, } | { "type": "member_profile", 
+/**
+ * The member whose profile changed.
+ */
+user: string, 
+/**
+ * Colour accent as `#rrggbb`, or `None` when unset.
+ */
+colour: string | null, 
+/**
+ * Pronouns text, or `None` when unset.
+ */
+pronouns: string | null, 
+/**
+ * Whether the member has an avatar.
+ */
+has_avatar: boolean, } | { "type": "emote", 
 /**
  * Scene the token stands on.
  */

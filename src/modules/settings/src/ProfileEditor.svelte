@@ -5,7 +5,8 @@
   // Self-service display profile: colour accent, pronouns and avatar, shown to every signed-in
   // account. The server validates and stores each value; the pronouns length cap here only
   // saves a round trip. Saved values are written into `ctx.memberProfiles` so this client's
-  // roster and chat show them at once; other clients read them on their next roster fetch.
+  // roster and chat show them at once; other clients receive the server's `member_profile`
+  // frame and update without reconnecting.
   const ctx = getAppContext();
   const { t } = ctx;
 

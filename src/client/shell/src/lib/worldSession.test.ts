@@ -73,6 +73,7 @@ const welcomeFrame = {
   capability_requirements: [],
   contract_declarations: [],
   schema_declarations: [],
+  online_users: [],
 };
 
 // Deliver the Welcome `count` times to exercise reconnect-idempotency (the
@@ -580,6 +581,53 @@ test("presence frames update the reactive presence map in place (stable referenc
   push({ type: "presence", user: "u9", online: false });
   await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
   expect(session.presence).toBe(captured);
+});
+
+test("a late-joining Welcome seeds presence from online_users, marks other members offline, and a reconnect replaces the snapshot", async () => {
+  const roster = [
+    { user: "u9", username: "Zara", role: "player" as const },
+    { user: "u8", username: "Bo", role: "player" as const },
+  ];
+  vi.mocked(listWorldMembers).mockResolvedValueOnce(roster).mockResolvedValueOnce(roster);
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.presence;
+  await session.enter("w1");
+  push({ ...welcomeFrame, online_users: ["u9"] });
+  await vi.waitFor(() => expect(session.presence.get("u8")).toBe(false));
+  expect(session.presence.get("u9")).toBe(true);
+  expect(session.presence).toBe(captured);
+
+  // A later Welcome (reconnect) replaces the snapshot instead of merging into it.
+  push({ ...welcomeFrame, online_users: ["u8"] });
+  await vi.waitFor(() => expect(session.presence.get("u8")).toBe(true));
+  await vi.waitFor(() => expect(session.presence.get("u9")).toBe(false));
+});
+
+test("a member_profile frame updates memberProfiles in place with a cache-busted avatar URL, and clears an emptied profile", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  const captured = session.memberProfiles;
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  push({ type: "member_profile", user: "u9", colour: "#336699", pronouns: "they/them", has_avatar: true });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(true));
+  expect(session.memberProfiles.get("u9")).toEqual({
+    colour: "#336699",
+    pronouns: "they/them",
+    avatar: expect.stringMatching(new RegExp(`^/api/worlds/w1/members/u9/avatar\\?v=\\d+$`)),
+  });
+  const first = session.memberProfiles.get("u9")!.avatar;
+
+  push({ type: "member_profile", user: "u9", colour: "#336699", pronouns: null, has_avatar: true });
+  await vi.waitFor(() => expect(session.memberProfiles.get("u9")!.pronouns).toBeNull());
+  expect(session.memberProfiles.get("u9")!.avatar).not.toBe(first);
+
+  push({ type: "member_profile", user: "u9", colour: null, pronouns: null, has_avatar: false });
+  await vi.waitFor(() => expect(session.memberProfiles.has("u9")).toBe(false));
+  expect(session.memberProfiles).toBe(captured);
 });
 
 test("a player Welcome also populates members (chat resolves author/recipient names for every role)", async () => {

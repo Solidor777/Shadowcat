@@ -13,8 +13,8 @@
   // repaint the instant a seat is actually granted.
   //
   // `ctx.presence` overlays a live online/offline dot on each badge. A member with no entry
-  // there is unknown (online before this client connected, no transition seen since), so the
-  // badge carries neither state class and no suffix.
+  // there is unknown (the roster read has not landed yet), so the badge carries neither state
+  // class and no suffix.
   const roster = $derived(
     [...ctx.members.entries()].map(([id, name]) => {
       const online = ctx.presence.get(id);

@@ -44,6 +44,7 @@ const welcomeFrame = {
   capability_requirements: [],
   contract_declarations: [],
   schema_declarations: [],
+  online_users: [],
 };
 
 function mockConnect(): Connect {

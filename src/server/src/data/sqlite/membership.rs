@@ -614,6 +614,40 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// The account's profile as the roster projects it: colour, pronouns and whether an avatar
+    /// is set, without reading the avatar bytes. `None` when no such account exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.member_profile(uuid::Uuid::new_v4()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn member_profile(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Option<String>, Option<String>, bool)>, DataError> {
+        let row = sqlx::query(
+            "SELECT colour, pronouns, avatar_bytes IS NOT NULL AS has_avatar \
+             FROM users WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            (
+                r.get("colour"),
+                r.get("pronouns"),
+                r.get::<i64, _>("has_avatar") != 0,
+            )
+        }))
+    }
+
     /// The account's avatar bytes and content type, or `None` when it has none (or no such
     /// account exists). Fetched only by the avatar route; `UserRecord` never carries the bytes.
     ///

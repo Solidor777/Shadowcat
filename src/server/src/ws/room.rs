@@ -15,12 +15,14 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::auth::role::ServerRole;
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::Document;
 use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::snapshot::StoredCommand;
+use crate::data::sqlite::SqliteRepository;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
@@ -758,8 +760,8 @@ pub struct Room {
     session_floors: Mutex<HashMap<Uuid, i64>>,
     /// Per-user live connection count in this room, driving the 0<->1 presence-transition
     /// broadcast (`ServerMsg::Presence`). Derived, in-memory only, cleared with the room: there
-    /// is no snapshot frame, so a client learns a user's presence only from transitions seen
-    /// since its own connect. A `std::sync::Mutex` because the guard is never held across an
+    /// is no separate online list: `presence_online` reads this map for the `Welcome` snapshot.
+    /// A `std::sync::Mutex` because the guard is never held across an
     /// `.await` and `presence_connect`/`presence_disconnect` are synchronous. Parallels
     /// `RoomStats::connections` without replacing it: `reap_if_empty` still reads that
     /// aggregate.
@@ -3946,6 +3948,43 @@ impl Room {
         }
     }
 
+    /// The members with at least one live connection in this room, sorted for a stable wire
+    /// order. Reads the same map `presence_connect`/`presence_disconnect` maintain, so the
+    /// `Welcome` snapshot and the `Presence` transitions cannot disagree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// assert!(room.presence_online().is_empty());
+    /// room.presence_connect(gm);
+    /// assert_eq!(room.presence_online(), vec![gm]);
+    /// room.presence_disconnect(gm);
+    /// assert!(room.presence_online().is_empty());
+    /// # }
+    /// ```
+    pub fn presence_online(&self) -> Vec<Uuid> {
+        let counts = self.presence.lock().unwrap_or_else(|e| e.into_inner());
+        let mut users: Vec<Uuid> = counts.keys().copied().collect();
+        users.sort_unstable();
+        users
+    }
+
     /// Whether an explicit `ClientMsg::ResyncRequest` should be clamped against
     /// `resync_floor`. See the `resync_floor_enforced_flag` field doc for why this is `true`
     /// for every production constructor.
@@ -4277,6 +4316,59 @@ impl RoomRegistry {
     /// ```
     pub fn live_rooms(&self) -> Vec<Arc<Room>> {
         self.rooms.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Broadcasts `user`'s current profile (`ServerMsg::MemberProfile`) into every live room of
+    /// a world the user is seated in. A world with no live room has no connection to tell, and
+    /// its next `Welcome` roster read carries the stored profile. Seating comes from
+    /// `worlds_for_user` with `ServerRole::User`, so a server admin is addressed only where
+    /// seated, the same boundary `list_members` applies. A user with no account is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+    ///
+    /// repo.set_profile(gm, Some("#336699"), None).await.unwrap();
+    /// registry.broadcast_member_profile(&repo, gm).await.unwrap();
+    /// // An account that does not exist has nothing to broadcast.
+    /// registry
+    ///     .broadcast_member_profile(&repo, uuid::Uuid::new_v4())
+    ///     .await
+    ///     .unwrap();
+    /// # }
+    /// ```
+    pub async fn broadcast_member_profile(
+        &self,
+        repo: &SqliteRepository,
+        user: Uuid,
+    ) -> Result<(), DataError> {
+        let Some((colour, pronouns, has_avatar)) = repo.member_profile(user).await? else {
+            return Ok(());
+        };
+        let frame = Arc::new(ServerMsg::MemberProfile {
+            user,
+            colour,
+            pronouns,
+            has_avatar,
+        });
+        for (world, _) in repo.worlds_for_user(user, ServerRole::User).await? {
+            if let Some(room) = self.get(world.id) {
+                room.broadcast_aux_shared(frame.clone());
+            }
+        }
+        Ok(())
     }
 
     /// Telemetry snapshots for every live room (admin debug endpoint).

@@ -879,6 +879,9 @@ export type WireWelcome = {
   /** The connecting user's own world-level capabilities — the `core:create` policy
    * `apply_intent` consults — projected for their role. Advisory mirror. */
   role_capabilities: WireRoleCapabilities;
+  /** The members with at least one live connection in this world at send time, the receiving
+   * user included. Seeds the presence map; later `presence` frames carry the transitions. */
+  online_users: string[];
 };
 
 /** Every frame the server sends, discriminated by `type`. Mirrors
@@ -1076,13 +1079,27 @@ export type ServerMsg =
   | {
       /** A member's live-connection count in this world crossed 0->1 or 1->0. Out-of-band (no
        * seq, never buffered/resynced), delivered to every connection in the room. Transitions
-       * only: there is no snapshot frame, so a member already online before this connection
-       * opened is unknown until their next transition. */
+       * only: the snapshot a late joiner needs rides on `welcome.online_users`. */
       type: "presence";
       /** The member whose presence changed. */
       user: string;
       /** `true` when the member's first connection opened, `false` when the last one closed. */
       online: boolean;
+    }
+  | {
+      /** A member changed their account profile. Out-of-band (no seq, never buffered/resynced),
+       * delivered to every connection in each world the member is seated in. Carries the roster's
+       * own projection of the three profile fields; avatar bytes are fetched from the avatar
+       * route, never from this frame. */
+      type: "member_profile";
+      /** The member whose profile changed. */
+      user: string;
+      /** Colour accent as `#rrggbb`, or `null` when unset. */
+      colour: string | null;
+      /** Pronouns text, or `null` when unset. */
+      pronouns: string | null;
+      /** Whether the member has an avatar. */
+      has_avatar: boolean;
     }
   | {
       /** A region-triggered floating overlay over a token: the server-authored twin of
@@ -1392,6 +1409,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     contract_declarations: z.array(ContractDeclarationSchema),
     schema_declarations: z.array(SchemaDeclarationSchema),
     role_capabilities: RoleCapabilitiesSchema.default({ all: [], by_type: {} }),
+    online_users: z.array(z.string()),
   }),
   z.object({
     type: z.literal("event"),
@@ -1486,6 +1504,13 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("modules_changed") }),
   z.object({ type: z.literal("presence"), user: z.string(), online: z.boolean() }),
+  z.object({
+    type: z.literal("member_profile"),
+    user: z.string(),
+    colour: z.string().nullable(),
+    pronouns: z.string().nullable(),
+    has_avatar: z.boolean(),
+  }),
   z.object({
     type: z.literal("scrolling_text"),
     scene: z.string(),

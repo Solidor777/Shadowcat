@@ -1722,6 +1722,11 @@ pub async fn put_profile(
         .repo
         .set_profile(user.id, body.colour.as_deref(), pronouns.as_deref())
         .await?;
+    state
+        .ws
+        .rooms
+        .broadcast_member_profile(state.repo.as_ref(), user.id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1788,6 +1793,11 @@ pub async fn put_avatar(
         .repo
         .set_avatar(user.id, Some((&body, content_type)))
         .await?;
+    state
+        .ws
+        .rooms
+        .broadcast_member_profile(state.repo.as_ref(), user.id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1833,6 +1843,11 @@ pub async fn delete_avatar(
     State(state): State<AppState>,
 ) -> Result<StatusCode, AppError> {
     state.repo.set_avatar(user.id, None).await?;
+    state
+        .ws
+        .rooms
+        .broadcast_member_profile(state.repo.as_ref(), user.id)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

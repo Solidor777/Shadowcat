@@ -937,9 +937,14 @@ fn welcome_carries_caps_role_and_requirements() {
         contract_declarations: Vec::new(),
         schema_declarations: Vec::new(),
         role_capabilities: RoleCapabilities::default(),
+        online_users: vec![Uuid::from_u128(7)],
     };
     let json = serde_json::to_value(&w).unwrap();
     assert_eq!(json["type"], "welcome");
+    assert_eq!(
+        json["online_users"],
+        serde_json::json!([Uuid::from_u128(7)])
+    );
     assert_eq!(json["user_role"], "player");
     assert!(json.get("world_default_grants").is_some());
     assert!(json.get("capability_requirements").is_some());

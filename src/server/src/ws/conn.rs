@@ -2663,6 +2663,7 @@ async fn egress_loop<S>(
             contract_declarations: world_contracts,
             schema_declarations: world_schemas,
             role_capabilities,
+            online_users: room.presence_online(),
         }))
         .await
         .is_err()

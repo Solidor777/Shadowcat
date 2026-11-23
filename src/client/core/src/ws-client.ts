@@ -353,6 +353,22 @@ export interface ExploredFogResetNotice {
   level: string | null;
 }
 
+/**
+ * A member changed their account profile (`WsClientHandlers.onMemberProfile`); carries no seq.
+ * Delivered to every connection in each world the member is seated in. The avatar bytes are not
+ * carried: a receiver derives the URL with `avatarUrl` and fetches it.
+ */
+export interface MemberProfileNotice {
+  /** The member whose profile changed. */
+  user: string;
+  /** Colour accent as `#rrggbb`, or `null` when unset. */
+  colour: string | null;
+  /** Pronouns text, or `null` when unset. */
+  pronouns: string | null;
+  /** Whether the member has an avatar. */
+  hasAvatar: boolean;
+}
+
 /** Optional scope for `WsClient.resetExploredFog`/`AppContext.resetExploredFog`. */
 export interface ResetExploredFogOptions {
   /** Limit the reset to one user's memory; omit to clear every user's. */
@@ -583,12 +599,15 @@ export interface WsClientHandlers {
    * session's module reconcile, which is idempotent when nothing differs. */
   onModulesChanged?(): void;
   /** A member's live-connection count crossed 0->1 or 1->0 (carries no seq); delivered to every
-   * connection in the room, the member's own included. Transitions only: no snapshot frame
-   * exists, so a member who was already online before this client connected has no entry until
-   * their next transition.
+   * connection in the room, the member's own included. Transitions only: the members already
+   * online at connect time arrive on the `welcome` frame's `online_users`.
    * @param user The member whose presence changed.
    * @param online `true` when the member's first connection opened, `false` when the last closed. */
   onPresence?(user: string, online: boolean): void;
+  /** A member changed their account profile (carries no seq); delivered to every connection in
+   * each world the member is seated in, the member's own included.
+   * @param profile The member and their new colour, pronouns and avatar flag. */
+  onMemberProfile?(profile: MemberProfileNotice): void;
   /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
    * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
    * doc).
@@ -1618,6 +1637,16 @@ export class WsClient {
         break;
       case "presence":
         this.safeEmit(() => this.opts.handlers.onPresence?.(msg.user, msg.online));
+        break;
+      case "member_profile":
+        this.safeEmit(() =>
+          this.opts.handlers.onMemberProfile?.({
+            user: msg.user,
+            colour: msg.colour,
+            pronouns: msg.pronouns,
+            hasAvatar: msg.has_avatar,
+          }),
+        );
         break;
       case "scrolling_text":
         this.safeEmit(() =>

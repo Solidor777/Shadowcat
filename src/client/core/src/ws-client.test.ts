@@ -62,6 +62,7 @@ function welcomeFrame(): ServerMsg {
     capability_requirements: [],
     contract_declarations: [],
     schema_declarations: [],
+    online_users: [],
     role_capabilities: { all: [], by_type: {} },
   };
 }
@@ -1950,6 +1951,24 @@ describe("WsClient", () => {
       ["u1", true],
       ["u1", false],
     ]);
+  });
+
+  it("a member_profile server frame invokes onMemberProfile with camelCase fields", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onMemberProfile: (p) => received.push(p) },
+    });
+    await client.start();
+    onMessage(
+      JSON.stringify({ type: "member_profile", user: "u1", colour: "#336699", pronouns: null, has_avatar: true }),
+    );
+    expect(received).toEqual([{ user: "u1", colour: "#336699", pronouns: null, hasAvatar: true }]);
   });
 });
 
