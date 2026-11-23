@@ -140,7 +140,6 @@ test("a custom theme is authored, persisted across reload, and deleted with fall
   // the reload and the panel layout is persisted, so it may already be
   // restored open — the topbar button toggles, so click it only when the
   // panel is not showing.
-  page.once("dialog", (d) => d.accept());
   const newThemeButton = page.getByRole("button", { name: "New custom theme" });
   if (!(await newThemeButton.isVisible())) {
     await page.getByTestId("topbar-settings").click();
@@ -148,6 +147,8 @@ test("a custom theme is authored, persisted across reload, and deleted with fall
   await expect(newThemeButton).toBeVisible();
   const row = page.locator(".custom-theme-row", { hasText: "My Theme" });
   await row.getByRole("button", { name: "Delete" }).click();
+  // The delete asks through the in-app `confirmDialog`, not a native dialog.
+  await page.getByTestId("confirm-dialog-confirm").click();
   await expect
     .poll(() =>
       page.evaluate(() => document.documentElement.style.getPropertyValue("--accent")),
