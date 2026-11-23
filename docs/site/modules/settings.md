@@ -13,6 +13,8 @@ enablement.
 | `settings:panel` | `shadowcat.panel` | `Settings` | order 6, icon 🔧, labelKey `settings.tab`, launcher-closed |
 | `settings:keybindings` | `shadowcat.settings-section` | `KeybindingsSection` | labelKey `settings.keybindings.title` |
 | `settings:backups` | `shadowcat.settings-section` | `BackupManager` | labelKey `settings.backups.title`, `serverAdminOnly` |
+| `settings:port-forward` | `shadowcat.settings-section` | `PortForwardSection` | labelKey `settings.portForward.title`, `serverAdminOnly` |
+| `settings:tour` | `shadowcat.tour` | none | tour `settings.intro`, manual (replay only; anchors `settings.panel`, `settings.language`) |
 
 ## Components
 
@@ -60,13 +62,25 @@ size, asset-file count and the server version that wrote it.
   its current state, stages the restore and stops; it does not restart itself.
   Start it again to apply the restore (see the [hosting guide](/guides/hosting)).
   If a staged restore could not be applied, a banner on the list names the
-  backup and the error, and the server runs on the data it had.
+  backup and the error, and the server runs on the data it had. The banner's
+  **Dismiss** button moves the server's `restore-failed.json` marker to the
+  trash and clears the banner; it stays until an admin dismisses it.
 - **Delete** moves a backup into the server trash after a confirm dialog.
 - The **retention policy** is read-only here: it is set in the server's
   configuration (`backup_keep_last`, `backup_keep_days`). **Apply now** runs it
   immediately; it is disabled when no limit is set.
 
 Scheduled backups are not built; the manager only lists and labels them.
+
+## Port forwarding
+
+`PortForwardSection.svelte` is a server-admin-only section titled **Port
+forwarding**. Its toggle asks the server to open the game port on the home
+router; the toggle is disabled, with a note, when the server configuration
+fixes the setting (`port_forward`). The section shows the current state, the
+protocol that worked, the external address and the lease, and has a Refresh
+button; a standing note beside the toggle warns that turning it on opens the
+server's port to the whole internet. See [Automatic port forwarding](/guides/hosting#automatic-port-forwarding).
 
 ## Contracts & seams
 

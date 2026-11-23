@@ -12,6 +12,7 @@ internals (the contract-only element boundary).
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `scene-tools:toolrail` | `shadowcat.surface:toolrail` | `ToolRail` | — |
+| `scene-tools:tour` | `shadowcat.tour` | none | tour `scene-tools.intro`, first use (anchors `scene-tools.rail` and one per tool) |
 
 ## Components
 
