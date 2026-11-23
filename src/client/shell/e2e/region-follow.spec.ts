@@ -44,6 +44,7 @@ test.use({ viewport: VIEWPORT });
  * @returns The stage host locator.
  * @example
  * ```ts
+ * declare const page: import("@playwright/test").Page;
  * stageHost(page);
  * ```
  */
@@ -71,6 +72,7 @@ function maxCol(bbox: string): number | null {
  * @param page The GM page.
  * @example
  * ```ts
+ * declare const page: import("@playwright/test").Page;
  * await disableSnap(page);
  * ```
  */
@@ -86,6 +88,7 @@ async function disableSnap(page: Page): Promise<void> {
  * @param page The GM page.
  * @example
  * ```ts
+ * declare const page: import("@playwright/test").Page;
  * await uploadTokenArt(page);
  * ```
  */
@@ -108,6 +111,7 @@ async function uploadTokenArt(page: Page): Promise<void> {
  * @param page The GM page.
  * @example
  * ```ts
+ * declare const page: import("@playwright/test").Page;
  * await pickActorArt(page);
  * ```
  */
