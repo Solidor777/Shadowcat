@@ -44,6 +44,9 @@ pnpm gate:push
 | `pnpm lint:inline-tests` | a Rust file holds an inline test module body |
 | `pnpm lint:module-docs` | a Rust `mod` item carries an outer doc comment |
 | `pnpm lint:secure-context` | client code names a browser API that plain-HTTP LAN play does not expose |
+| `pnpm lint:route-prefix` | client code writes a same-origin `/api/`, `/modules/` or `/ws` path as a bare string instead of through `apiPath` or `wsUrl` |
+| `pnpm lint:walk-sites` | a directory-walking call exists that `scripts/walk-sites.json` does not classify, or the inventory names a site that no longer exists |
+| `pnpm run check:svelte-runtime` | a file imports a `svelte` entry point the runtime does not enumerate |
 | `pnpm lint:crypto-backend` | a second TLS crypto backend enters `Cargo.lock` |
 | `pnpm lint:vendor` | project code hides under `vendor/`, or a vendored crate drifts from its recorded upstream plus patch |
 | `pnpm lint:aria-labels` | a human-facing attribute carries an i18n key instead of translated text |

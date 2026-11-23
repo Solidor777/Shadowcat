@@ -13,8 +13,11 @@ features precede polish; the module API stays 0.x until evidence proves it.
 
 Complete: M1–M13, the Phase-1 cleanup burndown, the close-out campaign, Phase 1b replay
 redaction, all Bucket C follow-on sub-projects, and the debt-burndown campaign. Full record in
-[`HISTORY.md`](HISTORY.md). `docs/OPEN_BUGS.md` is empty; `docs/TODO.md` holds only items blocked
-on unbuilt Phase-2+ infrastructure or on external circumstances.
+[`HISTORY.md`](HISTORY.md). `docs/OPEN_BUGS.md` holds the open defects; `docs/TODO.md` holds
+the items that await an owner ruling, a physical device or the final CI pass, and the work blocked
+on unbuilt infrastructure. The options batch (the comparative-survey items the owner approved,
+backups, port forwarding, the route prefix, guided tours and module-placed effects) is built;
+see the last `HISTORY.md` entry.
 
 ## Phase 2 — Full table ✅
 
@@ -143,7 +146,7 @@ Remaining, in order:
   and start authoring real incremental migrations from that point on.
 - Desync-convergence test (M4): maintained throughout.
 - Backups: the basic backup + snapshot-restore deliverable (M12.5) satisfies the dogfood gate;
-  Phase 4 adds scheduling / automation.
+  the in-app list, restore, delete and retention are built. Phase 4 adds scheduling / automation.
 - Rate limiting on WS / upload: introduced with the surfaces it protects, not only at hardening.
 - Account model: self-host, admin-provisioned accounts (admin-only `POST`/`GET /api/users`) plus a
   GM-minted world invite the invitee redeems from their own session. Deliberately no

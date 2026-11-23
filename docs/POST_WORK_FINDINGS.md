@@ -1204,3 +1204,67 @@ are observations awaiting triage, not committed work.
   session running under a route that no longer named its world, and a world route without an
   identity showed "Connecting..." forever. One effect in `App.svelte` now owns the session from
   the route's world id. Reproduced first by `App.session.test.ts`. Status: Resolved.
+
+- Title: `git checkout --theirs` dropped a lane's clean hunks during a merge.
+  Summary: Merging the region-follow lane, two files had one conflict each on a long import line.
+  `git checkout --theirs` takes the whole file from one side, so it discarded the other lane's
+  non-conflicting edits in the scene-tools rail (its frozen-session uses). A grep for that lane's
+  symbol came back short, the conflict was recreated with `git checkout -m`, only the marker block
+  was edited, and typecheck and the package tests passed afterwards. Status: Resolved (caught and
+  redone before the merge was committed). A conflict is resolved by editing the region between the
+  markers, then searching for a symbol each side introduced.
+
+- Title: several lane commits do not build alone.
+  Summary: `git commit -- <paths>` commits only files git already tracks, so a lane that added new
+  files and did not `git add` them first committed a tree that fails to compile on its own: the
+  token-art lane's server commit, the render-reveal commit of the chat-bubbles lane, the
+  anchored-region lane's first commit and the facing-vision lane's first commit are each
+  incoherent without the next commit in their lane. The merged
+  branch builds and tests green. Bisecting inside such a range fails at the first commit. Status:
+  Resolved on the merged tree (the common lane brief now states the `git add` step).
+
+- Title: a lane's commit lacks the co-author trailer.
+  Summary: The light-cone lane's server commit (`1c8607d4`) has no `Co-Authored-By` trailer. History
+  is immutable, so it is not amended. Status: Resolved (accepted).
+
+- Title: two plan claims about the code were false.
+  Summary: The facing-token design named `/engine/faction` and `/engine/disposition` as token
+  pointers; the token has no such fields, so the identity-hidden gate uses the six real pointers.
+  The recipient-tier design said `can_see` is the single visibility decider; the GM short-circuits
+  in `filter_properties` and `filter_command` are a second decider, so they were skipped when a
+  `Recipients` tier is held and the search index gained a GM partition that excludes
+  recipient-only text. Status: Resolved (code is right; the design notes were wrong).
+
+- Title: security-relevant permission changes the final review must read.
+  Summary: (1) `ServerMessageRevision` admission was widened to `/permissions/default`, `gm_role`,
+  `users` and `property_overrides` so a GM can revise a message's audience in one update; every
+  other writer is unchanged. (2) `filter_properties` and `filter_command` changed so recipient id
+  lists are emptied per viewer and a secret segment's visibility is withheld with its content;
+  override-map keys still show where a secret sits, not who can read it or what it says. (3)
+  `/engine/lock_rotation` and `/engine/facing_vision` are GM-write-only, and the template-merge
+  path now applies the same GM-only field gate to the carried light and `identity_hidden` as to
+  the new fields. (4) A token's effective owner gains `core:delete` on that token only
+  (`holds_token_owner_floor`; the embedded-actor, wall and manage-embedded capabilities stay
+  outside the floor). (5) Token bars stay owner-writable, bounded by redaction (owner ruling).
+  Status: Needs Review.
+
+- Title: lane checks that were inferred, not run.
+  Summary: Several lanes reported mutation or gate checks as not run: the change-password throttle
+  removal, the avatar bomb, `has_avatar` and 403/404 mutations, and every mutation for the
+  facing-vision client lane; about twenty end-to-end specs were written and not run; and docs
+  examples and push-tier clippy did not finish on a few lanes whose runs were killed by low
+  memory. Status: Needs Review
+  (the final push gate and the end-to-end owner lane are the places these run).
+
+- Title: low-memory kills and a hung trash helper interrupted gates.
+  Summary: A gate run and a commit hook were killed by the host's low-memory reaper; the cause was
+  an unrelated program. The killed hook left the route-prefix lint commit staged and a stale
+  `index.lock`, which was recycled and the commit finished. `windows-trash.exe` hung for 30
+  minutes inside `pnpm clean`. Two agents used a bare `git stash` on the shared stash stack; the
+  stack was checked afterwards and held only the two old entries. Status: Resolved.
+
+- Title: the flake lane was not merged.
+  Summary: The lane for the compound-region and combat-settings Playwright flakes could not run
+  e2e (its brief forbade it), so it added a retry-until-pass to the region helper. That was
+  rejected, because a retry hides which of three mechanisms fails, and the lane's branch was not
+  merged. Both flakes remain open (`OPEN_BUGS.md`). Status: Open.

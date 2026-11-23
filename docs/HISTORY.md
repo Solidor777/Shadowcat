@@ -3859,3 +3859,78 @@ Design and rationale: [`design/built-in-https.md`](design/built-in-https.md); op
   HTTPS-Only exempts private addresses, Chromium's HTTPS-First Mode does not: its upgraded
   navigation is blocked (`ERR_BLOCKED_BY_CLIENT`) and the page it then shows is empty to
   automation (the certificate interstitial of a direct `https://` navigation is clicked through); real iOS Safari and Android Chrome remain unverified (`TODO.md`).
+
+## Options batch and built-in HTTPS round-6 leftovers ✅
+One parallel campaign on branch `options-batch`, built in separate worktrees and merged in waves.
+It closed the built-in HTTPS phase 2a leftovers and built every item of the comparative-survey
+options batch that the owner approved ("everything, options too"), plus the designs the owner
+walked through first. Design records: [`design/module-placed-effects.md`](design/module-placed-effects.md)
+and [`design/upnp.md`](design/upnp.md); the user and author pages are under `docs/site/`. CI runs
+once, at the end of the campaign; the items that only CI or a device can confirm are listed in
+`TODO.md` ("Needs the final CI pass or a physical device"). Delivered:
+
+- **HTTPS round-6 leftovers**: the client session lifecycle and a typed join refusal (the server
+  drains the client's inbound frames before it drops a refused socket, so the typed frame is not
+  lost to a reset); the gate corpus (`repoFiles` is the one repository file list, `lint:walk-sites`
+  inventories every remaining directory walk, a git failure exits 2 in every corpus gate); e2e
+  hygiene (the click-bypass guard, the per-OS outcome tables, a WebKit-on-Linux long-audio
+  allowance); long-audio media (canonical audio and video slices by media type for ranged
+  requests, a full `200` without `Range`, the upgrade swap taking the write barrier); the audio
+  engine's resume and gesture handling; the h2 send buffer at 160 KiB with a median buffer-ratio
+  criterion and a blocking `CUT_OVERSHOOT_MAX`; the egress tests' lump premise
+  (`LUMP_GAP_BOUND`, `last_progress_at`); and `SHADOWCAT_E2E_PORT_BASE`, which moves every
+  browser-test port so two worktrees run e2e side by side.
+- **Trash and backups**: every production delete goes through `Trash` (`trash.rs`; retention
+  `Days`/`Never`/`Disabled`, default 30 days; a Rust arm of the no-delete gate), an admin trash
+  manager (`GET /api/admin/trash`, empty, delete one), TLS key temp files truncated before they
+  are trashed; in-app backups (`BackupKind` manual, pre-restore, scheduled; list, delete, prune,
+  retention by `backup_keep_last` and `backup_keep_days`; restore stages a marker, stops the
+  server, and applies at the next start with a mandatory pre-restore backup; a failed restore
+  writes `restore-failed.json`, shown as a banner the admin can dismiss) and the `BackupManager`
+  settings section. Backup scheduling stays in Phase 4.
+- **Built-in port forwarding**: `portmap` (NAT-PMP, PCP, UPnP IGD with a bounded SOAP scanner and
+  a trusted-endpoint check), the admin `GET`/`PUT /api/admin/portmap`, the `port_forward` config
+  key that locks the setting, default off, and the admin settings section.
+- **Hosting**: `Config.route_prefix` for subpath reverse proxies (the page base, `apiPath`,
+  `wsUrl`, the relative import map, whole-segment prefix stripping) with `lint:route-prefix` and a
+  `route-prefix` Playwright project; `onboarding_enabled` served through `GET /api/config`.
+- **Vision, lighting and scenes**: facing-limited vision (`FacingVision{arc, near}`, a per-scene
+  switch, a `free`/`own_turn` rotation rule enforced by `scene::rotation_gate`, GM-only lock);
+  cone lights with a darkness-activation window and follow-token rotation; volumetric
+  sense-blocking regions (`RegionEngine.occludes`; fog depth stays deferred); proximity sense
+  tiers on walls (`WallEngine.proximity`); token-attached regions (`RegionEngine.anchor`, dormant
+  when the carrier is gone, a dormant-region list in the region tool); multi-destination portals
+  (`PortalChoice`, `ChoosePortal`, `PortalOffer`); scene padding (`SceneEngine.padding`); a GM
+  template-to-region conversion; structured vision treatments (`RenderHint`,
+  `VISION_TREATMENT_CONTRACT`); edge snapping and camera pan-to; one dash mechanism
+  (`ShapeNodeSpec.stroke.dash`); the client frame depth and size caps (`parse_client_msg`).
+- **Tokens, actors and combat**: token bars and nameplates (`bars` derived channel, four bars,
+  display modes), quick edit and token delete (the effective owner holds `core:delete`), a
+  per-token disposition and `identity_hidden`, overlay conditions (dead and unconscious seed
+  `overlay: true`), art transform with anchor, scale, tint and facing, auto-rotate with a lock, a
+  sense-revealed marker, random-variant art pools, combatant groups, `defeated`, effect origin
+  with a configurable expiry note and an effects list on the actor sheet and the combat tracker.
+  A session pause freezes token moves and combat controls, not doors, scene edits, chat, dice,
+  pings or sheets; audio pauses only when the GM asks.
+- **Modules**: module-declared placeable effect areas with expiry and caster range, authorised
+  server-side under `WriteOrigin::ModulePlacement`; module-scoped settings (the twelfth config
+  singleton), manifest `conflicts` with a pre-save satisfiability check, load and activation
+  status in the module manager, `ServerMsg::ModulesChanged`, a keybindings framework and
+  `registerSetting`, and guided tours (`shadowcat.tour`, the `onboarding` module, the Welcome
+  screen).
+- **Chat, dice, tables and notes**: the module `system` payload and card extensions, audience
+  commands (`/gmroll`, `/publicroll`, `/gm`, `/players`, `/reply`, `/ooc`, `/ic`), blind and
+  self rolls with the two GM settings, a GM audience revision, roll flavour and live-resolved
+  document-link labels, `[[secret:...]]` per-recipient segments, chat history recall, chat
+  bubbles over tokens, `mn`/`mx` clamps, even/odd success, `best(a, b)`, a bare dice count, natural
+  min/max highlighting; table folders, typed note pages, heading TOC and anchors, per-user note
+  sharing and "present to players".
+- **Accounts, presence and audio**: self-service password change (throttled per account),
+  profile colour, pronouns and avatar, live presence, simultaneous and soundboard playlist modes,
+  muffled occluded audio, a perceptual volume curve, favourites and a list mode in the asset
+  browser.
+- **Client shell**: an Escape coordinator and confirm and prompt dialogs, one pointer-event drag
+  controller (touch long-press, axes, sort-key reorder), a touch-first context menu, progress
+  notifications, and the `DocFolderTree` shared by assets and tables.
+- **Gates**: `lint:route-prefix`, `lint:walk-sites` and `check:svelte-runtime` are in the
+  `.claude/CLAUDE.md` gate table beside the earlier gates.
