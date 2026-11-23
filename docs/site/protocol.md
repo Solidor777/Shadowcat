@@ -63,7 +63,7 @@ Every `ServerMsg` variant:
 
 | Frame | Purpose |
 |---|---|
-| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, `role_capabilities`, contract/schema declarations |
+| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, `role_capabilities`, contract/schema declarations, and `online_users` (the members with a live connection in the world, your own included) |
 | `event` | One sequenced, per-recipient-filtered command (ops batch), with correlating `intent_id` when it answers yours |
 | `reject` | Your intent was refused; carries `intent_id` + reason — roll back the prediction |
 | `resync_begin` | Replay window opens (`from_seq`..`to_seq`, with source) |
@@ -91,6 +91,8 @@ Every `ServerMsg` variant:
 | `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
 | `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
 | `audio_error` | An `audio_transport` op was refused (not GM, unknown id, over cap, invalid gain) — connection-local, never broadcast |
+| `presence` | Out-of-band: a member's live-connection count crossed zero (`user`, `online`); transitions only, the starting snapshot is `welcome.online_users` |
+| `member_profile` | Out-of-band: a member changed their colour, pronouns or avatar (`user`, `colour`, `pronouns`, `has_avatar`), sent to every world they are seated in; avatar bytes come from the avatar route |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
