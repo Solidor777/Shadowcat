@@ -533,7 +533,9 @@
       offMoveOutcome = onMoveOutcome((m) => {
         host.dataset.lastMoveOutcome = m.outcome;
         if (m.outcome !== "rejected") return;
-        noticeOncePerGesture(m.gesture, () => ctx.notify(t("tools.moveRejected"), "warning"));
+        noticeOncePerGesture(m.gesture, () =>
+          ctx.notify(t(m.paused ? "intent.rejected.paused" : "tools.moveRejected"), "warning"),
+        );
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.

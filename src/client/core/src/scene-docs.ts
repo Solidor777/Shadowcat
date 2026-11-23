@@ -10,6 +10,7 @@ import { DEFAULT_CONE_ANGLE_DEGREES, conePoints, linePoints, squarePoints } from
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
 import type {
+  WorldRole,
   MovementRestriction,
   MovementModel,
   FogPooling,
@@ -27,6 +28,7 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -145,6 +147,7 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -777,6 +780,50 @@ export function resolveViewedScene(
   const ws = store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined;
   if (exists(ws?.activeScene)) return ws!.activeScene;
   return scenes[0].id;
+}
+
+/** The world's whole-session pause as every client reads it: the `world-settings` singleton's
+ * `session` block with absent fields defaulted. Absent block means not paused. The server
+ * (`ws::session_pause`) is the authority on what a pause refuses; this is the display and
+ * control-gating mirror.
+ * @param store The document store to query the world-settings singleton from.
+ * @returns `paused`, the GM's `message` (`null` when none), and whether audio pauses with it.
+ * @example
+ * ```ts
+ * import { resolveSessionPause, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const { paused, message } = resolveSessionPause(store);
+ * ```
+ */
+export function resolveSessionPause(store: ReadableDocuments): {
+  /** `true` while the GM has the session paused. */
+  paused: boolean;
+  /** The GM's plain-text note shown with the pause, or `null`. */
+  message: string | null;
+  /** Whether the pause also pauses the world's audio. */
+  pauseAudio: boolean;
+} {
+  const s = (store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined)?.session;
+  return { paused: s?.paused ?? false, message: s?.message ?? null, pauseAudio: s?.pauseAudio ?? false };
+}
+
+/** Whether the session pause currently freezes token movement and combat controls for `role`:
+ * paused and not a GM. Every client control that mirrors the server's pause refusal reads this
+ * one decision (`Room::session_refuses` makes the same call: paused and not a GM).
+ * @param store The document store to query the world-settings singleton from.
+ * @param role The caller's world role.
+ * @returns `true` when the controls should be disabled.
+ * @example
+ * ```ts
+ * import { sessionFreezes, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const frozen = sessionFreezes(store, "player");
+ * ```
+ */
+export function sessionFreezes(store: ReadableDocuments, role: WorldRole): boolean {
+  return role !== "gm" && resolveSessionPause(store).paused;
 }
 
 /** The `doc_type` identifying a stored actor document. */

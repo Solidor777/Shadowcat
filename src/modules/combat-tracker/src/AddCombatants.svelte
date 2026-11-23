@@ -23,8 +23,11 @@
     rows: Row[];
     /** The combat's `combatant-group` documents, offered by the group picker. */
     groups: WireDocument[];
+    /** Whether the whole-session pause freezes this user's combat controls; disables every
+     * control here, since each one writes combat documents. */
+    frozen?: boolean;
   }
-  const { combatId, rows, groups }: Props = $props();
+  const { combatId, rows, groups, frozen = false }: Props = $props();
 
   const ctx = getAppContext();
 
@@ -108,7 +111,7 @@
   }
 </script>
 
-<div class="add-combatants">
+<fieldset class="add-combatants" disabled={frozen}>
   <label>
     <input type="checkbox" bind:checked={hiddenOnAdd} />
     {ctx.t("combatTracker.hidden")}
@@ -155,4 +158,15 @@
   {:else}
     <button type="button" onclick={() => (showEventForm = true)}>{ctx.t("combatTracker.addEvent")}</button>
   {/if}
-</div>
+</fieldset>
+
+<style lang="scss">
+  /* A fieldset carries the native disabled-subtree behavior; strip its default frame so it lays
+   * out exactly like the plain container it replaces. */
+  .add-combatants {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-inline-size: 0;
+  }
+</style>

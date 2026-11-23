@@ -567,6 +567,28 @@ test("a rejected move outcome raises one warning notice; executed and truncated 
   expect(notices).toEqual([{ message: "tools.moveRejected", level: "warning" }]);
 });
 
+test("a rejected move outcome flagged paused raises the paused notice, not the generic refusal", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected"; paused?: boolean }) => void) | null = null;
+  const notices: string[] = [];
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      subscribeScene: () => ({ unsubscribe() {} }),
+      t: (k) => k,
+      notify: (message) => { notices.push(message); },
+      onMoveOutcome: (cb) => {
+        capturedCb = cb;
+        return () => { capturedCb = null; };
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  capturedCb!({ tokenId: "tok1", outcome: "rejected", paused: true });
+  expect(notices).toEqual(["intent.rejected.paused"]);
+});
+
 test("rejections sharing one gesture raise one notice; a new gesture or a gestureless rejection raises its own", async () => {
   const createBackend = vi.fn(async () => fakeBackend());
   let capturedCb: ((msg: { tokenId: string; gesture?: object; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;

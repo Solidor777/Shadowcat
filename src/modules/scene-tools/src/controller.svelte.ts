@@ -166,6 +166,24 @@ export interface ToolContext {
    * the original scene through the same seam. Absent ⇒ pick-on-stage cannot switch scenes (the
    * GM picks within whichever scene is already viewed). */
   setGmViewedScene?: (id: string | null) => void;
+  /** Whether the whole-session pause freezes this user's token movement right now (`ToolRail`
+   * derives it from `sessionFreezes`). A frozen user's move commits (a drag release, a measure
+   * route commit) send nothing and raise the paused notice instead; selection, doors, measure
+   * previews and pings are unaffected. Absent ⇒ never frozen. */
+  movesFrozen?: () => boolean;
+}
+
+/** Raises the paused toast for a move commit the session pause froze. Never reaches
+ * `moveRequest`, so the host's move-outcome consumer cannot raise it.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyMovesFrozen(ctx);
+ * ```
+ */
+function notifyMovesFrozen(ctx: ToolContext): void {
+  ctx.notify?.(ctx.t("intent.rejected.paused"), "warning");
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -1700,6 +1718,11 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     // Never branches on `movementModel`: the server move-execution path
     // (`execute_move`/`gate_walk`) is engine-agnostic, so committing a route proceeds
     // identically for grid-stepped and continuous scenes.
+    if (ctx.movesFrozen?.()) {
+      clearRoute();
+      notifyMovesFrozen(ctx);
+      return;
+    }
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -2412,6 +2435,11 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
         ]));
       }
       if (ops.length > 0) ctx.dispatchIntent(ops);
+      return;
+    }
+    if (ctx.movesFrozen?.()) {
+      ctx.scene.previewOverlay([]);
+      notifyMovesFrozen(ctx);
       return;
     }
     const scene = activeScene(ctx);

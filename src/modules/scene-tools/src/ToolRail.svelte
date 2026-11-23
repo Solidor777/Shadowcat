@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, sessionFreezes, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -62,6 +62,7 @@
     ...hostToolContext,
     viewedLevelBand: () => resolvedViewedLevel(),
     viewedLevelBottom: () => resolvedViewedLevel()?.bottom ?? null,
+    movesFrozen: () => movesFrozen,
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
@@ -86,6 +87,15 @@
     subscribe();
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
   });
+  // The whole-session pause freezes a non-GM's token movement. The select and measure tools stay
+  // usable (selection, doors, route previews); their move commits are what the controller
+  // refuses, and their tooltip says why.
+  const movesFrozen = $derived.by((): boolean => {
+    subscribe();
+    return sessionFreezes(ctx.documents, ctx.role);
+  });
+  /** The tools whose gestures commit token movement. */
+  const MOVE_TOOLS: readonly ToolId[] = ["select", "measure"];
 
   // Contributed scene tools (SCENE_TOOL_CONTRACT): contribution changes are NOT document-store
   // changes, so this needs its own `ctx.contributions.subscribe` bridge, separate from the
@@ -664,7 +674,8 @@
       class:active={controller.active === tool.id}
       aria-pressed={controller.active === tool.id}
       data-testid="tool-{tool.id}"
-      title={tool.label}
+      data-moves-frozen={movesFrozen && MOVE_TOOLS.includes(tool.id) ? "true" : undefined}
+      title={movesFrozen && MOVE_TOOLS.includes(tool.id) ? t("tools.paused") : tool.label}
       onclick={() => controller.toggle(tool.id)}
     >
       {tool.label}

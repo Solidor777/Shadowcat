@@ -1,10 +1,10 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken, SnapModePreference, ShareRulerPreference } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -266,6 +266,34 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
   await new Promise((r) => setTimeout(r, 0)); // drain the pathfind microtasks
 
   expect(labels.at(-1)).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
+});
+
+/** A document store holding a world-settings doc whose session block is `paused`. */
+function pausedStore(paused: boolean): DocumentStore {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: buildWorldSettingsDoc("w1", { session: { paused, pauseAudio: false } }) }],
+  });
+  return docs;
+}
+
+test("a paused session marks a non-GM's move tools with the paused tooltip and leaves ping alone", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(true) }) });
+  for (const id of ["select", "measure"]) {
+    const btn = screen.getByTestId(`tool-${id}`);
+    expect(btn.getAttribute("data-moves-frozen")).toBe("true");
+    expect(btn.getAttribute("title")).toBe("tools.paused");
+  }
+  expect(screen.getByTestId("tool-ping").getAttribute("data-moves-frozen")).toBeNull();
+});
+
+test("the paused tooltip is absent for a GM and for a session that is not paused", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: pausedStore(true) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
+  cleanup();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(false) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
 });
 
 /** Every authoring tool: creates or edits scene content, GM-only. */

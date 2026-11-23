@@ -178,6 +178,40 @@ export class RequestTimeoutError extends Error {
   }
 }
 
+/** Rejection of a `move_request` or combat intent the whole-session pause refused (`reason:
+ * "paused"` on the `move_error`/`combat_error` frame). A distinct type so a caller raises the
+ * localized "the game is paused" notice by `instanceof` rather than showing the server text. */
+export class SessionPausedError extends Error {
+  /** Construct the rejection.
+   * @param message The server's player-presentable text.
+   * @example new SessionPausedError("the game is paused");
+   */
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionPausedError";
+  }
+}
+
+/** The rejection a `move_error`/`combat_error` frame settles its correlated request with:
+ * `SessionPausedError` for the paused reason, a plain `Error` carrying the server text otherwise.
+ * @param msg The frame's `message` and optional typed `reason`.
+ * @param msg.message The server's player-presentable text.
+ * @param msg.reason The typed refusal reason (`"paused"` selects `SessionPausedError`), if any.
+ * @returns The error to reject the pending entry with.
+ * @example
+ * ```
+ * refusalError({ message: "the game is paused", reason: "paused" }) instanceof SessionPausedError;
+ * ```
+ */
+function refusalError(msg: {
+  /** The server's player-presentable text. */
+  message: string;
+  /** The typed refusal reason; only `"paused"` selects a distinct error type. */
+  reason?: string | null;
+}): Error {
+  return msg.reason === "paused" ? new SessionPausedError(msg.message) : new Error(msg.message);
+}
+
 /** Rejection carried by a failed pathfind: the server answered with a `path_error` frame. `reason`
  * is the server's typed failure; `unreachable` also covers every refusal the server deliberately
  * does not distinguish, so it discloses no more than "no route". */
@@ -1380,7 +1414,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(refusalError(msg));
         }
         break;
       }
@@ -1413,7 +1447,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.combatPending.delete(msg.request_id);
-          p.reject(new Error(msg.message));
+          p.reject(refusalError(msg));
         }
         break;
       }
