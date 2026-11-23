@@ -113,6 +113,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `egress_window_secs` | `60` | Seconds a peer may make no progress receiving data before the server cuts it (1 to 3600; anything else stops the server at start). Applies to every response and to each pending WebSocket send; see [Slow readers](#slow-readers) |
 | `hsts_max_age_secs` | *(unset: no HSTS)* | Opt-in `Strict-Transport-Security` (read the HSTS section first) |
 | `port_forward` | *(unset: the admin toggle decides, off until turned on)* | Fixes automatic router port forwarding on or off, overriding the admin toggle in both directions (see [Automatic port forwarding](#automatic-port-forwarding)) |
+| `onboarding_enabled` | `true` | Whether the client offers its guided tours. `false` hides the offer for every user on this server; published as `onboarding_enabled` in `GET /api/config` |
 | `acme_domains`, `acme_email`, `acme_terms_agreed`, `acme_challenge`, `acme_directory`, `acme_ca_root` | *(unset)* | Accepted and validated; certificate issuance is not available in this version |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.

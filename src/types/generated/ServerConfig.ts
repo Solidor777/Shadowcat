@@ -11,9 +11,14 @@ import type { TlsStatus } from "./TlsStatus";
  * ```
  * use shadowcat::http::routes::ServerConfig;
  *
- * let cfg = ServerConfig { initialized: true, tls: shadowcat::tls::TlsRuntime::disabled().status() };
+ * let cfg = ServerConfig {
+ *     initialized: true,
+ *     tls: shadowcat::tls::TlsRuntime::disabled().status(),
+ *     onboarding_enabled: true,
+ * };
  * let json = serde_json::to_value(&cfg).unwrap();
  * assert_eq!(json["initialized"], true);
+ * assert_eq!(json["onboarding_enabled"], true);
  * assert_eq!(json["tls"]["enabled"], false);
  * ```
  */
@@ -26,4 +31,8 @@ initialized: boolean,
  * Built-in HTTPS status: whether TLS is answered, the source of the certificate, the
  * published `https://` origins and the negotiated ALPN protocols.
  */
-tls: TlsStatus, };
+tls: TlsStatus, 
+/**
+ * Whether clients offer the guided onboarding tours (`Config.onboarding_enabled`).
+ */
+onboarding_enabled: boolean, };

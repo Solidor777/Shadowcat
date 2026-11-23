@@ -10,19 +10,22 @@ function mockFetch(status: number, body?: unknown) {
 }
 
 test("getConfig returns the parsed config", async () => {
-  const body = {
-    initialized: true,
-    tls: { enabled: true, source: "self-signed", https_origins: [], alpn: ["h2", "http/1.1"] },
-  };
-  mockFetch(200, body);
-  expect(await api.getConfig()).toEqual(body);
+  const tls = { enabled: true, source: "self-signed", https_origins: [], alpn: ["h2", "http/1.1"] };
+  mockFetch(200, { initialized: true, tls, onboarding_enabled: true });
+  expect(await api.getConfig()).toEqual({ initialized: true, tls, onboardingEnabled: true });
+});
+
+test("getConfig reports a server that switched tours off", async () => {
+  const tls = { enabled: false, source: "self-signed", https_origins: [], alpn: ["http/1.1"] };
+  mockFetch(200, { initialized: true, tls, onboarding_enabled: false });
+  expect((await api.getConfig()).onboardingEnabled).toBe(false);
 });
 
 test("a missing or malformed tls block leaves initialized readable and tls null", async () => {
   mockFetch(200, { initialized: false });
-  expect(await api.getConfig()).toEqual({ initialized: false, tls: null });
-  mockFetch(200, { initialized: false, tls: { enabled: "yes" } });
-  expect(await api.getConfig()).toEqual({ initialized: false, tls: null });
+  expect(await api.getConfig()).toEqual({ initialized: false, tls: null, onboardingEnabled: true });
+  mockFetch(200, { initialized: false, tls: { enabled: "yes" }, onboarding_enabled: false });
+  expect(await api.getConfig()).toEqual({ initialized: false, tls: null, onboardingEnabled: true });
 });
 
 test("getConfig rejects a body whose initialized flag is not a boolean", async () => {

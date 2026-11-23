@@ -4,6 +4,7 @@
   import HttpsNotice from "./views/HttpsNotice.svelte";
   import Setup from "./views/Setup.svelte";
   import Login from "./views/Login.svelte";
+  import Welcome from "./views/Welcome.svelte";
   import WorldSelect from "./views/WorldSelect.svelte";
 
   // The pre-world flow is a self-contained package: the shell hands us callbacks
@@ -20,8 +21,10 @@
 
   /** The pre-world flow's local progression, entirely internal to this package — never the
    * shell's hash route (see the module-level comment above `onAuthenticated`/`onEnterWorld`). */
-  type Step = "loading" | "setup" | "login" | "worlds";
+  type Step = "loading" | "setup" | "welcome" | "login" | "worlds";
   let step = $state<Step>("loading");
+  /** The server's tour switch; the welcome screen after Setup shows only while it is on. */
+  let onboardingEnabled = $state(true);
   /** The server's published TLS status; `null` until `getConfig` resolves (or when it fails). */
   let tls = $state<TlsStatus | null>(null);
 
@@ -41,6 +44,7 @@
     try {
       const cfg = await getConfig();
       tls = cfg.tls;
+      onboardingEnabled = cfg.onboardingEnabled;
       if (!cfg.initialized) {
         step = "setup";
         return;
@@ -72,8 +76,10 @@
 </script>
 
 {#if step === "setup"}
-  <Setup onDone={() => (step = "login")} />
+  <Setup onDone={() => (step = onboardingEnabled ? "welcome" : "login")} />
   {#if tls}<HttpsNotice {tls} />{/if}
+{:else if step === "welcome"}
+  <Welcome onContinue={() => (step = "login")} />
 {:else if step === "login"}
   <Login onAuthed={afterLogin} />
   {#if tls}<HttpsNotice {tls} />{/if}

@@ -481,7 +481,7 @@
     {/each}
   </select>
   <label class="visually-hidden" for="chat-composer-roll-mode">{t("chat.composer.rollMode")}</label>
-  <select id="chat-composer-roll-mode" data-testid="roll-mode" bind:value={rollMode} onchange={() => applyRollMode(rollMode)}>
+  <select id="chat-composer-roll-mode" data-testid="roll-mode" data-tour="chat-composer.roll-mode" bind:value={rollMode} onchange={() => applyRollMode(rollMode)}>
     <option value="">{t("chat.composer.rollMode")}</option>
     {#each ROLL_MODES as mode (mode.command)}
       <option value={mode.command}>{t(mode.labelKey)}</option>
@@ -490,6 +490,7 @@
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>
   <textarea
     id="chat-composer-input"
+    data-tour="chat-composer.input"
     bind:this={textarea}
     bind:value
     {placeholder}
@@ -497,7 +498,7 @@
     oninput={onInput}
     rows="1"
   ></textarea>
-  <button type="button" data-testid="doc-link-trigger" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
+  <button type="button" data-testid="doc-link-trigger" data-tour="chat-composer.doc-link" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
   {#if imagesEnabled}
     <button type="button" data-testid="image-insert" title={t("chat.composer.insertImage")} onclick={() => void insertImage()}>🖼</button>
   {/if}

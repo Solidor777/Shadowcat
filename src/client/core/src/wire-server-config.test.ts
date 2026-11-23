@@ -38,13 +38,17 @@ describe("server config wire mirror — drift guard", () => {
 
 describe("ServerConfigSchema", () => {
   it("accepts the wire shape the server emits", () => {
-    expect(ServerConfigSchema.parse({ initialized: true, tls: TLS })).toEqual({
+    expect(
+      ServerConfigSchema.parse({ initialized: true, tls: TLS, onboarding_enabled: true }),
+    ).toEqual({
       initialized: true,
       tls: TLS,
+      onboarding_enabled: true,
     });
     expect(
       ServerConfigSchema.parse({
         initialized: false,
+        onboarding_enabled: false,
         tls: { enabled: false, source: null, https_origins: [], alpn: ["h2", "http/1.1"] },
       }).tls.source,
     ).toBeNull();
@@ -53,7 +57,13 @@ describe("ServerConfigSchema", () => {
   it("rejects a tls block missing alpn", () => {
     const { alpn: _dropped, ...withoutAlpn } = TLS;
     expect(() => TlsStatusSchema.parse(withoutAlpn)).toThrow();
-    expect(() => ServerConfigSchema.parse({ initialized: true, tls: withoutAlpn })).toThrow();
+    expect(() =>
+      ServerConfigSchema.parse({ initialized: true, tls: withoutAlpn, onboarding_enabled: true }),
+    ).toThrow();
+  });
+
+  it("rejects a body missing onboarding_enabled", () => {
+    expect(() => ServerConfigSchema.parse({ initialized: true, tls: TLS })).toThrow();
   });
 
   it("rejects an unknown source and a missing tls block", () => {

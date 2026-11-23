@@ -79,6 +79,8 @@ export type { SceneLevel, ElevationBand } from "./levels";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, STAGE_OVERLAY_CONTRACT, SETTINGS_SECTION_CONTRACT, SCENE_TOOL_CONTRACT, VISION_TREATMENT_CONTRACT, CHAT_CARD_EXTENSION_CONTRACT } from "./contributions";
+export { TOUR_CONTRACT, TOUR_ANCHOR_ATTR, TourMetaSchema, TourStepSchema, isTourAnchorId, validateTourMeta } from "./tour";
+export type { TourMeta, TourStep, TourAudience, TourScope, TourTrigger, TourPlacement } from "./tour";
 export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SettingsSectionMeta, SceneToolMeta, VisionTreatmentMeta, VisionTreatmentPaint, VisionTreatmentCell, ChatCardExtensionMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
