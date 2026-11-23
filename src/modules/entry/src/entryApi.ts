@@ -1,4 +1,4 @@
-import { TlsStatusSchema } from "@shadowcat/core";
+import { ServerConfigSchema, TlsStatusSchema } from "@shadowcat/core";
 import type { ServerConfig, WorldEntry } from "@shadowcat/types";
 
 /**
@@ -47,6 +47,8 @@ interface PublicConfig {
   initialized: boolean;
   /** The published TLS block, or `null` when absent or malformed. */
   tls: ServerConfig["tls"] | null;
+  /** The server's tour switch; `true` unless a body that satisfies `ServerConfigSchema` says `false`. */
+  onboardingEnabled: boolean;
 }
 
 /** `GET /api/config` before validation: each field is checked on its own. */
@@ -60,9 +62,11 @@ interface RawPublicConfig {
 /**
  * Fetch the server's public configuration. `initialized` is parsed on its own: it decides whether
  * the Setup form is reachable, so a missing or malformed `tls` block must never hide it. A `tls`
- * block that does not parse yields `null`, which only suppresses the HTTPS notice.
- * @returns `initialized` and the `tls` block (`null` when absent or malformed). Field semantics
- * are defined by the generated `ServerConfig` type (from the Rust source) — not restated here.
+ * block that does not parse yields `null`, which only suppresses the HTTPS notice. The tour switch
+ * is read through the shared `ServerConfigSchema`; a body that does not satisfy it leaves tours on.
+ * @returns `initialized`, the `tls` block (`null` when absent or malformed) and `onboardingEnabled`.
+ * Field semantics are defined by the generated `ServerConfig` type (from the Rust source) — not
+ * restated here.
  * @example
  * ```
  * // module-private; not part of the public API
@@ -74,7 +78,12 @@ export async function getConfig(): Promise<PublicConfig> {
   if (typeof body.initialized !== "boolean") throw new Error("/api/config: initialized is not a boolean");
   const initialized = body.initialized;
   const tls = TlsStatusSchema.safeParse(body.tls);
-  return { initialized, tls: tls.success ? tls.data : null };
+  const full = ServerConfigSchema.safeParse(body);
+  return {
+    initialized,
+    tls: tls.success ? tls.data : null,
+    onboardingEnabled: full.success ? full.data.onboarding_enabled : true,
+  };
 }
 
 /**
