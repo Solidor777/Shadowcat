@@ -5,6 +5,7 @@
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
+  import DormantRegionList from "./DormantRegionList.svelte";
   import { portalTokens } from "./portal-use";
   import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
@@ -1076,6 +1077,7 @@
         {/each}
         <button type="button" data-testid="region-trigger-add" onclick={addRegionTrigger}>{t("tools.addTrigger")}</button>
       </div>
+      <DormantRegionList {controller} />
     {/if}
 
     <!-- Every entity editor below keys off the shared editing selection, not the active tool:
