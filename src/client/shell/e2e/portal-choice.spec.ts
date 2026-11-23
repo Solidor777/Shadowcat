@@ -166,9 +166,32 @@ test("portal choice: the owner picks a destination, a decline stays put, and the
     if (await gm.getByTestId("portal-chooser").isVisible()) await gm.keyboard.press("Escape");
 
     // Walk back out and in again: Escape declines and the token stays where it stands.
-    await dragScene(player, DEST_LIBRARY, WALK_OUT);
-    await dragScene(player, WALK_OUT, WALK_IN);
-    await expect(chooser).toBeVisible({ timeout: 20_000 });
+    // The server refuses a move of a token whose previous move's glide is still playing, and the
+    // portal choice can be answered while the walk-in glide is in flight, so the first drag away
+    // is repeated until the token has actually left the destination. A refused drag leaves the
+    // token at the destination, so the repeat starts from the same point.
+    await expect(async () => {
+      await dragScene(player, DEST_LIBRARY, WALK_OUT);
+      await expect
+        .poll(async () => {
+          const at = await onlyTokenPosition(player);
+          return at ? Math.hypot(at.x - WALK_OUT.x, at.y - WALK_OUT.y) < 60 : false;
+        }, { timeout: 5_000 })
+        .toBe(true);
+      // Let the glide finish so the next move is not refused by the moving-lock.
+      let last = await onlyTokenPosition(player);
+      for (let i = 0; i < 20; i++) {
+        await player.waitForTimeout(250);
+        const now = await onlyTokenPosition(player);
+        if (now && last && now.x === last.x && now.y === last.y) break;
+        last = now;
+      }
+    }).toPass({ timeout: 20_000 });
+    // The walk-in is repeated the same way until the offer appears.
+    await expect(async () => {
+      await dragScene(player, WALK_OUT, WALK_IN);
+      await expect(chooser).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
     const before = await onlyTokenPosition(player);
     await player.keyboard.press("Escape");
     await expect(chooser).not.toBeVisible();
