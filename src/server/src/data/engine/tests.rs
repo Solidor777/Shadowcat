@@ -2482,6 +2482,7 @@ fn scene_with_levels(levels: Vec<SceneLevel>) -> SceneEngine {
         },
         background: None,
         bounds: None,
+        padding: None,
         snap_to_grid: None,
         vision: None,
         lighting: None,

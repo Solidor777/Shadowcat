@@ -19,6 +19,11 @@ export class MockBackend implements DisplayBackend {
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
   gridColor: number | null = null;
+  /** Segments of the last `drawBoundsOutline` call, recorded verbatim; empty before the first
+   * call or after a clear. */
+  boundsOutline: LineSeg[] = [];
+  /** Color passed to the last `drawBoundsOutline` call, `0xRRGGBB`; `null` before the first call. */
+  boundsOutlineColor: number | null = null;
   /** Last `setCameraTransform` value, recorded verbatim. */
   camera: CameraTransform | null = null;
   /** Last applied visibility mask — either the last `setVisibility` input, or the
@@ -164,6 +169,23 @@ export class MockBackend implements DisplayBackend {
   drawGrid(lines: LineSeg[], color: number): void {
     this.gridLineCount = lines.length;
     this.gridColor = color;
+  }
+  /** `DisplayBackend.drawBoundsOutline`: records the segments verbatim into `boundsOutline`
+   * (replacing the previous set) and the color into `boundsOutlineColor`.
+   * @param lines The outline segments; an empty array clears the recorded outline.
+   * @param color The stroke color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.drawBoundsOutline([{ x1: 0, y1: 0, x2: 100, y2: 0 }], 0xd9a441);
+   * backend.boundsOutline.length; // 1
+   * ```
+   */
+  drawBoundsOutline(lines: LineSeg[], color: number): void {
+    this.boundsOutline = lines;
+    this.boundsOutlineColor = color;
   }
   /** `DisplayBackend.setCameraTransform`: records `t` verbatim into `this.camera`.
    * @param t The camera transform: translation `(x,y)` plus uniform `scale`.

@@ -35,6 +35,28 @@ test("square grid lines are deterministic for non-integer (panned/zoomed) rects"
   expect(horizontals).toEqual([0, 100, 200]);
 });
 
+test("square authoredOutline is the closed rectangle from the origin to (w*size, h*size)", () => {
+  const edges = new Grid({ kind: "square", size: 50 }).authoredOutline(10, 6);
+  expect(edges).toEqual([
+    { x1: 0, y1: 0, x2: 500, y2: 0 },
+    { x1: 500, y1: 0, x2: 500, y2: 300 },
+    { x1: 500, y1: 300, x2: 0, y2: 300 },
+    { x1: 0, y1: 300, x2: 0, y2: 0 },
+  ]);
+});
+
+test("hex authoredOutline spans cell (0,0) to cell (w-1,h-1) plus the pointy-top half-extents", () => {
+  // Mirrors the server's `GridShape::world_extent` for a hex grid with no margin, so the outline
+  // frames exactly the area the server routes and lights.
+  const size = 100;
+  const [top, , bottom] = new Grid({ kind: "hex", size }).authoredOutline(4, 3);
+  const s3 = Math.sqrt(3);
+  expect(top.x1).toBeCloseTo((-size * s3) / 2);
+  expect(top.y1).toBeCloseTo(-size);
+  expect(top.x2).toBeCloseTo(size * (s3 * 3 + (s3 / 2) * 2) + (size * s3) / 2);
+  expect(bottom.y1).toBeCloseTo(size * 1.5 * 2 + size);
+});
+
 test("hex snap round-trips: a snapped point snaps to itself", () => {
   const g = new Grid({ kind: "hex", size: 50 });
   const snapped = g.snap({ x: 137, y: 221 });

@@ -331,6 +331,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   /** The `grid`-layer line strokes, redrawn wholesale by `drawGrid`. */
   private readonly grid = new Graphics();
+  /** The scene-bounds outline strokes, a second child of the `grid` layer so `drawGrid`'s clear
+   * never touches it; redrawn wholesale by `drawBoundsOutline`. */
+  private readonly boundsOutline = new Graphics();
   /** Three-state fog: two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
    * shows only on UNEXPLORED area — inverse-masked by `exploredHoles` (explored ∪ visible).
    * `fogDim` (semi-transparent) shows on unexplored + explored — inverse-masked by `visibleHoles`.
@@ -544,7 +547,7 @@ export class PixiBackend implements DisplayBackend {
       c.label = id;
       this.layers.set(id, c);
       this.world.addChild(c);
-      if (id === "grid") c.addChild(this.grid);
+      if (id === "grid") c.addChild(this.grid, this.boundsOutline);
       if (id === "vfx") {
         // VFX nodes carry a per-node zIndex (`vfxAnchorZIndex`'s 0/1/2), so this layer —
         // alone among the core layers — must actually sort its children.
@@ -679,6 +682,26 @@ export class PixiBackend implements DisplayBackend {
     if (lines.length === 0) return; // nothing to stroke (e.g. a 0×0 viewport)
     for (const l of lines) this.grid.moveTo(l.x1, l.y1).lineTo(l.x2, l.y2);
     this.grid.stroke({ width: 1, color, alpha: 0.5 });
+  }
+
+  /** `DisplayBackend.drawBoundsOutline`: replace the scene-bounds outline. Clears its Graphics
+   * first, then strokes each segment at 2px width, 90% alpha. An empty `lines` array leaves it
+   * blank.
+   * @param lines The outline segments to stroke, in scene coordinates.
+   * @param color The stroke color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawBoundsOutline([{ x1: 0, y1: 0, x2: 100, y2: 0 }], 0xd9a441);
+   * ```
+   */
+  drawBoundsOutline(lines: LineSeg[], color: number): void {
+    this.boundsOutline.clear();
+    if (lines.length === 0) return;
+    for (const l of lines) this.boundsOutline.moveTo(l.x1, l.y1).lineTo(l.x2, l.y2);
+    this.boundsOutline.stroke({ width: 2, color, alpha: 0.9 });
   }
 
   /** `DisplayBackend.setCameraTransform`: apply the camera transform to the `world` container —

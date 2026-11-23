@@ -266,7 +266,8 @@ fn resolve_scene_movement_model_null_scene_override_inherits_world() {
 fn resolve_scene_bounds_defaults_when_absent() {
     let ecs = SceneEcs::new();
     let r = ecs.resolve_scene(crate::test_ids::test_uuid(1));
-    assert_eq!(r.bounds, (100.0, 100.0));
+    assert_eq!(r.bounds.cells, (100.0, 100.0));
+    assert_eq!(r.bounds.padding_cells, 0.0);
 }
 
 #[test]
@@ -282,7 +283,45 @@ fn resolve_scene_bounds_reads_authored_value() {
         }),
     );
     let r = ecs.resolve_scene(scene_id);
-    assert_eq!(r.bounds, (40.0, 25.0));
+    assert_eq!(r.bounds.cells, (40.0, 25.0));
+}
+
+#[test]
+fn resolve_scene_padding_reads_authored_value_and_defaults_to_zero() {
+    use serde_json::json;
+    let mut ecs = SceneEcs::new();
+    let padded = crate::test_ids::test_uuid(20);
+    let bare = crate::test_ids::test_uuid(21);
+    ecs.insert_scene_for_test(
+        padded,
+        json!({
+            "grid": { "kind": "square", "size": 100 },
+            "bounds": { "width": 10.0, "height": 8.0 },
+            "padding": 3.0
+        }),
+    );
+    ecs.insert_scene_for_test(bare, json!({ "grid": { "kind": "square", "size": 100 } }));
+    // Discrimination: fails if the resolver drops `padding` (reads 0) or invents a default margin
+    // for a scene that authors none.
+    assert_eq!(ecs.resolve_scene(padded).bounds.padding_cells, 3.0);
+    assert_eq!(ecs.resolve_scene(bare).bounds.padding_cells, 0.0);
+}
+
+#[test]
+fn resolve_scene_padding_fails_closed_to_no_margin_on_a_negative_value() {
+    use serde_json::json;
+    let mut ecs = SceneEcs::new();
+    let scene_id = crate::test_ids::test_uuid(22);
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({
+            "grid": { "kind": "square", "size": 100 },
+            "padding": -4.0
+        }),
+    );
+    // Discrimination: fails if a negative margin reaches the envelope (shrinking it below the
+    // authored rectangle) instead of resolving to no margin.
+    assert_eq!(ecs.resolve_scene(scene_id).bounds.padding_cells, 0.0);
 }
 
 #[test]
@@ -299,7 +338,7 @@ fn resolve_scene_bounds_fail_closed_on_degenerate() {
         }),
     );
     let r = ecs.resolve_scene(scene_id);
-    assert_eq!(r.bounds, (100.0, 100.0));
+    assert_eq!(r.bounds.cells, (100.0, 100.0));
 }
 
 #[test]

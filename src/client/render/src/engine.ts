@@ -25,6 +25,10 @@ import { EmoteView, type EmoteKind } from "./emote-view";
 import { RemoteRulerView } from "./remote-ruler-view";
 import { VfxView } from "./vfx-view";
 
+/** Stroke color of the authored-rectangle outline, `0xRRGGBB` (amber), fixed rather than themed so
+ * it stays distinct from the grid lines under every theme. */
+const BOUNDS_OUTLINE_COLOR = 0xd9a441;
+
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
  * unions overlapping polygons by overdraw, so per-cell shapes (vs merged runs) are correct.
@@ -255,6 +259,14 @@ export class RenderEngine implements SceneToolHost {
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
    * Reassignable at runtime via {@link RenderEngine.setThemeColors} (a theme swap). */
   private gridColor: number;
+  /** The authored play-area size whose outline is shown, or `null` for none; set by
+   * {@link setAuthoredBounds}. */
+  private authoredBounds: {
+    /** Authored width, in grid cells. */
+    width: number;
+    /** Authored height, in grid cells. */
+    height: number;
+  } | null = null;
   /** Current CSS-pixel viewport size, set by {@link setViewport}; feeds the visible-scene-rect
    * computation in {@link redrawGrid}. */
   private viewport = { width: 0, height: 0 };
@@ -1631,6 +1643,46 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(spec);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.redrawGrid();
+    this.redrawBoundsOutline();
+  }
+
+  /** Show or hide the outline of the scene's authored play-area rectangle (the rectangle inside
+   * the margin). The host passes the size only for a viewer who should see it (the GM, on a scene
+   * with a margin); `null` removes it. The outline follows the active grid, so a later
+   * {@link setGrid} redraws it in the new grid's geometry.
+   * @param cells The authored width and height in grid cells, or `null` to hide the outline.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setAuthoredBounds({ width: 30, height: 20 });
+   * ```
+   */
+  setAuthoredBounds(cells: {
+    /** Authored width, in grid cells. */
+    width: number;
+    /** Authored height, in grid cells. */
+    height: number;
+  } | null): void {
+    this.authoredBounds = cells;
+    this.redrawBoundsOutline();
+  }
+
+  /** Draws (or clears) the authored-rectangle outline from {@link authoredBounds} and the active
+   * grid.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.redrawBoundsOutline();
+   * ```
+   */
+  private redrawBoundsOutline(): void {
+    const b = this.authoredBounds;
+    this.backend.drawBoundsOutline(
+      b ? this.grid.authoredOutline(b.width, b.height) : [],
+      BOUNDS_OUTLINE_COLOR,
+    );
   }
 
   /** Push animation config (speed + easing) to the token animator. Separate from setGrid

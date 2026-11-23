@@ -288,6 +288,10 @@ function deepFreeze<T>(obj: T): T {
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
 export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
+/** The largest scene margin, in grid cells, the server accepts on `SceneEngine.padding`. MUST match
+ * the server's `data::engine::MAX_SCENE_PADDING_CELLS`; the settings input uses it as its `max`. */
+export const MAX_SCENE_PADDING_CELLS = 100;
+
 /** The engine-literal innermost fallbacks of the settings chain, in the RESOLVED (non-overlay)
  * shape — a MIRROR of the server's definitions (the `WorldSceneDefaults`/`Pathfinding`/
  * `AnimationSettings` `Default` impls), cross-checked field-by-field by a server-side unit
@@ -382,6 +386,10 @@ export interface ResolvedSceneSettings {
   /** The scene's playable-area dimensions in grid units; scene `bounds`, else
    * `DEFAULT_SCENE_BOUNDS`. */
   bounds: SceneDimensions;
+  /** The margin around `bounds`, in grid cells; scene `padding`, else `0`. A present but
+   * non-finite or negative value resolves to `0` (no margin), the server's
+   * `sanitize_padding_cells` rule. */
+  padding: number;
 }
 
 /** Visible-to-all defaults; the server normalizes permissions per the creator's role.
@@ -572,6 +580,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     grid: engine.grid ?? { kind: "square", size: 100, distance: null },
     background: engine.background ?? null,
     bounds: engine.bounds ?? null,
+    padding: engine.padding ?? null,
     snapToGrid: engine.snapToGrid ?? null,
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
@@ -625,6 +634,21 @@ function resolveBounds(b: SceneDimensions | null | undefined): SceneDimensions {
     return { width: w, height: h };
   }
   return DEFAULT_SCENE_BOUNDS;
+}
+
+/** Fail-closed padding resolve, the client twin of the server's `sanitize_padding_cells`: a margin
+ * that is absent, non-finite or negative is `0` (no margin), never a larger envelope.
+ * Internal helper — not exported from the package.
+ * @param p A candidate margin in grid cells, possibly absent or malformed.
+ * @returns `p` when it is a finite number `>= 0`; otherwise `0`.
+ * @example
+ * ```
+ * resolvePadding(-3); // 0
+ * resolvePadding(2.5); // 2.5
+ * ```
+ */
+function resolvePadding(p: number | null | undefined): number {
+  return typeof p === "number" && Number.isFinite(p) && p >= 0 ? p : 0;
 }
 
 /** Engine-defined doc_type of the singleton the active system's declared defaults live in
@@ -712,6 +736,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     },
     gridDistance: eng?.grid?.distance ?? { perCell: 5, unit: "ft" },
     bounds: resolveBounds(eng?.bounds),
+    padding: resolvePadding(eng?.padding),
   };
 }
 

@@ -430,6 +430,41 @@ export class Grid {
   }
 
   /**
+   * The closed outline of the scene's authored play-area rectangle (no margin), as four segments.
+   * Mirrors the server's `GridShape::world_extent` with zero padding: square spans `(0,0)` to
+   * `(w*size, h*size)`; hex spans cell `(0,0)` to cell `(w-1,h-1)` plus the pointy-top half-extents
+   * (`size*sqrt(3)/2` on x, `size` on y), the same `axialToPixel` placement the grid overlay draws.
+   * @param widthCells The authored width in cells (finite, `> 0`).
+   * @param heightCells The authored height in cells (finite, `> 0`).
+   * @returns The four edges of the rectangle, in scene coordinates, drawn clockwise from top-left.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 50 });
+   * grid.authoredOutline(10, 10)[0]; // { x1: 0, y1: 0, x2: 500, y2: 0 }
+   * ```
+   */
+  authoredOutline(widthCells: number, heightCells: number): LineSeg[] {
+    let x0 = 0, y0 = 0, x1 = widthCells * this.spec.size, y1 = heightCells * this.spec.size;
+    if (this.spec.kind === "hex") {
+      const far = this.axialToPixel(Math.max(widthCells - 1, 0), Math.max(heightCells - 1, 0));
+      const halfX = (this.spec.size * Math.sqrt(3)) / 2;
+      const halfY = this.spec.size;
+      x0 = -halfX;
+      y0 = -halfY;
+      x1 = far.x + halfX;
+      y1 = far.y + halfY;
+    }
+    return [
+      { x1: x0, y1: y0, x2: x1, y2: y0 },
+      { x1: x1, y1: y0, x2: x1, y2: y1 },
+      { x1: x1, y1: y1, x2: x0, y2: y1 },
+      { x1: x0, y1: y1, x2: x0, y2: y0 },
+    ];
+  }
+
+  /**
    * Square-grid line segments: one vertical line per column boundary, one horizontal
    * line per row boundary, spanning `rect`.
    * @param rect The visible scene rectangle to cover.

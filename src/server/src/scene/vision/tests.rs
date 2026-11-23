@@ -175,7 +175,10 @@ fn bound_for_scene_unions_the_envelopes_minimum_and_a_refused_one_cannot_shrink_
     // - the far-from-the-origin refused arm fails if the union starts SKIPPING a zero-area
     //   envelope, which every other assertion here tolerates.
     let g = HexGrid { size: 400.0 };
-    let envelope = g.world_extent((3.0, 3.0));
+    let envelope = g.world_extent(crate::scene::SceneBounds {
+        cells: (3.0, 3.0),
+        padding_cells: 0.0,
+    });
     let margin = 100.0;
     let vp = (0.0, 0.0);
     assert!(

@@ -1,7 +1,7 @@
 import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, deterministicId, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSessionPause, sessionFreezes, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
+  buildWorldSettingsDoc, resolveSessionPause, sessionFreezes, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS, MAX_SCENE_PADDING_CELLS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
@@ -74,6 +74,28 @@ describe("resolveSceneSettings", () => {
     (scene.engine as SceneEngine).bounds = { width: 0, height: -5 } as SceneDimensions;
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.bounds).toEqual(DEFAULT_SCENE_BOUNDS);
+  });
+
+  it("absent padding resolves to 0 and an authored padding passes through", () => {
+    const bare = buildSceneDoc("w1", {}, "scene1");
+    expect(resolveSceneSettings(bare, storeWith(bare)).padding).toBe(0);
+    const padded = buildSceneDoc("w1", { padding: 2.5 }, "scene2");
+    expect(resolveSceneSettings(padded, storeWith(padded)).padding).toBe(2.5);
+  });
+
+  it("malformed padding fails closed to 0, the server's sanitize_padding_cells rule", () => {
+    // Each of these would WIDEN the envelope if passed through; every one must resolve to no margin.
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "3"]) {
+      const scene = buildSceneDoc("w1", {}, "scene1");
+      (scene.engine as SceneEngine).padding = bad as unknown as number;
+      expect(resolveSceneSettings(scene, storeWith(scene)).padding).toBe(0);
+    }
+    // 0 and values up to the server cap are kept as authored (the server rejects only > the cap
+    // at ingress; the resolver does not clamp).
+    for (const ok of [0, 1.5, MAX_SCENE_PADDING_CELLS]) {
+      const scene = buildSceneDoc("w1", { padding: ok }, "scene1");
+      expect(resolveSceneSettings(scene, storeWith(scene)).padding).toBe(ok);
+    }
   });
 
   it("uses world-settings defaults over built-ins", () => {
@@ -243,6 +265,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     grid: { kind: "square", size: 100, distance: null },
     background: null,
     bounds: null,
+    padding: null,
     snapToGrid: null,
     vision: null,
     lighting: null,

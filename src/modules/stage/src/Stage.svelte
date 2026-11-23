@@ -333,6 +333,7 @@
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
       let lastAnimKey = "";
+      let lastOutlineKey = "";
       const onDocs = (): void => {
         const vsid = ctx.viewedSceneId;
         const activeSceneDoc = vsid ? documents.get(vsid) : undefined;
@@ -357,6 +358,15 @@
         if (key !== lastGridKey) {
           lastGridKey = key;
           e.setGrid(spec);
+        }
+        // The authored-rectangle outline is a GM aid for telling the margin from the play area:
+        // only the GM, only with a margin. Pushed only on change so a token drag does not redraw
+        // it each frame; setGrid redraws it itself when the grid changes.
+        const outline = role === "gm" && settings.padding > 0 ? settings.bounds : null;
+        const outlineKey = outline ? `${outline.width}x${outline.height}` : "";
+        if (outlineKey !== lastOutlineKey) {
+          lastOutlineKey = outlineKey;
+          e.setAuthoredBounds(outline ? { width: outline.width, height: outline.height } : null);
         }
         // Snap-to-grid is per-scene. Pushed unconditionally each pass — a
         // cheap flag assignment (unlike setGrid's Grid rebuild or setAnimation's config
