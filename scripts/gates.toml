@@ -241,7 +241,7 @@ reason = "Builds the client bundle and the server binary the browser e2e step se
 [[gate]]
 workflow = "ci.yml"
 job = "ui-e2e"
-command = "pnpm --filter @shadowcat/shell exec playwright test --project=loopback --project=media-range-loopback --project=webm-decode-chromium --project=webm-decode-firefox"
+command = "pnpm --filter @shadowcat/shell exec playwright test --project=loopback --project=media-range-loopback --project=webm-decode-chromium --project=webm-decode-firefox --project=route-prefix"
 tier = "ci-only"
 reason = "The loopback browser end-to-end suite and the media-range spec, which runs against a server of its own with a short egress window, one of the end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding a fixed port outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds those ports to the tree under test."
 
@@ -360,6 +360,12 @@ tier = "commit"
 workflow = "ci.yml"
 job = "docs"
 command = "pnpm lint:secure-context"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:route-prefix"
 tier = "commit"
 
 [[gate]]

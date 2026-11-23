@@ -13,6 +13,7 @@ import {
   LONG_AUDIO_PLAYTHROUGH_SPEC,
   LONG_AUDIO_SPEC,
   MEDIA_RANGE_SPEC,
+  ROUTE_PREFIX_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
   WEBM_DECODE_SPEC,
@@ -55,6 +56,13 @@ const HTTPS_PORT = PORTS.https;
 /** Port of the loopback test server the `media-range-loopback` project targets: a server of its own
  * because it runs with a short egress window, which no other spec may share. */
 const MEDIA_RANGE_PORT = PORTS.mediaRange;
+
+/** Port of the loopback test server the `route-prefix` project targets: a server of its own because
+ * it runs mounted under `ROUTE_PREFIX`, which no other spec may share. */
+const ROUTE_PREFIX_PORT = PORTS.routePrefix;
+
+/** The subpath the route-prefix server is mounted under (`Config.route_prefix`). */
+const ROUTE_PREFIX = "/ttrpg";
 
 /** The `egress_window_secs` the windowed servers run with, as the environment string
  * (`MEDIA_RANGE_EGRESS_WINDOW_SECS`, the one value the play-through spec also reads). */
@@ -370,7 +378,7 @@ export default defineConfig({
   projects: [
     {
       name: "loopback",
-      testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC],
+      testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, ROUTE_PREFIX_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC],
       use: CHROMIUM_LAUNCH,
     },
     // `decodeAudioData` of the server's Opus derivatives, once per engine that decodes them in Web
@@ -393,6 +401,14 @@ export default defineConfig({
         baseURL: `http://${LAN_HOST}:${LAN_PORT}`,
         launchOptions: { args: [...BASE_LAUNCH_ARGS, `--host-resolver-rules=MAP ${LAN_HOST} 127.0.0.1`] },
       },
+    },
+    {
+      // The server mounted under a subpath, as a reverse proxy serves it. The base URL carries the
+      // prefix and a trailing slash, so a relative `page.goto("./")` lands on the mounted app;
+      // an absolute `/api/...` path would leave the prefix and 404.
+      name: "route-prefix",
+      testMatch: ROUTE_PREFIX_SPEC,
+      use: { baseURL: `http://127.0.0.1:${ROUTE_PREFIX_PORT}${ROUTE_PREFIX}/`, ...CHROMIUM_LAUNCH },
     },
     ...(LAN_IP === undefined ? [] : [...httpsProjects(LAN_IP), ...longAudioProjects(LAN_IP)]),
   ],
@@ -454,6 +470,15 @@ export default defineConfig({
         SHADOWCAT_BIND: `127.0.0.1:${MEDIA_RANGE_PORT}`,
         SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
       },
+    },
+    {
+      // The same binary mounted under `ROUTE_PREFIX`; its readiness probe lives under the prefix too.
+      command: `"${bin}"`,
+      cwd: repoRoot,
+      url: `http://127.0.0.1:${ROUTE_PREFIX_PORT}${ROUTE_PREFIX}/health`,
+      timeout: 120_000,
+      reuseExistingServer: !process.env.CI,
+      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${ROUTE_PREFIX_PORT}`, SHADOWCAT_ROUTE_PREFIX: ROUTE_PREFIX },
     },
     ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP), longAudioServer(LAN_IP)]),
   ],
