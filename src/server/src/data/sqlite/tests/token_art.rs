@@ -71,6 +71,8 @@ fn actor_engine(visual: TokenVisual) -> serde_json::Value {
         aura: None,
         sound: None,
         vfx: None,
+        bars: None,
+        nameplate_mode: None,
     })
     .unwrap()
 }
@@ -138,6 +140,8 @@ fn linked_token(world: Uuid, actor: Uuid, overrides_visual: Option<TokenVisual>)
             sound: None,
             vfx: None,
             disposition: None,
+            bars: None,
+            nameplate_mode: None,
         };
         t.engine.as_mut().unwrap()["overrides"] = serde_json::to_value(overrides).unwrap();
     }

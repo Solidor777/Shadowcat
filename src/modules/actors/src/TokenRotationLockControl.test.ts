@@ -23,15 +23,15 @@ function tokenWith(lock_rotation: boolean, actor_id: string | null = null): Wire
 }
 
 describe("TokenRotationLockControl", () => {
-  it("renders nothing without a selected token or when canEdit refuses", () => {
+  it("renders nothing without a selected token, and nothing for a non-GM who can edit the token", () => {
     render(TokenRotationLockControl, {
-      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent: vi.fn(), canEdit: () => true }),
+      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent: vi.fn(), role: "gm" }),
       props: { tokenId: null },
     });
     expect(screen.queryByTestId("token-rotation-lock")).toBeNull();
 
     render(TokenRotationLockControl, {
-      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent: vi.fn(), canEdit: () => false }),
+      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent: vi.fn(), role: "player", canEdit: () => true }),
       props: { tokenId: "tok1" },
     });
     expect(screen.queryByTestId("token-rotation-lock")).toBeNull();
@@ -39,7 +39,7 @@ describe("TokenRotationLockControl", () => {
 
   it("shows the stored state for a raw token and a linked token alike", () => {
     render(TokenRotationLockControl, {
-      context: setAppContextForTest({ documents: storeWith(tokenWith(true, "actor1")), dispatchIntent: vi.fn(), canEdit: () => true }),
+      context: setAppContextForTest({ documents: storeWith(tokenWith(true, "actor1")), dispatchIntent: vi.fn(), role: "gm" }),
       props: { tokenId: "tok1" },
     });
     expect((screen.getByTestId("token-rotation-lock") as HTMLInputElement).checked).toBe(true);
@@ -48,7 +48,7 @@ describe("TokenRotationLockControl", () => {
   it("checking writes /engine/lock_rotation with the stored old", async () => {
     const dispatchIntent = vi.fn();
     render(TokenRotationLockControl, {
-      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent, canEdit: () => true }),
+      context: setAppContextForTest({ documents: storeWith(tokenWith(false)), dispatchIntent, role: "gm" }),
       props: { tokenId: "tok1" },
     });
     await fireEvent.click(screen.getByTestId("token-rotation-lock"));
@@ -60,7 +60,7 @@ describe("TokenRotationLockControl", () => {
   it("unchecking writes false over the stored true", async () => {
     const dispatchIntent = vi.fn();
     render(TokenRotationLockControl, {
-      context: setAppContextForTest({ documents: storeWith(tokenWith(true)), dispatchIntent, canEdit: () => true }),
+      context: setAppContextForTest({ documents: storeWith(tokenWith(true)), dispatchIntent, role: "gm" }),
       props: { tokenId: "tok1" },
     });
     await fireEvent.click(screen.getByTestId("token-rotation-lock"));

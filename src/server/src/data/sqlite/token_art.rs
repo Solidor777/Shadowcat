@@ -28,6 +28,8 @@ fn empty_overrides() -> TokenOverrides {
         sound: None,
         vfx: None,
         disposition: None,
+        bars: None,
+        nameplate_mode: None,
     }
 }
 

@@ -9,6 +9,7 @@
 
 mod anchored_regions;
 pub mod audibility;
+pub mod bars;
 pub(crate) mod elevation;
 pub(crate) mod emitters;
 pub mod explored;
