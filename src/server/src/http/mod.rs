@@ -141,7 +141,8 @@ impl AppState {
 }
 
 /// Build the complete axum router: sessions, request-id + trace layers, all
-/// REST/WS/asset/module routes, and the embedded SPA fallback.
+/// REST/WS/asset/module routes, and the embedded SPA fallback. When `Config.route_prefix` is set
+/// the whole application is nested under that prefix and nothing is served outside it.
 ///
 /// # Examples
 ///
@@ -227,7 +228,8 @@ pub async fn router(state: AppState) -> Router {
         },
     );
 
-    Router::new()
+    let prefix = state.config.base_path().to_owned();
+    let app = Router::new()
         .route("/health", get(routes::health))
         .route("/api/config", get(routes::config))
         // GET for HTTP/1.1 upgrades, CONNECT for RFC 8441 WebSockets over HTTP/2 (the
@@ -405,7 +407,21 @@ pub async fn router(state: AppState) -> Router {
             "/api/assets/uploads/{id}",
             delete(assets::uploads::abort_session),
         )
-        .fallback(embed::static_handler)
+        .fallback(embed::static_handler);
+    // Every route above is written at its root-mount path; a configured prefix wraps the whole
+    // application (routes and fallback) in one nest, so the prefix is applied here and nowhere
+    // else. A nest does not match its own prefix followed by a bare slash (`/ttrpg/` is neither
+    // `/ttrpg` nor `/ttrpg/<something>`), so that one path is routed to the embedded page
+    // explicitly. A request outside the prefix matches nothing and gets the default 404. The
+    // layers below wrap the nested router, so they cover every response, including that 404.
+    let mounted = if prefix.is_empty() {
+        app
+    } else {
+        Router::new()
+            .nest(&prefix, app)
+            .route(&format!("{prefix}/"), get(embed::static_handler))
+    };
+    mounted
         .layer(sessions)
         .layer(CompressionLayer::new().compress_when(compression::AssetAndWsSafePredicate::new()))
         .layer(security_headers)

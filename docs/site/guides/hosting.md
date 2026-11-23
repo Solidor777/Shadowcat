@@ -104,6 +104,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
 | `trusted_proxies` | *(empty)* | Reverse-proxy IP addresses trusted to set `X-Forwarded-For` and `X-Forwarded-Proto`; every entry must be an IP address (anything else stops the server at start, naming the entry) |
 | `behind_proxy` | `false` | Declares a reverse proxy fronts this bind on the same host; makes a loopback bind count as exposed for the setup-token policy. Replaces `behind_tls_proxy`, which now stops the server at start |
+| `route_prefix` | *(unset: served at the root)* | Subpath the whole server is served under, e.g. `/ttrpg`, for a reverse proxy that forwards the path unchanged (see [Serving under a subpath](#serving-under-a-subpath)). A leading slash is added and a trailing one removed; segments may use letters, digits and `-` `.` `_` `~` only, anything else stops the server at start |
 | `tls` | `auto` | Built-in HTTPS: `auto` serves TLS on the same port beside plain HTTP, `off` serves plain HTTP only |
 | `tls_cert` / `tls_key` | *(unset)* | Your own certificate chain and private key (PEM); both or neither |
 | `tls_hostnames` | *(empty)* | Extra DNS names / IP addresses the self-signed certificate must cover |
@@ -260,6 +261,27 @@ same host (cloudflared, tailscale, ngrok, nginx) is exempt from the caps because
 loopback, but it still has to be listed in `trusted_proxies` for the server to believe the
 `X-Forwarded-For` and `X-Forwarded-Proto` headers it sends, which carry the real client address and
 scheme.
+
+### Serving under a subpath
+
+To publish Shadowcat at `https://host/ttrpg/` beside other sites, start it with
+`--route-prefix /ttrpg` (or `SHADOWCAT_ROUTE_PREFIX=/ttrpg`, or
+`route_prefix = "/ttrpg"` in `shadowcat.toml`) and have the proxy forward the path **unchanged**:
+every route, the WebSocket at `/ttrpg/ws` and the client bundle live under the prefix, and a
+request outside it gets a 404. Do not strip the prefix in the proxy.
+
+```nginx
+location /ttrpg/ {
+    proxy_pass http://127.0.0.1:30000;   # no trailing path: the prefix is forwarded as received
+    # ... the Upgrade, Host and X-Forwarded-* headers shown under "Serving to your table"
+}
+```
+
+The same build serves any prefix: the server writes the prefix into the page it serves, so nothing
+is rebuilt per deployment. The default (no `route_prefix`) is the origin root, exactly as before.
+The session cookie keeps its `/` path (the `__Host-` form used over HTTPS requires it), so two
+Shadowcat servers published under different prefixes of one host name share a cookie name and
+replace each other's session; give each its own host name.
 
 ### Automatic certificates (ACME)
 

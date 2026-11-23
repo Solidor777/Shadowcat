@@ -1424,3 +1424,114 @@ fn trash_dir_sharing_only_a_name_prefix_with_a_sibling_is_accepted() {
         "component-wise comparison, not string prefix"
     );
 }
+
+#[test]
+fn normalize_route_prefix_yields_one_canonical_form() {
+    assert_eq!(normalize_route_prefix("").unwrap(), None);
+    assert_eq!(normalize_route_prefix("/").unwrap(), None);
+    assert_eq!(normalize_route_prefix("  ").unwrap(), None);
+    for raw in ["ttrpg", "/ttrpg", "ttrpg/", "/ttrpg/", " /ttrpg/ "] {
+        assert_eq!(
+            normalize_route_prefix(raw).unwrap().as_deref(),
+            Some("/ttrpg"),
+            "{raw:?}"
+        );
+    }
+    assert_eq!(
+        normalize_route_prefix("a/b.c/d_e-f~g").unwrap().as_deref(),
+        Some("/a/b.c/d_e-f~g")
+    );
+}
+
+#[test]
+fn normalize_route_prefix_rejects_what_the_router_or_the_page_cannot_carry() {
+    // Empty, dot-relative and route-pattern segments, and characters that would break out of the
+    // HTML attribute / JS string the prefix is substituted into.
+    for bad in [
+        "/a//b", "/a/./b", "/a/..", "/{id}", "/*", "/a?x", "/a#x", "/a b", "/\"", "/a\\b", "/é",
+    ] {
+        assert!(normalize_route_prefix(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn route_prefix_defaults_to_the_root_mount() {
+    let cfg = Config::default();
+    assert_eq!(cfg.route_prefix, None);
+    assert_eq!(cfg.base_path(), "");
+}
+
+#[test]
+fn route_prefix_is_normalized_from_the_toml_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shadowcat.toml");
+    std::fs::write(&path, "route_prefix = \"ttrpg/\"\n").unwrap();
+    let _guard = config_env_test_lock();
+    let cfg = Config::load(Cli {
+        config: Some(path.to_string_lossy().into_owned()),
+        ..Default::default()
+    })
+    .expect("load");
+    assert_eq!(cfg.route_prefix.as_deref(), Some("/ttrpg"));
+    assert_eq!(cfg.base_path(), "/ttrpg");
+}
+
+#[test]
+fn route_prefix_env_overrides_toml_and_cli_overrides_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shadowcat.toml");
+    std::fs::write(&path, "route_prefix = \"/from-toml\"\n").unwrap();
+    let toml_path = path.to_string_lossy().into_owned();
+    let _guard = config_env_test_lock();
+    // SAFETY: single-threaded test-only env mutation (serialised by the lock), restored below.
+    unsafe {
+        std::env::set_var("SHADOWCAT_ROUTE_PREFIX", "from-env/");
+    }
+    let from_env = Config::load(Cli {
+        config: Some(toml_path.clone()),
+        ..Default::default()
+    });
+    let from_cli = Config::load(Cli {
+        config: Some(toml_path),
+        route_prefix: Some("/from-cli/".into()),
+        ..Default::default()
+    });
+    // SAFETY: matches the set_var above.
+    unsafe {
+        std::env::remove_var("SHADOWCAT_ROUTE_PREFIX");
+    }
+    assert_eq!(
+        from_env.expect("env load").route_prefix.as_deref(),
+        Some("/from-env")
+    );
+    assert_eq!(
+        from_cli.expect("cli load").route_prefix.as_deref(),
+        Some("/from-cli")
+    );
+}
+
+#[test]
+fn an_empty_route_prefix_from_any_layer_means_the_root_mount() {
+    let _guard = config_env_test_lock();
+    let cfg = Config::load(Cli {
+        config: Some("/nonexistent/shadowcat.toml".into()),
+        route_prefix: Some("/".into()),
+        ..Default::default()
+    })
+    .expect("load");
+    assert_eq!(cfg.route_prefix, None);
+}
+
+#[test]
+fn an_invalid_route_prefix_fails_boot_naming_the_value() {
+    let _guard = config_env_test_lock();
+    let err = Config::load(Cli {
+        config: Some("/nonexistent/shadowcat.toml".into()),
+        route_prefix: Some("/a/{id}".into()),
+        ..Default::default()
+    })
+    .expect_err("a route-pattern prefix must fail boot");
+    let text = err.to_string();
+    assert!(text.contains("route_prefix"), "names the key: {text}");
+    assert!(text.contains("{id}"), "names the value: {text}");
+}
