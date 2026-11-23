@@ -3,8 +3,8 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend, RemoteRulerPath, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, buildRegionDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
-import type { ReadableDocuments, FootprintLookup, Logger, RulerNotice } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, buildRegionDoc, ContributionRegistry, EMPTY_FOOTPRINTS, EMPTY_BARS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
+import type { ReadableDocuments, FootprintLookup, BarsLookup, Logger, RulerNotice } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController, SnapModePreference, StageView } from "@shadowcat/ui-kit";
 
@@ -1002,6 +1002,62 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
     ],
   } as never);
   await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("a new bars lookup re-projects the tokens exactly once per genuine change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") }],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  // A live getter, mirroring the session's reactive `#bars` $state: a frame replaces the lookup
+  // wholesale, so the Stage watches the reference.
+  let bars: BarsLookup = EMPTY_BARS;
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "bars", { get: () => bars, configurable: true });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyBars");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  const tokenDoc = (id: string) =>
+    buildTokenDoc(
+      "w1",
+      "sA",
+      { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false },
+      id,
+    );
+  bars = { token: () => ({ nameplate: "Goblin", nameplateMode: "always", bars: [] }) };
+  store.applyCommand({ seq: 2, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: tokenDoc("t1") }] } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // An unrelated doc mutation with the same lookup must not re-project.
+  store.applyCommand({ seq: 3, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: tokenDoc("t2") }] } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("the pointer leaving the canvas clears the hovered token", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const spy = vi.spyOn(RenderEngine.prototype, "clearHoveredToken");
+  const { container } = render(Stage, { props: { createBackend }, context: setAppContextForTest({ subscribeScene: () => ({ unsubscribe() {} }) }) });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  host.querySelector("canvas")!.dispatchEvent(new Event("pointerleave"));
   expect(spy).toHaveBeenCalledTimes(1);
   spy.mockRestore();
 });

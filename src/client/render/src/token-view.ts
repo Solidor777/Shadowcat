@@ -1,7 +1,7 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, resolveTokenFacingVision, resolveSceneSettings, EMPTY_FOOTPRINTS, levelOf } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, VisualTransform, FootprintLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, tokenBoxContains, resolveTokenVisual, resolveTokenFacingVision, resolveSceneSettings, resolveTokenBarAttribute, barRevealed, EMPTY_FOOTPRINTS, EMPTY_BARS, levelOf } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, VisualTransform, FootprintLookup, BarsLookup, ConditionFx, SceneEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, ResolvedArtTransform, TokenTransform } from "./types";
+import type { Point, TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, ResolvedArtTransform, TokenTransform } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
@@ -85,6 +85,36 @@ function conditionFxEntries(cf: ConditionFx): TokenFx[] {
   return out;
 }
 
+/** Where a `TokenView` reads token nameplates and bars from. Everything here is host state: the
+ * server's resolved `"bars"` channel, the per-device budget flag, and the localized fallback
+ * label. The view decides nothing about who may see a value. */
+export interface TokenBarsHost {
+  /** The server's current resolved nameplates and bars, read fresh per `toSpec`. */
+  lookup: () => BarsLookup;
+  /** Live `PerformanceSettings.nameplatesAndBars`; `false` drops every nameplate and bar. */
+  enabled: () => boolean;
+  /** The label drawn for a delivered nameplate that names nothing (a secret identity). */
+  fallbackLabel: () => string;
+}
+
+/** The host a `TokenView` constructed without one reads: nothing delivered, nothing drawn. */
+const NO_BARS_HOST: TokenBarsHost = { lookup: () => EMPTY_BARS, enabled: () => true, fallbackLabel: () => "" };
+
+/** A bar's fill fraction: `current / max` clamped to `[0,1]`; a non-positive `max` has nothing
+ * to fill against and reads as empty.
+ * @param current The server-evaluated filled amount.
+ * @param max The server-evaluated full amount.
+ * @returns The fill fraction in `[0,1]`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * barFraction(5, 10); // 0.5
+ * ```
+ */
+function barFraction(current: number, max: number): number {
+  return max > 0 ? Math.min(1, Math.max(0, current / max)) : 0;
+}
+
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
@@ -101,6 +131,9 @@ export class TokenView {
   /** A locally-dragged token id snaps to its target each reconcile (no tween lag);
    * remote tokens still tween. Set by the move tool via the engine. */
   private dragging: string | null = null;
+  /** The token id under the pointer, or `null` — reveals `"hover"`-mode nameplates and bars.
+   * Set only through `setHovered`. */
+  private hovered: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
   /** Active grid's per-step world distance (`Grid.worldUnitsPerCell`) — see `setWorldUnitsPerCell`. */
@@ -147,6 +180,8 @@ export class TokenView {
    * @param facingWedgeVisible Decides, per token doc, whether THIS viewer may see the token's
    * facing wedge (the host passes owner-or-GM). Defaults to always-`false`, so a view built
    * without one never draws a wedge and never reveals another creature's facing.
+   * @param barsHost Where nameplates and bars are read from (see `TokenBarsHost`). Defaults to a
+   * host that delivers nothing, under which no token draws a nameplate or bar.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -169,6 +204,7 @@ export class TokenView {
     private readonly tokenFx: () => boolean = () => true,
     reducedMotion: () => boolean = () => false,
     private readonly facingWedgeVisible: (doc: WireDocument) => boolean = () => false,
+    private readonly barsHost: TokenBarsHost = NO_BARS_HOST,
   ) {
     this.animator = new TokenAnimator(reducedMotion);
   }
@@ -189,6 +225,71 @@ export class TokenView {
    */
   setDragging(id: string | null): void {
     this.dragging = id;
+  }
+
+  /** Set the token under the pointer and re-project the token the pointer left and the one it
+   * entered, so a `"hover"`-mode nameplate or bar appears and disappears with the pointer. No
+   * store commit carries a hover change, so this is the whole update path.
+   * @param id The hovered token id, or `null` when no token is under the pointer.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.setHovered("token-1");
+   * view.setHovered(null);
+   * ```
+   */
+  setHovered(id: string | null): void {
+    if (id === this.hovered) return;
+    const left = this.hovered;
+    this.hovered = id;
+    this.reproject([left, id]);
+  }
+
+  /** The id of the topmost tracked token whose drawn footprint contains `p`, or `null`. "Topmost"
+   * is the last match in spec insertion order, the order the backend appends token nodes in. The
+   * containment test is `tokenBoxContains`, the predicate the select tool picks with.
+   * @param p The scene-coordinate point to test.
+   * @returns The topmost token id under `p`, or `null`.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.tokenAt({ x: 10, y: 10 }); // null until reconcile() projects a token there
+   * ```
+   */
+  tokenAt(p: Point): string | null {
+    let hit: string | null = null;
+    for (const [id, spec] of this.specs) {
+      if (tokenBoxContains(spec, p)) hit = id;
+    }
+    return hit;
+  }
+
+  /** Re-project the named tracked tokens from the store and push them, the update path for state
+   * that changes without a store commit (the hovered token).
+   * @param ids The token ids to re-project; `null` entries and untracked ids are skipped.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.reproject(["token-1", null]);
+   * ```
+   */
+  private reproject(ids: ReadonlyArray<string | null>): void {
+    for (const id of ids) {
+      if (id === null || !this.specs.has(id)) continue;
+      const doc = this.store.get(id);
+      const spec = doc ? this.toSpec(doc) : null;
+      if (!spec) continue;
+      this.specs.set(id, spec);
+      this.push(id);
+    }
   }
 
   /** The badge chips the last `toSpec` projection produced for `id` (condition glyphs, then the
@@ -707,6 +808,38 @@ export class TokenView {
     if (fx.length > 0) spec.fx = fx;
     const facing = this.facingWedge(doc);
     if (facing) spec.facing = facing;
+    this.applyBars(doc, spec);
     return spec;
+  }
+
+  /** Fold the delivered nameplate and bars for `doc` into `spec`. Only values the server delivered
+   * to this viewer exist here (`resolveTokenBarAttribute` is a read-through; no formula is
+   * evaluated and no visibility is decided). Each draws when its delivered mode reveals it:
+   * `"hover"` while the token is hovered or selected, every other mode continuously. A delivered
+   * nameplate that names nothing draws the host's fallback label. `nameplatesAndBars` off drops
+   * both.
+   * @param doc The `token` document being projected.
+   * @param spec The node description under construction; `nameplate` and `bars` are set when
+   * they draw.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const doc: WireDocument;
+   * declare const node: TokenNodeSpec;
+   * this.applyBars(doc, node);
+   * ```
+   */
+  private applyBars(doc: WireDocument, spec: TokenNodeSpec): void {
+    if (!this.barsHost.enabled()) return;
+    const entry = resolveTokenBarAttribute(doc, this.barsHost.lookup());
+    if (!entry) return;
+    const emphasized = this.hovered === doc.id || this.selectedTokens().has(doc.id);
+    if (entry.nameplateMode !== null && barRevealed(entry.nameplateMode, emphasized)) {
+      spec.nameplate = entry.nameplate ?? this.barsHost.fallbackLabel();
+    }
+    const bars = entry.bars
+      .filter((b) => barRevealed(b.mode, emphasized))
+      .map((b) => ({ label: b.label, fraction: barFraction(b.current, b.max), color: parseColor(b.color) }));
+    if (bars.length > 0) spec.bars = bars;
   }
 }

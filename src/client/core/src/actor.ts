@@ -413,6 +413,37 @@ export interface TokenBox {
   shape: "square" | "circle";
 }
 
+/** A point in scene pixels, the coordinate space `TokenBox` is stated in. */
+export interface ScenePoint {
+  /** Scene-pixel x coordinate. */
+  x: number;
+  /** Scene-pixel y coordinate. */
+  y: number;
+}
+
+/** Whether `p` lies inside a token footprint: ellipse containment for a `"circle"`, the
+ * axis-aligned box for a `"square"`. Rotation is ignored and a degenerate box (`w <= 0 || h <= 0`)
+ * contains nothing. The ONE picking predicate — the select tool's hit-test and the canvas hover
+ * both read it, so a token the cursor hovers is the token a click would pick.
+ * @param box The token footprint, as `resolveTokenBox` or a render spec states it.
+ * @param p The scene-coordinate point to test.
+ * @returns `true` when `p` is inside the footprint.
+ * @example
+ * ```ts
+ * import { tokenBoxContains } from "@shadowcat/core";
+ *
+ * tokenBoxContains({ x: 0, y: 0, w: 100, h: 100, shape: "square" }, { x: 40, y: -40 }); // true
+ * ```
+ */
+export function tokenBoxContains(box: TokenBox, p: ScenePoint): boolean {
+  if (box.w <= 0 || box.h <= 0) return false;
+  const dx = p.x - box.x;
+  const dy = p.y - box.y;
+  const hw = box.w / 2;
+  const hh = box.h / 2;
+  return box.shape === "circle" ? (dx * dx) / (hw * hw) + (dy * dy) / (hh * hh) <= 1 : Math.abs(dx) <= hw && Math.abs(dy) <= hh;
+}
+
 /** See the `TokenBox` doc above for the wire-extent-vs-authored-fallback resolution rule.
  * @param token The token to resolve a footprint for.
  * @param store The document store to resolve the actor against (for `shape`).

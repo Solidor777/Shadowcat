@@ -885,6 +885,47 @@ test("the session subscribes to footprints itself and publishes each frame's res
   expect(session.footprints.token("tok1")).toBeNull();
 });
 
+test("the session subscribes to bars itself and publishes each frame's delivered nameplates and bars", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Nothing is drawn before the server states a value.
+  expect(session.bars.token("tok1")).toBeNull();
+
+  const req = await vi.waitFor(() => {
+    const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "bars");
+    expect(m).toBeDefined();
+    return m!;
+  });
+  push({
+    type: "scene_derived",
+    request_id: req.request_id,
+    channel: "bars",
+    computed_at_seq: 0,
+    payload: {
+      scenes: {
+        "scene-1": {
+          tokens: { tok1: { nameplate: "Goblin", nameplate_mode: "always", bars: [{ label: "HP", current: 4, max: 10, color: "#cc2222", mode: "always" }] } },
+        },
+      },
+    },
+  });
+  await vi.waitFor(() => expect(session.bars.token("tok1")?.nameplate).toBe("Goblin"));
+  expect(session.bars.token("tok1")?.bars).toHaveLength(1);
+
+  // Leaving drops the values with the connection they came from.
+  session.leave();
+  expect(session.bars.token("tok1")).toBeNull();
+});
+
 test("defineCombatHooks ran: a module's combat:start listener fires on a start command", async () => {
   let push!: (frame: unknown) => void;
   const connect: Connect = (handlers) => {

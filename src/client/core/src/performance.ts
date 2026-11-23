@@ -1,6 +1,6 @@
 /** Per-device render-budget settings — the seam every render/audio consumer reads.
  * `RenderEngine` consumes it today (frame cap, render scale, antialias, tokenFx, lighting,
- * idleSkip, reducedMotion); the `vfx`/`dice3d`/`spatialAudio` keys are consumed by their
+ * idleSkip, reducedMotion, nameplatesAndBars); the `vfx`/`dice3d`/`spatialAudio` keys are consumed by their
  * owning subsystems as those land, which MUST read them through this same type — never a
  * private copy. Persisted in `localStorage` only, never
  * the server `ui_state`: a phone and a desktop want different budgets, and `ui_state` is
@@ -15,6 +15,10 @@ export interface PerformanceSettings {
   /** Per-token ColorMatrix fx (tint/desaturate/highlight) — off ⇒ condition-driven filters never
    * build; the selection highlight is exempt (it is the one signifier, bounded by selection size). */
   tokenFx: boolean;
+  /** Token nameplates and attribute bars — off ⇒ no nameplate or bar is projected or drawn,
+   * whatever the delivered display modes. Pure UI convenience: it gates drawing only and never
+   * affects what the server delivers. */
+  nameplatesAndBars: boolean;
   /** Lighting overlay quality: `"full"` (per-frame photometric sweeps), `"static"` (a carried-light
    * sweep snaps straight to its committed end frame, no per-tick interpolation), `"off"` (the
    * cosmetic overlay never paints — fog/vision secrecy is untouched; this never affects what a
@@ -66,17 +70,17 @@ export interface DeviceSignals {
  * `effectiveSettings`) and have no static entry here. */
 export const PRESETS: Record<Exclude<PerformancePreset, "auto" | "custom">, PerformanceSettings> = {
   mobile: {
-    fpsCap: 30, renderScale: 0.75, antialias: false, tokenFx: false, lighting: "static",
+    fpsCap: 30, renderScale: 0.75, antialias: false, tokenFx: false, nameplatesAndBars: true, lighting: "static",
     vfx: false, dice3d: false, spatialAudio: true, idleSkip: true, reducedMotion: false,
     textureBudgetBytes: 128 * 1024 * 1024,
   },
   balanced: {
-    fpsCap: 60, renderScale: 1, antialias: true, tokenFx: true, lighting: "full",
+    fpsCap: 60, renderScale: 1, antialias: true, tokenFx: true, nameplatesAndBars: true, lighting: "full",
     vfx: true, dice3d: true, spatialAudio: true, idleSkip: true, reducedMotion: false,
     textureBudgetBytes: 512 * 1024 * 1024,
   },
   quality: {
-    fpsCap: "uncapped", renderScale: 1, antialias: true, tokenFx: true, lighting: "full",
+    fpsCap: "uncapped", renderScale: 1, antialias: true, tokenFx: true, nameplatesAndBars: true, lighting: "full",
     vfx: true, dice3d: true, spatialAudio: true, idleSkip: true, reducedMotion: false,
     textureBudgetBytes: 1024 * 1024 * 1024,
   },
@@ -151,6 +155,7 @@ function sanitizeOverrides(value: unknown): Partial<PerformanceSettings> {
   if (typeof src.renderScale === "number" && Number.isFinite(src.renderScale)) out.renderScale = clampRenderScale(src.renderScale);
   if (typeof src.antialias === "boolean") out.antialias = src.antialias;
   if (typeof src.tokenFx === "boolean") out.tokenFx = src.tokenFx;
+  if (typeof src.nameplatesAndBars === "boolean") out.nameplatesAndBars = src.nameplatesAndBars;
   if (LIGHTING_MODES.has(src.lighting as PerformanceSettings["lighting"])) out.lighting = src.lighting as PerformanceSettings["lighting"];
   if (typeof src.vfx === "boolean") out.vfx = src.vfx;
   if (typeof src.dice3d === "boolean") out.dice3d = src.dice3d;

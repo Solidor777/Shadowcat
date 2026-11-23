@@ -13,7 +13,7 @@
   const LIGHTING_MODES: PerformanceSettings["lighting"][] = ["full", "static", "off"];
 
   /** The `PerformanceSettings` keys driven by a checkbox. */
-  type BooleanKey = "antialias" | "tokenFx" | "vfx" | "dice3d" | "spatialAudio" | "idleSkip" | "reducedMotion";
+  type BooleanKey = "antialias" | "tokenFx" | "nameplatesAndBars" | "vfx" | "dice3d" | "spatialAudio" | "idleSkip" | "reducedMotion";
 
   /** Applies the fps-cap select's value (`"uncapped"` stays the literal; digits parse).
    * @param e The select's change event.
@@ -111,6 +111,7 @@
   </label>
   <label><input type="checkbox" data-testid="perf-antialias" checked={performance.current.antialias} onchange={toggle("antialias")} /> {t("performance.antialias")}</label>
   <label><input type="checkbox" data-testid="perf-token-fx" checked={performance.current.tokenFx} onchange={toggle("tokenFx")} /> {t("performance.tokenFx")}</label>
+  <label><input type="checkbox" data-testid="perf-nameplates-and-bars" checked={performance.current.nameplatesAndBars} onchange={toggle("nameplatesAndBars")} /> {t("performance.nameplatesAndBars")}</label>
   <label><input type="checkbox" data-testid="perf-vfx" checked={performance.current.vfx} onchange={toggle("vfx")} /> {t("performance.vfx")}</label>
   <label><input type="checkbox" data-testid="perf-dice3d" checked={performance.current.dice3d} onchange={toggle("dice3d")} /> {t("performance.dice3d")}</label>
   <label><input type="checkbox" data-testid="perf-spatial-audio" checked={performance.current.spatialAudio} onchange={toggle("spatialAudio")} /> {t("performance.spatialAudio")}</label>

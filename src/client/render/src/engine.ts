@@ -1,5 +1,5 @@
-import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
-import type { ReadableDocuments, WireDocument, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS, EMPTY_BARS, PRESETS, fpsCapToTickerValue, resolveViewedScene } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, AssetResolver, FootprintLookup, BarsLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
 import type { CameraTransform, VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, SnapMode, PanToOptions, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
@@ -148,6 +148,14 @@ export interface RenderEngineOpts {
   /** Whether this viewer may see a token's facing-vision wedge (Stage → owner-or-GM). Absent ⇒
    * no wedge is ever drawn, so another creature's facing is never revealed. */
   facingWedgeVisible?: (doc: WireDocument) => boolean;
+  /** The server's resolved token nameplates and bars (Stage → `ctx.bars`). The engine computes
+   * no visibility and evaluates no formula: `TokenView` reads what the server delivered. Absent
+   * ⇒ nothing delivered, so no nameplate or bar draws. A new frame carries no store commit, so
+   * the host must call {@link RenderEngine.reapplyBars} to re-project. */
+  bars?: () => BarsLookup;
+  /** The localized label drawn for a delivered nameplate that names nothing (Stage → the
+   * `token.nameplateFallback` message). Absent ⇒ an empty label. */
+  nameplateFallbackLabel?: () => string;
   /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
    * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
    * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
@@ -434,7 +442,11 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion, opts.facingWedgeVisible);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion, opts.facingWedgeVisible, {
+      lookup: () => opts.bars?.() ?? EMPTY_BARS,
+      enabled: () => this.perf().nameplatesAndBars,
+      fallbackLabel: () => opts.nameplateFallbackLabel?.() ?? "",
+    });
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.vfxView = new VfxView(
       opts.store,
@@ -559,7 +571,7 @@ export class RenderEngine implements SceneToolHost {
       // Live budget flips: the overlay and the token projection must react on THIS tick, not on
       // the next committed frame / document commit (which may never come).
       if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
-      if (lastPerf !== null && perf.tokenFx !== lastPerf.tokenFx) this.tokens.reconcile();
+      if (lastPerf !== null && (perf.tokenFx !== lastPerf.tokenFx || perf.nameplatesAndBars !== lastPerf.nameplatesAndBars)) this.tokens.reconcile();
       // Same live-flip shape for the VFX budget: a `vfx` knob toggle re-runs the view's
       // reconcile on this tick (it reads the flag fresh and tears every node down when off).
       if (lastPerf !== null && perf.vfx !== lastPerf.vfx) this.vfxView.reconcile();
@@ -930,6 +942,35 @@ export class RenderEngine implements SceneToolHost {
    */
   reapplyTokenSelection(): void {
     this.tokens.reconcile();
+  }
+
+  /** Re-project every token after a new `"bars"` frame. A bars frame carries no document change,
+   * so no store commit drives a reconcile for it (the server recomputes derived channels after
+   * the event that changed them). Tokens only — no other view reads a bar.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyBars();
+   * ```
+   */
+  reapplyBars(): void {
+    this.tokens.reconcile();
+  }
+
+  /** Clear the hovered token when the pointer leaves the canvas, so a `"hover"`-mode nameplate or
+   * bar hides again. {@link dispatchPointerMove} sets the hovered token.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.clearHoveredToken();
+   * ```
+   */
+  clearHoveredToken(): void {
+    this.tokens.setHovered(null);
   }
 
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
@@ -2049,6 +2090,8 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   dispatchPointerMove(screen: Point, ev: PointerEvent): void {
+    // Hover is tracked for every pointer, gesture or not: a mouse hovers with no button down.
+    this.tokens.setHovered(this.tokens.tokenAt(this.camera.screenToScene(screen)));
     if (ev.pointerId !== this.activePointerId) return; // a non-owning pointer
     if (this.toolGesture && this.activeTool) {
       this.activeTool.onPointerMove(this.camera.screenToScene(screen), ev);

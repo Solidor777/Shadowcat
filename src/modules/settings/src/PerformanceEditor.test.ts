@@ -31,9 +31,17 @@ describe("PerformanceEditor", () => {
     expect(controller.preset).toBe("auto");
   });
 
+  it("the nameplates and bars checkbox flips the flag and shows custom", async () => {
+    const controller = renderEditor();
+    expect(controller.current.nameplatesAndBars).toBe(true);
+    await fireEvent.click(screen.getByTestId("perf-nameplates-and-bars"));
+    expect(controller.current.nameplatesAndBars).toBe(false);
+    expect(controller.preset).toBe("custom");
+  });
+
   it("every control is labelled", () => {
     renderEditor();
-    for (const id of ["perf-fps-cap", "perf-render-scale", "perf-lighting", "perf-antialias", "perf-token-fx", "perf-vfx", "perf-dice3d", "perf-spatial-audio", "perf-idle-skip", "perf-reduced-motion", "perf-show-stats"]) {
+    for (const id of ["perf-fps-cap", "perf-render-scale", "perf-lighting", "perf-antialias", "perf-token-fx", "perf-nameplates-and-bars", "perf-vfx", "perf-dice3d", "perf-spatial-audio", "perf-idle-skip", "perf-reduced-motion", "perf-show-stats"]) {
       expect(screen.getByTestId(id).closest("label")).not.toBeNull();
     }
   });

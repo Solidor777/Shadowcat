@@ -26,6 +26,9 @@ import {
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
+  parseBars,
+  EMPTY_BARS,
+  type BarsLookup,
   parseAudibility,
   sceneAudibility,
   EMPTY_AUDIBILITY,
@@ -345,6 +348,13 @@ export class WorldSession {
   /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #footprintsSub: SceneSubscription | null = null;
+  /** The server's resolved token nameplates and bars, replaced wholesale by each `"bars"` frame.
+   * `$state` so the canvas re-projects the moment a frame lands; `EMPTY_BARS` until the first
+   * frame, under which no nameplate or bar draws. */
+  #bars = $state<BarsLookup>(EMPTY_BARS);
+  /** Handle for the session-owned `"bars"` subscription; dropped in `leave()` so a second
+   * `enter()` does not stack a duplicate record. */
+  #barsSub: SceneSubscription | null = null;
   /** The per-device mixer + one-shot/loop engine (`AppContext.audio`'s backing); constructed
    * once here (its wire-facing closures read `#ws` lazily, so a pre-`enter()` read is a safe
    * no-op) and disposed in `leave()`. */
@@ -442,6 +452,14 @@ export class WorldSession {
    * @returns The current lookup; `EMPTY_FOOTPRINTS` before the first frame. */
   get footprints(): FootprintLookup {
     return this.#footprints;
+  }
+
+  /** The server's resolved token nameplates and bars. The values and the decision of who receives
+   * them are the server's, read off the `"bars"` derived channel; the client evaluates no
+   * formula and applies no visibility rule of its own.
+   * @returns The current lookup; `EMPTY_BARS` before the first frame. */
+  get bars(): BarsLookup {
+    return this.#bars;
   }
 
   /** The per-device audio seam (`AppContext.audio`). `AudioEngine` implements `AudioApi`
@@ -1752,6 +1770,10 @@ export class WorldSession {
     this.#footprintsSub = this.subscribeScene("footprints", (f) => {
       this.#footprints = parseFootprints(f.payload);
     });
+    // Same lifecycle as `#footprintsSub`: the per-recipient redacted nameplates and bars.
+    this.#barsSub = this.subscribeScene("bars", (f) => {
+      this.#bars = parseBars(f.payload);
+    });
     // Same lifecycle as `#footprintsSub`: server-resolved per-recipient combat numbers, never
     // client-derived.
     this.#combatSub = this.subscribeScene("combat", (f) => {
@@ -2260,6 +2282,9 @@ export class WorldSession {
     this.#footprintsSub?.unsubscribe();
     this.#footprintsSub = null;
     this.#footprints = EMPTY_FOOTPRINTS;
+    this.#barsSub?.unsubscribe();
+    this.#barsSub = null;
+    this.#bars = EMPTY_BARS;
     this.#combatSub?.unsubscribe();
     this.#combatSub = null;
     this.#combat.setResolved(EMPTY_COMBATS);

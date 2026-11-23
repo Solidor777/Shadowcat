@@ -177,6 +177,9 @@
     get footprints() {
       return session.footprints;
     },
+    get bars() {
+      return session.bars;
+    },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
     get viewedLevel() {
       return session.viewedLevel;
