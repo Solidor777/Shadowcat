@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
+import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 import { clickScene } from "./stage-gestures";
 
@@ -15,8 +15,10 @@ const PNG_1X1 = Buffer.from(
   "base64",
 );
 
-// Snap is off so the click lands exactly here, mid-scene so both sides have room to be lit.
-const WATCHER = { x: 1010, y: 510 };
+// Snap is off so the click lands exactly here. The point is in canvas-local pixels and must stay
+// inside the canvas, which is narrower than the viewport because the chat panel docks beside the
+// stage; it sits mid-canvas so both sides have room to be lit.
+const WATCHER = { x: 380, y: 460 };
 
 const VIEWPORT = { width: 1600, height: 1000 };
 test.use({ viewport: VIEWPORT });
@@ -94,7 +96,7 @@ test("a player turning a facing-limited token moves the lit region to the side i
 
     // Turn the world's facing-vision switch on.
     await togglePanel(gm, "game-settings:panel");
-    await gm.getByLabel("Facing-limited vision").check();
+    await gm.getByLabel("Facing-limited vision", { exact: true }).check();
     await togglePanel(gm, "game-settings:panel");
 
     // A linked, player-owned actor with a 90-degree forward arc and no all-round awareness.
@@ -146,6 +148,8 @@ test("a player turning a facing-limited token moves the lit region to the side i
     // The player selects the token and turns it half a circle through the rotation control.
     await player.getByTestId("tool-select").click();
     await clickScene(player, WATCHER);
+    // The rotation control lives in the actors panel, which is closed until opened.
+    await openPanel(player, "actors:panel");
     const rotation = player.getByLabel("Rotation (degrees)");
     await expect(rotation).toBeVisible();
     await rotation.fill("180");
