@@ -154,6 +154,34 @@ pub struct SeatedByInvite {
     pub role: WorldRole,
 }
 
+/// One account's roster projection: the username and the three profile fields a member list
+/// row shows. No avatar bytes; `has_avatar` is the flag the client builds the avatar URL from.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::sqlite::MemberProfileRecord;
+///
+/// let row = MemberProfileRecord {
+///     username: "mock_player".into(),
+///     colour: Some("#336699".into()),
+///     pronouns: None,
+///     has_avatar: false,
+/// };
+/// assert_eq!(row.username, "mock_player");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberProfileRecord {
+    /// The account's username.
+    pub username: String,
+    /// Colour accent as `#rrggbb`, or `None` when unset.
+    pub colour: Option<String>,
+    /// Pronouns text, or `None` when unset.
+    pub pronouns: Option<String>,
+    /// Whether the account has an avatar.
+    pub has_avatar: bool,
+}
+
 /// The fields of an invite row at mint time.
 ///
 /// # Examples

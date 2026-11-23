@@ -2020,6 +2020,16 @@ pub async fn add_member(
         .repo
         .upsert_member(world, body.user, body.role)
         .await?;
+    // The seat is committed; a failed announcement must not report the seating as failed. The
+    // member then appears for connected clients at their next `Welcome`.
+    if let Err(e) = state
+        .ws
+        .rooms
+        .announce_member_seated(state.repo.as_ref(), world, body.user)
+        .await
+    {
+        tracing::warn!(?e, %world, user = %body.user, "member seated announcement failed");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2466,6 +2476,16 @@ pub async fn accept_invite(
     else {
         return Err(AppError::NotFound);
     };
+    // The invite is already burned; a failed announcement must not report the redemption as
+    // failed. The member then appears for connected clients at their next `Welcome`.
+    if let Err(e) = state
+        .ws
+        .rooms
+        .announce_member_seated(state.repo.as_ref(), seated.world, user.id)
+        .await
+    {
+        tracing::warn!(?e, world = %seated.world, user = %user.id, "member seated announcement failed");
+    }
     Ok(Json(WorldEntry {
         id: seated.world,
         name: seated.world_name,

@@ -680,7 +680,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     explored_fog_reset: { type: "explored_fog_reset", scene: "s", user: null, level: null },
     modules_changed: { type: "modules_changed" },
     presence: { type: "presence", user: "u", online: true },
-    member_profile: { type: "member_profile", user: "u", colour: "#336699", pronouns: null, has_avatar: true },
+    member_profile: { type: "member_profile", user: "u", username: "mock_user", colour: "#336699", pronouns: null, has_avatar: true },
     scrolling_text: { type: "scrolling_text", scene: "s", token: "t", text: "chill", gm_only: false },
     path_result: {
       type: "path_result",

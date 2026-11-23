@@ -1811,10 +1811,15 @@ export class WorldSession {
           void this.reconcileInstalledModules();
         },
         onPresence: (user, online) => this.presence.set(user, online),
-        // The frame carries the roster's own projection, so it lands in `memberProfiles`
-        // exactly as a roster read does: a member with nothing set has no entry. The version
-        // query busts the image cache, as the avatar URL is the same after a replacement.
+        // The frame carries the roster's own projection, so it lands in `members` and
+        // `memberProfiles` exactly as a roster read does: a member with nothing set has no
+        // profile entry. A member seated mid-session is new to `members`; its presence is
+        // offline until its own `presence` frame says otherwise, and an existing entry is kept.
+        // The version query busts the image cache, as the avatar URL is the same after a
+        // replacement.
         onMemberProfile: (p) => {
+          this.members.set(p.user, p.username);
+          if (!this.presence.has(p.user)) this.presence.set(p.user, false);
           const avatar = avatarUrl(this.world ?? "", p.user, p.hasAvatar, ++this.#profileVersion);
           if (p.colour || p.pronouns || avatar) {
             this.memberProfiles.set(p.user, { colour: p.colour, pronouns: p.pronouns, avatar });

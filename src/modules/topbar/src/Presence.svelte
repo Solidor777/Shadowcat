@@ -4,13 +4,10 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // A reactive SvelteMap (userId -> username), populated for every role.
-  // `WorldSession.#onWelcome` refreshes it only on a WS (re)connect
-  // Welcome, not on each individual join/leave — a member seated mid-session
-  // does not appear here until the next reconnect. Reading it via $derived does track whatever
-  // updates DO land (the map is mutated in place, never reassigned), so this
-  // badge list repaints once a reconnect's fetch resolves; it does not
-  // repaint the instant a seat is actually granted.
+  // A reactive SvelteMap (userId -> username), populated for every role. `WorldSession`
+  // refills it from the roster read on each WS (re)connect Welcome and adds a member seated
+  // mid-session from the server's `member_profile` frame. The map is mutated in place, never
+  // reassigned, so reading it via $derived repaints on either update.
   //
   // `ctx.presence` overlays a live online/offline dot on each badge. A member with no entry
   // there is unknown (the roster read has not landed yet), so the badge carries neither state

@@ -4354,21 +4354,76 @@ impl RoomRegistry {
         repo: &SqliteRepository,
         user: Uuid,
     ) -> Result<(), DataError> {
-        let Some((colour, pronouns, has_avatar)) = repo.member_profile(user).await? else {
+        let Some(frame) = Self::member_profile_frame(repo, user).await? else {
             return Ok(());
         };
-        let frame = Arc::new(ServerMsg::MemberProfile {
-            user,
-            colour,
-            pronouns,
-            has_avatar,
-        });
         for (world, _) in repo.worlds_for_user(user, ServerRole::User).await? {
             if let Some(room) = self.get(world.id) {
                 room.broadcast_aux_shared(frame.clone());
             }
         }
         Ok(())
+    }
+
+    /// Announces a newly seated member to `world`'s live room: the same `MemberProfile` frame
+    /// a profile change sends, so connected clients add the member to their roster without a
+    /// reconnect. Only `world`'s room is addressed, since the member's other worlds already
+    /// list them. A world with no live room has no connection to tell, and its next `Welcome`
+    /// roster read lists the member. A user with no account is a no-op. Called after every
+    /// successful seating: `http::routes::add_member` and `http::routes::accept_invite`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let player = repo.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+    /// repo.add_member(world.id, player, WorldRole::Player).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+    ///
+    /// registry.announce_member_seated(&repo, world.id, player).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn announce_member_seated(
+        &self,
+        repo: &SqliteRepository,
+        world: Uuid,
+        user: Uuid,
+    ) -> Result<(), DataError> {
+        let Some(room) = self.get(world) else {
+            return Ok(());
+        };
+        if let Some(frame) = Self::member_profile_frame(repo, user).await? {
+            room.broadcast_aux_shared(frame);
+        }
+        Ok(())
+    }
+
+    /// The `MemberProfile` frame for `user`'s stored roster row, or `None` when no such account
+    /// exists. The one builder behind `broadcast_member_profile` and `announce_member_seated`.
+    async fn member_profile_frame(
+        repo: &SqliteRepository,
+        user: Uuid,
+    ) -> Result<Option<Arc<ServerMsg>>, DataError> {
+        Ok(repo.member_profile(user).await?.map(|p| {
+            Arc::new(ServerMsg::MemberProfile {
+                user,
+                username: p.username,
+                colour: p.colour,
+                pronouns: p.pronouns,
+                has_avatar: p.has_avatar,
+            })
+        }))
     }
 
     /// Telemetry snapshots for every live room (admin debug endpoint).

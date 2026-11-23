@@ -1087,13 +1087,15 @@ export type ServerMsg =
       online: boolean;
     }
   | {
-      /** A member changed their account profile. Out-of-band (no seq, never buffered/resynced),
-       * delivered to every connection in each world the member is seated in. Carries the roster's
-       * own projection of the three profile fields; avatar bytes are fetched from the avatar
-       * route, never from this frame. */
+      /** A member's roster row: sent when they change their account profile and when they are
+       * seated in a world. Out-of-band (no seq, never buffered/resynced), delivered to every
+       * connection in each world the member is seated in. Carries the roster's own projection;
+       * avatar bytes are fetched from the avatar route, never from this frame. */
       type: "member_profile";
-      /** The member whose profile changed. */
+      /** The member the row describes. */
       user: string;
+      /** The member's username, the name the roster and chat show. */
+      username: string;
       /** Colour accent as `#rrggbb`, or `null` when unset. */
       colour: string | null;
       /** Pronouns text, or `null` when unset. */
@@ -1507,6 +1509,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("member_profile"),
     user: z.string(),
+    username: z.string(),
     colour: z.string().nullable(),
     pronouns: z.string().nullable(),
     has_avatar: z.boolean(),

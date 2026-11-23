@@ -628,23 +628,19 @@ impl SqliteRepository {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn member_profile(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<(Option<String>, Option<String>, bool)>, DataError> {
+    pub async fn member_profile(&self, id: Uuid) -> Result<Option<MemberProfileRecord>, DataError> {
         let row = sqlx::query(
-            "SELECT colour, pronouns, avatar_bytes IS NOT NULL AS has_avatar \
+            "SELECT username, colour, pronouns, avatar_bytes IS NOT NULL AS has_avatar \
              FROM users WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| {
-            (
-                r.get("colour"),
-                r.get("pronouns"),
-                r.get::<i64, _>("has_avatar") != 0,
-            )
+        Ok(row.map(|r| MemberProfileRecord {
+            username: r.get("username"),
+            colour: r.get("colour"),
+            pronouns: r.get("pronouns"),
+            has_avatar: r.get::<i64, _>("has_avatar") != 0,
         }))
     }
 

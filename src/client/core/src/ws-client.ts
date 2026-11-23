@@ -354,13 +354,16 @@ export interface ExploredFogResetNotice {
 }
 
 /**
- * A member changed their account profile (`WsClientHandlers.onMemberProfile`); carries no seq.
- * Delivered to every connection in each world the member is seated in. The avatar bytes are not
- * carried: a receiver derives the URL with `avatarUrl` and fetches it.
+ * A member's roster row (`WsClientHandlers.onMemberProfile`); carries no seq. Sent when the
+ * member changes their account profile or is seated in the world, to every connection in each
+ * world the member is seated in. The avatar bytes are not carried: a receiver derives the URL
+ * with `avatarUrl` and fetches it.
  */
 export interface MemberProfileNotice {
-  /** The member whose profile changed. */
+  /** The member the row describes. */
   user: string;
+  /** The member's username, the name the roster and chat show. */
+  username: string;
   /** Colour accent as `#rrggbb`, or `null` when unset. */
   colour: string | null;
   /** Pronouns text, or `null` when unset. */
@@ -1642,6 +1645,7 @@ export class WsClient {
         this.safeEmit(() =>
           this.opts.handlers.onMemberProfile?.({
             user: msg.user,
+            username: msg.username,
             colour: msg.colour,
             pronouns: msg.pronouns,
             hasAvatar: msg.has_avatar,

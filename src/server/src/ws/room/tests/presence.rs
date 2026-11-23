@@ -100,13 +100,55 @@ async fn broadcast_member_profile_goes_only_to_rooms_the_user_is_seated_in() {
     };
     assert!(matches!(
         frame.as_ref(),
-        ServerMsg::MemberProfile { user, colour, pronouns, has_avatar }
+        ServerMsg::MemberProfile { user, username, colour, pronouns, has_avatar }
             if *user == ctx.user_id
+                && !username.is_empty()
                 && colour.as_deref() == Some("#336699")
                 && pronouns.as_deref() == Some("they/them")
                 && !*has_avatar
     ));
     assert!(other_rx.try_recv().is_err());
+}
+
+/// A seating announcement reaches only the named world's live room, carries the username, and
+/// is skipped for a world with no live room. Fails if it addressed every world the user is
+/// seated in, or omitted the username.
+#[tokio::test]
+async fn announce_member_seated_goes_only_to_the_named_worlds_room() {
+    let (repo, world, ctx) = repo_with_world().await;
+    let registry = RoomRegistry::new();
+    let named = registry.get_or_create(&repo, world).await.unwrap().unwrap();
+    let second = repo
+        .create_world_owned("second", ctx.user_id, 0)
+        .await
+        .unwrap();
+    let other = registry
+        .get_or_create(&repo, second.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut named_rx, _) = named.subscribe();
+    let (mut other_rx, _) = other.subscribe();
+
+    registry
+        .announce_member_seated(&repo, world, ctx.user_id)
+        .await
+        .unwrap();
+    let RoomEvent::Other(frame) = named_rx.recv().await.unwrap() else {
+        panic!("expected an out-of-band frame");
+    };
+    assert!(matches!(
+        frame.as_ref(),
+        ServerMsg::MemberProfile { user, username, .. }
+            if *user == ctx.user_id && !username.is_empty()
+    ));
+    assert!(other_rx.try_recv().is_err());
+
+    // A world with no live room is a no-op, not an error.
+    registry
+        .announce_member_seated(&repo, uuid::Uuid::new_v4(), ctx.user_id)
+        .await
+        .unwrap();
 }
 
 /// Counts are per user: one user's connections never mask another's transitions.
