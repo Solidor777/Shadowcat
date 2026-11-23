@@ -1,18 +1,20 @@
 <script lang="ts">
-  // A `Teleport` trigger's destination editor: scene picker (live search), x/y number inputs,
-  // pick-on-stage targeting (`ToolController.beginPickPortalTarget`/`endPickPortalTarget`), an
-  // elevation input, and a VFX asset picker. `target` is `$bindable`: it lives inside the
-  // `$state`-proxied `ToolController.regionTriggers` tree owned by `ToolRail.svelte`, and a
-  // plain (non-bindable) prop mutated from a CHILD component is a dev-mode ownership violation
-  // in Svelte 5 (`ownership_invalid_mutation`) — `bind:target` at the call site is the sanctioned
-  // two-way seam across that component boundary.
+  // A portal trigger's editor. "Single destination" edits a `teleport` effect (one fixed
+  // `PortalTarget`); "Several destinations" edits a `portal_choice` effect (a prompt plus a list of
+  // labelled options, each with its own target and a "show scene name" flag). Switching the mode
+  // replaces the effect, carrying the first destination across. `effect` is `$bindable`: it lives
+  // inside the `$state`-proxied `ToolController.regionTriggers` tree owned by `ToolRail.svelte`,
+  // and a plain (non-bindable) prop mutated from a CHILD component is a dev-mode ownership
+  // violation in Svelte 5 (`ownership_invalid_mutation`) — `bind:effect` at the call site is the
+  // sanctioned two-way seam across that component boundary.
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { PortalTarget, WireDocument, WireSearchHit, SubscriptionHandle } from "@shadowcat/core";
+  import type { TriggerEffect } from "@shadowcat/core";
   import type { ToolController } from "./controller.svelte";
+  import PortalTargetFields from "./PortalTargetFields.svelte";
 
-  let { target = $bindable(), row, controller }: {
-    /** The teleport trigger's destination; mutated through the two-way binding. */
-    target: PortalTarget;
+  let { effect = $bindable(), row, controller }: {
+    /** The trigger's effect, a `teleport` or a `portal_choice`; replaced when the mode switches. */
+    effect: TriggerEffect;
     /** This row's index into `controller.regionTriggers`, for pick-on-stage targeting. */
     row: number;
     /** The shared tool-controller instance (pick-on-stage state + trigger). */
@@ -22,169 +24,114 @@
   const ctx = getAppContext();
   const { t } = ctx;
 
-  /** Destination scene search text; empty renders the currently-authored destination as a
-   * placeholder rather than a result list. */
-  let query = $state("");
-  let hits = $state<WireDocument[]>([]);
-
-  // Live FTS search over scenes, mirroring `ActorsPanel`'s live-search effect: torn down and
-  // recreated on every query change, cancel-guarded against a stale query's callback firing
-  // after a newer one has already re-subscribed.
-  $effect(() => {
-    const q = query.trim();
-    if (!q) {
-      hits = [];
-      return;
-    }
-    let handle: SubscriptionHandle | null = null;
-    let cancelled = false;
-    void ctx
-      .searchDocuments(q, { limit: 20, docTypes: ["scene"] }, (h: WireSearchHit[]) => {
-        if (cancelled) return;
-        hits = h.map((x) => x.document);
-      })
-      .then((h) => {
-        if (cancelled) h.unsubscribe();
-        else handle = h;
-      })
-      .catch(() => {
-        /* no transport: leave last hits, re-subscribe on next keystroke */
-      });
-    return () => {
-      cancelled = true;
-      handle?.unsubscribe();
-    };
-  });
-
-  const destinationLabel = $derived(
-    target.scene ? (ctx.documents.get(target.scene)?.name ?? target.scene) : t("tools.triggerTeleportScene"),
-  );
-
-  /** Set the trigger's destination scene from a search hit and clear the search UI.
-   * @param id The picked scene document's id.
+  /** Switch between one fixed destination and several. The first destination (the single
+   * target, or the first option's target) survives the switch; everything else starts fresh.
+   * @param several `true` for the `portal_choice` mode, `false` for the `teleport` mode.
    * @example
    * ```
-   * declare const editor: { pickScene(id: string): void };
-   * editor.pickScene("scene-1");
+   * declare const editor: { setSeveral(several: boolean): void };
+   * editor.setSeveral(true);
    * ```
    */
-  function pickScene(id: string): void {
-    target.scene = id;
-    query = "";
-    hits = [];
+  function setSeveral(several: boolean): void {
+    if (several === (effect.type === "portal_choice")) return;
+    if (effect.type === "teleport") {
+      effect = { type: "portal_choice", prompt: null, options: [{ label: "", target: effect.target, reveal_scene: false }] };
+    } else if (effect.type === "portal_choice") {
+      const first = effect.options[0]?.target ?? { scene: null, x: 0, y: 0, elevation: null, vfx: null };
+      effect = { type: "teleport", target: first };
+    }
   }
 
-  /** Parse the elevation input: empty clears to `null` (leave the token's current elevation
-   * unchanged, per `PortalTarget.elevation`'s own null-means-unchanged semantics); otherwise a
-   * finite number, mirroring `parseElevation`'s null-normalization.
-   * @param raw The input's raw string value.
+  /** Append a blank option (empty label, no scene, origin, scene name hidden).
    * @example
    * ```
-   * declare const editor: { editElevation(raw: string): void };
-   * editor.editElevation("10");
+   * declare const editor: { addOption(): void };
+   * editor.addOption();
    * ```
    */
-  function editElevation(raw: string): void {
-    const trimmed = raw.trim();
-    if (trimmed === "") {
-      target.elevation = null;
-      return;
-    }
-    const n = Number(trimmed);
-    if (Number.isFinite(n)) target.elevation = n;
+  function addOption(): void {
+    if (effect.type !== "portal_choice") return;
+    effect.options.push({ label: "", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null }, reveal_scene: false });
   }
 </script>
 
-<div class="trigger-teleport">
-  <input
-    data-testid="region-trigger-teleport-scene"
-    aria-label={t("tools.triggerTeleportScene")}
-    bind:value={query}
-    placeholder={destinationLabel}
-  />
-  {#if hits.length > 0}
-    <ul class="scene-hits">
-      {#each hits as h (h.id)}
-        <li>
-          <button type="button" data-testid="region-trigger-teleport-scene-hit" onclick={() => pickScene(h.id)}>
-            {h.name}
-          </button>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-  <input
-    type="number"
-    data-testid="region-trigger-teleport-x"
-    aria-label={t("tools.triggerTeleportX")}
-    value={target.x}
-    onchange={(e) => {
-      const n = Number(e.currentTarget.value);
-      if (Number.isFinite(n)) target.x = n;
-    }}
-  />
-  <input
-    type="number"
-    data-testid="region-trigger-teleport-y"
-    aria-label={t("tools.triggerTeleportY")}
-    value={target.y}
-    onchange={(e) => {
-      const n = Number(e.currentTarget.value);
-      if (Number.isFinite(n)) target.y = n;
-    }}
-  />
-  <button
-    type="button"
-    data-testid="region-trigger-teleport-pick"
-    onclick={() => controller.beginPickPortalTarget(row)}
-  >
-    {controller.pickingPortalRow === row ? t("tools.triggerTeleportPicking") : t("tools.triggerTeleportPick")}
-  </button>
-  <input
-    type="number"
-    data-testid="region-trigger-teleport-elevation"
-    aria-label={t("tools.triggerTeleportElevation")}
-    value={target.elevation ?? ""}
-    onchange={(e) => editElevation(e.currentTarget.value)}
-  />
-  <button
-    type="button"
-    data-testid="region-trigger-teleport-vfx"
-    onclick={() =>
-      void ctx.pickAsset({ kind: "image", tags: ["vfx"] }).then((id) => {
-        if (id !== null) target.vfx = id;
-      })}
-  >
-    {target.vfx ? `${t("tools.triggerTeleportVfx")}: ${target.vfx}` : t("tools.triggerTeleportVfx")}
-  </button>
-  {#if target.vfx}
-    <button
-      type="button"
-      data-testid="region-trigger-teleport-vfx-clear"
-      onclick={() => (target.vfx = null)}
-    >
-      {t("tools.triggerTeleportVfxClear")}
-    </button>
+<div class="portal-editor" data-testid="region-trigger-portal-editor">
+  <label class="mode">
+    <input
+      type="checkbox"
+      data-testid="region-trigger-portal-several"
+      checked={effect.type === "portal_choice"}
+      onchange={(e) => setSeveral(e.currentTarget.checked)}
+    />
+    <span>{t("tools.triggerPortalSeveral")}</span>
+  </label>
+  {#if effect.type === "teleport"}
+    <PortalTargetFields
+      bind:target={effect.target}
+      picking={controller.pickingPortalRow === row}
+      onPick={() => controller.beginPickPortalTarget(row)}
+    />
+  {:else if effect.type === "portal_choice"}
+    <input
+      data-testid="region-trigger-portal-prompt"
+      aria-label={t("tools.triggerPortalPrompt")}
+      placeholder={t("tools.triggerPortalPrompt")}
+      value={effect.prompt ?? ""}
+      onchange={(e) => {
+        if (effect.type === "portal_choice") effect.prompt = e.currentTarget.value === "" ? null : e.currentTarget.value;
+      }}
+    />
+    {#each effect.options as option, i (i)}
+      <div class="option" data-testid="region-trigger-portal-option">
+        <input
+          data-testid="region-trigger-portal-label"
+          aria-label={t("tools.triggerPortalLabel")}
+          placeholder={t("tools.triggerPortalLabel")}
+          bind:value={option.label}
+        />
+        <label class="reveal">
+          <input type="checkbox" data-testid="region-trigger-portal-reveal" bind:checked={option.reveal_scene} />
+          <span>{t("tools.triggerPortalReveal")}</span>
+        </label>
+        <button
+          type="button"
+          data-testid="region-trigger-portal-remove"
+          title={t("tools.triggerPortalRemoveOption")}
+          aria-label={t("tools.triggerPortalRemoveOption")}
+          onclick={() => {
+            if (effect.type === "portal_choice") effect.options.splice(i, 1);
+          }}
+        >×</button>
+        <PortalTargetFields
+          bind:target={option.target}
+          picking={controller.pickingPortalRow === row && controller.pickingPortalOption === i}
+          onPick={() => controller.beginPickPortalTarget(row, i)}
+        />
+      </div>
+    {/each}
+    <button type="button" data-testid="region-trigger-portal-add" onclick={addOption}>{t("tools.triggerPortalAddOption")}</button>
   {/if}
 </div>
 
 <style lang="scss">
-  .trigger-teleport {
+  .portal-editor {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+  .mode,
+  .reveal {
+    display: inline-flex;
     align-items: center;
     gap: var(--space-1);
   }
-  .scene-hits {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+  .option {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-  }
-  .scene-hits button {
-    width: 100%;
-    text-align: left;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
   }
 </style>

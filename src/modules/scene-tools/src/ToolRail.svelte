@@ -1,10 +1,11 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, sessionFreezes, actorDisplayName, resolveTokenActor, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type RegionAnchor, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
+  import { resolveSceneSettings, sessionFreezes, SessionPausedError, actorDisplayName, resolveTokenActor, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type RegionAnchor, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
+  import { portalTokens } from "./portal-use";
   import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
   const ctx = getAppContext();
@@ -227,6 +228,32 @@
     if (!tok) return false;
     return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
   });
+
+  // "Use portal" affordance: the selected tokens that stand in a portal region and that this user
+  // may plausibly act for (GM, or the effective owner). Advisory only, like `canActAsSelected`:
+  // the server re-checks the token's stored membership and ownership before it re-offers.
+  const portalTokenIds = $derived.by((): string[] => {
+    subscribe();
+    return portalTokens(ctx.tokenSelection.ids, ctx.documents).filter((id) => {
+      const tok = ctx.documents.get(id);
+      return tok !== undefined && (ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents));
+    });
+  });
+
+  /** Ask the server to re-offer the portal for every selected token that stands in one; a
+   * refusal surfaces as a notification carrying the server's wording.
+   * @example
+   * ```
+   * usePortal();
+   * ```
+   */
+  function usePortal(): void {
+    for (const id of portalTokenIds) {
+      ctx.portal.open(id).catch((e: unknown) => {
+        ctx.notify(e instanceof SessionPausedError ? t("intent.rejected.paused") : e instanceof Error ? e.message : String(e), "error");
+      });
+    }
+  }
 
   /** The viewed scene's tokens this user effectively owns (`ownerFloorApplies`: direct owner, or
    * the linked actor's owner). The pan-to-owned button's subject and its enablement. */
@@ -746,6 +773,18 @@
     </button>
   {/each}
 
+  {#if portalTokenIds.length > 0}
+    <button
+      type="button"
+      class="tool"
+      data-testid="use-portal"
+      title={t("tools.usePortal")}
+      onclick={usePortal}
+    >
+      {t("tools.usePortal")}
+    </button>
+  {/if}
+
   <!-- Snap is a scene-document write (`/engine/snapToGrid`), i.e. authoring: GM-only. -->
   {#if isGm && activeScene}
     <button
@@ -1001,7 +1040,7 @@
             <select
               data-testid="region-trigger-effect"
               aria-label={t("tools.triggerEffect")}
-              value={trig.effect.type}
+              value={trig.effect.type === "portal_choice" ? "teleport" : trig.effect.type}
               onchange={(e) => setRegionTriggerEffectType(trig, e.currentTarget.value)}
             >
               {#each triggerEffectTypes as et (et)}<option value={et}>{et}</option>{/each}
@@ -1021,8 +1060,8 @@
               <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
                 {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
               </select>
-            {:else if trig.effect.type === "teleport"}
-              <RegionTriggerTeleportEditor bind:target={trig.effect.target} row={i} {controller} />
+            {:else if trig.effect.type === "teleport" || trig.effect.type === "portal_choice"}
+              <RegionTriggerTeleportEditor bind:effect={trig.effect} row={i} {controller} />
             {:else if trig.effect.type === "scrolling_text"}
               <input
                 data-testid="region-trigger-scrolling-text"

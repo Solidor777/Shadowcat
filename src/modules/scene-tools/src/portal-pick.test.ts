@@ -71,6 +71,48 @@ test("endPickPortalTarget resolves the target by the captured trigger OBJECT, no
   expect(rowBeingPicked.effect).toEqual({ type: "teleport", target: { scene: null, x: 12, y: 34, elevation: null, vfx: null } });
 });
 
+function choiceTrigger(): RegionTrigger {
+  const target = (scene: string | null) => ({ scene, x: 0, y: 0, elevation: null, vfx: null });
+  return {
+    on: "enter",
+    effect: {
+      type: "portal_choice",
+      prompt: null,
+      options: [
+        { label: "A", target: target("dest-a"), reveal_scene: false },
+        { label: "B", target: target("dest-b"), reveal_scene: false },
+      ],
+    },
+  };
+}
+
+test("picking for a portal_choice option roams to that option's scene and writes the point into that option only", () => {
+  const { controller, gmViewedScenes } = setup();
+  const trig = choiceTrigger();
+  controller.regionTriggers = [trig];
+
+  controller.beginPickPortalTarget(0, 1);
+  expect(gmViewedScenes).toEqual(["dest-b"]);
+  expect(controller.pickingPortalRow).toBe(0);
+  expect(controller.pickingPortalOption).toBe(1);
+
+  controller.endPickPortalTarget({ x: 7, y: 8 });
+  expect(controller.pickingPortalOption).toBeNull();
+  if (trig.effect.type !== "portal_choice") throw new Error("effect type changed");
+  expect(trig.effect.options.map((o) => [o.target.x, o.target.y])).toEqual([[0, 0], [7, 8]]);
+});
+
+test("a pick for an option that was removed mid-pick writes nothing", () => {
+  const { controller } = setup();
+  const trig = choiceTrigger();
+  controller.regionTriggers = [trig];
+  controller.beginPickPortalTarget(0, 1);
+  if (trig.effect.type !== "portal_choice") throw new Error("effect type changed");
+  trig.effect.options.splice(1, 1);
+  controller.endPickPortalTarget({ x: 7, y: 8 });
+  expect(trig.effect.options.map((o) => [o.target.x, o.target.y])).toEqual([[0, 0]]);
+});
+
 test("endPickPortalTarget no-ops the write (but still restores the scene) when the captured trigger was removed entirely", () => {
   const { controller, gmViewedScenes } = setup();
   const removed = teleportTrigger("dest");

@@ -1139,6 +1139,123 @@ test("a persisted region document's triggers includes the authored Teleport effe
   }
 });
 
+test("the several-destinations switch turns a teleport row into a portal_choice row, carrying the first target across, and back", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: sceneStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-x"), { target: { value: "50" } });
+
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(1);
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("50");
+  // The effect select keeps reading "teleport" while the row holds a portal_choice effect.
+  expect((screen.getByTestId("region-trigger-effect") as HTMLSelectElement).value).toBe("teleport");
+
+  await fireEvent.input(screen.getByTestId("region-trigger-portal-label"), { target: { value: "The Library" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-reveal"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(2);
+
+  const tool = tools.at(-1)!;
+  tool.onPointerDown({ x: 0, y: 0 }, {} as PointerEvent);
+  tool.onPointerUp({ x: 100, y: 100 }, {} as PointerEvent);
+  const op = dispatched.at(-1)![0];
+  if (op.op !== "create") throw new Error("expected a create op");
+  const engine = op.doc.engine as { triggers: Array<{ effect: unknown }> };
+  expect(engine.triggers[0].effect).toEqual({
+    type: "portal_choice",
+    prompt: null,
+    options: [
+      { label: "The Library", target: { scene: null, x: 50, y: 0, elevation: null, vfx: null }, reveal_scene: true },
+      { label: "", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null }, reveal_scene: false },
+    ],
+  });
+
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  expect(screen.queryByTestId("region-trigger-portal-option")).toBeNull();
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("50");
+});
+
+test("removing an option drops it from the row", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  await fireEvent.click(screen.getAllByTestId("region-trigger-portal-remove")[0]);
+  expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(1);
+});
+
+/** A store holding a portal region over (0,0)-(100,100) and a token at its centre. */
+function portalStore(): DocumentStore {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "s1", {
+          shape: { kind: "rect", points: [0, 0, 100, 100] },
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, ambient_override: null, occludes: null, anchor: null, elevation: null,
+          triggers: [{ on: "enter", effect: { type: "portal_choice", prompt: null, options: [{ label: "A", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null }, reveal_scene: false }] } }],
+        }, "portal-region"),
+      },
+      {
+        op: "create",
+        doc: buildTokenDoc("w1", "s1", {
+          x: 50, y: 50, w: 10, h: 10, rotation: 0,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
+        }, "tok1"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("Use portal appears for a selected token standing in a portal region and asks the server to re-offer", async () => {
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+  const opened: string[] = [];
+  const { scene } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: portalStore(), tokenSelection: sel,
+      portal: { onOffer: () => () => {}, choose: async () => {}, decline: async () => {}, open: async (t) => { opened.push(t); } },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("use-portal"));
+  expect(opened).toEqual(["tok1"]);
+});
+
+test("Use portal is absent when no selected token stands in a portal region", async () => {
+  const sel = new TokenSelection();
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: portalStore(), tokenSelection: sel }) });
+  expect(screen.queryByTestId("use-portal")).toBeNull();
+});
+
+test("a refused Use portal surfaces the server's text as a notification", async () => {
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+  const notes: string[] = [];
+  const { scene } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: portalStore(), tokenSelection: sel,
+      notify: (m) => notes.push(m),
+      portal: { onOffer: () => () => {}, choose: async () => {}, decline: async () => {}, open: () => Promise.reject(new Error("portal rejected")) },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("use-portal"));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(notes).toEqual(["portal rejected"]);
+});
+
 test("beginPickPortalTarget switches ctx.setGmViewedScene and overrides the active tool; endPickPortalTarget restores both and writes the captured point", async () => {
   const { scene, tools } = captureScene();
   const gmViewedScenes: (string | null)[] = [];
