@@ -3,6 +3,91 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Server — an in-app restore could swap the database and then fail on the assets, leaving a half restore
+
+- [High, FIXED] `restore_backup` swapped the database file and the assets directory as two
+  independent steps, so an assets failure after the database swap left a database from one backup
+  beside assets from another. The half restore was reproduced before the fix. Fixed in `4e7e7c13`:
+  `restore_backup` stages copies of both first, swaps the assets (old directory renamed to
+  `.restore-old`), and renames the database last, which is the one atomic step; a database rename
+  failure undoes the assets swap, and `.restore-old` goes to the trash after success. A trash
+  failure after both swaps succeed is a logged warning, never a failed restore, because the
+  restore already applied. Tests: three in the `backup` suite, one mutation observed red.
+
+## Server — `serve_with` did not stop on the WebSocket shutdown signal
+
+- [Medium, FIXED] `http::serve_with` kept serving after `ws.shutdown` fired, so a restore that
+  asked the server to stop (and every other shutdown trigger routed through the same signal) did
+  not end the listener. Fixed in `c54ade13` (the in-app backup routes).
+
+## Permissions — a player's template pull could write GM-only token fields
+
+- [High, FIXED] `merge_intents` applied a `TemplateMerge` without the field gates
+  `authorize_update_change` enforces, so a player could write the carried light and
+  `identity_hidden` of a token through a template pull. One list, `gm_only_field_touched`
+  (carried light, `identity_hidden`, `lock_rotation`, `facing_vision`), now feeds the Create gate,
+  the Update gate and `update_authorized` for the merge path. Fixed in `f2190a45` and `a5e4c9fa`
+  with three Rust tests and five mutations observed red.
+
+## Permissions — an instanced token's embedded actor copy leaked the hidden identity
+
+- [High, FIXED] With `identity_hidden` set, the identity pointers hid only the token's own fields;
+  the embedded actor copy on an instanced token still carried `/name`, `/engine/displayName`,
+  `/engine/visual` and `/engine/faction` to a player who may not read the actor. Three tests
+  failed before the fix. Fixed in `68f20779`: `redaction_target` and `redact_pointers` follow
+  `/embedded/<collection>/<index>/...` hops, and `identity_hidden_pointers` adds the four copy
+  pointers. Size, shape, conditions, light, vision and movement stay readable.
+
+## Permissions — recipient id lists leaked through `permissions.property_overrides`
+
+- [High, FIXED] A message or note with a `Recipients` visibility tier stored the recipient ids in
+  `permissions.property_overrides`, and `filter_properties` delivered those lists on Create and
+  Update to viewers who were not on them. Fixed in `bab28f4b`: the filters empty any list the viewer
+  is not on, and `scrub_recipient_lists` applies the same rule to a command's old and new images.
+  Tests run through `filter_command` with five of twenty-six sabotage cases red. A secret
+  segment's stub also now fails closed to `GmOnly` when its visibility is absent.
+
+## Chat — a recalculated roll lost its previous raw total from search
+
+- [Low, FIXED] A recalculated roll's previous raw total was dropped from search results. The serde
+  defaults added on the redacted roll fields for blind rolls (`060e4607`) close that gap.
+
+## Scene — `RegionEngine::validate` accepted non-finite coordinates
+
+- [Medium, FIXED] A region with a NaN or infinite coordinate passed validation. Fixed in
+  `f045c54a`; the mutation was observed red.
+
+## Build — `build:all` failed on strict typedoc warnings
+
+- [Medium, FIXED] The strict documentation build failed on 20 warnings: unused `@param` names on
+  `AudioEngine`, `OneShotPlayer` and `AudioApi`, duplicate comments on `CoreHooks`, and a link to
+  the unexported `PanTarget` from `Camera.panTo`. Fixed in `b53f98e5` (named `AudioChannelPatch`
+  and `OneShotOptions`, `CoreHooks` extends the two hook interfaces, `PanTarget` exported); a
+  later strict warning on the `Visibility::Recipients` and `NotePageKind` discriminants was fixed in
+  `6cfadcaa` (struct variant with the same wire form, and the typedoc exemption for the tag class).
+
+## Server — two load-dependent test flakes in the egress tests
+
+- [Flake, FIXED] `media_range_stall`'s keeps-reading control and the three ping-flood tests
+  (`egress_stall_h2`) failed under load; the media-range one shared the lump premise the `egress_stall` fix
+  established. Fixed in `e7ae4edd` (the shared floors-per-window and lump-gap
+  premise) and `2ec652e4` (an `EventTimes` gap control, `FLOOD_GAP_BOUND` 500 ms); windowed e2e
+  servers now pipe stdout so a cut line is visible (`6265588f`).
+- [Flake, FIX LANDED, CI CONFIRMATION OWED] `an_http2_peer_that_stops_reading_the_socket_has_its_connection_cut_not_a_stream`
+  failed on Windows CI with a cut at 3.57 s against a derived 1.25 s. The cause is inferred, not
+  reproduced: a later lump accepted by the CI socket restarted the stall window. Fixed in
+  `bc5c936f` by measuring the cut from the last floor-sized acceptance (`WriteStats::note_accepted`,
+  `last_progress_at`, `measure::record_cut_after_progress`) in the h1, h2 and ping-flood
+  stopped-reader tests; four tests pin the measure. Local Windows runs read 751 to 1002 ms alone.
+
+## E2E — WebKit on Linux reports a refused certificate as a cancelled navigation
+
+- [Flake, FIXED by an engine-specific allowance, CI CONFIRMATION OWED] In
+  `https-trust.spec.ts`, the `https-webkit` project on Linux reported a refused certificate as
+  "Operation was cancelled" in 18 of 310 isolated navigations (about 5.8 %), at about 25 ms and
+  with no detached frame. The spec accepts that wording for `https-webkit` on Linux only and still
+  asserts `CONNECTION_LEVEL_FAILURE`. The final CI pass confirms the Ubuntu leg.
+
 ## E2E — the WebKit-on-Linux long-audio leg failed intermittently on the engine's own end-of-track behaviour
 
 - [Flake, FIXED by an engine-specific allowance] The `long-audio-https-webkit` leg of
