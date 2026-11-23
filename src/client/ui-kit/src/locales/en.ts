@@ -350,6 +350,7 @@ export const en: Messages = {
   "actors.quickBarValue": "{label} value",
   "actors.quickBarComputed": "This value is computed; edit its source instead.",
   "actors.quickBarReadOnly": "You cannot edit this value.",
+  "actors.deleteToken": "Delete token",
   "token.nameplateFallback": "Unknown",
   "actors.carriedLight": "Carried light",
   "actors.tokenLight": "Token light override",

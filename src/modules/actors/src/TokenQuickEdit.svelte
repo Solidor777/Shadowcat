@@ -81,6 +81,19 @@
     ctx.dispatchIntent([buildUpdate(row.target.doc.id, [{ path: row.target.path, old: row.current, value }])]);
   }
 
+  /** Deletes the token with the stored document as the full pre-image. The server applies its own
+   * delete rule; the button is shown only where `ctx.canDelete` mirrors it.
+   * @example
+   * ```
+   * // private helper; wired to the delete button
+   * deleteToken();
+   * ```
+   */
+  function deleteToken(): void {
+    if (!token) return;
+    ctx.dispatchIntent([{ op: "delete", doc: token }]);
+  }
+
   /** Commits the value input's text, ignoring anything that is not a number.
    * @param row The bar row.
    * @param raw The input's raw string.
@@ -121,6 +134,9 @@
         </div>
       {/each}
     {/if}
+    {#if ctx.canDelete(token)}
+      <button type="button" class="delete" data-testid="token-delete" onclick={deleteToken}>{t("actors.deleteToken")}</button>
+    {/if}
   </section>
 {/if}
 
@@ -152,5 +168,10 @@
   }
   .bar-row input {
     width: 6em;
+  }
+  .delete {
+    min-height: 44px;
+    min-width: 44px;
+    align-self: flex-start;
   }
 </style>

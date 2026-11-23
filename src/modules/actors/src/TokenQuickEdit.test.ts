@@ -114,6 +114,27 @@ describe("TokenQuickEdit", () => {
     expect(screen.queryByText("HP")).toBeNull();
   });
 
+  it("Delete token dispatches one delete op carrying the stored token as the full pre-image", async () => {
+    const dispatchIntent = vi.fn();
+    const s = setup([]);
+    render(TokenQuickEdit, { context: setAppContextForTest({ ...s, dispatchIntent, canEdit: () => true, canDelete: () => true }), props: { tokenId: "tok1" } });
+    const button = screen.getByTestId("token-delete") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await fireEvent.click(button);
+    expect(dispatchIntent).toHaveBeenCalledTimes(1);
+    expect(dispatchIntent).toHaveBeenCalledWith([{ op: "delete", doc: s.documents.get("tok1") }]);
+  });
+
+  it("shows no Delete token control when ctx.canDelete refuses the token, whatever canEdit says", () => {
+    const seen: string[] = [];
+    render(TokenQuickEdit, {
+      context: setAppContextForTest({ ...setup([]), canEdit: () => true, canDelete: (doc) => (seen.push(doc.id), false) }),
+      props: { tokenId: "tok1" },
+    });
+    expect(seen).toContain("tok1");
+    expect(screen.queryByTestId("token-delete")).toBeNull();
+  });
+
   it("shows no bar section when the channel delivers nothing for the token", () => {
     render(TokenQuickEdit, { context: setAppContextForTest({ ...setup([]), canEdit: () => true }), props: { tokenId: "tok1" } });
     expect(screen.queryByTestId("quick-bar-row")).toBeNull();
