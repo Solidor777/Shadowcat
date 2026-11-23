@@ -83,7 +83,10 @@ elevation: number | null,
  * When true, a move never auto-rotates this token to face its movement direction (see
  * `scene::move_exec::bearing_degrees`), whatever the resolved scene's `auto_rotate_tokens`
  * says. Per-token presentation state like `elevation`, so linked and instanced tokens
- * carry it identically (it is not an `overrides` field).
+ * carry it identically (it is not an `overrides` field). Writing it is GM-only
+ * (`permission::rotation_lock_touched`): the lock binds a player's rotation
+ * (`scene::rotation_gate::rotation_refusal`), so an owner who could clear it would not be
+ * bound by it.
  */
 lock_rotation: boolean, 
 /**
@@ -101,5 +104,6 @@ identity_hidden: boolean,
  * Facing-limited field of view of an ACTORLESS token (no `actor_id`, no embedded actor);
  * every other token resolves it from its actor or `TokenOverrides::facing_vision`
  * (`SceneEcs::token_facing_vision`). Ignored unless the scene's `facing_vision` switch is on.
+ * Writing it is GM-only (`permission::facing_vision_touched`).
  */
 facing_vision?: FacingVision, };

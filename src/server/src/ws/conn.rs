@@ -1844,6 +1844,7 @@ async fn handle_pathfind(
                 Some(t) => s.token_mover_elevation(t),
                 None => crate::scene::elevation::GROUND,
             },
+            token,
         },
     ) {
         Ok(outcome) => ServerMsg::PathResult {

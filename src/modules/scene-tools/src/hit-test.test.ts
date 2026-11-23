@@ -79,6 +79,7 @@ const regionEngine = (over: Partial<RegionEngine> = {}): RegionEngine => ({
   elevation: null,
   ambient_override: null,
   occludes: null,
+  anchor: null,
   ...over,
 });
 

@@ -630,9 +630,9 @@ pub fn carried_light_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bo
 /// synthesis (`identity_hidden_pointers`) both read.
 const IDENTITY_HIDDEN_POINTER: &str = "/engine/identity_hidden";
 
-/// Whether a JSON value reads as an enabled secret-identity flag: absent, `null` and `false`
-/// are the same "not hidden" state.
-fn identity_flag_on(value: Option<&serde_json::Value>) -> bool {
+/// Whether a JSON value reads as an enabled boolean flag (the secret-identity and rotation-lock
+/// flags): absent, `null` and `false` are the same "off" state.
+fn flag_on(value: Option<&serde_json::Value>) -> bool {
     value.and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
@@ -674,8 +674,8 @@ pub fn identity_hidden_touched(
     }
     let e = IDENTITY_HIDDEN_POINTER;
     if e.len() > path.len() && e.starts_with(path) && e.as_bytes()[path.len()] == b'/' {
-        let old_on = identity_flag_on(whole.pointer(e));
-        let new_on = !remove && identity_flag_on(new.pointer(&e[path.len()..]));
+        let old_on = flag_on(whole.pointer(e));
+        let new_on = !remove && flag_on(new.pointer(&e[path.len()..]));
         return old_on != new_on;
     }
     false
@@ -697,7 +697,228 @@ pub fn identity_hidden_touched(
 /// assert!(!identity_hidden_in_body("actor", &on));
 /// ```
 pub fn identity_hidden_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
-    doc_type == TOKEN_DOC_TYPE && identity_flag_on(doc_json.pointer(IDENTITY_HIDDEN_POINTER))
+    doc_type == TOKEN_DOC_TYPE && flag_on(doc_json.pointer(IDENTITY_HIDDEN_POINTER))
+}
+
+/// The pointer of a token's rotation lock (`TokenEngine::lock_rotation`). The one symbol the
+/// write gate (`rotation_lock_touched`, `rotation_lock_in_body`) reads.
+const ROTATION_LOCK_POINTER: &str = "/engine/lock_rotation";
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a token whose current JSON is
+/// `whole` changes the rotation lock's effective value (absent reads as `false`). Value-aware at
+/// every level: a write that restates the current value, directly at the flag's pointer or
+/// through an ancestor (`/engine`), is not a touch. Only `token` documents carry the lock.
+///
+/// This exists because the lock binds a player's rotation of the token
+/// (`scene::rotation_gate::rotation_refusal`): an owner holds `WRITE_FIELDS` on the token, so
+/// without this gate they could clear the lock and then rotate. `apply_intent` refuses such
+/// writes from non-GMs, the same way it refuses the secret-identity flag
+/// (`identity_hidden_touched`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::rotation_lock_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "x": 0.0, "lock_rotation": true } });
+/// assert!(rotation_lock_touched("token", "/engine/lock_rotation", false, &tok, &serde_json::json!(false)));
+/// // Restating the stored value is not a touch.
+/// assert!(!rotation_lock_touched("token", "/engine/lock_rotation", false, &tok, &serde_json::json!(true)));
+/// // An ancestor write counts only when the lock's value changes.
+/// assert!(!rotation_lock_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0, "lock_rotation": true})));
+/// assert!(rotation_lock_touched("token", "/engine", false, &tok, &serde_json::json!({"x": 1.0})));
+/// // Other doc_types never count.
+/// assert!(!rotation_lock_touched("actor", "/engine/lock_rotation", false, &tok, &serde_json::json!(false)));
+/// ```
+pub fn rotation_lock_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    doc_type == TOKEN_DOC_TYPE
+        && pointer_value_changed(ROTATION_LOCK_POINTER, path, remove, whole, new, |v| {
+            flag_on(v).then_some(serde_json::Value::Bool(true))
+        })
+}
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a document whose current JSON is
+/// `whole` changes the value at `pointer`, as `norm` reads it (`norm` maps the raw value, or
+/// `None` when absent, to its effective value, so two spellings of the same state compare equal;
+/// it also reads a sub-value of a write below `pointer`). Covers a write at `pointer`, below it
+/// and above it (an ancestor write such as `/engine` carries the pointer's value inside `new`).
+/// Compared with `values_semantically_eq`, the numeric-variant-aware equality the OCC pre-image
+/// check uses, so a whole-number `f64` round-tripped through a JS client does not read as a
+/// change.
+fn pointer_value_changed(
+    pointer: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+    norm: fn(Option<&serde_json::Value>) -> Option<serde_json::Value>,
+) -> bool {
+    let (old_raw, new_raw) = if path == pointer || is_descendant(path, pointer) {
+        // A write at or below the pointer: the changed subtree is `path` itself.
+        (whole.pointer(path), (!remove).then_some(new))
+    } else if is_descendant(pointer, path) {
+        // An ancestor write: the pointer's value is read out of the new subtree.
+        (
+            whole.pointer(pointer),
+            (!remove)
+                .then(|| new.pointer(&pointer[path.len()..]))
+                .flatten(),
+        )
+    } else {
+        return false;
+    };
+    match (norm(old_raw), norm(new_raw)) {
+        (None, None) => false,
+        (Some(a), Some(b)) => !crate::data::command::values_semantically_eq(&a, &b),
+        _ => true,
+    }
+}
+
+/// Each facing-limited-vision pointer only a GM may write, per doc_type: a token's own field, a
+/// token's `overrides` field, and an actor's field (`SceneEcs::token_facing_vision` resolves the
+/// token's own, then the override, then the actor's). A player who owns the document would
+/// otherwise widen their own arc and defeat the GM's facing restriction.
+const FACING_VISION_POINTERS: [(&str, &str); 3] = [
+    (TOKEN_DOC_TYPE, "/engine/facing_vision"),
+    (TOKEN_DOC_TYPE, "/engine/overrides/facing_vision"),
+    ("actor", "/engine/facing_vision"),
+];
+
+/// A JSON value's effective facing arc: absent and `null` are the same "unset" state.
+fn present_value(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    value.filter(|v| !v.is_null()).cloned()
+}
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a document whose current JSON is
+/// `whole` changes a facing-limited-vision field (`FACING_VISION_POINTERS`). Value-aware at every
+/// level: restating the current value, directly or through an ancestor write (`/engine`,
+/// `/engine/overrides`), is not a touch.
+///
+/// This exists because the facing arc bounds what a token sees (`SceneEcs::token_facing_vision`):
+/// an owner holds `WRITE_FIELDS` on the document, so without this gate they could widen the arc
+/// to 360 degrees. `apply_intent` refuses such writes from non-GMs.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::facing_vision_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "facing_vision": { "arc": 90.0, "near": 0.0 } } });
+/// let wide = serde_json::json!({ "arc": 360.0, "near": 0.0 });
+/// assert!(facing_vision_touched("token", "/engine/facing_vision", false, &tok, &wide));
+/// // Restating the stored value is not a touch.
+/// let same = serde_json::json!({ "arc": 90.0, "near": 0.0 });
+/// assert!(!facing_vision_touched("token", "/engine/facing_vision", false, &tok, &same));
+/// // Other doc_types never count.
+/// assert!(!facing_vision_touched("scene", "/engine/facing_vision", false, &tok, &wide));
+/// ```
+pub fn facing_vision_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    FACING_VISION_POINTERS
+        .iter()
+        .filter(|(t, _)| *t == doc_type)
+        .any(|(_, p)| pointer_value_changed(p, path, remove, whole, new, present_value))
+}
+
+/// Whether a document BODY being created carries a facing-limited-vision field
+/// (`FACING_VISION_POINTERS`; `apply_intent`'s Create arm). Complements `facing_vision_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::facing_vision_in_body;
+///
+/// let with = serde_json::json!({ "engine": { "facing_vision": { "arc": 90.0, "near": 0.0 } } });
+/// let without = serde_json::json!({ "engine": { "facing_vision": null } });
+/// assert!(facing_vision_in_body("token", &with));
+/// assert!(!facing_vision_in_body("token", &without));
+/// ```
+pub fn facing_vision_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    FACING_VISION_POINTERS
+        .iter()
+        .filter(|(t, _)| *t == doc_type)
+        .any(|(_, p)| present_value(doc_json.pointer(p)).is_some())
+}
+
+/// Whether a document BODY being created carries an enabled rotation lock (`apply_intent`'s
+/// Create arm — Create writes the whole body at once, so there is no field path to classify).
+/// Complements `rotation_lock_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::rotation_lock_in_body;
+///
+/// let on = serde_json::json!({ "engine": { "lock_rotation": true } });
+/// let off = serde_json::json!({ "engine": { "lock_rotation": false } });
+/// assert!(rotation_lock_in_body("token", &on));
+/// assert!(!rotation_lock_in_body("token", &off));
+/// assert!(!rotation_lock_in_body("actor", &on));
+/// ```
+pub fn rotation_lock_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    doc_type == TOKEN_DOC_TYPE && flag_on(doc_json.pointer(ROTATION_LOCK_POINTER))
+}
+
+/// Whether a field change touches any engine field only a GM may write: a carried-light emission
+/// (`carried_light_touched`), the secret-identity flag (`identity_hidden_touched`), the
+/// rotation lock (`rotation_lock_touched`) or a facing-limited-vision field
+/// (`facing_vision_touched`). The one predicate every non-GM Update path reads —
+/// `apply_intent` and the template-merge authorization — so a new GM-only field is added here
+/// once and no path can disagree about the list. A Create checks the body instead
+/// (`gm_only_field_in_body`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::gm_only_field_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "x": 0.0, "lock_rotation": false } });
+/// assert!(gm_only_field_touched("token", "/engine/lock_rotation", false, &tok, &serde_json::json!(true)));
+/// assert!(!gm_only_field_touched("token", "/engine/x", false, &tok, &serde_json::json!(5.0)));
+/// ```
+pub fn gm_only_field_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    carried_light_touched(doc_type, path, remove, whole, new)
+        || identity_hidden_touched(doc_type, path, remove, whole, new)
+        || rotation_lock_touched(doc_type, path, remove, whole, new)
+        || facing_vision_touched(doc_type, path, remove, whole, new)
+}
+
+/// Whether a document BODY being created carries any engine field only a GM may write
+/// (`carried_light_in_body`, `identity_hidden_in_body`, `rotation_lock_in_body`,
+/// `facing_vision_in_body`). The Create-arm counterpart of `gm_only_field_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::gm_only_field_in_body;
+///
+/// let locked = serde_json::json!({ "engine": { "lock_rotation": true } });
+/// let plain = serde_json::json!({ "engine": { "lock_rotation": false } });
+/// assert!(gm_only_field_in_body("token", &locked));
+/// assert!(!gm_only_field_in_body("token", &plain));
+/// ```
+pub fn gm_only_field_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    carried_light_in_body(doc_type, doc_json)
+        || identity_hidden_in_body(doc_type, doc_json)
+        || rotation_lock_in_body(doc_type, doc_json)
+        || facing_vision_in_body(doc_type, doc_json)
 }
 
 /// The pointers a secret-identity token withholds from every recipient below `OwnerOrGm`: the
@@ -742,7 +963,7 @@ const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
 /// assume one document's shape.
 fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
     let active = doc.doc_type == TOKEN_DOC_TYPE
-        && identity_flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
+        && flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
     let copies = if active {
         doc.embedded
             .get(EMBEDDED_ACTOR_COLLECTION)

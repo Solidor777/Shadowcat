@@ -10,6 +10,7 @@
 
 pub mod asset_folder;
 pub mod audio;
+pub mod bars;
 pub mod combat;
 pub mod geometry;
 pub mod note;
@@ -25,6 +26,9 @@ pub use audio::{
     AUDIO_STATE_DOC_TYPE, MAX_PLAYING_TRACKS, MAX_PLAYLIST_FADE_MS, MAX_PLAYLIST_TRACKS,
     PLAYLIST_DOC_TYPE,
 };
+pub use bars::{
+    validate_bars, BarAttribute, BarDisplayMode, MAX_BAR_ATTRIBUTES, MAX_BAR_LABEL_CHARS,
+};
 pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
     CombatantEngine, CombatantGroupEngine, CombatantKind, CombatantResource, Duration,
@@ -36,8 +40,8 @@ pub use combat::{
 pub use geometry::{
     AmbientLightMode, AmbientLightOverride, CompoundShapePart, DoorState, DrawingEngine,
     DrawingShape, EffectiveWallFlags, ElevationBand, Fill, NoticeAudience, PortalTarget,
-    RegionEngine, RegionGeometry, RegionOcclusion, RegionShape, RegionTrigger, Seg, Stroke,
-    TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
+    RegionAnchor, RegionEngine, RegionGeometry, RegionOcclusion, RegionShape, RegionTrigger, Seg,
+    Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallDirection, WallEngine,
     WallProximity, WallSense, WallSightTier, MAX_PROXIMITY_CELLS, MAX_REGION_SHAPE_PARTS,
     MAX_TRIGGER_ID_CHARS,
 };

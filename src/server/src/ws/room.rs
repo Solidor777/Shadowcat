@@ -2655,6 +2655,7 @@ impl Room {
                     crate::scene::elevation::elevation_or_ground(
                         token_eng.as_ref().and_then(|t| t.elevation),
                     ),
+                    Some(token),
                 )
                 .unwrap_or_default();
             let arrest_cell = match arrest_stop {

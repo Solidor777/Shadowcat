@@ -54,6 +54,7 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     let outcome = r.expect("GM route");
@@ -103,6 +104,7 @@ explored: // GM: unrestricted mask
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -158,6 +160,7 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
                 budget_cells: Some(4.0),
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -216,6 +219,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("grid-stepped straight route");
@@ -230,6 +234,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("continuous straight route");
@@ -299,6 +304,7 @@ explored: // GM: unrestricted mask
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("start == goal must succeed, not Unreachable");
@@ -423,6 +429,7 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("weighted continuous route");
@@ -497,7 +504,12 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
     // neighbour arrests too, so the whole ring is checked rather than the two cells the route
     // happens to pass through.
     let field = ecs
-        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(10),
+            None,
+            elevation::GROUND,
+            None,
+        )
         .expect("scene exists");
     assert!(
         field.is_arrest(arrest_cell),
@@ -527,6 +539,7 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("hex continuous route");
@@ -575,6 +588,7 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("polyanya route");
@@ -623,6 +637,7 @@ fn pathfind_continuous_impassable_routes_around() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("route around impassable");
@@ -684,6 +699,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("player route");
@@ -712,6 +728,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("gm route");
@@ -768,6 +785,7 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("clip truncates the route short of the unseen goal rather than failing outright");
@@ -854,7 +872,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     );
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
     assert!(
-        ecs.region_field(scene_id, Some(user), elevation::GROUND)
+        ecs.region_field(scene_id, Some(user), elevation::GROUND, None)
             .expect("scene exists")
             .has_terrain_or_impassable(&std::collections::BTreeSet::new()),
         "the terrain region flips the Continuous dispatch to the weighted sub-path"
@@ -881,6 +899,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("weighted route to a visible goal succeeds");
@@ -913,6 +932,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -982,6 +1002,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("player route");
@@ -1015,6 +1036,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("gm route");
@@ -1116,6 +1138,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("the player's route ignores a wall it cannot see");
@@ -1182,6 +1205,7 @@ fn gm_route_does_not_cross_a_gm_only_wall() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
@@ -1217,6 +1241,7 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     let outcome = r.expect("GM route");
@@ -1257,6 +1282,7 @@ fn pathfind_nongm_visible_is_bounded_by_the_mask() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
@@ -1286,6 +1312,7 @@ fn pathfind_revealed_unions_explored_memory() {
             budget_cells: None,
             traits: MoveTraits::default(),
             elevation: elevation::GROUND,
+            token: None,
         },
     );
     assert!(
@@ -2582,6 +2609,7 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: elevation::GROUND,
+                    token: None,
                 },
             )
             .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
@@ -2654,6 +2682,7 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a position inside an authored hex must be on-mesh and routable");
@@ -2715,6 +2744,7 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("a hex cell inside the authored bounds must be routable");
@@ -2763,7 +2793,12 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
     // predicate fires. Asserted rather than assumed: with an empty field the pure-polyanya
     // path runs instead and the cost assertion would be measuring a different function.
     let field = ecs
-        .region_field(crate::test_ids::test_uuid(10), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(10),
+            None,
+            elevation::GROUND,
+            None,
+        )
         .expect("the fixture's scene resolves a region field");
     assert!(
         field.has_terrain_or_impassable(&std::collections::BTreeSet::new()),
@@ -2790,6 +2825,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: elevation::GROUND,
+                token: None,
             },
         )
         .expect("hex continuous weighted route");
@@ -2965,6 +3001,7 @@ fn route_and_execute_at(
                 budget_cells: None,
                 traits: MoveTraits::default(),
                 elevation: mover_elevation,
+                token: None,
             },
         )
         .expect("a route exists (bounds admit a detour around the wall's endpoint)");

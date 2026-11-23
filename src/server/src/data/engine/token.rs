@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::bars::{validate_bars, BarAttribute, BarDisplayMode};
 use crate::data::engine::registries::FactionStance;
 use crate::data::engine::scene::LightEmission;
 
@@ -82,7 +83,10 @@ pub struct TokenEngine {
     /// When true, a move never auto-rotates this token to face its movement direction (see
     /// `scene::move_exec::bearing_degrees`), whatever the resolved scene's `auto_rotate_tokens`
     /// says. Per-token presentation state like `elevation`, so linked and instanced tokens
-    /// carry it identically (it is not an `overrides` field).
+    /// carry it identically (it is not an `overrides` field). Writing it is GM-only
+    /// (`permission::rotation_lock_touched`): the lock binds a player's rotation
+    /// (`scene::rotation_gate::rotation_refusal`), so an owner who could clear it would not be
+    /// bound by it.
     #[serde(default)]
     pub lock_rotation: bool,
     /// Secret-identity mode: when true, every recipient who is neither the token's effective
@@ -98,6 +102,7 @@ pub struct TokenEngine {
     /// Facing-limited field of view of an ACTORLESS token (no `actor_id`, no embedded actor);
     /// every other token resolves it from its actor or `TokenOverrides::facing_vision`
     /// (`SceneEcs::token_facing_vision`). Ignored unless the scene's `facing_vision` switch is on.
+    /// Writing it is GM-only (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,
@@ -365,6 +370,8 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 ///     sound: None,
 ///     vfx: None,
 ///     disposition: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
 /// ```
@@ -396,7 +403,8 @@ pub struct TokenOverrides {
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
     /// Per-token facing-limited field of view: replaces the actor's `facing_vision` wholesale
-    /// when present. Ignored unless the scene's `facing_vision` switch is on.
+    /// when present. Ignored unless the scene's `facing_vision` switch is on. Writing it is
+    /// GM-only (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,
@@ -430,6 +438,15 @@ pub struct TokenOverrides {
     /// neutral. Reuses `FactionStance`, the one three-value stance enum.
     #[serde(default)]
     pub disposition: Option<FactionStance>,
+    /// Per-token bar list: replaces the actor's `bars` entirely when present (wholesale, never
+    /// merged); at most `MAX_BAR_ATTRIBUTES` entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Per-token nameplate delivery override, replacing the actor's `nameplate_mode` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl TokenOverrides {
@@ -458,6 +475,9 @@ impl TokenOverrides {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "overrides.bars")?;
         }
         Ok(())
     }
@@ -1093,6 +1113,8 @@ impl AnimatedSource {
 ///     aura: None,
 ///     sound: None,
 ///     vfx: None,
+///     bars: None,
+///     nameplate_mode: None,
 /// };
 /// assert_eq!(actor.display_name, "Goblin Scout");
 /// ```
@@ -1134,7 +1156,8 @@ pub struct ActorEngine {
     pub vision: Option<Vec<VisionAssignment>>,
     /// The actor's facing-limited field of view, inherited by every token resolving this actor
     /// (a per-token `TokenOverrides::facing_vision` replaces it wholesale). Ignored unless the
-    /// scene's `facing_vision` switch is on.
+    /// scene's `facing_vision` switch is on. Writing it is GM-only
+    /// (`permission::facing_vision_touched`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub facing_vision: Option<FacingVision>,
@@ -1166,6 +1189,18 @@ pub struct ActorEngine {
     /// `TokenOverrides.vfx` replaces it wholesale).
     #[serde(default)]
     pub vfx: Option<VfxEmission>,
+    /// Attribute bars drawn on this actor's tokens, inherited by linked tokens (a per-token
+    /// `TokenOverrides.bars` replaces the list wholesale); at most `MAX_BAR_ATTRIBUTES`. Absent
+    /// means none. Delivered as evaluated numbers through the `"bars"` derived channel, never
+    /// as this authored form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bars: Option<Vec<BarAttribute>>,
+    /// Who receives the nameplate of this actor's tokens; absent means `BarDisplayMode::Hover`
+    /// (a per-token `TokenOverrides.nameplate_mode` replaces it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nameplate_mode: Option<BarDisplayMode>,
 }
 
 impl ActorEngine {
@@ -1189,6 +1224,9 @@ impl ActorEngine {
         }
         if let Some(vfx) = &self.vfx {
             vfx.validate()?;
+        }
+        if let Some(bars) = &self.bars {
+            validate_bars(bars, "bars")?;
         }
         Ok(())
     }

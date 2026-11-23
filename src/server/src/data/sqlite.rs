@@ -24,9 +24,8 @@ use crate::data::engine::{
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
-    declared_caps_for_path, identity_hidden_in_body, identity_hidden_touched,
-    required_cap_for_path, resolve_access_world, Access,
+    cap, declared_caps_for_document, declared_caps_for_path, gm_only_field_in_body,
+    gm_only_field_touched, required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::{Repository, WorldMemberRow};
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
@@ -662,29 +661,18 @@ where
             return Err(DataError::Forbidden);
         }
     }
-    // Create carries no field paths, so the carried-light GM gate (see
-    // `authorize_update_change`) checks the body directly: a non-GM may not
-    // create a token/actor already carrying an emission, even in a world whose
-    // `core:create` grant otherwise admits the Create itself.
+    // Create carries no field paths, so the GM-only engine fields (see
+    // `authorize_update_change`) are checked on the body directly
+    // (`permission::gm_only_field_in_body`): a non-GM may not create a token/actor already
+    // carrying an emission, a secret identity, a rotation lock or a facing arc, even in a
+    // world whose `core:create` grant otherwise admits the Create itself.
     if !origin.skips_capability_gates()
         && ctx.world_role != WorldRole::Gm
-        && carried_light_in_body(&doc.doc_type, &doc_json)
+        && gm_only_field_in_body(&doc.doc_type, &doc_json)
     {
         tracing::debug!(
             user = %ctx.user_id, doc_type = %doc.doc_type,
-            "create denied: carried-light authoring is GM-only"
-        );
-        return Err(DataError::Forbidden);
-    }
-    // The secret-identity flag is a GM-only write on Create too: the body is checked directly
-    // because Create carries no field path (`identity_hidden_in_body`).
-    if !origin.skips_capability_gates()
-        && ctx.world_role != WorldRole::Gm
-        && identity_hidden_in_body(&doc.doc_type, &doc_json)
-    {
-        tracing::debug!(
-            user = %ctx.user_id, doc_type = %doc.doc_type,
-            "create denied: secret-identity authoring is GM-only"
+            "create denied: GM-only field authoring"
         );
         return Err(DataError::Forbidden);
     }
@@ -812,9 +800,8 @@ const SMR_READERSHIP_PATHS: [&str; 3] = [
 
 /// The validation pass's per-change authorization for an Update — the structural capability
 /// mapping (`required_cap_for_path`), the additive declared-requirement check
-/// (`declared_caps_for_path`), and the carried-light GM gate
-/// (`carried_light_touched`) and secret-identity GM gate (`identity_hidden_touched`) for one
-/// `FieldChange`. Pure: every input was resolved
+/// (`declared_caps_for_path`), and the GM-only engine field gate (`gm_only_field_touched`:
+/// carried light, secret identity, rotation lock, facing vision) for one `FieldChange`. Pure: every input was resolved
 /// by `authorize_update_access` (or the validation pass's own load), so the in-transaction
 /// arm and the pre-transaction validator screen apply the identical decision.
 fn authorize_update_change(
@@ -898,33 +885,17 @@ fn authorize_update_change(
             }
         }
     }
-    // Carried-light authoring is GM-only, value-aware
-    // (`permission::carried_light_touched`): an emission joins the SHARED
-    // illumination field every viewer's lit mask and movement gate read, so unlike
-    // an owner's other writable fields, writing one edits other players' secrecy
-    // masks. An ancestor write is refused only when the emission subtree actually
-    // changes, so a whole-`/engine/overrides` write that leaves `light` untouched
-    // stays legal.
+    // The GM-only engine fields (`permission::gm_only_field_touched`: carried light, secret
+    // identity, rotation lock) are value-aware: an owner's `WRITE_FIELDS` floor does not reach
+    // them. An ancestor write is refused only when the protected value actually changes, so a
+    // whole-`/engine` write that leaves them alone stays legal.
     if !origin.skips_capability_gates()
         && ctx.world_role != WorldRole::Gm
-        && carried_light_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
+        && gm_only_field_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
     {
         tracing::debug!(
             user = %ctx.user_id, path = %ch.path,
-            "intent denied: carried-light authoring is GM-only"
-        );
-        return Err(DataError::Forbidden);
-    }
-    // The secret-identity flag is GM-only and value-aware too
-    // (`permission::identity_hidden_touched`): it decides what every other viewer
-    // perceives of the token, so the owner's `WRITE_FIELDS` floor does not reach it.
-    if !origin.skips_capability_gates()
-        && ctx.world_role != WorldRole::Gm
-        && identity_hidden_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
-    {
-        tracing::debug!(
-            user = %ctx.user_id, path = %ch.path,
-            "intent denied: secret-identity authoring is GM-only"
+            "intent denied: GM-only field authoring"
         );
         return Err(DataError::Forbidden);
     }

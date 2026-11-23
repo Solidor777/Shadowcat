@@ -2,7 +2,9 @@
   // Per-TOKEN rotation-lock control (mounted by ActorsPanel for the selected token). The lock is
   // token state (`TokenEngine.lock_rotation`), not actor state — like elevation it applies to
   // EVERY token, linked or raw, with no `overrides` indirection. A locked token is never
-  // auto-rotated by a move, whatever the scene's `autoRotateTokens` resolves to.
+  // auto-rotated by a move, whatever the scene's `autoRotateTokens` resolves to. GM-only to
+  // write, mirroring the server's `rotation_lock_touched` gate — the lock binds the owner's own
+  // rotation, so an owner must not be able to clear it.
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { buildUpdate, type WireDocument, type TokenEngine } from "@shadowcat/core";
@@ -32,10 +34,9 @@
 
   const editable = $derived.by((): boolean => {
     subscribe();
-    const tok = token;
-    // Advisory mirror of the server's Update-path capability check (owner-or-gm for an
-    // ordinary engine field); the server remains authoritative and re-checks independently.
-    return tok !== null && ctx.canEdit(tok, "/engine/lock_rotation");
+    // Advisory mirror of the server's GM-only gate; the server remains authoritative and
+    // re-checks independently.
+    return token !== null && ctx.role === "gm";
   });
 
   /** Dispatch an `/engine/lock_rotation` Update on the selected token; a no-op when the value
