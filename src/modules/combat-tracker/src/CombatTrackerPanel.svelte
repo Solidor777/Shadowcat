@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { createDragController, dropIndex, type DropResult, type WireDocument, type ResourceRegistryEngine, type Resource } from "@shadowcat/core";
+  import { createDragController, dropIndex, sessionFreezes, SessionPausedError, type DropResult, type WireDocument, type ResourceRegistryEngine, type Resource } from "@shadowcat/core";
   import type { TurnBadge } from "./turnBadge";
   import { rowsFor, moveInOrder, type Row } from "./model";
   import CombatHeader from "./CombatHeader.svelte";
@@ -75,6 +75,12 @@
   });
 
   const can = $derived.by(() => (selectedCombat ? ctx.combat.canAct(selectedCombat.id) : null));
+  // The whole-session pause refuses a non-GM's combat intents and combat-document writes, so every
+  // control that issues one is disabled; opening a combatant's sheet stays available.
+  const frozen = $derived.by((): boolean => {
+    subscribeDocs();
+    return sessionFreezes(ctx.documents, ctx.role);
+  });
   const compact = $derived(sizeClass() === "compact");
 
   let busy = $state(false);
@@ -95,7 +101,10 @@
     try {
       await fn();
     } catch (e) {
-      ctx.notify(e instanceof Error ? e.message : String(e), "warning");
+      ctx.notify(
+        e instanceof SessionPausedError ? ctx.t("intent.rejected.paused") : e instanceof Error ? e.message : String(e),
+        "warning",
+      );
     } finally {
       busy = false;
     }
@@ -186,7 +195,7 @@
    * ```
    */
   function onDragStart(index: number, ev: PointerEvent): void {
-    if (!can?.edit) return;
+    if (!can?.edit || frozen) return;
     drag.beginDrag(rows[index].doc.id, ev);
   }
 
@@ -204,7 +213,7 @@
    * ```
    */
   function onRowKeydown(index: number, ev: KeyboardEvent): void {
-    if (!can?.edit || !ev.altKey) return;
+    if (!can?.edit || !ev.altKey || frozen) return;
     if (ev.key === "ArrowUp" && index > 0) {
       ev.preventDefault();
       dispatchReorder(index, index - 1);
@@ -217,6 +226,9 @@
 
 <section class="combat-tracker" class:compact aria-label={ctx.t("combatTracker.title")}>
   <h2>{ctx.t("combatTracker.title")}</h2>
+  {#if frozen}
+    <p role="status" data-testid="combat-tracker:paused" title={ctx.t("combatTracker.paused")}>{ctx.t("combatTracker.paused")}</p>
+  {/if}
 
   {#if combats.length > 1}
     <label>
@@ -232,15 +244,15 @@
 
   {#if selectedCombat && can}
     <p data-testid="combat-tracker:selected" hidden>{selectedCombat.id}</p>
-    <CombatHeader combat={selectedCombat} {rows} {busy} {run} {compact} bind:notation />
+    <CombatHeader combat={selectedCombat} {rows} busy={busy || frozen} {run} {compact} bind:notation />
     <div class="rows" class:compact>
       {#each rows as row, i (row.doc.id)}
         <div class="row-wrap" class:stacked={compact} class:drop-before={hover?.over === row.doc.id && hover.placement === "before"} class:drop-after={hover?.over === row.doc.id && hover.placement === "after"} use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
-          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as CombatTurnShape).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} {compact} />
+          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as CombatTurnShape).turn === row.doc.id} {can} busy={busy || frozen} {frozen} {run} {notation} {onDragStart} index={i} {compact} />
         </div>
       {/each}
     </div>
-    <AddCombatants combatId={selectedCombat.id} {rows} {groups} />
+    <AddCombatants combatId={selectedCombat.id} {rows} {groups} {frozen} />
   {:else if ctx.role === "gm"}
     <p>{ctx.t("combatTracker.noCombat")}</p>
     <button type="button" data-testid="combat-tracker:create" disabled={busy} onclick={create}>{ctx.t("combatTracker.create")}</button>

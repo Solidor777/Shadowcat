@@ -4,6 +4,7 @@
 export { getAppContext, setAppContext, __APP_CONTEXT_KEY__ } from "./appContext";
 export type { AppContext, TFunc, HooksEmitApi, ProgressNotification, MemberProfile } from "./appContext";
 export { default as Surface } from "./Surface.svelte";
+export { findTourAnchor } from "./tourAnchors";
 export { t, locale, i18n, plural, compare } from "./i18n.svelte";
 export { notifications, activeNotifications } from "./notifications.svelte";
 export { default as NotificationHost } from "./NotificationHost.svelte";

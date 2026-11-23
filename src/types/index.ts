@@ -162,6 +162,7 @@ export type { WallProximity } from "./generated/engine/WallProximity";
 export type { WallSense } from "./generated/engine/WallSense";
 export type { ElevationBand } from "./generated/engine/ElevationBand";
 export type { Seg } from "./generated/engine/Seg";
+export type { RegionAnchor } from "./generated/engine/RegionAnchor";
 export type { RegionEngine } from "./generated/engine/RegionEngine";
 export type { RegionShape } from "./generated/engine/RegionShape";
 export type { RegionGeometry } from "./generated/engine/RegionGeometry";

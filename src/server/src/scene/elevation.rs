@@ -215,7 +215,7 @@ impl SceneEcs {
             if !region.enabled || !region.occludes.is_some_and(|o| o.blocks(sense)) {
                 continue;
             }
-            let Some(parts) = super::regions::parse_region_shape(&region.shape) else {
+            let Some(parts) = self.anchored_region_parts(scene, &region) else {
                 continue;
             };
             if resolved.is_none() {
@@ -235,7 +235,7 @@ impl SceneEcs {
                 let mut cache = self.occluder_cache.lock().unwrap();
                 match cache.get(&doc.id) {
                     Some(hit)
-                        if hit.shape == region.shape
+                        if hit.parts == parts
                             && hit.cell.to_bits() == cell.to_bits()
                             && hit.kind == *kind =>
                     {
@@ -248,7 +248,7 @@ impl SceneEcs {
                         cache.insert(
                             doc.id,
                             super::regions::OccluderCacheEntry {
-                                shape: region.shape.clone(),
+                                parts: parts.clone(),
                                 cell: *cell,
                                 kind: *kind,
                                 outline: outline.clone(),

@@ -16,7 +16,7 @@ import {
   type Point,
   type ShapeNodeSpec,
 } from "@shadowcat/render";
-import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
+import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGesture, buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, reanchorRegion, buildRegionFromTemplate, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, ownerFloorApplies, resolveViewedScene, type ReadableDocuments, type AssetResolver, type WireDocument, type TemplateRegionRefusal, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type RegionAnchor, type RegionShape, type CompoundShapePart, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta, type DoorState, type NotificationLevel, type WallEngine, type AmbientLightMode, type AmbientLightOverride, type RegionOcclusion } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
@@ -166,6 +166,24 @@ export interface ToolContext {
    * the original scene through the same seam. Absent ⇒ pick-on-stage cannot switch scenes (the
    * GM picks within whichever scene is already viewed). */
   setGmViewedScene?: (id: string | null) => void;
+  /** Whether the whole-session pause freezes this user's token movement right now (`ToolRail`
+   * derives it from `sessionFreezes`). A frozen user's move commits (a drag release, a measure
+   * route commit) send nothing and raise the paused notice instead; selection, doors, measure
+   * previews and pings are unaffected. Absent ⇒ never frozen. */
+  movesFrozen?: () => boolean;
+}
+
+/** Raises the paused toast for a move commit the session pause froze. Never reaches
+ * `moveRequest`, so the host's move-outcome consumer cannot raise it.
+ * @param ctx The tool context; uses `notify` and `t`.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * notifyMovesFrozen(ctx);
+ * ```
+ */
+function notifyMovesFrozen(ctx: ToolContext): void {
+  ctx.notify?.(ctx.t("intent.rejected.paused"), "warning");
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -705,11 +723,46 @@ export class ToolController {
       elevation: this.ctx.viewedLevelBand?.() ?? null,
       ambient_override: regionAmbientOverride(this),
       occludes: regionOcclusion(this),
+      anchor: null,
     };
     const doc = buildRegionDoc(this.ctx.world, scene.id, engine);
     if (this.regionSecret) setRegionVisibility(doc, true);
     this.ctx.dispatchIntent([{ op: "create", doc }]);
     this.discardRegionParts();
+  }
+
+  /** Attach the region `regionId` to a carrier token, change its anchor flags, or detach it
+   * (`next` null), without moving it on the canvas: `reanchorRegion` re-expresses the stored
+   * shape (offsets from the carrier's centre when anchored, absolute scene units when not) and
+   * ONE update writes `/engine/anchor` and `/engine/shape` together, each against its raw stored
+   * value. Refuses with a toast when a carrier does not resolve (the region is dormant, or the
+   * chosen token is not a token on the region's scene), because there is then no centre to
+   * convert against.
+   * @param regionId The region document's id.
+   * @param next The new anchor, or `null` to detach.
+   * @returns `true` when an update was dispatched.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.setRegionAnchor("region-1", { token: "token-1", include_carrier: false, follow_rotation: false });
+   * ```
+   */
+  setRegionAnchor(regionId: string, next: RegionAnchor | null): boolean {
+    const doc = this.ctx.documents.get(regionId);
+    const eng = doc?.engine as RegionEngine | undefined;
+    if (!doc || doc.doc_type !== "region" || !eng) return false;
+    const writes = reanchorRegion(doc, this.ctx.documents, next);
+    if (!writes) {
+      this.ctx.notify?.(this.ctx.t("tools.regionAnchorUnresolved"));
+      return false;
+    }
+    this.ctx.dispatchIntent([
+      buildUpdate(doc.id, [
+        { path: "/engine/anchor", old: eng.anchor ?? null, value: writes.anchor },
+        { path: "/engine/shape", old: eng.shape, value: writes.shape },
+      ]),
+    ]);
+    return true;
   }
 
   /** Toggle a contributed scene tool: re-selecting the active one clears it (back to camera),
@@ -1106,6 +1159,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
             elevation: ctx.viewedLevelBand?.() ?? null,
             ambient_override: regionAmbientOverride(controller),
             occludes: regionOcclusion(controller),
+            anchor: null,
           };
           const doc = buildRegionDoc(ctx.world, scene.id, engine);
           if (controller.regionSecret) setRegionVisibility(doc, true);
@@ -1700,6 +1754,11 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     // Never branches on `movementModel`: the server move-execution path
     // (`execute_move`/`gate_walk`) is engine-agnostic, so committing a route proceeds
     // identically for grid-stepped and continuous scenes.
+    if (ctx.movesFrozen?.()) {
+      clearRoute();
+      notifyMovesFrozen(ctx);
+      return;
+    }
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -2414,6 +2473,11 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
       if (ops.length > 0) ctx.dispatchIntent(ops);
       return;
     }
+    if (ctx.movesFrozen?.()) {
+      ctx.scene.previewOverlay([]);
+      notifyMovesFrozen(ctx);
+      return;
+    }
     const scene = activeScene(ctx);
     if (!scene || !ctx.pathfind || !ctx.moveRequest) return;
     const pathfind = ctx.pathfind;
@@ -2475,7 +2539,7 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
         // document write regardless; this branch only decides which editor opens, and a player
         // gets no editor affordance).
         if (ctx.role === "gm") {
-          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p) : null;
+          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p, ctx.documents) : null;
           const drawingHit = !lightHit && !wallHit && !regionHit ? topDrawingAt(inScene("drawing"), p) : null;
           const templateHit =
             !lightHit && !wallHit && !regionHit && !drawingHit ? topTemplateAt(inScene("template"), p) : null;

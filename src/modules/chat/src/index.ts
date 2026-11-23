@@ -1,5 +1,6 @@
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, TOUR_CONTRACT, type Module } from "@shadowcat/core";
 import ChatPanel from "./ChatPanel.svelte";
+import { chatTour } from "./tour";
 import { chatUnreadBadge } from "./unreadBadge";
 
 /** Chat panel host: contributes the default (order 0, docked right) panel and declares the
@@ -25,5 +26,6 @@ export const chat: Module = {
       component: ChatPanel,
       panel: { icon: "💬", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" }, badge: chatUnreadBadge },
     });
+    ctx.contributions.contribute({ id: "chat:tour", contract: TOUR_CONTRACT, component: null, tour: chatTour });
   },
 };

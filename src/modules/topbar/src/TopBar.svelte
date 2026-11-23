@@ -2,6 +2,16 @@
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
   import LauncherMenu from "./LauncherMenu.svelte";
   import Presence from "./Presence.svelte";
+  import SessionPauseBanner from "./SessionPauseBanner.svelte";
+  import PauseControls from "./PauseControls.svelte";
+  import type { KeybindingOptions, KeybindingRegistration } from "@shadowcat/core";
+
+  /** TopBar props. */
+  interface Props {
+    /** The topbar module's keybinding registrar, handed to the GM pause controls. */
+    registerKeybinding?: (bindingId: string, opts: KeybindingOptions) => KeybindingRegistration;
+  }
+  const { registerKeybinding }: Props = $props();
 
   const ctx = getAppContext();
   const { world, t } = ctx;
@@ -36,7 +46,11 @@
     <span class="world">{t("topbar.world", { world })}</span>
   </div>
 
+  <SessionPauseBanner />
+
   <div class="spacer"></div>
+
+  <PauseControls {registerKeybinding} />
 
   <div class="presence-slot">
     <Presence />

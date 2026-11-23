@@ -1014,6 +1014,38 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
 });
 
+test("an anchored region rides its carrier's move animation, frame by frame, not only at the end", () => {
+  const { store, engine, backend } = makeEngineWithToken("tok1", { x: 0, y: 0 });
+  const region = {
+    ...tokenCmd(2, "r1", 0).ops[0].doc,
+    doc_type: "region",
+    engine: {
+      shape: { kind: "circle", points: [0, 0, 50] }, behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true,
+      triggers: [], elevation: null, ambient_override: null, occludes: null,
+      anchor: { token: "tok1", include_carrier: false, follow_rotation: false },
+    },
+  };
+  store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: region }] });
+  engine.setGrid({ kind: "square", size: 100 });
+  engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
+  engine.start();
+  const centreX = () => {
+    const xs = backend.shapes.get("r1")!.points.filter((_, i) => i % 2 === 0);
+    return (Math.min(...xs) + Math.max(...xs)) / 2;
+  };
+  expect(centreX()).toBeCloseTo(0, 5);
+  engine.animateAlongPath("tok1", [[0, 0], [300, 0]]);
+  backend.runTicker(100);
+  const mid = backend.lastTokenX("tok1");
+  expect(mid).toBeGreaterThan(0);
+  expect(mid).toBeLessThan(300);
+  // The region sits where the token's tween currently is. Fails if the engine's ticker stops
+  // calling `RegionView.tick` or the view stops reading the token's live transform.
+  expect(centreX()).toBeCloseTo(mid, 5);
+  backend.runTicker(500);
+  expect(centreX()).toBeCloseTo(300, 0);
+});
+
 // Invariant: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
 // (the per-step distance, `size * sqrt(3)`), not `GridSpec.size` (the indexing scale/outer
 // radius) — the two coincide on square grids, so a square-fixture tween test cannot distinguish

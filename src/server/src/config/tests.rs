@@ -282,6 +282,47 @@ fn auth_throttle_budgets_default_to_none_and_env_overrides() {
 }
 
 #[test]
+fn onboarding_enabled_defaults_true_and_env_turns_it_off() {
+    assert!(Config::default().onboarding_enabled);
+
+    let _guard = config_env_test_lock();
+    // SAFETY: single-threaded test-only env mutation, restored below.
+    unsafe {
+        std::env::set_var("SHADOWCAT_ONBOARDING_ENABLED", "false");
+    }
+    let cli = Cli {
+        config: Some("/nonexistent/shadowcat.toml".into()),
+        ..Default::default()
+    };
+    let cfg = Config::load(cli).expect("load");
+    // SAFETY: matches the set_var above.
+    unsafe {
+        std::env::remove_var("SHADOWCAT_ONBOARDING_ENABLED");
+    }
+    assert!(!cfg.onboarding_enabled);
+}
+
+#[test]
+fn onboarding_enabled_cli_flag_wins_over_the_environment() {
+    let _guard = config_env_test_lock();
+    // SAFETY: single-threaded test-only env mutation, restored below.
+    unsafe {
+        std::env::set_var("SHADOWCAT_ONBOARDING_ENABLED", "true");
+    }
+    let cli = Cli {
+        config: Some("/nonexistent/shadowcat.toml".into()),
+        onboarding_enabled: Some(false),
+        ..Default::default()
+    };
+    let cfg = Config::load(cli).expect("load");
+    // SAFETY: matches the set_var above.
+    unsafe {
+        std::env::remove_var("SHADOWCAT_ONBOARDING_ENABLED");
+    }
+    assert!(!cfg.onboarding_enabled);
+}
+
+#[test]
 fn non_numeric_world_create_throttle_budget_env_var_fails_to_load() {
     // A malformed `SHADOWCAT_WORLD_CREATE_PER_MIN_PER_ACCOUNT` value fails
     // `Config::load` outright rather than silently falling back to `None`/the

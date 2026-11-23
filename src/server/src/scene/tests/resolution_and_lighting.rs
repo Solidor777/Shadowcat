@@ -1523,7 +1523,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     );
 
     let authoritative = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         authoritative.is_impassable((0, 0)),
@@ -1532,7 +1532,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
 
     let player_field = ecs
-        .region_field(scene_id, Some(player), elevation::GROUND)
+        .region_field(scene_id, Some(player), elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         !player_field.is_impassable((0, 0)),
@@ -1572,7 +1572,7 @@ fn region_field_ignores_disabled_regions() {
         0,
     );
     assert!(!ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists")
         .is_impassable((0, 0)));
 }
@@ -1619,11 +1619,11 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
     );
 
     let field = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
     let rows = ecs
-        .trigger_regions(scene_id, elevation::GROUND)
+        .trigger_regions(scene_id, elevation::GROUND, None)
         .expect("scene exists");
     assert_eq!(
         rows.len(),
@@ -1691,7 +1691,7 @@ fn region_field_composes_compound_parts_additive_minus_holes() {
         0,
     );
     let field = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     assert!(field.is_impassable((0, 0)));
     assert!(field.is_impassable((2, 0)));
@@ -1722,7 +1722,7 @@ fn a_token_standing_in_a_hole_does_not_count_as_entered() {
         0,
     );
     let rows = ecs
-        .trigger_regions(scene_id, elevation::GROUND)
+        .trigger_regions(scene_id, elevation::GROUND, None)
         .expect("scene exists");
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
@@ -1964,7 +1964,12 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
 fn absent_scene_region_field_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
     assert!(ecs
-        .region_field(crate::test_ids::test_uuid(0xDEAD), None, elevation::GROUND)
+        .region_field(
+            crate::test_ids::test_uuid(0xDEAD),
+            None,
+            elevation::GROUND,
+            None
+        )
         .is_none());
 }
 
@@ -3133,7 +3138,7 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     // A floor-0 mover: the floor-2 region is absent from BOTH the composed field and the
     // trigger table; the unbanded region is present in both.
     let field = ecs
-        .region_field(scene_id, None, elevation::GROUND)
+        .region_field(scene_id, None, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         !field.is_impassable((0, 0)),
@@ -3144,7 +3149,7 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
         "an unbanded region applies at every elevation"
     );
     let rows = ecs
-        .trigger_regions(scene_id, elevation::GROUND)
+        .trigger_regions(scene_id, elevation::GROUND, None)
         .expect("scene exists");
     assert!(
         rows.iter()
@@ -3159,11 +3164,13 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
 
     // A mover inside the band: both regions apply, to the field and to the trigger table.
     let field = ecs
-        .region_field(scene_id, None, 15.0)
+        .region_field(scene_id, None, 15.0, None)
         .expect("scene exists");
     assert!(field.is_impassable((0, 0)));
     assert!(field.is_impassable((2, 0)));
-    let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
+    let rows = ecs
+        .trigger_regions(scene_id, 15.0, None)
+        .expect("scene exists");
     assert!(rows
         .iter()
         .any(|r| r.region_id == crate::test_ids::test_uuid(20)));
@@ -3432,7 +3439,7 @@ fn a_gm_only_ambient_region_still_darkens_a_non_gms_movement_gate() {
     let (ecs, user, scene) = global_illumination_scene(vec![region]);
 
     let player_field = ecs
-        .region_field(scene, Some(user), elevation::GROUND)
+        .region_field(scene, Some(user), elevation::GROUND, None)
         .expect("scene exists");
     assert_eq!(
         player_field.ambient_at((2, 2)),
@@ -3440,7 +3447,7 @@ fn a_gm_only_ambient_region_still_darkens_a_non_gms_movement_gate() {
         "a non-GM's per-requester field omits the secret region's geometry"
     );
     let authoritative = ecs
-        .region_field(scene, None, elevation::GROUND)
+        .region_field(scene, None, elevation::GROUND, None)
         .expect("scene exists");
     assert_eq!(
         authoritative.ambient_at((2, 2)),

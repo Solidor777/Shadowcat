@@ -1,7 +1,7 @@
 import { test, expect, describe, it } from "vitest";
 import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, deterministicId, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
-  buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
+  buildWorldSettingsDoc, resolveSessionPause, sessionFreezes, resolveSceneSettings, resolveViewedScene, queryScenesInCreationOrder, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
@@ -466,6 +466,7 @@ describe("buildRegionDoc", () => {
       elevation: null,
       ambient_override: null,
       occludes: null,
+      anchor: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -486,6 +487,7 @@ describe("buildRegionDoc", () => {
       elevation: null,
       ambient_override: null,
       occludes: null,
+      anchor: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
@@ -510,6 +512,7 @@ describe("buildRegionDoc", () => {
       elevation: null,
       ambient_override: null,
       occludes: null,
+      anchor: null,
     };
     const compound: RegionEngine = {
       shape: [
@@ -524,6 +527,7 @@ describe("buildRegionDoc", () => {
       elevation: null,
       ambient_override: null,
       occludes: null,
+      anchor: null,
     };
     for (const engine of [legacy, compound]) {
       const revived = JSON.parse(JSON.stringify(buildRegionDoc("world1", "scene1", engine))) as { engine: RegionEngine };
@@ -556,6 +560,7 @@ describe("buildRegionDoc", () => {
         elevation: null,
         ambient_override: override,
         occludes: null,
+        anchor: null,
       };
       const doc = buildRegionDoc("world1", "scene1", eng);
       expect(doc.engine).toEqual(eng);
@@ -614,6 +619,28 @@ function store(docs: WireDocument[]): DocumentStore {
 function ws(activeScene: string | null): WireDocument {
   return buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene } as WorldSettingsEngine);
 }
+
+describe("session pause", () => {
+  const withSession = (session: WorldSettingsEngine["session"]): DocumentStore =>
+    store([buildWorldSettingsDoc("w1", { session } as WorldSettingsEngine)]);
+
+  it("reads not paused with no world-settings doc or no session block", () => {
+    expect(resolveSessionPause(store([]))).toEqual({ paused: false, message: null, pauseAudio: false });
+    expect(resolveSessionPause(store([buildWorldSettingsDoc("w1")])).paused).toBe(false);
+  });
+
+  it("reads the stored flag, message and audio switch", () => {
+    const s = withSession({ paused: true, message: "Back in 5", pauseAudio: true });
+    expect(resolveSessionPause(s)).toEqual({ paused: true, message: "Back in 5", pauseAudio: true });
+  });
+
+  it("freezes every role but the GM while paused, and nobody while not", () => {
+    const paused = withSession({ paused: true, pauseAudio: false });
+    expect(sessionFreezes(paused, "player")).toBe(true);
+    expect(sessionFreezes(paused, "gm")).toBe(false);
+    expect(sessionFreezes(withSession({ paused: false, pauseAudio: false }), "player")).toBe(false);
+  });
+});
 
 describe("scene creation order", () => {
   const sceneAt = (id: string, createdAt: number): WireDocument => ({ ...buildSceneDoc("w1", {}, id), created_at: createdAt });

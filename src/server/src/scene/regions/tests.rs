@@ -1298,3 +1298,109 @@ fn occluder_outline_of_a_region_covering_no_cell_center_is_empty() {
     let parts = [rect_part(10.0, 10.0, 20.0, 20.0, false)];
     assert!(occluder_outline(&parts, 100.0, &grid).is_empty());
 }
+
+// --- Token-anchored geometry ---
+
+/// A rect part given as offset corners.
+fn offset_rect(x0: f64, y0: f64, x1: f64, y1: f64, hole: bool) -> (RegionShape, bool) {
+    (RegionShape::Rect { x0, y0, x1, y1 }, hole)
+}
+
+#[test]
+fn anchored_parts_translate_every_shape_kind_and_keep_hole_flags() {
+    let parts = vec![
+        offset_rect(-10.0, -20.0, 30.0, 40.0, false),
+        (
+            RegionShape::Circle {
+                cx: 5.0,
+                cy: -5.0,
+                r: 7.0,
+            },
+            true,
+        ),
+        (
+            RegionShape::Polygon {
+                points: vec![(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)],
+            },
+            false,
+        ),
+    ];
+    let placed = anchored_parts(parts, (100.0, 200.0), 77.0, false);
+    assert_eq!(
+        placed,
+        vec![
+            offset_rect(90.0, 180.0, 130.0, 240.0, false),
+            (
+                RegionShape::Circle {
+                    cx: 105.0,
+                    cy: 195.0,
+                    r: 7.0
+                },
+                true
+            ),
+            (
+                RegionShape::Polygon {
+                    points: vec![(100.0, 200.0), (110.0, 200.0), (100.0, 210.0)]
+                },
+                false
+            ),
+        ],
+        "translation only: kinds, radii and hole flags survive, rotation is ignored"
+    );
+}
+
+#[test]
+fn anchored_parts_rotate_clockwise_about_the_carrier_when_following_rotation() {
+    let placed = anchored_parts(
+        vec![offset_rect(0.0, -10.0, 100.0, 10.0, false)],
+        (500.0, 500.0),
+        90.0,
+        true,
+    );
+    let [(RegionShape::Polygon { points }, false)] = placed.as_slice() else {
+        panic!("a rotated rect becomes a polygon: {placed:?}");
+    };
+    // The +x arm of the offset box now points toward +y (clockwise on a y-down canvas).
+    let expected = [
+        (510.0, 500.0),
+        (510.0, 600.0),
+        (490.0, 600.0),
+        (490.0, 500.0),
+    ];
+    assert_eq!(points.len(), 4);
+    for (got, want) in points.iter().zip(expected) {
+        assert!(
+            (got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9,
+            "vertex {got:?} != {want:?}"
+        );
+    }
+
+    let circle = anchored_parts(
+        vec![(
+            RegionShape::Circle {
+                cx: 100.0,
+                cy: 0.0,
+                r: 5.0,
+            },
+            false,
+        )],
+        (0.0, 0.0),
+        90.0,
+        true,
+    );
+    let [(RegionShape::Circle { cx, cy, r }, false)] = circle.as_slice() else {
+        panic!("a circle stays a circle: {circle:?}");
+    };
+    assert!(cx.abs() < 1e-9 && (cy - 100.0).abs() < 1e-9 && *r == 5.0);
+}
+
+#[test]
+fn anchored_parts_with_a_non_finite_pose_fail_closed_at_rasterize() {
+    let placed = anchored_parts(
+        vec![offset_rect(0.0, 0.0, 10.0, 10.0, false)],
+        (f64::NAN, 0.0),
+        0.0,
+        false,
+    );
+    assert!(rasterize_compound(&placed, 100.0, &sq(100.0)).is_none());
+}

@@ -2042,6 +2042,7 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
     expected.insert("elevation".to_string(), serde_json::Value::Null);
     expected.insert("ambient_override".to_string(), serde_json::Value::Null);
     expected.insert("occludes".to_string(), serde_json::Value::Null);
+    expected.insert("anchor".to_string(), serde_json::Value::Null);
     expected.insert(
         "cost_by_tag".to_string(),
         serde_json::Value::Object(serde_json::Map::new()),
@@ -2604,6 +2605,7 @@ fn region_with_teleport(target: PortalTarget) -> RegionEngine {
         elevation: None,
         ambient_override: None,
         occludes: None,
+        anchor: None,
     }
 }
 
@@ -2636,6 +2638,111 @@ fn teleport_effect_round_trips_through_the_engine_wire_shape() {
         n["triggers"][0]["effect"]["target"]["vfx"],
         "11111111-1111-1111-1111-111111111111"
     );
+}
+
+// --- TriggerEffect::PortalChoice validation ---
+
+/// One valid option; `label` is the caller's.
+fn portal_option(label: &str) -> PortalOption {
+    PortalOption {
+        label: label.to_string(),
+        target: portal_target(5.0, 5.0),
+        reveal_scene: false,
+    }
+}
+
+/// A `RegionEngine` carrying one `PortalChoice` trigger.
+fn region_with_portal_choice(prompt: Option<String>, options: Vec<PortalOption>) -> RegionEngine {
+    let mut region = region_with_teleport(portal_target(0.0, 0.0));
+    region.triggers = vec![RegionTrigger {
+        on: TriggerEvent::Enter,
+        effect: TriggerEffect::PortalChoice { prompt, options },
+    }];
+    region
+}
+
+#[test]
+fn portal_choice_accepts_one_to_the_option_cap() {
+    assert!(region_with_portal_choice(None, vec![portal_option("A")])
+        .validate()
+        .is_ok());
+    let full = (0..MAX_PORTAL_OPTIONS)
+        .map(|_| portal_option("A"))
+        .collect();
+    assert!(region_with_portal_choice(Some("Where?".to_string()), full)
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn portal_choice_rejects_zero_and_over_cap_options() {
+    assert!(region_with_portal_choice(None, vec![]).validate().is_err());
+    let over = (0..=MAX_PORTAL_OPTIONS)
+        .map(|_| portal_option("A"))
+        .collect();
+    assert!(region_with_portal_choice(None, over).validate().is_err());
+}
+
+#[test]
+fn portal_choice_rejects_an_empty_or_over_long_label() {
+    assert!(region_with_portal_choice(None, vec![portal_option("")])
+        .validate()
+        .is_err());
+    let long = "x".repeat(MAX_PORTAL_LABEL_CHARS + 1);
+    assert!(region_with_portal_choice(None, vec![portal_option(&long)])
+        .validate()
+        .is_err());
+    let exact = "x".repeat(MAX_PORTAL_LABEL_CHARS);
+    assert!(region_with_portal_choice(None, vec![portal_option(&exact)])
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn portal_choice_rejects_an_invalid_target_and_an_over_long_prompt() {
+    let mut bad = portal_option("A");
+    bad.target = portal_target(f64::NAN, 0.0);
+    assert!(region_with_portal_choice(None, vec![bad])
+        .validate()
+        .is_err());
+    let over_bound = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+    let mut far = portal_option("A");
+    far.target = portal_target(over_bound, 0.0);
+    assert!(region_with_portal_choice(None, vec![far])
+        .validate()
+        .is_err());
+    let prompt = "p".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(
+        region_with_portal_choice(Some(prompt), vec![portal_option("A")])
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn portal_choice_round_trips_and_refuses_unknown_option_keys() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "portal_choice", "prompt": "Where to?",
+                "options": [
+                    { "label": "Cellar", "target": { "x": 3.0, "y": 4.0 }, "reveal_scene": true },
+                    { "label": "Unknown", "target": { "x": 1.0, "y": 2.0 } }
+                ] } }
+        ]
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    let effect = &n["triggers"][0]["effect"];
+    assert_eq!(effect["type"], "portal_choice");
+    assert_eq!(effect["options"][0]["reveal_scene"], true);
+    // An omitted flag defaults to hidden.
+    assert_eq!(effect["options"][1]["reveal_scene"], false);
+
+    let mut smuggled = v.clone();
+    smuggled["triggers"][0]["effect"]["options"][0]["extra"] = json!(1);
+    assert!(validate_engine("region", Some(&smuggled)).is_err());
 }
 
 /// A base region engine body in the legacy singular wire form; `shape` is replaceable.

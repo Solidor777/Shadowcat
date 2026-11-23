@@ -1,10 +1,10 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken, SnapModePreference, ShareRulerPreference } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -266,6 +266,34 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
   await new Promise((r) => setTimeout(r, 0)); // drain the pathfind microtasks
 
   expect(labels.at(-1)).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
+});
+
+/** A document store holding a world-settings doc whose session block is `paused`. */
+function pausedStore(paused: boolean): DocumentStore {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [{ op: "create", doc: buildWorldSettingsDoc("w1", { session: { paused, pauseAudio: false } }) }],
+  });
+  return docs;
+}
+
+test("a paused session marks a non-GM's move tools with the paused tooltip and leaves ping alone", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(true) }) });
+  for (const id of ["select", "measure"]) {
+    const btn = screen.getByTestId(`tool-${id}`);
+    expect(btn.getAttribute("data-moves-frozen")).toBe("true");
+    expect(btn.getAttribute("title")).toBe("tools.paused");
+  }
+  expect(screen.getByTestId("tool-ping").getAttribute("data-moves-frozen")).toBeNull();
+});
+
+test("the paused tooltip is absent for a GM and for a session that is not paused", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: pausedStore(true) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
+  cleanup();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(false) }) });
+  expect(screen.getByTestId("tool-select").getAttribute("data-moves-frozen")).toBeNull();
 });
 
 /** Every authoring tool: creates or edits scene content, GM-only. */
@@ -672,7 +700,7 @@ function editorStore(): DocumentStore {
         op: "create",
         doc: buildRegionDoc("w1", "s1", {
           shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
-          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null,
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null, anchor: null,
         }, "region-1"),
       },
       {
@@ -1278,6 +1306,79 @@ test("the region editor's delete dispatches the full pre-image and closes the ed
   expect(op.op).toBe("delete");
   if (op.op === "delete") expect(op.doc.id).toBe("region-1");
   expect(screen.queryByTestId("region-editor")).toBeNull();
+});
+
+/** `editorStore()` plus a carrier token at (500,500) and an anchored region following it, whose
+ * stored shape is a 300x300 box of offsets (so it is drawn, and picked, at (350,350)-(650,650)). */
+function anchoredEditorStore(): DocumentStore {
+  const docs = editorStore();
+  docs.applyCommand({
+    seq: 3, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 500, y: 500, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, "carrier-1") },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "s1", {
+          shape: { kind: "rect", points: [-150, -150, 150, 150] },
+          behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null,
+          anchor: { token: "carrier-1", include_carrier: false, follow_rotation: false },
+        }, "region-2"),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the region editor's Follows token picker attaches without moving the region: one update writes the anchor and the offset shape", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: anchoredEditorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent); // the static region
+  await screen.findByTestId("region-editor");
+  expect(screen.queryByTestId("region-follow-rotation")).toBeNull(); // flags only appear once attached
+  await fireEvent.change(screen.getByTestId("region-follow-token"), { target: { value: "carrier-1" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [
+      { path: "/engine/anchor", old: null, new: { include_carrier: false, follow_rotation: false, token: "carrier-1" } },
+      // (1000,1000)-(1100,1100) minus the carrier centre (500,500): the region stays put.
+      { path: "/engine/shape", old: { kind: "rect", points: [1000, 1000, 1100, 1100] }, new: { kind: "rect", points: [500, 500, 600, 600] } },
+    ],
+  });
+});
+
+test("an anchored region is picked where it is drawn (at its carrier); its flags and Detach write back absolute coordinates", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: anchoredEditorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  // The stored offsets put the box at the scene origin; the pick lands only at the carrier.
+  tools.at(-1)!.onPointerDown({ x: -10, y: -10 }, { shiftKey: false } as PointerEvent);
+  expect(screen.queryByTestId("region-editor")).toBeNull();
+  tools.at(-1)!.onPointerDown({ x: 400, y: 400 }, { shiftKey: false } as PointerEvent); // inside the region, outside the carrier token
+  await screen.findByTestId("region-editor");
+
+  await fireEvent.click(screen.getByTestId("region-follow-include-carrier"));
+  const flag = dispatched.at(-1)![0];
+  expect(flag.op === "update" && flag.changes[0]).toEqual({
+    path: "/engine/anchor",
+    old: { token: "carrier-1", include_carrier: false, follow_rotation: false },
+    new: { include_carrier: true, follow_rotation: false, token: "carrier-1" },
+  });
+
+  await fireEvent.change(screen.getByTestId("region-follow-token"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-2",
+    changes: [
+      { path: "/engine/anchor", old: { token: "carrier-1", include_carrier: false, follow_rotation: false }, new: null },
+      { path: "/engine/shape", old: { kind: "rect", points: [-150, -150, 150, 150] }, new: { kind: "rect", points: [350, 350, 650, 650] } },
+    ],
+  });
 });
 
 test("selecting a drawing with the select tool opens its elevation editor; the band inputs write /engine/elevation", async () => {

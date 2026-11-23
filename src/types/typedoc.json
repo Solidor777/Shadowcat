@@ -20,6 +20,7 @@
     "Operation.__type.op",
     "PushInstanceStatus.__type.conflicts",
     "ResourceBinding.__type.kind",
+    "RenderHint.__type.kind",
     "RenderVisual.__type.kind",
     "Scope.__type.kind",
     "ServerMsg.__type.type",

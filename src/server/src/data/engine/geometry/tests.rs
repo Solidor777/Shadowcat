@@ -290,6 +290,7 @@ fn ambient_region(mode: AmbientLightMode, level: f64) -> RegionEngine {
         elevation: None,
         ambient_override: Some(AmbientLightOverride { mode, level }),
         occludes: None,
+        anchor: None,
     }
 }
 
@@ -588,5 +589,76 @@ fn proximity_validate_rejects_a_malformed_tier() {
             .validate()
             .is_err(),
         "a sound gain without the sound sense"
+    );
+}
+
+// --- Region anchor ---
+
+/// A terrain `RegionEngine` wire body with `extra` merged over its keys.
+fn region_body(extra: serde_json::Value) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "shape": { "kind": "rect", "points": [-5.0, -5.0, 5.0, 5.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        body[k] = v.clone();
+    }
+    body
+}
+
+#[test]
+fn a_region_anchor_round_trips_with_its_flag_defaults() {
+    let carrier = uuid::Uuid::from_u128(7);
+    let wire = region_body(serde_json::json!({ "anchor": { "token": carrier.to_string() } }));
+    let region: RegionEngine = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        region.anchor,
+        Some(RegionAnchor {
+            token: carrier,
+            include_carrier: false,
+            follow_rotation: false,
+        })
+    );
+    let back = serde_json::to_value(&region).unwrap();
+    assert_eq!(back["anchor"]["token"], carrier.to_string());
+    assert_eq!(back["anchor"]["include_carrier"], false);
+    assert_eq!(back["anchor"]["follow_rotation"], false);
+}
+
+#[test]
+fn a_region_without_an_anchor_stays_static_and_an_unknown_anchor_key_is_refused() {
+    let region: RegionEngine = serde_json::from_value(region_body(serde_json::json!({}))).unwrap();
+    assert!(region.anchor.is_none());
+    let smuggled = region_body(serde_json::json!({
+        "anchor": { "token": uuid::Uuid::from_u128(7).to_string(), "scale": 2.0 }
+    }));
+    assert!(
+        serde_json::from_value::<RegionEngine>(smuggled).is_err(),
+        "the anchor body denies unknown fields"
+    );
+}
+
+#[test]
+fn an_anchor_is_accepted_for_every_behavior_and_through_ingress() {
+    for behavior in ["terrain", "impassable", "arrest"] {
+        let wire = region_body(serde_json::json!({
+            "behavior": behavior,
+            "anchor": {
+                "token": uuid::Uuid::from_u128(7).to_string(),
+                "follow_rotation": true,
+            },
+        }));
+        let region: RegionEngine = serde_json::from_value(wire).unwrap();
+        assert!(region.validate().is_ok(), "{behavior}");
+    }
+    assert!(
+        crate::data::engine::normalize_engine_opt(
+            "region",
+            Some(&region_body(serde_json::json!({
+                "anchor": { "token": uuid::Uuid::from_u128(7).to_string() }
+            })))
+        )
+        .is_ok(),
+        "ingress accepts an anchored region"
     );
 }

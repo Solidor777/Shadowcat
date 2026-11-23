@@ -2384,6 +2384,7 @@ export const TlsStatusSchema: z.ZodType<TlsStatus> = tlsStatusSchemaImpl;
 export const serverConfigSchemaImpl = z.object({
   initialized: z.boolean(),
   tls: tlsStatusSchemaImpl,
+  onboarding_enabled: z.boolean(),
 });
 
 /** The `/api/config` schema, typed against the generated `ServerConfig`. */

@@ -30,8 +30,11 @@
     index: number;
     /** Whether the panel is in the compact (narrow-viewport) layout. */
     compact?: boolean;
+    /** Whether the whole-session pause freezes this user's combat controls. `busy` already
+     * covers the buttons that gate on it; this disables the controls that do not. */
+    frozen?: boolean;
   }
-  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false }: Props = $props();
+  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false, frozen = false }: Props = $props();
 
   const ctx = getAppContext();
   // Reactive bridge: `ctx.documents` is a plain-callback store, not a Svelte rune (mirrors
@@ -174,7 +177,7 @@
 
 <div class="row" class:turn={isTurn} class:defeated={engine.defeated} class:compact class:grouped={row.group !== null} style:--group-color={row.group?.color ?? undefined} title={row.group?.name} aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
   {#if can.edit}
-    <button type="button" class="drag-handle" aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
+    <button type="button" class="drag-handle" disabled={frozen} aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
   {/if}
 
   {#if row.kind === "event"}
@@ -194,7 +197,7 @@
     <EffectsList host={effectHost} anchor={row.doc.id} compact />
 
     {#if can.edit || mayEditResource}
-      <input type="number" aria-label={ctx.t("combatTracker.initiative")} value={engine.initiative ?? ""}
+      <input type="number" aria-label={ctx.t("combatTracker.initiative")} disabled={frozen} value={engine.initiative ?? ""}
         onchange={(e) => setInitiative((e.currentTarget as HTMLInputElement).value)} />
     {:else}
       <span>{engine.initiative ?? ""}</span>
@@ -223,7 +226,7 @@
             ⚠
           {:else if resource.binding.kind === "tracked" && mayEditResource}
             <button type="button" disabled={busy} onclick={() => resourceDelta(key, -1)}>−</button>
-            <input type="number" value={view?.current ?? ""} onchange={(e) => resourceSet(key, Number((e.currentTarget as HTMLInputElement).value))} />
+            <input type="number" disabled={frozen} value={view?.current ?? ""} onchange={(e) => resourceSet(key, Number((e.currentTarget as HTMLInputElement).value))} />
             <button type="button" disabled={busy} onclick={() => resourceDelta(key, 1)}>+</button>
           {:else}
             {formatResource(view)}
@@ -234,8 +237,8 @@
   {/if}
 
   {#if can.edit}
-    <button type="button" data-testid={"combat-tracker:hide-" + row.doc.id} onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
-    <button type="button" disabled={isTurn} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
+    <button type="button" data-testid={"combat-tracker:hide-" + row.doc.id} disabled={frozen} onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
+    <button type="button" disabled={isTurn || frozen} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
   {/if}
 </div>
 

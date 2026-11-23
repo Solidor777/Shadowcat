@@ -1,5 +1,5 @@
 import type { WireDocument, ReadableDocuments, FootprintLookup } from "@shadowcat/core";
-import { resolveTokenBox, tokenBoxContains } from "@shadowcat/core";
+import { resolveTokenBox, tokenBoxContains, resolveRegionGeometry } from "@shadowcat/core";
 import type { Point, ShapeNodeSpec } from "@shadowcat/render";
 import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat/render";
 
@@ -255,16 +255,18 @@ function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) 
  * `parent_id`-filtered docs).
  * @param regions The candidate region documents (typically `store.query("region")`, scene-scoped).
  * @param p The point to test (scene coords).
+ * @param store Resolves an anchored region's carrier (`resolveRegionGeometry`), so a following
+ * region is picked where it is drawn and a dormant one is never picked.
  * @returns The picked region's id, or `null` when none matches.
  * @example
  * ```
  * declare const store: ReadableDocuments;
  * declare const p: Point;
- * const id = topRegionAt(store.query("region"), p);
+ * const id = topRegionAt(store.query("region"), p, store);
  * ```
  */
-export function topRegionAt(regions: WireDocument[], p: Point): string | null {
-  return topShapeAt(regions, p, regionShapeSpec);
+export function topRegionAt(regions: WireDocument[], p: Point, store: ReadableDocuments): string | null {
+  return topShapeAt(regions, p, (doc) => regionShapeSpec(doc, resolveRegionGeometry(doc, store)));
 }
 
 /** The id of the topmost drawing whose geometry contains `p` (closed `rect`/`ellipse`/`polygon`),

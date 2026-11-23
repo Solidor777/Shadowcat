@@ -1,4 +1,4 @@
-import type { Module } from "@shadowcat/core";
+import type { KeybindingOptions, Module } from "@shadowcat/core";
 import TopBar from "./TopBar.svelte";
 
 /** Top bar panel. Requires core-ui's topbar region; contributes TopBar into it. */
@@ -11,6 +11,11 @@ export const topBar: Module = {
     provides: [],
   },
   register(ctx) {
-    ctx.contributions.contribute({ id: "topbar:topbar", contract: "shadowcat.surface:topbar", component: TopBar });
+    ctx.contributions.contribute({
+      id: "topbar:topbar",
+      contract: "shadowcat.surface:topbar",
+      component: TopBar,
+      props: { registerKeybinding: (bindingId: string, opts: KeybindingOptions) => ctx.keybindings.register(bindingId, opts) },
+    });
   },
 };

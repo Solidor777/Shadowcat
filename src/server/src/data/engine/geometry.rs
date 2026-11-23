@@ -766,6 +766,52 @@ pub enum TriggerEffect {
         /// display-truncates further — see `EmoteView`'s doc).
         text: String,
     },
+    /// Offer the entering token's owner (or a GM) a list of destinations instead of moving the
+    /// token unconditionally. A fixed `Teleport` is the zero-prompt case; this is the asked
+    /// case, so a one-option list still asks. Shares `Teleport`'s one-hop rule: a fire that
+    /// may not teleport refuses it as a chained portal.
+    PortalChoice {
+        /// Heading shown above the options (`chat::MAX_MESSAGE_CHARS`-bounded); `None` shows
+        /// none.
+        #[serde(default)]
+        prompt: Option<String>,
+        /// The destinations, `1..=MAX_PORTAL_OPTIONS` of them, in display order.
+        options: Vec<PortalOption>,
+    },
+}
+
+/// Most options one `TriggerEffect::PortalChoice` may list.
+pub const MAX_PORTAL_OPTIONS: usize = 8;
+
+/// Most characters in one `PortalOption::label`.
+pub const MAX_PORTAL_LABEL_CHARS: usize = 120;
+
+/// One destination of a `TriggerEffect::PortalChoice`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{PortalOption, PortalTarget};
+///
+/// let option = PortalOption {
+///     label: "The Cellar".to_string(),
+///     target: PortalTarget { scene: None, x: 4.0, y: 4.0, elevation: None, vfx: None },
+///     reveal_scene: false,
+/// };
+/// assert!(!option.reveal_scene);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct PortalOption {
+    /// What the chooser shows (non-empty, `MAX_PORTAL_LABEL_CHARS`-bounded).
+    pub label: String,
+    /// Where choosing this option sends the token.
+    pub target: PortalTarget,
+    /// Whether the chooser also shows the destination scene's real name; `false` shows only
+    /// `label`.
+    #[serde(default)]
+    pub reveal_scene: bool,
 }
 
 /// A teleport's destination. `scene: None` = the same scene the portal fired
@@ -972,6 +1018,45 @@ impl RegionOcclusion {
     }
 }
 
+/// The token a region follows (`RegionEngine::anchor`). While set, the region's shape
+/// coordinates are OFFSETS from the carrier's centre in scene units, and every geometry
+/// consumer reads the shape translated by the carrier's current committed position
+/// (`regions::anchored_parts`). The carrier must be a `token` document with the same
+/// `parent_id` as the region; ingress cannot check that (`RegionEngine::validate` is pure), so
+/// a region whose carrier is missing, is not a token or sits on another scene is DORMANT at
+/// read time: it contributes nothing and fires nothing, the same harmless no-op a disabled
+/// region is.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RegionAnchor;
+///
+/// let carrier = uuid::Uuid::new_v4();
+/// // `include_carrier` and `follow_rotation` default to `false` when absent.
+/// let anchor: RegionAnchor =
+///     serde_json::from_value(serde_json::json!({ "token": carrier })).unwrap();
+/// assert_eq!(anchor.token, carrier);
+/// assert!(!anchor.include_carrier && !anchor.follow_rotation);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct RegionAnchor {
+    /// The carrier token's document id.
+    pub token: uuid::Uuid,
+    /// Whether the carrier itself feels the region's movement effects and fires its triggers.
+    /// `false` (default): the carrier is exempt from its own region, so an aura of difficult
+    /// ground never taxes its owner. Lighting is unaffected: an anchored `ambient_light`
+    /// region edits every cell it covers, the carrier's included.
+    #[serde(default)]
+    pub include_carrier: bool,
+    /// Whether the shape rotates with the carrier's `TokenEngine::rotation`. `false`
+    /// (default): the shape is translated only.
+    #[serde(default)]
+    pub follow_rotation: bool,
+}
+
 /// A region document's engine body: a vector-shaped zone that weights,
 /// blocks, or arrests grid movement, or edits its cells' ambient light, and
 /// optionally fires triggers on entering tokens. Client mirror: `RegionEngine` (`@shadowcat/core`).
@@ -997,6 +1082,7 @@ impl RegionOcclusion {
 ///     elevation: None,
 ///     ambient_override: None,
 ///     occludes: None,
+///     anchor: None,
 /// };
 /// assert!(region.validate().is_ok());
 /// ```
@@ -1004,7 +1090,8 @@ impl RegionOcclusion {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct RegionEngine {
-    /// The zone's geometry, scene units: a single shape (the legacy wire form,
+    /// The zone's geometry, scene units (offsets from the carrier's centre when `anchor` is
+    /// set): a single shape (the legacy wire form,
     /// still emitted by the default authoring gesture) or a compound list of
     /// parts with per-part hole flags — see `RegionGeometry`.
     pub shape: RegionGeometry,
@@ -1056,6 +1143,11 @@ pub struct RegionEngine {
     /// the region occludes nothing (serde default).
     #[serde(default)]
     pub occludes: Option<RegionOcclusion>,
+    /// The token this region follows (`RegionAnchor`). When set, `shape`'s coordinates are
+    /// offsets from the carrier's centre rather than absolute scene units. Absent = a static
+    /// region (serde default).
+    #[serde(default)]
+    pub anchor: Option<RegionAnchor>,
 }
 
 impl RegionEngine {
@@ -1095,6 +1187,7 @@ impl RegionEngine {
     ///     elevation: None,
     ///     ambient_override: None,
     ///     occludes: None,
+    ///     anchor: None,
     /// };
     /// assert!(region.validate().is_err()); // empty condition id
     /// ```
@@ -1182,6 +1275,32 @@ impl RegionEngine {
                             "scrolling_text text exceeds {} chars",
                             crate::chat::MAX_MESSAGE_CHARS
                         ));
+                    }
+                }
+                TriggerEffect::PortalChoice { prompt, options } => {
+                    if let Some(prompt) = prompt {
+                        if prompt.chars().count() > crate::chat::MAX_MESSAGE_CHARS {
+                            return Err(format!(
+                                "portal_choice prompt exceeds {} chars",
+                                crate::chat::MAX_MESSAGE_CHARS
+                            ));
+                        }
+                    }
+                    if options.is_empty() || options.len() > MAX_PORTAL_OPTIONS {
+                        return Err(format!(
+                            "portal_choice needs 1 to {MAX_PORTAL_OPTIONS} options"
+                        ));
+                    }
+                    for option in options {
+                        if option.label.is_empty() {
+                            return Err("portal_choice option label must be non-empty".to_string());
+                        }
+                        if option.label.chars().count() > MAX_PORTAL_LABEL_CHARS {
+                            return Err(format!(
+                                "portal_choice option label exceeds {MAX_PORTAL_LABEL_CHARS} chars"
+                            ));
+                        }
+                        option.target.validate()?;
                     }
                 }
             }

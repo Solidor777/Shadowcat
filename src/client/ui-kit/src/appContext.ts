@@ -445,6 +445,9 @@ export interface AppContext {
     /** `truncated` means the server stopped the move short (e.g. a movement-gate rejection
      * mid-path); `rejected` means no move happened at all. */
     outcome: "executed" | "truncated" | "rejected";
+    /** `true` on a `rejected` outcome the whole-session pause caused, so the consumer raises
+     * the paused notice instead of the generic refusal. */
+    paused?: boolean;
   }) => void) => () => void;
   /** Chat transport seam: send/edit/delete a chat message. NOT fire-and-forget — each frame
    * carries a `request_id` and a rejection correlates back to REJECT this promise with the

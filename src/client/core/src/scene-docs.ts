@@ -10,6 +10,7 @@ import { DEFAULT_CONE_ANGLE_DEGREES, conePoints, linePoints, squarePoints } from
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
 import type {
+  WorldRole,
   MovementRestriction,
   MovementModel,
   FogPooling,
@@ -27,6 +28,7 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -55,6 +57,7 @@ import type {
   RegionShape,
   RegionGeometry,
   CompoundShapePart,
+  RegionAnchor,
   RegionEngine,
   RegionTrigger,
   TriggerEvent,
@@ -145,6 +148,7 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SessionState,
   SceneAmbience,
   Occlusion,
   AudioOverlay,
@@ -173,6 +177,7 @@ export type {
   RegionShape,
   RegionGeometry,
   CompoundShapePart,
+  RegionAnchor,
   RegionEngine,
   RegionTrigger,
   TriggerEvent,
@@ -779,6 +784,50 @@ export function resolveViewedScene(
   return scenes[0].id;
 }
 
+/** The world's whole-session pause as every client reads it: the `world-settings` singleton's
+ * `session` block with absent fields defaulted. Absent block means not paused. The server
+ * (`ws::session_pause`) is the authority on what a pause refuses; this is the display and
+ * control-gating mirror.
+ * @param store The document store to query the world-settings singleton from.
+ * @returns `paused`, the GM's `message` (`null` when none), and whether audio pauses with it.
+ * @example
+ * ```ts
+ * import { resolveSessionPause, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const { paused, message } = resolveSessionPause(store);
+ * ```
+ */
+export function resolveSessionPause(store: ReadableDocuments): {
+  /** `true` while the GM has the session paused. */
+  paused: boolean;
+  /** The GM's plain-text note shown with the pause, or `null`. */
+  message: string | null;
+  /** Whether the pause also pauses the world's audio. */
+  pauseAudio: boolean;
+} {
+  const s = (store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined)?.session;
+  return { paused: s?.paused ?? false, message: s?.message ?? null, pauseAudio: s?.pauseAudio ?? false };
+}
+
+/** Whether the session pause currently freezes token movement and combat controls for `role`:
+ * paused and not a GM. Every client control that mirrors the server's pause refusal reads this
+ * one decision (`Room::session_refuses` makes the same call: paused and not a GM).
+ * @param store The document store to query the world-settings singleton from.
+ * @param role The caller's world role.
+ * @returns `true` when the controls should be disabled.
+ * @example
+ * ```ts
+ * import { sessionFreezes, type ReadableDocuments } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * const frozen = sessionFreezes(store, "player");
+ * ```
+ */
+export function sessionFreezes(store: ReadableDocuments, role: WorldRole): boolean {
+  return role !== "gm" && resolveSessionPause(store).paused;
+}
+
 /** The `doc_type` identifying a stored actor document. */
 export const ACTOR_DOC_TYPE = "actor";
 
@@ -1208,6 +1257,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   elevation: null,
  *   ambient_override: null,
  *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1215,6 +1265,250 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  */
 export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionEngine, id?: string): WireDocument {
   return envelope(worldId, "region", sceneId, {}, id, engine, null);
+}
+
+/** A region carrier token's committed (or animated) pose: the token's centre in scene units and
+ * its rotation in degrees, clockwise on the y-down canvas. */
+export interface RegionCarrierPose {
+  /** The carrier's centre x, scene units. */
+  x: number;
+  /** The carrier's centre y, scene units. */
+  y: number;
+  /** The carrier's rotation, degrees (`TokenEngine.rotation`). */
+  rotation: number;
+}
+
+/** Maps one wire shape through `place` (a point -> point function) for the anchor translation.
+ * `keepRect` keeps a `rect` a `rect` (translation only); otherwise a `rect` becomes a
+ * four-vertex `polygon`, because a rotated rectangle is not axis-aligned. A `circle` keeps its
+ * radius and moves its centre. A shape whose `points` count does not match its `kind` (or an
+ * unknown `kind`) is returned unchanged so the downstream outline rule still rejects it.
+ * @param shape The wire shape to map.
+ * @param place Maps a point to its new position.
+ * @param keepRect Whether a `rect` stays a `rect`.
+ * @returns The mapped shape.
+ * @example
+ * ```
+ * // module-private; reached through `anchoredRegionGeometry`/`offsetRegionGeometry`
+ * mapRegionShape({ kind: "circle", points: [0, 0, 5] }, (x, y) => [x + 10, y], true);
+ * ```
+ */
+function mapRegionShape(shape: RegionShape, place: (x: number, y: number) => [number, number], keepRect: boolean): RegionShape {
+  const pts = shape?.points;
+  if (!Array.isArray(pts)) return shape;
+  const placed = (flat: number[]): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < flat.length; i += 2) out.push(...place(flat[i], flat[i + 1]));
+    return out;
+  };
+  switch (shape.kind) {
+    case "rect":
+      if (pts.length !== 4) return shape;
+      if (keepRect) return { ...shape, points: placed(pts) };
+      return { ...shape, kind: "polygon", points: placed([pts[0], pts[1], pts[2], pts[1], pts[2], pts[3], pts[0], pts[3]]) };
+    case "circle":
+      if (pts.length !== 3) return shape;
+      return { ...shape, points: [...place(pts[0], pts[1]), pts[2]] };
+    case "polygon":
+      if (pts.length < 6 || pts.length % 2 !== 0) return shape;
+      return { ...shape, points: placed(pts) };
+    default:
+      return shape;
+  }
+}
+
+/** Applies `mapRegionShape` to every part of a region geometry, keeping the bare-shape or
+ * compound-list form and each part's hole flag.
+ * @param geometry The region geometry (bare shape or compound part list).
+ * @param place Maps a point to its new position.
+ * @param keepRect Whether a `rect` stays a `rect`.
+ * @returns The mapped geometry in the same form.
+ * @example
+ * ```
+ * // module-private; reached through `anchoredRegionGeometry`/`offsetRegionGeometry`
+ * mapRegionGeometry({ kind: "circle", points: [0, 0, 5] }, (x, y) => [x, y], true);
+ * ```
+ */
+function mapRegionGeometry(geometry: RegionGeometry, place: (x: number, y: number) => [number, number], keepRect: boolean): RegionGeometry {
+  if (Array.isArray(geometry)) {
+    return geometry.map((part) => (part ? { ...part, shape: mapRegionShape(part.shape, place, keepRect) } : part));
+  }
+  return mapRegionShape(geometry, place, keepRect);
+}
+
+/** Rotates `(x, y)` about the origin by `degrees`, clockwise on a y-down canvas (the standard
+ * rotation matrix applied with `+y` pointing down the screen). The same convention as the
+ * server's `rotate_point`.
+ * @param x The point's x.
+ * @param y The point's y.
+ * @param degrees The clockwise rotation.
+ * @returns The rotated point.
+ * @example
+ * ```
+ * // module-private
+ * rotateClockwise(10, 0, 90); // [~0, 10]: the +x axis turns toward +y (down)
+ * ```
+ */
+function rotateClockwise(x: number, y: number, degrees: number): [number, number] {
+  const rad = (degrees * Math.PI) / 180;
+  const sin = Math.sin(rad);
+  const cos = Math.cos(rad);
+  return [x * cos - y * sin, x * sin + y * cos];
+}
+
+/** Carrier-centre offsets -> absolute scene coordinates for an anchored region: the optional
+ * rotation about the carrier's centre, then the translation to its position. The client twin of
+ * the server's `anchored_parts` (`scene::regions`): same rotation direction, same
+ * rect -> polygon conversion under `followRotation`, same circle handling. A non-finite pose
+ * yields non-finite coordinates, which the outline rule rejects (the region draws nothing).
+ * @param geometry The region's stored geometry (offsets from the carrier's centre).
+ * @param pose The carrier's pose.
+ * @param followRotation Whether the shape turns with the carrier (`RegionAnchor.follow_rotation`).
+ * @returns The geometry in absolute scene coordinates.
+ * @example
+ * ```ts
+ * import { anchoredRegionGeometry } from "@shadowcat/core";
+ *
+ * const offsets = { kind: "circle", points: [0, 0, 100] };
+ * anchoredRegionGeometry(offsets, { x: 300, y: 200, rotation: 0 }, false); // circle at (300, 200)
+ * ```
+ */
+export function anchoredRegionGeometry(geometry: RegionGeometry, pose: RegionCarrierPose, followRotation: boolean): RegionGeometry {
+  const place = (x: number, y: number): [number, number] => {
+    const [rx, ry] = followRotation ? rotateClockwise(x, y, pose.rotation) : [x, y];
+    return [rx + pose.x, ry + pose.y];
+  };
+  return mapRegionGeometry(geometry, place, !followRotation);
+}
+
+/** The inverse of `anchoredRegionGeometry`: absolute scene coordinates -> offsets from the
+ * carrier's centre (translate by the negated position, then rotate by the negated rotation under
+ * `followRotation`). Used when a region is attached to or detached from a carrier so its place on
+ * the canvas does not change.
+ * @param geometry The region geometry in absolute scene coordinates.
+ * @param pose The carrier's pose.
+ * @param followRotation Whether the offsets are expressed in the carrier's rotated frame.
+ * @returns The geometry as carrier-centre offsets.
+ * @example
+ * ```ts
+ * import { offsetRegionGeometry } from "@shadowcat/core";
+ *
+ * const absolute = { kind: "circle", points: [300, 200, 100] };
+ * offsetRegionGeometry(absolute, { x: 300, y: 200, rotation: 0 }, false); // circle at (0, 0)
+ * ```
+ */
+export function offsetRegionGeometry(geometry: RegionGeometry, pose: RegionCarrierPose, followRotation: boolean): RegionGeometry {
+  const place = (x: number, y: number): [number, number] => {
+    const dx = x - pose.x;
+    const dy = y - pose.y;
+    return followRotation ? rotateClockwise(dx, dy, -pose.rotation) : [dx, dy];
+  };
+  return mapRegionGeometry(geometry, place, !followRotation);
+}
+
+/** A carrier token document's pose, or `null` when the document is not a usable carrier for
+ * `region`: it must be a `token` document parented to the SAME scene as the region (the
+ * server's dormant rule — a deleted carrier, a non-token id and a carrier on another scene all
+ * read as `null`) and carry a numeric position.
+ * @param region The anchored region document.
+ * @param carrier The document the region's anchor names, or `undefined` when unknown.
+ * @returns The carrier's committed pose, or `null` when the region is dormant.
+ * @example
+ * ```ts
+ * import { carrierPoseFor, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const carrier: WireDocument | undefined;
+ * carrierPoseFor(region, carrier); // { x, y, rotation } or null
+ * ```
+ */
+export function carrierPoseFor(region: WireDocument, carrier: WireDocument | undefined): RegionCarrierPose | null {
+  if (!carrier || carrier.doc_type !== "token" || carrier.parent_id !== region.parent_id) return null;
+  const t = carrier.engine as Partial<TokenEngine> | undefined;
+  if (typeof t?.x !== "number" || typeof t.y !== "number") return null;
+  return { x: t.x, y: t.y, rotation: typeof t.rotation === "number" ? t.rotation : 0 };
+}
+
+/** The absolute-coordinate geometry of a region document, or `null` when it has none to draw. A
+ * static region returns its stored shape unchanged. An anchored region (`RegionEngine.anchor`)
+ * resolves its carrier in `store` (`carrierPoseFor`): a carrier that does not resolve makes the
+ * region DORMANT (`null`, drawing and hit-testing nothing, the server's rule); otherwise the
+ * stored offsets are translated by the carrier's pose through `anchoredRegionGeometry`. The one
+ * resolution the render view and the hit-test both read.
+ * @param region The region document.
+ * @param store The document store to resolve the carrier in.
+ * @param poseOf Optional live pose of a token id (the animated transform); when it returns a
+ * pose it replaces the carrier document's committed one, so the region rides the token's tween.
+ * @returns The geometry in absolute scene coordinates, or `null` for a dormant or shapeless region.
+ * @example
+ * ```ts
+ * import { resolveRegionGeometry, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const store: ReadableDocuments;
+ * resolveRegionGeometry(region, store); // absolute geometry, or null when dormant
+ * ```
+ */
+export function resolveRegionGeometry(
+  region: WireDocument,
+  store: ReadableDocuments,
+  poseOf?: (tokenId: string) => RegionCarrierPose | undefined,
+): RegionGeometry | null {
+  const eng = region.engine as RegionEngine | undefined;
+  if (!eng?.shape) return null;
+  const anchor = eng.anchor;
+  if (!anchor) return eng.shape;
+  const committed = carrierPoseFor(region, store.get(anchor.token));
+  if (!committed) return null;
+  const live = poseOf?.(anchor.token);
+  return anchoredRegionGeometry(eng.shape, live ?? committed, anchor.follow_rotation);
+}
+
+/** The two engine-band values `reanchorRegion` produces: written together so a region's anchor
+ * and the coordinate frame of its shape never disagree. */
+export interface RegionAnchorWrites {
+  /** The value for `/engine/anchor` (`null` detaches). */
+  anchor: RegionAnchor | null;
+  /** The value for `/engine/shape`, in the frame `anchor` implies. */
+  shape: RegionGeometry;
+}
+
+/** The engine-band writes that attach a region to `next` (or detach it with `null`) without
+ * moving it on the canvas: the new `/engine/anchor` value and the `/engine/shape` re-expressed
+ * for it. The current absolute shape is resolved through the current anchor (when any), then
+ * converted to offsets of the new carrier (when any). Returns `null` when the conversion cannot
+ * be done: the new carrier does not resolve (no centre to offset from), or the region is dormant
+ * and is being detached (no absolute shape to keep). A dormant region attached to a resolving
+ * carrier keeps its stored offsets.
+ * @param region The region document being edited.
+ * @param store The document store to resolve both carriers in.
+ * @param next The new anchor, or `null` to detach.
+ * @returns The new `anchor` and `shape` values, or `null` when a carrier does not resolve.
+ * @example
+ * ```ts
+ * import { reanchorRegion, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+ *
+ * declare const region: WireDocument;
+ * declare const store: ReadableDocuments;
+ * const writes = reanchorRegion(region, store, { token: "t1", include_carrier: false, follow_rotation: false });
+ * writes?.anchor; // the value to write at /engine/anchor
+ * ```
+ */
+export function reanchorRegion(
+  region: WireDocument,
+  store: ReadableDocuments,
+  next: RegionAnchor | null,
+): RegionAnchorWrites | null {
+  const eng = region.engine as RegionEngine | undefined;
+  if (!eng?.shape) return null;
+  const absolute = resolveRegionGeometry(region, store);
+  if (!next) return absolute ? { anchor: null, shape: absolute } : null;
+  const pose = carrierPoseFor(region, store.get(next.token));
+  if (!pose) return null;
+  // A dormant region (its carrier no longer resolves) has no absolute place to preserve: the
+  // stored offsets are kept, so pointing it at a new carrier re-attaches the same aura shape.
+  if (!absolute) return { anchor: next, shape: eng.shape };
+  return { anchor: next, shape: offsetRegionGeometry(absolute, pose, next.follow_rotation) };
 }
 
 /** Set/clear the secrecy override on a region doc's permissions. Hiding sets BOTH:
@@ -1240,6 +1534,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *   elevation: null,
  *   ambient_override: null,
  *   occludes: null,
+ *   anchor: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);
@@ -1369,6 +1664,7 @@ export function buildRegionFromTemplate(worldId: string, template: WireDocument,
     elevation: engine.elevation ?? null,
     ambient_override: null,
     occludes: null,
+    anchor: null,
   };
   const region = buildRegionDoc(worldId, template.parent_id as string, regionEngine, id);
   return {

@@ -391,6 +391,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     budget_cells: None,
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("unclamped route");
@@ -406,6 +407,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     budget_cells: Some(2.0),
                     traits: MoveTraits::default(),
                     elevation: crate::scene::elevation::GROUND,
+                    token: None,
                 },
             )
             .expect("clamped route");
