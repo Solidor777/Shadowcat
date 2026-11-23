@@ -452,7 +452,7 @@ export class RenderEngine implements SceneToolHost {
     this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.templates = new TemplateView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.walls = new WallView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
-    this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel, (id) => this.tokens.transformOf(id));
     this.lights = new LightView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.compositor = new Compositor(this.backend, () => this.opts.onVisibilityApplied?.());
     this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0), opts.visionTreatments);
@@ -509,6 +509,8 @@ export class RenderEngine implements SceneToolHost {
       // advanced on the PREVIOUS tick and then both land in this frame's render together.
       if (this.camera.tick(dt, this.viewport)) this.applyCamera();
       this.tokens.tick(dt);
+      // After the token tween so an anchored region reads this frame's carrier transform.
+      this.regions.tick();
       this.vfxView.tick(dt);
       const vfxCount = this.vfxView.count();
       if (vfxCount !== this.lastVfxCount) {

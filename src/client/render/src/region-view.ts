@@ -1,4 +1,5 @@
-import type { ReadableDocuments, WireDocument, RegionEngine, RegionShape, CompoundShapePart } from "@shadowcat/core";
+import { resolveRegionGeometry } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, RegionEngine, RegionGeometry, RegionShape, CompoundShapePart, RegionCarrierPose } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
 import { rectPoints, circlePoints } from "./geometry";
@@ -32,6 +33,10 @@ const SOUND_DASH = { on: 12, off: 8 };
 export class RegionView {
   /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
+  /** The carrier live pose each anchored region was last drawn at (absent when it drew from the
+   * carrier document's committed pose), keyed by region id; `tick` redraws a region only when
+   * its carrier's live pose differs from this. */
+  private readonly drawnPose = new Map<string, RegionCarrierPose>();
 
   /**
    * Constructs a view bound to `store`/`backend`; call `reconcile()` once to populate it.
@@ -44,6 +49,9 @@ export class RegionView {
    * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally
    * scopes its query to this level (see `sceneScopedDocs`). Defaults to always-`null` (every
    * level — the degenerate pre-levels case).
+   * @param livePose Resolves a token id to its live (animated) pose, or `undefined` when it has
+   * none; an anchored region draws at that pose instead of the carrier document's committed one,
+   * so it rides the token's move animation. Defaults to always-`undefined` (committed pose).
    * @example
    * ```ts
    * import { RegionView, MockBackend } from "@shadowcat/render";
@@ -58,6 +66,7 @@ export class RegionView {
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
     private readonly viewedLevel: () => string | null = () => null,
+    private readonly livePose: (tokenId: string) => RegionCarrierPose | undefined = () => undefined,
   ) {}
 
   /**
@@ -80,7 +89,7 @@ export class RegionView {
   reconcile(): void {
     const seen = new Set<string>();
     for (const doc of sceneScopedDocs(this.store, "region", this.viewedSceneId, this.viewedLevel)) {
-      const spec = regionShapeSpec(doc);
+      const spec = this.specFor(doc);
       if (!spec) continue;
       seen.add(doc.id);
       this.ids.add(doc.id);
@@ -89,8 +98,59 @@ export class RegionView {
     for (const id of [...this.ids]) {
       if (seen.has(id)) continue;
       this.ids.delete(id);
+      this.drawnPose.delete(id);
       this.backend.removeShape(id);
     }
+  }
+
+  /**
+   * Redraws every anchored region whose carrier's live pose changed since it was last drawn, so
+   * a following region tracks the carrier's move animation frame by frame instead of jumping
+   * when the animation ends. A static region or an unmoved carrier costs one pose comparison.
+   * Called from the render ticker after the token views advance.
+   * @example
+   * ```ts
+   * import { RegionView, MockBackend } from "@shadowcat/render";
+   * import type { ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new RegionView(store, new MockBackend());
+   * view.tick();
+   * ```
+   */
+  tick(): void {
+    for (const id of this.ids) {
+      const doc = this.store.get(id);
+      const anchor = (doc?.engine as RegionEngine | undefined)?.anchor;
+      if (!doc || !anchor) continue;
+      const live = this.livePose(anchor.token);
+      if (!live) continue;
+      const last = this.drawnPose.get(id);
+      if (last && last.x === live.x && last.y === live.y && last.rotation === live.rotation) continue;
+      const spec = this.specFor(doc);
+      if (spec) this.backend.setShape(id, spec);
+    }
+  }
+
+  /**
+   * Builds `doc`'s spec from its absolute geometry (`resolveRegionGeometry`: an anchored region
+   * is translated by its carrier's live pose when there is one, else the committed pose; a
+   * dormant one has none) and records the live pose it was drawn at for `tick`.
+   * @param doc The region document.
+   * @returns The shape node to draw, or `null` when the region has no drawable geometry.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.specFor(doc);
+   * ```
+   */
+  private specFor(doc: WireDocument): ShapeNodeSpec | null {
+    const anchor = (doc.engine as RegionEngine | undefined)?.anchor;
+    const live = anchor ? this.livePose(anchor.token) : undefined;
+    // Copied: the token animator mutates its transform objects in place between ticks.
+    if (live) this.drawnPose.set(doc.id, { x: live.x, y: live.y, rotation: live.rotation });
+    else this.drawnPose.delete(doc.id);
+    return regionShapeSpec(doc, resolveRegionGeometry(doc, this.store, () => live));
   }
 }
 
@@ -144,6 +204,9 @@ export function regionShapeOutline(shape: RegionShape | undefined): number[] | n
  * can reuse the SAME tessellation this view draws from, rather than forking a second copy
  * of the shape math.
  * @param doc The `region` document to convert.
+ * @param resolved The region's geometry in absolute scene coordinates (`resolveRegionGeometry`):
+ * `null` for a dormant anchored region. Omitted, a static region uses its stored shape and an
+ * anchored one draws nothing, since its stored shape is offsets from the carrier.
  * @returns A `ShapeNodeSpec` for the `regions` layer, or `null` if it can't be rendered.
  * @example
  * ```ts
@@ -154,9 +217,11 @@ export function regionShapeOutline(shape: RegionShape | undefined): number[] | n
  * const spec = regionShapeSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */
-export function regionShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
+export function regionShapeSpec(doc: WireDocument, resolved?: RegionGeometry | null): ShapeNodeSpec | null {
   const s = doc.engine as RegionEngine | undefined;
-  const geometry = s?.shape;
+  // An anchored region's stored shape is carrier-centre offsets, never drawable as-is: without a
+  // resolved absolute geometry it draws nothing (the dormant, fail-closed read).
+  const geometry = resolved !== undefined ? resolved : s?.anchor ? null : s?.shape;
   if (!geometry) return null;
   // Elements typed nullable: the optimistic store can hold unvalidated engine data
   // pre-rejection, so a `null` array element must fail the whole spec closed rather than

@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
-import { DocumentStore, buildSceneDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
-import { MockBackend, RegionView } from "./index";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, buildUpdate, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { MockBackend, RegionView, regionShapeSpec } from "./index";
 
 function regionDoc(
   id: string,
@@ -183,4 +183,81 @@ test("a viewedLevel function scopes reconcile() to that level's band", () => {
   new RegionView(store, backend, () => "s1", () => "l1").reconcile();
   expect(backend.shapes.has("r-ground")).toBe(true);
   expect(backend.shapes.has("r-upper")).toBe(false);
+});
+
+// --- anchored (token-following) regions ---
+
+const carrierDoc = (id: string, x: number, y: number, parent = "s1"): WireDocument =>
+  buildTokenDoc("w1", parent, { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false }, id);
+
+function anchoredRegion(id: string, carrier: string): WireDocument {
+  const doc = regionDoc(id, { kind: "circle", points: [0, 0, 50] }, "terrain");
+  (doc.engine as Record<string, unknown>).anchor = { token: carrier, include_carrier: false, follow_rotation: false };
+  return doc;
+}
+
+test("an anchored region draws at its carrier's position and re-translates when the carrier moves", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: carrierDoc("t1", 300, 200) }, { op: "create", doc: anchoredRegion("r1", "t1") }]));
+  const view = new RegionView(store, backend);
+  view.reconcile();
+  const centre = (pts: number[]) => [(Math.min(...pts.filter((_, i) => i % 2 === 0)) + Math.max(...pts.filter((_, i) => i % 2 === 0))) / 2, (Math.min(...pts.filter((_, i) => i % 2 === 1)) + Math.max(...pts.filter((_, i) => i % 2 === 1))) / 2];
+  expect(centre(backend.shapes.get("r1")!.points)).toEqual([300, 200]);
+  store.applyCommand(cmd(2, [buildUpdate("t1", [{ path: "/engine/x", old: 300, value: 340 }])]));
+  view.reconcile();
+  expect(centre(backend.shapes.get("r1")!.points)).toEqual([340, 200]);
+});
+
+test("an anchored region whose carrier is missing, on another scene or not a token draws nothing", () => {
+  const draws = (carrier: WireDocument | null): boolean => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    store.applyCommand(cmd(1, [...(carrier ? [{ op: "create" as const, doc: carrier }] : []), { op: "create", doc: anchoredRegion("r1", "t1") }]));
+    new RegionView(store, backend).reconcile();
+    return backend.shapes.has("r1");
+  };
+  expect(draws(carrierDoc("t1", 0, 0))).toBe(true);
+  expect(draws(null)).toBe(false);
+  expect(draws(carrierDoc("t1", 0, 0, "s2"))).toBe(false);
+  expect(draws({ ...carrierDoc("t1", 0, 0), doc_type: "light" })).toBe(false);
+});
+
+test("a dormant region disappears when its carrier is deleted", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: carrierDoc("t1", 0, 0) }, { op: "create", doc: anchoredRegion("r1", "t1") }]));
+  const view = new RegionView(store, backend);
+  view.reconcile();
+  expect(backend.shapes.has("r1")).toBe(true);
+  store.applyCommand(cmd(2, [{ op: "delete", doc: carrierDoc("t1", 0, 0) }]));
+  view.reconcile();
+  expect(backend.shapes.has("r1")).toBe(false);
+});
+
+test("tick() rides the carrier's live animated pose and redraws only when it changes", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: carrierDoc("t1", 300, 200) }, { op: "create", doc: anchoredRegion("r1", "t1") }, { op: "create", doc: regionDoc("r2", { kind: "rect", points: [0, 0, 10, 10] }, "terrain") }]));
+  let live: { x: number; y: number; rotation: number } | undefined = { x: 300, y: 200, rotation: 0 };
+  const view = new RegionView(store, backend, () => null, () => null, () => live);
+  view.reconcile();
+  let draws = 0;
+  const real = backend.setShape.bind(backend);
+  backend.setShape = (id, spec) => { draws += 1; real(id, spec); };
+  view.tick();
+  expect(draws).toBe(0); // unchanged pose: no redraw
+  live = { x: 320, y: 200, rotation: 0 };
+  view.tick();
+  expect(draws).toBe(1); // only the anchored region, never the static one
+  const xs = backend.shapes.get("r1")!.points.filter((_, i) => i % 2 === 0);
+  expect((Math.min(...xs) + Math.max(...xs)) / 2).toBe(320);
+  view.tick();
+  expect(draws).toBe(1);
+});
+
+test("regionShapeSpec draws nothing for an anchored doc given no resolved geometry", () => {
+  // The stored shape is carrier-centre offsets; drawing it as-is would put the region at the
+  // scene origin. Fails if the anchored guard in regionShapeSpec is removed.
+  expect(regionShapeSpec(anchoredRegion("r1", "t1"))).toBeNull();
 });
