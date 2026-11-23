@@ -145,6 +145,10 @@ const SERVER_ENV = {
   SHADOWCAT_SETUP_TOKEN: "off",
   SHADOWCAT_DB: "sqlite::memory:",
   SHADOWCAT_LOG: "warn",
+  // The first-use tour offer is a fixed toast over the bottom-left of the viewport, where tiles and
+  // pickers sit; left on, it intercepts the pointer in every spec that opens a fresh world. The
+  // tours themselves stay reachable through the settings panel's replay buttons.
+  SHADOWCAT_ONBOARDING_ENABLED: "false",
   // The suite logs in as the same seeded admin identity many times across
   // specs within the auth-throttle's 60s sliding window (`/api/login` allows
   // LOGIN_PER_MIN_PER_IDENTITY=10 by default) — relax the budgets so

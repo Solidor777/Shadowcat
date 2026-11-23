@@ -99,10 +99,13 @@ test("a folder moves under another via the accessible move control", async ({
   await expect(page.getByTestId("asset-browser")).toBeVisible();
 
   // Two root folders.
-  await page.getByTestId("folder-create-name").fill("alpha");
-  await page.getByTestId("folder-create-name").press("Enter");
-  await page.getByTestId("folder-create-name").fill("beta");
-  await page.getByTestId("folder-create-name").press("Enter");
+  // The tables panel is open by default and carries its own folder-create input with the same
+  // test id, so the inputs are scoped to the asset browser's tree.
+  const createName = page.getByTestId("asset-browser-tree").getByTestId("folder-create-name");
+  await createName.fill("alpha");
+  await createName.press("Enter");
+  await createName.fill("beta");
+  await createName.press("Enter");
   const betaRow = page.locator(".row", { hasText: "beta" });
   await expect(betaRow).toHaveCount(1);
   await expect(betaRow).toHaveAttribute("style", /padding-left: 0rem/);

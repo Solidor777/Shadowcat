@@ -91,8 +91,10 @@
     return () => ro.disconnect();
   });
 
-  // Tile track is minmax(72px,1fr) with a 0.25rem gap → ~76px per column.
-  const columns = $derived(Math.max(1, Math.floor(clientWidth / 76)));
+  // Tile track is minmax(96px,1fr) with a 0.25rem gap → ~100px per column. The 96px floor keeps the
+  // tile's centre clear of the 44px favourite star anchored at its bottom-left corner (star right
+  // edge 46px < centre 48px), so a click or tap on the middle of a tile always reaches the tile.
+  const columns = $derived(Math.max(1, Math.floor(clientWidth / 100)));
   const windowed = $derived.by(() =>
     computeGridWindow(scrollTop, clientHeight, scrollHeight, items.length, columns),
   );
@@ -147,7 +149,7 @@
     if (
       onNearEnd &&
       scrollHeight > 0 &&
-      scrollTop + clientHeight >= scrollHeight - 2 * Math.max(rowHeight, 76)
+      scrollTop + clientHeight >= scrollHeight - 2 * Math.max(rowHeight, 100)
     ) {
       onNearEnd();
     }
@@ -211,7 +213,7 @@
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
     gap: 0.25rem;
     padding: 0.25rem;
   }
