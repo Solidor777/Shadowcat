@@ -45,6 +45,7 @@ export { setField, setFields, unsetField } from "./sheetEdit";
 export type { FieldEdit } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
+export { default as ConditionTogglePalette } from "./ConditionTogglePalette.svelte";
 export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
