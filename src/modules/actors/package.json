@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@shadowcat/core": "workspace:*",
+    "@shadowcat/formula": "workspace:*",
     "@shadowcat/ui-kit": "workspace:*",
     "@shadowcat/types": "workspace:^"
   },
