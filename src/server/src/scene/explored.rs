@@ -27,9 +27,12 @@ use uuid::Uuid;
 /// `Uuid::nil()` sentinel under `FogPooling::Shared` — every player then reads/writes the SAME
 /// bucket for that scene. Safe with no schema change because `Uuid::new_v4()` (how every real
 /// user id is generated) can never produce the nil UUID, so the sentinel is unambiguously
-/// distinguishable from any real user. `ws::conn::enrich_vision_explored` is the sole caller,
-/// computing this once per (scene, user) pair and passing the result to BOTH its
-/// `Repository::get_explored`/`Repository::set_explored` calls — never `user` directly.
+/// distinguishable from any real user. Every explored-fog reader and writer goes through this one
+/// derivation and passes the result to `Repository::get_explored`/`Repository::set_explored`,
+/// never `user` directly: `ws::conn::enrich_vision_explored` (read and write, one key per
+/// (scene, level) group), `ws::conn::handle_pathfind`, `Room::publish`'s Create gate and
+/// `Room::execute_move`. A reader keyed on `user` under `Shared` reads a dormant row while the
+/// writer fills the pool.
 pub(crate) fn explored_fog_key(pooling: FogPooling, user: Uuid) -> Uuid {
     match pooling {
         FogPooling::Individual => user,

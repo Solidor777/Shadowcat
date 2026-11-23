@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 // shared with `ws::room`'s test module.
 use crate::ws::test_support::{token_engine, ws_engine};
 
+mod client_frame;
 mod combat_intents;
 mod door_toggle;
 mod join_refusal;
@@ -18,6 +19,7 @@ mod refusal_drain;
 mod reset_explored_fog;
 mod ruler;
 mod senses;
+mod shared_fog;
 mod shutdown_bound;
 
 mod merge_intents;

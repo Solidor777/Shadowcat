@@ -1190,6 +1190,7 @@ impl Room {
                 CellSet,
                 CellSet,
                 crate::scene::GridKind,
+                uuid::Uuid,
             )> = Vec::new();
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
@@ -1349,6 +1350,10 @@ impl Room {
                                     [target].into_iter().collect(),
                                     mask,
                                     settings.grid_kind,
+                                    crate::scene::explored::explored_fog_key(
+                                        settings.fog_pooling,
+                                        ctx.user_id,
+                                    ),
                                 ));
                             }
                         }
@@ -1363,11 +1368,12 @@ impl Room {
                 (uuid::Uuid, String),
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, level, move_cells, visible, grid_kind) in revealed_pending {
+            for (scene_id, level, move_cells, visible, grid_kind, explored_key) in revealed_pending
+            {
                 let explored = match explored_cache.entry((scene_id, level.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let set = match repo.get_explored(scene_id, &level, ctx.user_id).await {
+                        let set = match repo.get_explored(scene_id, &level, explored_key).await {
                             Ok(Some(blob)) => {
                                 crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
@@ -1850,6 +1856,10 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The `explored_fog` row the Revealed union reads: the mover's own row under
+        // `FogPooling::Individual`, the shared sentinel row under `Shared` — the same key
+        // `ws::conn::enrich_vision_explored` accumulates into.
+        let explored_key: Uuid;
         // The mover's resolved level id (`""` = ground/a level-less scene), captured under the
         // first guard: explored memory is keyed per level, so the Revealed union reads the
         // mover's OWN floor's memory — a floor the token is not on grants nothing.
@@ -1915,6 +1925,8 @@ impl Room {
             // below, so the movement gate's mask is level-scoped to this SAME mover floor.
             let mover_elevation = scene.token_mover_elevation(token);
             grid_kind = settings.grid_kind;
+            explored_key =
+                crate::scene::explored::explored_fog_key(settings.fog_pooling, ctx.user_id);
             mover_level = crate::scene::elevation::level_of(
                 &scene.scene_levels(token_scene),
                 mover_elevation,
@@ -2011,7 +2023,7 @@ impl Room {
         let visible = if is_revealed {
             let mut union = visible_cells;
             let explored = match repo
-                .get_explored(token_scene, &mover_level, ctx.user_id)
+                .get_explored(token_scene, &mover_level, explored_key)
                 .await
             {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),

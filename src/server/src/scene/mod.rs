@@ -232,8 +232,9 @@ pub struct ResolvedScene {
     /// visibility cache's own invalidation key.
     pub grid_kind: GridKind,
     /// Which `explored_fog` bucket this scene's players accumulate into (see
-    /// `eng::FogPooling`). Consulted ONLY by `ws::conn::enrich_vision_explored` via
-    /// `scene::explored::explored_fog_key`; the live vision/movement gates never read it.
+    /// `eng::FogPooling`). Every explored-fog reader derives its row through
+    /// `scene::explored::explored_fog_key`: `ws::conn::enrich_vision_explored`,
+    /// `ws::conn::handle_pathfind`, `Room::publish`'s Create gate and `Room::execute_move`.
     pub fog_pooling: eng::FogPooling,
     /// Whether a completed move rotates the mover to face its movement direction
     /// (`Room::execute_move`, gated per token by `TokenEngine::lock_rotation`).

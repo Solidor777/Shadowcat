@@ -664,7 +664,7 @@ async fn handle_socket(
                             .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
                         match frame {
                             Message::Text(t) => {
-                                let parsed = serde_json::from_str::<ClientMsg>(t.as_str());
+                                let parsed = client_frame::parse_client_msg(t.as_str());
                                 // A paused session refuses a non-GM's move request, accepting
                                 // portal choice and combat intents here, before any handler
                                 // resolves them, so one rule (`session_pause::blocks_msg`)
@@ -1775,7 +1775,7 @@ async fn handle_pathfind(
     // below never re-acquires the lock for it. The mover's level is captured here too: explored
     // memory is keyed per level, and a token-less hypothetical preview routes (and remembers) at
     // ground.
-    let (need_explored, grid_kind, mover_level) = {
+    let (need_explored, grid_kind, mover_level, explored_key) = {
         let s = room.scene().read().await;
         let resolved = s.resolve_scene(scene);
         let levels = s.scene_levels(scene);
@@ -1793,11 +1793,12 @@ async fn handle_pathfind(
             crate::scene::elevation::level_of(&levels, mover_elevation)
                 .map(|l| l.id.clone())
                 .unwrap_or_default(),
+            crate::scene::explored::explored_fog_key(resolved.fog_pooling, ctx.user_id),
         )
     };
     // Fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
-        match repo.get_explored(scene, &mover_level, ctx.user_id).await {
+        match repo.get_explored(scene, &mover_level, explored_key).await {
             Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
                 &blob, grid_kind,
             )),
@@ -3168,4 +3169,5 @@ pub(crate) async fn reseed_world_config(
 #[cfg(test)]
 mod tests;
 
+mod client_frame;
 mod merge_intents;
