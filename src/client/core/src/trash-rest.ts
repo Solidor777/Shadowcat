@@ -1,4 +1,5 @@
 import { restError } from "./user-rest";
+import { apiPath } from "./base-path";
 
 // Admin trash REST, beside `user-rest`: the server's `/api/admin/trash` routes are gated on
 // ServerRole::Admin (`http::trash`). Nothing here is a permission check; a non-admin caller gets
@@ -50,7 +51,7 @@ export async function listTrash(opts: ListTrashOptions = {}): Promise<TrashEntry
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
   if (opts.before !== undefined) params.set("before", opts.before);
   const query = params.toString();
-  const res = await fetch(`/api/admin/trash${query ? `?${query}` : ""}`, {
+  const res = await fetch(apiPath(`/api/admin/trash${query ? `?${query}` : ""}`), {
     headers: { accept: "application/json" },
   });
   if (!res.ok) throw new Error(await restError(res, "list trash failed"));
@@ -67,7 +68,7 @@ export async function listTrash(opts: ListTrashOptions = {}): Promise<TrashEntry
  * ```
  */
 export async function emptyTrash(): Promise<EmptyTrashResult> {
-  const res = await fetch("/api/admin/trash/empty", { method: "POST" });
+  const res = await fetch(apiPath("/api/admin/trash/empty"), { method: "POST" });
   if (!res.ok) throw new Error(await restError(res, "empty trash failed"));
   return (await res.json()) as EmptyTrashResult;
 }
@@ -102,7 +103,7 @@ export class TrashEntryGoneError extends Error {
  * ```
  */
 export async function deleteTrashEntry(id: string): Promise<void> {
-  const res = await fetch(`/api/admin/trash/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/admin/trash/${encodeURIComponent(id)}`), { method: "DELETE" });
   if (res.status === 404) throw new TrashEntryGoneError(await restError(res, "trash entry not found"));
   if (!res.ok) throw new Error(await restError(res, "delete trash entry failed"));
 }

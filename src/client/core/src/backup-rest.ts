@@ -7,6 +7,7 @@ import type {
   RestoreStaged,
 } from "@shadowcat/types";
 import { restError } from "./user-rest";
+import { apiPath } from "./base-path";
 
 // Admin backup REST, beside `trash-rest`: every `/api/admin/backup*` route is gated on
 // ServerRole::Admin (`http::backups`). Nothing here is a permission check; a non-admin caller gets
@@ -82,7 +83,7 @@ function toManifestView(m: BackupManifest): BackupManifestView {
  * ```
  */
 export async function adminBackup(): Promise<BackupManifestView> {
-  const res = await fetch("/api/admin/backup", { method: "POST" });
+  const res = await fetch(apiPath("/api/admin/backup"), { method: "POST" });
   if (!res.ok) throw new Error(await restError(res, "backup failed"));
   return toManifestView((await res.json()) as BackupManifest);
 }
@@ -98,7 +99,7 @@ export async function adminBackup(): Promise<BackupManifestView> {
  * ```
  */
 export async function listBackups(): Promise<BackupListingView> {
-  const res = await fetch("/api/admin/backups", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/admin/backups"), { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(await restError(res, "list backups failed"));
   const raw = (await res.json()) as BackupListing;
   return {
@@ -124,7 +125,7 @@ export async function listBackups(): Promise<BackupListingView> {
  * ```
  */
 export async function deleteBackup(id: string): Promise<void> {
-  const res = await fetch(`/api/admin/backups/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/admin/backups/${encodeURIComponent(id)}`), { method: "DELETE" });
   if (!res.ok) throw new Error(await restError(res, "delete backup failed"));
 }
 
@@ -141,7 +142,7 @@ export async function deleteBackup(id: string): Promise<void> {
  * ```
  */
 export async function restoreBackup(id: string): Promise<RestoreStaged> {
-  const res = await fetch(`/api/admin/backups/${encodeURIComponent(id)}/restore`, {
+  const res = await fetch(apiPath(`/api/admin/backups/${encodeURIComponent(id)}/restore`), {
     method: "POST",
   });
   if (!res.ok) throw new Error(await restError(res, "restore backup failed"));
@@ -158,7 +159,7 @@ export async function restoreBackup(id: string): Promise<RestoreStaged> {
  * ```
  */
 export async function dismissRestoreFailed(): Promise<void> {
-  const res = await fetch("/api/admin/backups/restore-failed", { method: "DELETE" });
+  const res = await fetch(apiPath("/api/admin/backups/restore-failed"), { method: "DELETE" });
   if (!res.ok) throw new Error(await restError(res, "dismiss failed restore failed"));
 }
 
@@ -173,7 +174,7 @@ export async function dismissRestoreFailed(): Promise<void> {
  * ```
  */
 export async function pruneBackups(): Promise<PruneResult> {
-  const res = await fetch("/api/admin/backups/prune", { method: "POST" });
+  const res = await fetch(apiPath("/api/admin/backups/prune"), { method: "POST" });
   if (!res.ok) throw new Error(await restError(res, "prune backups failed"));
   return (await res.json()) as PruneResult;
 }

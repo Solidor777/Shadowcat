@@ -1,4 +1,4 @@
-import { ServerConfigSchema } from "@shadowcat/core";
+import { apiPath, ServerConfigSchema } from "@shadowcat/core";
 
 /** Reads the server's `onboarding_enabled` switch from the public `GET /api/config` body.
  *
@@ -18,7 +18,7 @@ import { ServerConfigSchema } from "@shadowcat/core";
  */
 export async function fetchOnboardingEnabled(fetchFn: typeof fetch = fetch): Promise<boolean> {
   try {
-    const res = await fetchFn("/api/config", { headers: { accept: "application/json" } });
+    const res = await fetchFn(apiPath("/api/config"), { headers: { accept: "application/json" } });
     if (!res.ok) return true;
     const parsed = ServerConfigSchema.safeParse(await res.json());
     return parsed.success ? parsed.data.onboarding_enabled : true;

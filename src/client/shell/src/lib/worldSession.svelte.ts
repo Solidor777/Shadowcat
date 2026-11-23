@@ -89,6 +89,7 @@ import {
   type ModuleStatusEntry,
   type RulerNotice,
   UserModuleSettings,
+  apiPath,
 } from "@shadowcat/core";
 import type { DoorState, WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, ShareRulerPreference, i18n, performanceController } from "@shadowcat/ui-kit";
@@ -2152,7 +2153,9 @@ export class WorldSession {
       resolved.push({
         folderId: id,
         manifest: info.manifest as ModuleManifest,
-        entry: info.entry_url,
+        // The server sends the entry as a root-relative `/modules/<id>/...`; the import must carry
+        // the route prefix like every other same-origin request.
+        entry: apiPath(info.entry_url),
       });
     }
     return resolved;

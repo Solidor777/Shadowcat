@@ -22,6 +22,23 @@ test("listWorlds returns the world array", async () => {
   expect(worlds[0].name).toBe("W");
 });
 
+test("requests carry the route prefix the server page declared", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const f = mockFetch(200, []);
+    await api.listWorlds();
+    await api.getMe().catch(() => undefined);
+    await api.logout();
+    expect(f.mock.calls.map((c) => String(c[0]))).toEqual([
+      "/ttrpg/api/worlds",
+      "/ttrpg/api/me",
+      "/ttrpg/api/logout",
+    ]);
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
+});
+
 test("getUiState normalizes an empty server blob to defaults", async () => {
   mockFetch(200, {});
   const s = await api.getUiState();

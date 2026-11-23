@@ -1,5 +1,5 @@
 import type { TlsStatus, WorldEntry } from "@shadowcat/types";
-import { ServerConfigSchema, type WireDocument } from "@shadowcat/core";
+import { apiPath, ServerConfigSchema, type WireDocument } from "@shadowcat/core";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -106,7 +106,7 @@ async function postJson(url: string, body: unknown): Promise<Response> {
  * ```
  */
 export async function getMe(): Promise<Me | null> {
-  const res = await fetch("/api/me", {
+  const res = await fetch(apiPath("/api/me"), {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
@@ -132,7 +132,7 @@ export async function getMe(): Promise<Me | null> {
  * ```
  */
 export async function getTlsStatus(): Promise<TlsStatus> {
-  return ServerConfigSchema.parse(await getJson<unknown>("/api/config")).tls;
+  return ServerConfigSchema.parse(await getJson<unknown>(apiPath("/api/config"))).tls;
 }
 
 /** Logs the caller out server-side. Awaits the request but does not inspect
@@ -144,7 +144,7 @@ export async function getTlsStatus(): Promise<TlsStatus> {
  * ```
  */
 export async function logout(): Promise<void> {
-  await postJson("/api/logout", {});
+  await postJson(apiPath("/api/logout"), {});
 }
 
 /** Lists the worlds the caller's account can currently access.
@@ -155,7 +155,7 @@ export async function logout(): Promise<void> {
  * ```
  */
 export function listWorlds(): Promise<WorldEntry[]> {
-  return getJson<WorldEntry[]>("/api/worlds");
+  return getJson<WorldEntry[]>(apiPath("/api/worlds"));
 }
 
 /** `GET /api/worlds/{id}/snapshot` response: every document the caller can currently see,
@@ -181,7 +181,7 @@ export interface WorldSnapshotResponse {
  * ```
  */
 export function getWorldSnapshot(worldId: string): Promise<WorldSnapshotResponse> {
-  return getJson<WorldSnapshotResponse>(`/api/worlds/${encodeURIComponent(worldId)}/snapshot`);
+  return getJson<WorldSnapshotResponse>(apiPath(`/api/worlds/${encodeURIComponent(worldId)}/snapshot`));
 }
 
 /** Per-user UI session state and its REST wrappers live in `@shadowcat/core`; re-exported so the

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { webSocketConnect } from "@shadowcat/core";
+  import { apiPath, webSocketConnect, wsUrl } from "@shadowcat/core";
   import { plainHttpHint } from "./lib/plainHttpHint";
   import { TlsStatusLoader } from "./lib/tlsStatusLoader.svelte";
   import { notifications, t } from "@shadowcat/ui-kit";
@@ -85,7 +85,7 @@
       location,
       currentTls: () => tls.status,
       loadTls: () => tls.ensure(),
-      fetchMe: () => fetch("/api/me", { credentials: "same-origin" }),
+      fetchMe: () => fetch(apiPath("/api/me"), { credentials: "same-origin" }),
     });
     if (url !== null) notifications.push("warning", t("ws.plainHttpHint", { url }));
   }
@@ -210,12 +210,9 @@
    * ```
    */
   function openSession(worldId: string, selfId: string): WorldSession {
-    const wsUrl =
-      (location.protocol === "https:" ? "wss:" : "ws:") +
-      "//" + location.host + "/ws?world=" + worldId;
     const s = new WorldSession({
       selfId,
-      connect: webSocketConnect(wsUrl),
+      connect: webSocketConnect(`${wsUrl()}?world=${worldId}`),
       modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, chatBubbles, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking, onboarding],
       onEvicted: () => navigate({ name: "worlds" }),
       // A refused join (the world is gone, or this user is not a member) is terminal: say why,

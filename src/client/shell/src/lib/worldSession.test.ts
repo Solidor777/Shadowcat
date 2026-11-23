@@ -1752,6 +1752,37 @@ test("resolves an enabled folder id to its installed entry even when the manifes
   ).toBe(false);
 });
 
+test("an external module's entry is imported through the route prefix", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const core = await import("@shadowcat/core");
+    vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "folder-one", validators_enabled: false }]);
+    vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+      {
+        id: "folder-one",
+        manifest: { id: "mod-one", version: "1.0.0", dependencies: {}, provides: [] },
+        entry_url: "/modules/folder-one/index.js",
+        has_validators: false,
+        validator_load_error: null,
+        engine_compat_ok: true,
+      },
+    ]);
+    const importModule = vi.fn().mockRejectedValue(new Error("not under test"));
+    const session = new WorldSession({
+      selfId: "u1",
+      connect: mockConnect(),
+      modules: [coreUiStub],
+      logger: silentLogger,
+      importModule,
+    });
+    await session.enter("w1");
+    await vi.waitFor(() => expect(importModule).toHaveBeenCalled());
+    expect(importModule).toHaveBeenCalledWith("/ttrpg/modules/folder-one/index.js");
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
+});
+
 test("Welcome degrades gracefully when external module discovery fails (network error)", async () => {
   const core = await import("@shadowcat/core");
   vi.mocked(core.getEnabledModules).mockRejectedValueOnce(new Error("network down"));
