@@ -82,7 +82,7 @@ export interface TourMeta {
 }
 
 /** Zod schema for `TourStep`; strict, so an unknown key is rejected. */
-export const TourStepSchema = z
+export const TourStepSchema: z.ZodType<TourStep> = z
   .object({
     target: z.string().regex(ANCHOR_ID),
     titleKey: z.string().min(1),
@@ -92,7 +92,7 @@ export const TourStepSchema = z
   .strict();
 
 /** Zod schema for `TourMeta`; strict, so an unknown key is rejected. */
-export const TourMetaSchema = z
+export const TourMetaSchema: z.ZodType<TourMeta> = z
   .object({
     id: z.string().min(1),
     labelKey: z.string().min(1),
