@@ -1,4 +1,4 @@
-import { ServerConfigSchema, TlsStatusSchema } from "@shadowcat/core";
+import { apiPath, ServerConfigSchema, TlsStatusSchema } from "@shadowcat/core";
 import type { ServerConfig, WorldEntry } from "@shadowcat/types";
 
 /**
@@ -74,7 +74,7 @@ interface RawPublicConfig {
  * ```
  */
 export async function getConfig(): Promise<PublicConfig> {
-  const body = await getJson<RawPublicConfig>("/api/config");
+  const body = await getJson<RawPublicConfig>(apiPath("/api/config"));
   if (typeof body.initialized !== "boolean") throw new Error("/api/config: initialized is not a boolean");
   const initialized = body.initialized;
   const tls = TlsStatusSchema.safeParse(body.tls);
@@ -100,7 +100,7 @@ export async function getMe(): Promise<{
   /** The authenticated caller's user id. */
   id: string;
 } | null> {
-  const res = await fetch("/api/me", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/me"), { headers: { accept: "application/json" } });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
   return (await res.json()) as {
@@ -122,7 +122,7 @@ export async function getMe(): Promise<{
  * ```
  */
 export async function login(username: string, password: string): Promise<boolean> {
-  const res = await postJson("/api/login", { username, password });
+  const res = await postJson(apiPath("/api/login"), { username, password });
   return res.ok;
 }
 
@@ -159,7 +159,7 @@ export async function setup(
 }> {
   const body: Record<string, string> = { username, password };
   if (token) body.token = token;
-  const res = await postJson("/api/setup", body);
+  const res = await postJson(apiPath("/api/setup"), body);
   return { ok: res.ok, status: res.status };
 }
 
@@ -175,7 +175,7 @@ export async function setup(
  * ```
  */
 export function listWorlds(): Promise<WorldEntry[]> {
-  return getJson<WorldEntry[]>("/api/worlds");
+  return getJson<WorldEntry[]>(apiPath("/api/worlds"));
 }
 
 /**
@@ -193,7 +193,7 @@ export function listWorlds(): Promise<WorldEntry[]> {
  * ```
  */
 export async function deleteWorld(id: string): Promise<void> {
-  const res = await fetch(`/api/worlds/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/worlds/${encodeURIComponent(id)}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`/api/worlds/${id} → ${res.status}`);
 }
 
@@ -210,7 +210,7 @@ export async function deleteWorld(id: string): Promise<void> {
  * ```
  */
 export async function createWorld(name: string): Promise<WorldEntry> {
-  const res = await postJson("/api/worlds", { name });
+  const res = await postJson(apiPath("/api/worlds"), { name });
   if (!res.ok) throw new Error(`/api/worlds → ${res.status}`);
   return (await res.json()) as WorldEntry;
 }
@@ -242,7 +242,7 @@ export async function acceptInvite(code: string): Promise<WorldEntry | null> {
   // The code goes in the BODY: a URL is recorded by browser history, `Referer`,
   // proxy access logs, and the server's request-trace span, none of which a
   // live bearer credential may reach.
-  const res = await postJson("/api/invites/accept", { code });
+  const res = await postJson(apiPath("/api/invites/accept"), { code });
   if (!res.ok) return null;
   return (await res.json()) as WorldEntry;
 }

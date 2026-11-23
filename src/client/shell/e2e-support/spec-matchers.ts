@@ -19,6 +19,10 @@ export const LONG_AUDIO_SPEC = /long-audio\.spec\.ts$/;
  * projects (one per protocol, each its own CI job) against the same long-audio server. */
 export const LONG_AUDIO_PLAYTHROUGH_SPEC = /long-audio-playthrough\.spec\.ts$/;
 
+/** The route-prefix spec. It runs only under the `route-prefix` project, against a server mounted
+ * under a subpath (`Config.route_prefix`), where every same-origin request must carry the prefix. */
+export const ROUTE_PREFIX_SPEC = /route-prefix\.spec\.ts$/;
+
 /** The WebM/Ogg derivative decode spec. It runs under the two `webm-decode-*` projects, one per
  * engine whose `decodeAudioData` it measures, against the shared loopback server. */
 export const WEBM_DECODE_SPEC = /webm-decode\.spec\.ts$/;

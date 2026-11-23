@@ -1,5 +1,6 @@
 import type { PortMapStatus } from "@shadowcat/types";
 import { restError } from "./user-rest";
+import { apiPath } from "./base-path";
 
 // Admin port-forwarding REST: both routes are gated on ServerRole::Admin (`http::port_forward`).
 // The status carries the host's external address, so it is only ever fetched from an admin-only
@@ -17,7 +18,7 @@ import { restError } from "./user-rest";
  * ```
  */
 export async function getPortMapStatus(): Promise<PortMapStatus> {
-  const res = await fetch("/api/admin/portmap", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/admin/portmap"), { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(await restError(res, "port forwarding status failed"));
   return (await res.json()) as PortMapStatus;
 }
@@ -34,7 +35,7 @@ export async function getPortMapStatus(): Promise<PortMapStatus> {
  * ```
  */
 export async function setPortForward(enabled: boolean): Promise<PortMapStatus> {
-  const res = await fetch("/api/admin/portmap", {
+  const res = await fetch(apiPath("/api/admin/portmap"), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ enabled }),

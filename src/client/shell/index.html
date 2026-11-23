@@ -2,6 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- The server replaces %%SHADOWCAT_BASE%% with its route prefix ("" at the root mount) when
+         it serves this page. The base element must precede every URL-bearing element so the
+         relative asset URLs the build emits and the import map addresses below resolve under the
+         prefix. -->
+    <base href="%%SHADOWCAT_BASE%%/" />
+    <script>
+      window.__SHADOWCAT_BASE__ = "%%SHADOWCAT_BASE%%";
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
@@ -12,14 +20,14 @@
     <script type="importmap">
       {
         "imports": {
-          "svelte": "/runtime/svelte.js",
-          "svelte/internal/client": "/runtime/svelte-internal-client.js",
-          "svelte/internal/disclose-version": "/runtime/svelte-internal-disclose-version.js",
-          "svelte/reactivity": "/runtime/svelte-reactivity.js",
-          "@shadowcat/core": "/runtime/shadowcat-core.js",
-          "@shadowcat/ui-kit": "/runtime/shadowcat-ui-kit.js",
-          "@shadowcat/formula": "/runtime/shadowcat-formula.js",
-          "@shadowcat/types": "/runtime/shadowcat-types.js"
+          "svelte": "./runtime/svelte.js",
+          "svelte/internal/client": "./runtime/svelte-internal-client.js",
+          "svelte/internal/disclose-version": "./runtime/svelte-internal-disclose-version.js",
+          "svelte/reactivity": "./runtime/svelte-reactivity.js",
+          "@shadowcat/core": "./runtime/shadowcat-core.js",
+          "@shadowcat/ui-kit": "./runtime/shadowcat-ui-kit.js",
+          "@shadowcat/formula": "./runtime/shadowcat-formula.js",
+          "@shadowcat/types": "./runtime/shadowcat-types.js"
         }
       }
     </script>

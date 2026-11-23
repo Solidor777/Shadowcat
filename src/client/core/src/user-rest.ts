@@ -1,4 +1,5 @@
 import type { WorldRole } from "@shadowcat/types";
+import { apiPath } from "./base-path";
 
 // Account + membership REST, beside the `module-rest` module. Core stays framework-neutral,
 // so no Svelte in its dependency closure — the settings module's admin user-management and
@@ -31,7 +32,7 @@ export interface ServerUser {
  * ```
  */
 export async function listUsers(): Promise<ServerUser[]> {
-  const res = await fetch("/api/users", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/users"), { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(await restError(res, "list users failed"));
   return (await res.json()) as ServerUser[];
 }
@@ -73,7 +74,7 @@ export interface WorldMember {
  * ```
  */
 export async function listWorldMembers(world: string): Promise<WorldMember[]> {
-  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/members`, {
+  const res = await fetch(apiPath(`/api/worlds/${encodeURIComponent(world)}/members`), {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(LIST_WORLD_MEMBERS_TIMEOUT_MS),
   });
@@ -97,7 +98,7 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  */
 export function avatarUrl(world: string, user: string, hasAvatar: boolean | undefined): string | null {
   if (!hasAvatar) return null;
-  return `/api/worlds/${encodeURIComponent(world)}/members/${encodeURIComponent(user)}/avatar`;
+  return apiPath(`/api/worlds/${encodeURIComponent(world)}/members/${encodeURIComponent(user)}/avatar`);
 }
 
 /** The values `updateProfile` stores. */
@@ -120,7 +121,7 @@ export interface ProfileUpdate {
  * ```
  */
 export async function updateProfile(profile: ProfileUpdate): Promise<void> {
-  const res = await fetch("/api/account/profile", {
+  const res = await fetch(apiPath("/api/account/profile"), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ colour: profile.colour, pronouns: profile.pronouns }),
@@ -140,7 +141,7 @@ export async function updateProfile(profile: ProfileUpdate): Promise<void> {
  * ```
  */
 export async function uploadAvatar(file: Blob): Promise<void> {
-  const res = await fetch("/api/account/avatar", { method: "PUT", body: file });
+  const res = await fetch(apiPath("/api/account/avatar"), { method: "PUT", body: file });
   if (!res.ok) throw new Error(await restError(res, "upload avatar failed"));
 }
 
@@ -153,7 +154,7 @@ export async function uploadAvatar(file: Blob): Promise<void> {
  * ```
  */
 export async function deleteAvatar(): Promise<void> {
-  const res = await fetch("/api/account/avatar", { method: "DELETE" });
+  const res = await fetch(apiPath("/api/account/avatar"), { method: "DELETE" });
   if (!res.ok) throw new Error(await restError(res, "delete avatar failed"));
 }
 
@@ -182,7 +183,7 @@ export interface CreateUserOptions {
  * ```
  */
 export async function createUser(opts: CreateUserOptions): Promise<ServerUser> {
-  const res = await fetch("/api/users", {
+  const res = await fetch(apiPath("/api/users"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -211,7 +212,7 @@ export async function createUser(opts: CreateUserOptions): Promise<ServerUser> {
  * ```
  */
 export async function deleteUser(id: string): Promise<void> {
-  const res = await fetch(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/users/${encodeURIComponent(id)}`), { method: "DELETE" });
   if (!res.ok) throw new Error(await restError(res, "delete user failed"));
 }
 
@@ -253,7 +254,7 @@ export class ChangePasswordError extends Error {
  * ```
  */
 export async function changeOwnPassword(current: string, next: string): Promise<void> {
-  const res = await fetch("/api/account/password", {
+  const res = await fetch(apiPath("/api/account/password"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ current_password: current, new_password: next }),
@@ -317,7 +318,7 @@ export async function createWorldInvite(
   world: string,
   role: WorldRole,
 ): Promise<MintedInvite> {
-  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/invites`, {
+  const res = await fetch(apiPath(`/api/worlds/${encodeURIComponent(world)}/invites`), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ role }),
@@ -339,7 +340,7 @@ export async function createWorldInvite(
  * ```
  */
 export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
-  const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/invites`, {
+  const res = await fetch(apiPath(`/api/worlds/${encodeURIComponent(world)}/invites`), {
     headers: { accept: "application/json" },
   });
   if (!res.ok) throw new Error(await restError(res, "list invites failed"));
@@ -362,7 +363,7 @@ export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
  */
 export async function revokeWorldInvite(world: string, codeId: string): Promise<void> {
   const res = await fetch(
-    `/api/worlds/${encodeURIComponent(world)}/invites/${encodeURIComponent(codeId)}`,
+    apiPath(`/api/worlds/${encodeURIComponent(world)}/invites/${encodeURIComponent(codeId)}`),
     { method: "DELETE" },
   );
   if (!res.ok) throw new Error(await restError(res, "revoke invite failed"));
@@ -445,7 +446,7 @@ export function defaultUiState(): UiState {
  * ```
  */
 export async function getUiState(): Promise<UiState> {
-  const url = "/api/me/ui-state";
+  const url = apiPath("/api/me/ui-state");
   const res = await fetch(url, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(UI_STATE_TIMEOUT_MS),
@@ -517,7 +518,7 @@ export async function putUiState(
 ): Promise<void> {
   // `keepalive` lets the request outlive a page unload (the patch is within
   // the server's 64KB merged cap, under keepalive's body limit).
-  const res = await fetch("/api/me/ui-state", {
+  const res = await fetch(apiPath("/api/me/ui-state"), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),

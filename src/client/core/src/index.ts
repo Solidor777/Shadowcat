@@ -277,6 +277,7 @@ export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placeme
 export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
 export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";
 export type { StampOpts, SyncState } from "./templates";
+export { basePath, apiPath, wsUrl, type WsLocation } from "./base-path";
 export { PRESETS, resolveAuto, parsePersisted, serializePersisted, effectiveSettings, PERFORMANCE_STORAGE_KEY, fpsCapToTickerValue } from "./performance";
 export type { PerformanceSettings, PerformancePreset, DeviceSignals, PersistedPerformance } from "./performance";
 export {

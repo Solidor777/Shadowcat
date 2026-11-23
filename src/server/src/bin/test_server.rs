@@ -65,6 +65,9 @@ struct Args {
     /// Operator private key (PEM), pairs with `--tls-cert`.
     #[arg(long)]
     tls_key: Option<String>,
+    /// Subpath to mount the whole server under (`Config.route_prefix`), normalized the same way.
+    #[arg(long)]
+    route_prefix: Option<String>,
 }
 
 #[tokio::main]
@@ -94,6 +97,10 @@ async fn main() -> anyhow::Result<()> {
     config.hsts_max_age_secs = args.hsts_max_age_secs;
     config.tls_cert = args.tls_cert;
     config.tls_key = args.tls_key;
+    if let Some(raw) = args.route_prefix {
+        config.route_prefix =
+            shadowcat::config::normalize_route_prefix(&raw).map_err(anyhow::Error::msg)?;
+    }
     config.validate_tls()?;
     shadowcat::tls::install_default_provider();
     let tls = shadowcat::tls::TlsRuntime::start(&config);

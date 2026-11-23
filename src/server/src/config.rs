@@ -197,6 +197,10 @@ pub struct Cli {
     /// Turns the guided onboarding tours on or off for every user (`Config.onboarding_enabled`).
     #[arg(long)]
     pub onboarding_enabled: Option<bool>,
+    /// Subpath the whole server is mounted under behind a reverse proxy that does not rewrite
+    /// paths (`Config.route_prefix`), e.g. `/ttrpg`.
+    #[arg(long)]
+    pub route_prefix: Option<String>,
     /// One-shot: regenerate the persisted self-signed certificate and exit. Mutually exclusive
     /// with `--backup-to`, `--restore-from` and any subcommand.
     #[arg(long)]
@@ -424,6 +428,12 @@ pub struct Config {
     /// offer for every user on this server. Published as `onboarding_enabled` in `/api/config`
     /// (`http::routes::ServerConfig`).
     pub onboarding_enabled: bool,
+    /// Subpath every route is served under (`http::router` nests the whole application there),
+    /// for a reverse proxy that forwards `https://host/<prefix>/...` without rewriting the path.
+    /// `None` (default) mounts at the origin root. `Config::load` normalizes it once through
+    /// [`normalize_route_prefix`] (leading slash, no trailing slash); read it through
+    /// [`Config::base_path`] only.
+    pub route_prefix: Option<String>,
 }
 
 /// The least [`Config::egress_window_secs`] accepts.
@@ -479,8 +489,53 @@ impl Default for Config {
             egress_window_secs: crate::http::conn_serve::PEER_STALL_TIMEOUT.as_secs(),
             port_forward: None,
             onboarding_enabled: true,
+            route_prefix: None,
         }
     }
+}
+
+/// Normalizes a configured route prefix to the one form the router, the embedded-page
+/// substitution and the client all share: a leading slash and no trailing slash. An empty value
+/// or a bare `/` means the origin root and yields `None`. Each segment must be non-empty and made
+/// of URL-unreserved characters (`A-Z a-z 0-9 - . _ ~`), and may not be `.` or `..`: the value is
+/// spliced into the served HTML and handed to the router's `nest`, which rejects route-pattern
+/// characters, so anything else is a boot error rather than a silently different mount.
+///
+/// # Errors
+///
+/// Returns the reason when a segment is empty, dot-relative or holds a character outside the set.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::normalize_route_prefix;
+///
+/// assert_eq!(normalize_route_prefix("ttrpg").unwrap().as_deref(), Some("/ttrpg"));
+/// assert_eq!(normalize_route_prefix("/ttrpg/").unwrap().as_deref(), Some("/ttrpg"));
+/// assert_eq!(normalize_route_prefix("/a/b").unwrap().as_deref(), Some("/a/b"));
+/// assert_eq!(normalize_route_prefix("/").unwrap(), None);
+/// assert!(normalize_route_prefix("/a//b").is_err());
+/// assert!(normalize_route_prefix("/a/{id}").is_err());
+/// ```
+pub fn normalize_route_prefix(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    for segment in trimmed.split('/') {
+        let valid = !segment.is_empty()
+            && segment != "."
+            && segment != ".."
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+        if !valid {
+            return Err(format!(
+                "route_prefix {raw:?} must be slash-separated segments of letters, digits, '-', '.', '_' or '~' (no empty, '.' or '..' segment)"
+            ));
+        }
+    }
+    Ok(Some(format!("/{trimmed}")))
 }
 
 /// Resolved setup-window policy. `Required(None)` means a token is required but
@@ -810,6 +865,14 @@ impl Config {
         if let Some(v) = cli.onboarding_enabled {
             cfg.onboarding_enabled = v;
         }
+        if let Some(v) = cli.route_prefix {
+            cfg.route_prefix = Some(v);
+        }
+        // Normalized after every layer has applied, so a prefix from the CLI, the environment or
+        // the TOML file reaches every reader in the same form.
+        if let Some(raw) = cfg.route_prefix.take() {
+            cfg.route_prefix = normalize_route_prefix(&raw).map_err(figment::Error::from)?;
+        }
         if !(EGRESS_WINDOW_SECS_MIN..=EGRESS_WINDOW_SECS_MAX).contains(&cfg.egress_window_secs) {
             return Err(Box::new(figment::Error::from(format!(
                 "egress_window_secs must be {EGRESS_WINDOW_SECS_MIN} to {EGRESS_WINDOW_SECS_MAX}, got {}",
@@ -916,6 +979,23 @@ impl Config {
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("trash")
         })
+    }
+
+    /// The route prefix as a string slice: `""` at the origin root, otherwise the normalized
+    /// `/prefix`. The one reader of [`Config::route_prefix`]; `http::router` nests under it and
+    /// `http::embed::static_handler` strips and publishes it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::Config;
+    ///
+    /// assert_eq!(Config::default().base_path(), "");
+    /// let cfg = Config { route_prefix: Some("/ttrpg".into()), ..Config::default() };
+    /// assert_eq!(cfg.base_path(), "/ttrpg");
+    /// ```
+    pub fn base_path(&self) -> &str {
+        self.route_prefix.as_deref().unwrap_or("")
     }
 
     /// The no-progress window every stalled-peer bound uses: [`Config::egress_window_secs`] as a

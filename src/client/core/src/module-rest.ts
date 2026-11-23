@@ -1,4 +1,5 @@
 import type { InstalledModuleInfo, WorldModuleEntry } from "@shadowcat/types";
+import { apiPath } from "./base-path";
 
 // Client-side module-toolchain REST, beside the `asset-rest` module: the installed-module
 // discovery + per-world enablement contract with the server. Core stays framework-neutral,
@@ -15,7 +16,7 @@ import type { InstalledModuleInfo, WorldModuleEntry } from "@shadowcat/types";
  * ```
  */
 export async function listInstalledModules(): Promise<InstalledModuleInfo[]> {
-  const res = await fetch("/api/modules", { headers: { accept: "application/json" } });
+  const res = await fetch(apiPath("/api/modules"), { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`list installed modules failed: ${res.status}`);
   return (await res.json()) as InstalledModuleInfo[];
 }
@@ -32,7 +33,7 @@ export async function listInstalledModules(): Promise<InstalledModuleInfo[]> {
  * ```
  */
 export async function getEnabledModules(world: string): Promise<WorldModuleEntry[]> {
-  const res = await fetch(`/api/worlds/${world}/enabled-modules`, {
+  const res = await fetch(apiPath(`/api/worlds/${world}/enabled-modules`), {
     headers: { accept: "application/json" },
   });
   if (!res.ok) throw new Error(`get enabled modules failed: ${res.status}`);
@@ -53,7 +54,7 @@ export async function getEnabledModules(world: string): Promise<WorldModuleEntry
  * ```
  */
 export async function setEnabledModules(world: string, entries: WorldModuleEntry[]): Promise<void> {
-  const res = await fetch(`/api/worlds/${world}/enabled-modules`, {
+  const res = await fetch(apiPath(`/api/worlds/${world}/enabled-modules`), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(entries),

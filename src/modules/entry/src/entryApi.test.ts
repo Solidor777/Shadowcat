@@ -15,6 +15,25 @@ test("getConfig returns the parsed config", async () => {
   expect(await api.getConfig()).toEqual({ initialized: true, tls, onboardingEnabled: true });
 });
 
+test("entry requests carry the route prefix the server page declared", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const f = mockFetch(200, []);
+    await api.listWorlds();
+    await api.getMe().catch(() => undefined);
+    await api.createWorld("W").catch(() => undefined);
+    await api.deleteWorld("w1").catch(() => undefined);
+    expect(f.mock.calls.map((c) => String(c[0]))).toEqual([
+      "/ttrpg/api/worlds",
+      "/ttrpg/api/me",
+      "/ttrpg/api/worlds",
+      "/ttrpg/api/worlds/w1",
+    ]);
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
+});
+
 test("getConfig reports a server that switched tours off", async () => {
   const tls = { enabled: false, source: "self-signed", https_origins: [], alpn: ["http/1.1"] };
   mockFetch(200, { initialized: true, tls, onboarding_enabled: false });

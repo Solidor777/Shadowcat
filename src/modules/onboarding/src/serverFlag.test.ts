@@ -31,6 +31,20 @@ function answering(body: unknown, status: number): typeof fetch {
 }
 
 describe("fetchOnboardingEnabled", () => {
+  it("requests the config under the route prefix the page declared", async () => {
+    (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+    try {
+      const urls: string[] = [];
+      await fetchOnboardingEnabled(async (input) => {
+        urls.push(String(input));
+        return new Response(JSON.stringify(configBody(true)), { status: 200 });
+      });
+      expect(urls).toEqual(["/ttrpg/api/config"]);
+    } finally {
+      delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+    }
+  });
+
   it("is false only when the server reports onboarding_enabled false", async () => {
     expect(await fetchOnboardingEnabled(answering(configBody(false), 200))).toBe(false);
   });

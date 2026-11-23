@@ -38,16 +38,23 @@ describe("shared-runtime import map (build output)", () => {
     const match = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
     expect(match, "no <script type=\"importmap\"> found in dist/index.html").not.toBeNull();
     const map = JSON.parse(match![1]) as { imports: Record<string, string> };
-    expect(map.imports["svelte"]).toBe("/runtime/svelte.js");
-    expect(map.imports["svelte/internal/client"]).toBe("/runtime/svelte-internal-client.js");
+    // Addresses are relative to the page's `<base href>`, so the same build resolves under any
+    // route prefix.
+    expect(map.imports["svelte"]).toBe("./runtime/svelte.js");
+    expect(map.imports["svelte/internal/client"]).toBe("./runtime/svelte-internal-client.js");
     expect(map.imports["svelte/internal/disclose-version"]).toBe(
-      "/runtime/svelte-internal-disclose-version.js",
+      "./runtime/svelte-internal-disclose-version.js",
     );
-    expect(map.imports["svelte/reactivity"]).toBe("/runtime/svelte-reactivity.js");
-    expect(map.imports["@shadowcat/core"]).toBe("/runtime/shadowcat-core.js");
-    expect(map.imports["@shadowcat/ui-kit"]).toBe("/runtime/shadowcat-ui-kit.js");
-    expect(map.imports["@shadowcat/formula"]).toBe("/runtime/shadowcat-formula.js");
-    expect(map.imports["@shadowcat/types"]).toBe("/runtime/shadowcat-types.js");
+    expect(map.imports["svelte/reactivity"]).toBe("./runtime/svelte-reactivity.js");
+    expect(map.imports["@shadowcat/core"]).toBe("./runtime/shadowcat-core.js");
+    expect(map.imports["@shadowcat/ui-kit"]).toBe("./runtime/shadowcat-ui-kit.js");
+    expect(map.imports["@shadowcat/formula"]).toBe("./runtime/shadowcat-formula.js");
+    expect(map.imports["@shadowcat/types"]).toBe("./runtime/shadowcat-types.js");
+
+    // The server substitutes these placeholders at serve time; the build must leave them intact.
+    expect(html).toContain('<base href="%%SHADOWCAT_BASE%%/"');
+    expect(html).toContain('window.__SHADOWCAT_BASE__ = "%%SHADOWCAT_BASE%%";');
+    expect(html.indexOf("<base ")).toBeLessThan(html.indexOf('<script type="importmap">'));
 
     // The import map must precede the app's own module entry script: it must be injected
     // before any module script executes.

@@ -1,4 +1,5 @@
 import type { Asset } from "@shadowcat/types";
+import { apiPath } from "./base-path";
 
 /** Op carried by an out-of-band AssetChanged frame. `created` and `moved` (name / folder /
  * tags) change what a LISTING shows, never what a URL serves; `replaced` and `deleted` change
@@ -105,7 +106,7 @@ export class AssetResolver {
     // The initial version names the same bytes as an unversioned URL, so a listing that reports
     // it after an image was requested must not change the URL and re-request the image.
     if (rev !== undefined && rev !== INITIAL_ASSET_VERSION) params.push(`v=${rev}`);
-    return params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`;
+    return apiPath(params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`);
   }
 
   /** Resolves an audio asset to its playback URL set: BOTH Opus derivatives plus the

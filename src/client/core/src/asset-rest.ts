@@ -1,4 +1,5 @@
 import type { Asset, AssetPage, BulkAssetRequest, PatchAssetRequest } from "@shadowcat/types";
+import { apiPath } from "./base-path";
 
 // Client-side asset REST, beside AssetResolver: the asset upload/list/replace/
 // delete contract with the server. Shared by the assets panel and scene-tools'
@@ -34,7 +35,7 @@ export async function uploadAsset(
   const form = new FormData();
   form.append("file", file);
   if (audioContainers) form.append("containers", audioContainers);
-  const res = await fetch(`/api/worlds/${world}/assets`, { method: "POST", body: form });
+  const res = await fetch(apiPath(`/api/worlds/${world}/assets`), { method: "POST", body: form });
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);
   return (await res.json()) as Asset;
 }
@@ -54,7 +55,7 @@ export async function uploadAsset(
  * ```
  */
 export async function listAssets(world: string): Promise<Asset[]> {
-  const res = await fetch(`/api/worlds/${world}/assets`);
+  const res = await fetch(apiPath(`/api/worlds/${world}/assets`));
   if (!res.ok) throw new Error(`list failed: ${res.status}`);
   return (await res.json()) as Asset[];
 }
@@ -73,7 +74,7 @@ export async function listAssets(world: string): Promise<Asset[]> {
  * ```
  */
 export async function getAssetMeta(id: string): Promise<Asset> {
-  const res = await fetch(`/api/assets/${id}/meta`);
+  const res = await fetch(apiPath(`/api/assets/${id}/meta`));
   if (!res.ok) throw new Error(await restErrorText(res));
   return (await res.json()) as Asset;
 }
@@ -99,7 +100,7 @@ export async function getAssetMeta(id: string): Promise<Asset> {
 export async function replaceAsset(uuid: string, file: File): Promise<Asset> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`/api/assets/${uuid}/replace`, { method: "POST", body: form });
+  const res = await fetch(apiPath(`/api/assets/${uuid}/replace`), { method: "POST", body: form });
   if (!res.ok) throw new Error(`replace failed: ${res.status}`);
   return (await res.json()) as Asset;
 }
@@ -118,7 +119,7 @@ export async function replaceAsset(uuid: string, file: File): Promise<Asset> {
  * ```
  */
 export async function deleteAsset(uuid: string): Promise<void> {
-  const res = await fetch(`/api/assets/${uuid}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/assets/${uuid}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`delete failed: ${res.status}`);
 }
 
@@ -169,7 +170,7 @@ export async function deleteAssetFolder(
   id: string,
   assets: "reparent" | "delete" = "reparent",
 ): Promise<void> {
-  const res = await fetch(`/api/asset-folders/${id}?assets=${assets}`, { method: "DELETE" });
+  const res = await fetch(apiPath(`/api/asset-folders/${id}?assets=${assets}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`folder delete failed: ${res.status} ${await restErrorText(res)}`);
 }
 
@@ -243,7 +244,7 @@ export async function queryAssets(world: string, q: AssetQuery): Promise<AssetPa
   if (q.cursor !== undefined) params.set("cursor", q.cursor);
   // `limit` is always sent so an otherwise-empty query still selects the page form.
   if (!params.has("limit")) params.set("limit", "200");
-  const res = await fetch(`/api/worlds/${world}/assets?${params.toString()}`);
+  const res = await fetch(apiPath(`/api/worlds/${world}/assets?${params.toString()}`));
   if (!res.ok) throw await restError(res, "query");
   return (await res.json()) as AssetPage;
 }
@@ -266,7 +267,7 @@ export async function queryAssets(world: string, q: AssetQuery): Promise<AssetPa
  * ```
  */
 export async function patchAsset(uuid: string, patch: PatchAssetRequest): Promise<Asset> {
-  const res = await fetch(`/api/assets/${uuid}`, {
+  const res = await fetch(apiPath(`/api/assets/${uuid}`), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
@@ -294,7 +295,7 @@ export async function patchAsset(uuid: string, patch: PatchAssetRequest): Promis
  * ```
  */
 export async function bulkPatchAssets(world: string, body: BulkAssetRequest): Promise<Asset[]> {
-  const res = await fetch(`/api/worlds/${world}/assets/bulk`, {
+  const res = await fetch(apiPath(`/api/worlds/${world}/assets/bulk`), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -316,7 +317,7 @@ export async function bulkPatchAssets(world: string, body: BulkAssetRequest): Pr
  * ```
  */
 export async function reconvertAsset(uuid: string): Promise<Asset> {
-  const res = await fetch(`/api/assets/${uuid}/reconvert`, { method: "POST" });
+  const res = await fetch(apiPath(`/api/assets/${uuid}/reconvert`), { method: "POST" });
   if (!res.ok) throw await restError(res, "reconvert");
   return (await res.json()) as Asset;
 }
@@ -333,5 +334,5 @@ export async function reconvertAsset(uuid: string): Promise<Asset> {
  * ```
  */
 export function originalUrl(uuid: string): string {
-  return `/api/assets/${uuid}/original`;
+  return apiPath(`/api/assets/${uuid}/original`);
 }

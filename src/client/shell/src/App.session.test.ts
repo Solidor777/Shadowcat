@@ -247,6 +247,27 @@ test("a hashchange to another world while the first snapshot is pending leaves e
   expect(sockets).toEqual(["w2"]);
 });
 
+test("the world socket is opened under the route prefix the server page declared", async () => {
+  (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__ = "/ttrpg";
+  try {
+    const urls: string[] = [];
+    class RecordingSocket extends WelcomingSocket {
+      constructor(url: string) {
+        super(url);
+        urls.push(url);
+      }
+    }
+    await bootToEntry(async () => SELF_SIGNED);
+    vi.stubGlobal("WebSocket", RecordingSocket as unknown);
+    navigateBrowser("#/world/w1");
+    await vi.waitFor(() => expect(urls.length).toBeGreaterThan(0));
+    expect(new URL(urls[0]).pathname).toBe("/ttrpg/ws");
+    expect(new URL(urls[0]).searchParams.get("world")).toBe("w1");
+  } finally {
+    delete (globalThis as Record<string, unknown>).__SHADOWCAT_BASE__;
+  }
+});
+
 test("Back to a world route after leaving it enters a new session for that world", async () => {
   await bootToEntry(async () => SELF_SIGNED);
   const first = await enter("w1");
