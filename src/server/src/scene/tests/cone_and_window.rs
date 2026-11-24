@@ -98,13 +98,25 @@ fn mover_light_sample_rotation_matches_the_committed_field_light() {
     // clip composes the former into the field the latter belongs to.
     let (ecs, scene, token) = bearer(90.0, cone_torch(true));
     let inputs = ecs
-        .mover_light_inputs(scene, token, 100.0)
+        .mover_light_inputs(scene, token, 100.0, None)
         .expect("an enabled carried cone is sampled");
     let sample = inputs.sample_at(0.0, (150.0, 150.0));
     let committed = &ecs.scene_lights(scene)[0];
     assert_eq!(sample.angle, committed.angle);
     assert_eq!(sample.rotation, Some(committed.rotation));
     assert_eq!(sample.rotation, Some(100.0));
+}
+
+#[test]
+fn a_mover_light_sample_points_along_the_rotation_the_move_commits() {
+    // Mutation: ignoring `committed_rotation` in `mover_light_inputs` keeps the stored 90 degree
+    // facing (cone rotation 100) and fails this; the cone must read the new bearing's 190.
+    let (ecs, scene, token) = bearer(90.0, cone_torch(true));
+    let sample = ecs
+        .mover_light_inputs(scene, token, 100.0, Some(180.0))
+        .expect("an enabled carried cone is sampled")
+        .sample_at(0.0, (150.0, 150.0));
+    assert_eq!(sample.rotation, Some(190.0));
 }
 
 #[test]
@@ -115,7 +127,7 @@ fn a_radial_mover_light_sample_carries_no_cone_fields() {
                 "enabled": true }),
     );
     let sample = ecs
-        .mover_light_inputs(scene, token, 100.0)
+        .mover_light_inputs(scene, token, 100.0, None)
         .expect("sampled")
         .sample_at(0.0, (150.0, 150.0));
     assert_eq!((sample.angle, sample.rotation), (None, None));
@@ -132,11 +144,11 @@ fn mover_light_inputs_follow_the_darkness_window() {
         "scene": { "environment": { "color": "#ffffff", "intensity": 0.5 } }
     }));
     assert!(
-        ecs.mover_light_inputs(scene, token, 100.0).is_none(),
+        ecs.mover_light_inputs(scene, token, 100.0, None).is_none(),
         "the window is closed at environment 0.5"
     );
     ecs.set_world_settings_for_test(json!({
         "scene": { "environment": { "color": "#ffffff", "intensity": 0.2 } }
     }));
-    assert!(ecs.mover_light_inputs(scene, token, 100.0).is_some());
+    assert!(ecs.mover_light_inputs(scene, token, 100.0, None).is_some());
 }

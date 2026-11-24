@@ -456,13 +456,8 @@ pub(crate) fn facing_arc_for(
         0.0
     };
     let near_world = scaled.max(FACING_MIN_NEAR_WORLD);
-    let facing_rad = if rotation_deg.is_finite() {
-        crate::scene::move_exec::token_facing_radians(rotation_deg)
-    } else {
-        0.0
-    };
     Some(vision::FacingArc {
-        facing_rad,
+        facing_rad: facing_rad_for(rotation_deg),
         half_rad: if arc_valid {
             (fv.arc / 2.0).to_radians()
         } else {
@@ -470,6 +465,34 @@ pub(crate) fn facing_arc_for(
         },
         near_world,
     })
+}
+
+/// The direction, in radians, a token with stored rotation `rotation_deg` looks along; a
+/// non-finite rotation reads as `0.0`. The one rotation-to-direction conversion
+/// `facing_arc_for` and `SightSources::turn_source` share.
+fn facing_rad_for(rotation_deg: f64) -> f64 {
+    if rotation_deg.is_finite() {
+        crate::scene::move_exec::token_facing_radians(rotation_deg)
+    } else {
+        0.0
+    }
+}
+
+impl SightSources {
+    /// Turns source `id`'s facing arc to `rotation_deg`, leaving its width and bubble unchanged.
+    /// `Room::execute_move` calls it with the rotation the move commits, so the streamed
+    /// `los_at` re-raycasts look along the heading the committed polygons will use. A source
+    /// with no facing arc (`facing_vision` off, or a full-circle arc) has nothing to turn.
+    pub(crate) fn turn_source(&mut self, id: Uuid, rotation_deg: f64) {
+        if let Some(arc) = self
+            .sources
+            .iter_mut()
+            .find(|s| s.id == id)
+            .and_then(|s| s.facing.as_mut())
+        {
+            arc.facing_rad = facing_rad_for(rotation_deg);
+        }
+    }
 }
 
 /// Signed area ×2 of triangle abc; >0 = ccw, <0 = cw, 0 = collinear.

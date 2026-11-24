@@ -2056,6 +2056,7 @@ impl Room {
         let stop_cell;
         let duration_ms;
         let samples;
+        let committed_rotation: Option<f64>;
         let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
         let mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>;
         {
@@ -2088,6 +2089,11 @@ impl Room {
             stop_cell = scene
                 .resolve_grid_shape(token_scene, cell)
                 .cell_of(outcome.stop);
+            // The rotation this move commits, derived once: the streamed facing vision and
+            // carried cone light below and the commit's `/engine/rotation` write all read it,
+            // so a viewer never sees the stream look along one heading and the commit another.
+            committed_rotation = auto_rotate_from
+                .map(|current| move_exec::bearing_degrees(start, outcome.stop, current));
             let speed_cells_per_sec = scene.resolved_animation_speed();
             // Animation speed is authored in cells/sec, so the travelled distance converts
             // through the scene shape's per-cell world distance, not its indexing scale.
@@ -2124,8 +2130,11 @@ impl Room {
             mover_vision = if is_gm {
                 None
             } else {
-                let sight =
+                let mut sight =
                     scene.sight_sources(ctx.user_id, ctx.world_role, &world_defaults, token_scene);
+                if let Some(rotation) = committed_rotation {
+                    sight.turn_source(token, rotation);
+                }
                 Some(
                     samples
                         .iter()
@@ -2146,7 +2155,7 @@ impl Room {
             // the mover's role: a GM walking a torch-bearer lights the corridor for the
             // players watching it exactly as a player's own move does.
             mover_light = scene
-                .mover_light_inputs(token_scene, token, cell)
+                .mover_light_inputs(token_scene, token, cell, committed_rotation)
                 .map(|li| {
                     samples
                         .iter()
@@ -2226,16 +2235,13 @@ impl Room {
         // sees both change together under one commit. Only reachable past the zero-progress
         // return above, so `start != stop` and the bearing is a real direction. A GM move
         // rotates too: the GM exemption covers gameplay gates, not a cosmetic write.
-        if let Some(current_rotation) = auto_rotate_from {
+        if let (Some(current_rotation), Some(new_rotation)) = (auto_rotate_from, committed_rotation)
+        {
             position_changes.push(FieldChange {
                 remove: false,
                 path: "/engine/rotation".into(),
                 old: serde_json::json!(current_rotation),
-                new: serde_json::json!(move_exec::bearing_degrees(
-                    start,
-                    outcome.stop,
-                    current_rotation
-                )),
+                new: serde_json::json!(new_rotation),
             });
         }
         let ops = vec![Operation::Update {

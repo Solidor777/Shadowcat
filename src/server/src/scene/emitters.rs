@@ -212,11 +212,16 @@ impl SceneEcs {
     /// entity, or its resolved emission (`token_light_emission`) is absent or disabled. This
     /// `None` is what makes the timeline "cost only on request": a lightless move performs no
     /// light raycast at all. `cell` is the scene's indexing cell size (`scene_grid_sizes`).
+    /// `committed_rotation` is the rotation the move itself commits (`Room::execute_move`'s
+    /// auto-rotate bearing), `None` when the move writes none: a cone light that follows the
+    /// token's rotation points along it for the whole timeline, so the streamed cone matches
+    /// the committed one instead of the pre-move facing.
     pub(crate) fn mover_light_inputs(
         &self,
         scene: Uuid,
         token: Uuid,
         cell: f64,
+        committed_rotation: Option<f64>,
     ) -> Option<MoverLightInputs> {
         let settings = self.resolve_scene(scene);
         if settings.all_bright() {
@@ -236,7 +241,12 @@ impl SceneEcs {
             )
         };
         // The position is per sample; the template light carries every other field.
-        let light = emission_to_light((0.0, 0.0), elev, Some(rotation), &emission)?;
+        let light = emission_to_light(
+            (0.0, 0.0),
+            elev,
+            Some(committed_rotation.unwrap_or(rotation)),
+            &emission,
+        )?;
         // A light the darkness window suppresses contributes to no cell, so it has no timeline —
         // the same `env_intensity` comparison `cell_illumination_from` makes.
         if !light.active_at_env(settings.env_intensity) {
