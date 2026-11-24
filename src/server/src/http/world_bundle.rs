@@ -248,15 +248,9 @@ impl TempFileGuard {
         Self(Some(path), trash)
     }
 
-    /// Cancels the cleanup. No production call site needs this (the
-    /// one `TempFileGuard` this module creates is explicitly
-    /// `drop`ped once its file is no longer needed — see `import_world`),
-    /// so this stays test-only rather than shipping an unused release-build
-    /// method; it exists to let a test assert the disarmed half of the
-    /// guard's contract directly, the same way
-    /// `temp_file_guard_removes_the_file_on_ordinary_drop` asserts the armed
-    /// half.
-    #[cfg(test)]
+    /// Cancels the cleanup, for a caller that has moved the file itself. `import_world` calls it
+    /// once extraction is done and it moves the staged upload through the async
+    /// `Trash::discard`.
     fn keep(mut self) {
         self.0 = None;
     }
@@ -413,10 +407,14 @@ pub async fn import_world(
                 tracing::error!(?e, "world import extraction task panicked");
                 AppError::Internal
             })?;
-    // Extraction is done with the staged file either way — drop the guard
-    // here (rather than letting it ride to the end of the function) so the
-    // temp file is removed before the DB insert, not after.
-    drop(guard);
+    // Extraction is done with the staged file either way. It moves into the trash here, before the
+    // DB insert, through `Trash::discard` on the blocking pool: a cross-device move copies the
+    // whole upload, which must not run on an async worker. The guard is disarmed because the
+    // move has been made; it still covers every early return above.
+    guard.keep();
+    if let Err(e) = state.trash.discard(&tmp_tar).await {
+        tracing::warn!(error = %e, "the staged import upload could not be moved to the trash");
+    }
 
     let import_data = match import_result {
         Ok(d) => d,
