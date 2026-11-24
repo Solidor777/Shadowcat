@@ -712,8 +712,9 @@ pub struct AudioOverlay {
     pub spatial: Option<bool>,
     /// Wall-occlusion policy; absent = `Occlusion::Walls`.
     pub occlusion: Option<Occlusion>,
-    /// Gain an occluded emitter is reduced to — never silenced entirely, so a player still
-    /// learns something is behind the door; absent = `0.25`.
+    /// Gain a wall-occluded emitter is reduced to — a wall never silences entirely, so a player
+    /// still learns something is behind the door; absent = `0.25`. A sound-blocking region
+    /// (`RegionEngine::occludes`) is stricter: an emitter across its edge has gain `0`.
     #[serde(rename = "throughWallGain")]
     pub through_wall_gain: Option<f64>,
 }

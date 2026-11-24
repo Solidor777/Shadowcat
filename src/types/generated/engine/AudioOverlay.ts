@@ -25,7 +25,8 @@ spatial: boolean | null,
  */
 occlusion: Occlusion | null, 
 /**
- * Gain an occluded emitter is reduced to — never silenced entirely, so a player still
- * learns something is behind the door; absent = `0.25`.
+ * Gain a wall-occluded emitter is reduced to — a wall never silences entirely, so a player
+ * still learns something is behind the door; absent = `0.25`. A sound-blocking region
+ * (`RegionEngine::occludes`) is stricter: an emitter across its edge has gain `0`.
  */
 throughWallGain: number | null, };
