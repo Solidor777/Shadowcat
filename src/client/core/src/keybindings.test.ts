@@ -113,11 +113,12 @@ describe("isEditableTarget", () => {
     expect(isEditableTarget({} as EventTarget)).toBe(false);
   });
 
-  it("is true for input, textarea and contenteditable elements only", () => {
+  it("is true for input, textarea, select and contenteditable elements only", () => {
     vi.stubGlobal("HTMLElement", FakeElement);
     const make = (patch: Partial<FakeElement>) => Object.assign(new FakeElement(), patch) as unknown as EventTarget;
     expect(isEditableTarget(make({ tagName: "INPUT" }))).toBe(true);
     expect(isEditableTarget(make({ tagName: "TEXTAREA" }))).toBe(true);
+    expect(isEditableTarget(make({ tagName: "SELECT" }))).toBe(true);
     expect(isEditableTarget(make({ isContentEditable: true }))).toBe(true);
     expect(isEditableTarget(make({}))).toBe(false);
     expect(isEditableTarget(null)).toBe(false);

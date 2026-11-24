@@ -108,8 +108,8 @@
     gap: var(--space-1);
   }
   .palette button {
-    min-width: 36px;
-    min-height: 36px;
+    min-width: 44px;
+    min-height: 44px;
     font-size: 1.1em;
     border: 1px solid var(--border);
     border-radius: var(--radius-1);

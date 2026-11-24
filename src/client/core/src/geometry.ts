@@ -19,6 +19,26 @@ const deg2rad = (d: number): number => (d * Math.PI) / 180;
 export const DEFAULT_CONE_ANGLE_DEGREES = 60;
 
 /**
+ * Whether a template's authored cone aperture can be drawn: absent (the default applies), or a
+ * finite number strictly between 0 and 180 degrees. `conePoints`' three-point wedge is collinear
+ * at 180 and opens away from the facing past it, so neither endpoint is drawable. The bound
+ * matches the server's template validation; the render layer and the template-to-region
+ * conversion both read this one guard so a template is drawn exactly when it can be converted.
+ * @param angle The authored `shape.angle` (`null` or `undefined` when absent).
+ * @returns `true` when the angle is absent or inside `(0, 180)`.
+ * @example
+ * ```ts
+ * import { isDrawableConeAngle } from "@shadowcat/core";
+ *
+ * isDrawableConeAngle(60); // true
+ * isDrawableConeAngle(180); // false
+ * ```
+ */
+export function isDrawableConeAngle(angle: number | null | undefined): boolean {
+  return angle == null || (Number.isFinite(angle) && angle > 0 && angle < 180);
+}
+
+/**
  * Four corners of the axis-aligned rectangle spanning the two given corners, in the
  * order `(x0,y0)`, `(x1,y0)`, `(x1,y1)`, `(x0,y1)`.
  * @param x0 One corner's x.
@@ -126,10 +146,9 @@ export function conePoints(
 /**
  * Four corners of a rectangle (sides `2*half` by `2*halfWidth`) centered at `(cx,cy)`,
  * rotated `directionDeg` about its center. Degrees follow the shared convention: 0° = +x,
- * positive toward +y (scene y is down). `halfWidth` defaults to `half`, reproducing the
- * exact rotated-square output this function has always produced when a caller doesn't
- * pass a distinct second dimension — a template's `"rect"` kind is forced-square exactly
- * when its `width` is absent (`width ?? size`, the caller's job).
+ * positive toward +y (scene y is down). `halfWidth` defaults to `half`, so omitting it gives a
+ * rotated square — a template's `"rect"` kind is forced-square exactly when its `width` is
+ * absent (`width ?? size`, the caller's job).
  * @param cx Center x.
  * @param cy Center y.
  * @param half Half the first-axis side length (so the full side is `2*half`).
@@ -160,10 +179,9 @@ export function squarePoints(cx: number, cy: number, half: number, directionDeg:
 
 /**
  * A line segment from `(x0,y0)`, length `length`, facing `directionDeg` — a bare 2-point
- * open segment when `width` is `0` (or omitted, matching the pre-existing zero-width
- * template line exactly), or a closed 4-point rectangle of thickness `width` centered on
- * the segment's axis otherwise. Degrees follow the shared convention: 0° = +x, positive
- * toward +y (scene y is down).
+ * open segment when `width` is `0` or omitted (the zero-width template line), or a closed
+ * 4-point rectangle of thickness `width` centered on the segment's axis otherwise. Degrees
+ * follow the shared convention: 0° = +x, positive toward +y (scene y is down).
  * @param x0 Start x.
  * @param y0 Start y.
  * @param length Segment length.
@@ -175,7 +193,7 @@ export function squarePoints(cx: number, cy: number, half: number, directionDeg:
  * ```ts
  * import { linePoints } from "@shadowcat/core";
  *
- * linePoints(0, 0, 10, 0); // [0,0, 10,0] — zero-width, matches the pre-existing shape
+ * linePoints(0, 0, 10, 0); // [0,0, 10,0] — zero-width, a bare segment
  * linePoints(0, 0, 10, 0, 4).length; // 8 (4 points × 2 coords) — a thick line
  * ```
  */

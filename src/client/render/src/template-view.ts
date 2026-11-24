@@ -1,7 +1,15 @@
 import type { ReadableDocuments, WireDocument, TemplateEngine } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { ShapeNodeSpec } from "./types";
-import { parseColor, circlePoints, conePoints, squarePoints, linePoints, DEFAULT_CONE_ANGLE_DEGREES } from "./geometry";
+import {
+  parseColor,
+  circlePoints,
+  conePoints,
+  squarePoints,
+  linePoints,
+  isDrawableConeAngle,
+  DEFAULT_CONE_ANGLE_DEGREES,
+} from "./geometry";
 import { sceneScopedDocs } from "./scene-scope";
 
 /** Templates render as translucent filled areas. */
@@ -85,13 +93,12 @@ export class TemplateView {
  * axis-aligned bbox between two authored corners (the `"rect"` string means different
  * geometry in each file). `line` builds a segment from `(x,y)` at `direction` degrees,
  * length `size`, via `linePoints`: a bare open 2-point segment when `width` is absent or
- * `0` (`closed:false`, no `fill` — the pre-existing zero-width shape, unchanged), or a
+ * `0` (`closed:false`, no `fill`), or a
  * closed rectangle of thickness `width` otherwise. Returns `null` for a missing
  * `engine.shape`, an unrecognized `kind`, a non-numeric `x`/`y`/`size`/`direction`/authored
- * `angle`/`width`, or a cone `angle` outside `(0.0, 180.0)` (`conePoints`' three-point
- * wedge is collinear at 180° and opens away from `direction` past it — matching
- * `TemplateEngine::validate`'s own bound, since the optimistic store can hold engine data
- * the server has not yet validated). This is defense-in-depth, not a claim about any particular
+ * `angle`/`width`, or an `angle` that fails `isDrawableConeAngle` (non-finite, or outside
+ * `(0.0, 180.0)`, matching `TemplateEngine::validate`'s own bound, since the optimistic store can
+ * hold engine data the server has not yet validated). This is defense-in-depth, not a claim about any particular
  * upstream conversion: the render layer draws the OPTIMISTIC view (`AppContext.documents`), so
  * a scene-tool bug that builds a Create op with a missing or non-numeric coordinate reaches
  * `templateShapeSpec` on the authoring client before the server has validated anything. Guarded
@@ -124,14 +131,12 @@ export function templateShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   // `angle`/`width` use loose null-checks: a genuine server document always carries the
   // key (Option<f64> serializes to `null`, never omitted), but a pre-migration/legacy
   // in-memory doc may omit it entirely (`undefined`) — both mean "absent, use the default".
-  if (angle != null && !Number.isFinite(angle)) return null;
   if (width != null && !Number.isFinite(width)) return null;
   // An out-of-`(0.0, 180.0)` cone angle is rejected the same as a non-finite one: the
   // optimistic store can hold engine data the server has not yet validated/rejected — the same
-  // precedent `regionShapeSpec`'s own null-part guard documents. The bound matches
-  // `TemplateEngine::validate` exactly — `conePoints`' three-point wedge is collinear at 180°
-  // and opens away from `direction` past it, so neither endpoint is drawable.
-  if (angle != null && (angle <= 0 || angle >= 180)) return null;
+  // precedent `regionShapeSpec`'s own null-part guard documents. `isDrawableConeAngle` is the
+  // guard `templateToRegionShape` reads too.
+  if (!isDrawableConeAngle(angle)) return null;
   let points: number[];
   let closed = true;
   switch (kind) {

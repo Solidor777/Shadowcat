@@ -40,6 +40,12 @@ describe("templateToRegionShape", () => {
     expect(templateToRegionShape(shape({ kind: "line", width: 0 }))).toEqual({ ok: false, reason: "zero_width_line" });
   });
 
+  test("a cone whose angle the render layer refuses to draw is refused", () => {
+    for (const angle of [0, 180, 200, -10, Number.NaN]) {
+      expect(templateToRegionShape(shape({ kind: "cone", angle }))).toEqual({ ok: false, reason: "unknown_shape" });
+    }
+  });
+
   test("an unrecognised kind is refused", () => {
     expect(templateToRegionShape(shape({ kind: "blob" }))).toEqual({ ok: false, reason: "unknown_shape" });
   });

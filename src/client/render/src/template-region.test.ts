@@ -24,6 +24,16 @@ test.each([
   expect(regionSpec?.points).toEqual(drawn?.points);
 });
 
+// One guard decides both: a cone is drawn exactly when it converts. Mutating either side to a
+// different bound makes an angle appear in only one of the two sets.
+test.each([-10, 0, 1, 90, 179, 180, 200, Number.NaN, Number.POSITIVE_INFINITY])(
+  "a cone with angle %s is drawn exactly when it converts",
+  (angle) => {
+    const tpl = templateDoc({ kind: "cone", x: 0, y: 0, size: 100, direction: 0, angle, width: null });
+    expect(templateShapeSpec(tpl) !== null).toBe(buildRegionFromTemplate("w1", tpl).ok);
+  },
+);
+
 test("a converted circle region is the circle every template outline vertex lies on", () => {
   const tpl = templateDoc({ kind: "circle", x: 120, y: 80, size: 75, direction: 0, angle: null, width: null });
   const batch = buildRegionFromTemplate("w1", tpl);

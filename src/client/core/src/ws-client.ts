@@ -780,17 +780,7 @@ export class WsClient {
    * (success-ASSUMED from silence, never acknowledged) and cleans the entry up
    * when no error arrives within the window. The three settle paths are exactly:
    * that timer, a `chat_error` reject, and a disconnect reject. */
-  private chatPending = new Map<
-    string,
-    {
-      /** Resolves (void) once the silence window elapses with no `chat_error`. */
-      resolve: () => void;
-      /** Rejects with the server's reason on a correlated `chat_error`, or on disconnect. */
-      reject: (e: Error) => void;
-      /** The silence-window timeout handle that resolves success-assumed. */
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  private chatPending: SilencePending = new Map();
   /** In-flight door toggles, keyed by request_id — the same asymmetric settle shape as
    * `chatPending` (ONLY a rejection replies, as a `door_toggle_error` frame; success is the
    * broadcast Event echo, which carries no `request_id` correlation), kept as its own map so
@@ -2079,21 +2069,7 @@ export class WsClient {
    * ```
    */
   private trackChatOp(request_id: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.chatPending.delete(request_id);
-        resolve();
-      }, CHAT_ERROR_WINDOW_MS);
-      // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
-      // call reaches it where present without taking a `@types/node` dependency.
-      (
-        timer as unknown as {
-          /** Node-only: detach the timer from keeping the event loop alive. */
-          unref?: () => void;
-        }
-      ).unref?.();
-      this.chatPending.set(request_id, { resolve, reject, timer });
-    });
+    return this.awaitSilence(this.chatPending, request_id);
   }
 
   /**
@@ -2314,11 +2290,13 @@ export class WsClient {
 
   /** Register a correlated request whose only reply is a refusal: resolves (success-assumed)
    * when the silence window elapses, rejects when the matching refusal frame settles the entry
-   * in `pending`. The shared body of `trackDoorToggle` and `trackPortalRequest`.
+   * in `pending`. With no open transport the frame cannot be sent, so it rejects at once with
+   * `NotConnectedError` instead of resolving success after the window. The shared body of
+   * `trackDoorToggle`, `choosePortal`, `openPortal` and `placeEffect`.
    * @param pending The map the request is registered in, keyed by `request_id`.
    * @param request_id The request's correlation id (already sent on the wire by the caller).
    * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no refusal; rejects when the
-   * refusal handler rejects the entry.
+   * refusal handler rejects the entry, or immediately when there is no transport.
    * @example
    * ```
    * // called from trackDoorToggle; not part of the public API
@@ -2327,6 +2305,26 @@ export class WsClient {
    * ```
    */
   private trackSilenceSettled(pending: SilencePending, request_id: string): Promise<void> {
+    if (!this.transport) return Promise.reject(new NotConnectedError());
+    return this.awaitSilence(pending, request_id);
+  }
+
+  /** Register `request_id` in `pending` and settle it by silence: the entry resolves once the
+   * window elapses with no refusal, and a refusal or a disconnect rejects it through the stored
+   * `reject`. The timer is unref'd where supported so it never keeps a test's event loop alive.
+   * The one body behind `trackChatOp` and `trackSilenceSettled`.
+   * @param pending The map the request is registered in, keyed by `request_id`.
+   * @param request_id The request's correlation id.
+   * @returns Resolves (void) after `CHAT_ERROR_WINDOW_MS` with no refusal; rejects when the
+   * refusal handler or a disconnect rejects the entry.
+   * @example
+   * ```
+   * // called from trackChatOp and trackSilenceSettled; not part of the public API
+   * declare const request_id: string;
+   * const p = this.awaitSilence(this.chatPending, request_id);
+   * ```
+   */
+  private awaitSilence(pending: SilencePending, request_id: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(request_id);

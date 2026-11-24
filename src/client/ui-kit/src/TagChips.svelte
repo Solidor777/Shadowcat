@@ -76,7 +76,8 @@
     border-radius: 1rem;
     font-size: 0.8rem;
     button {
-      min-height: 0;
+      min-width: 44px;
+      min-height: 44px;
       border: none;
       background: none;
       cursor: pointer;
@@ -84,6 +85,6 @@
     }
   }
   input {
-    min-height: 2rem;
+    min-height: 44px;
   }
 </style>

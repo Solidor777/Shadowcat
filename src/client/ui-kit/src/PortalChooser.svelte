@@ -7,7 +7,7 @@
   import { SessionPausedError, type PortalOfferNotice } from "@shadowcat/core";
   import { getAppContext } from "./appContext";
   import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
-  import { trapFocus } from "./focusTrap";
+  import { rememberFocus, trapFocus } from "./focusTrap";
   import { sizeClass } from "./sizeClass.svelte";
 
   const ctx = getAppContext();
@@ -47,14 +47,21 @@
   }
 
   // One Escape path: the shared coordinator, registered only while an offer is shown so an idle
-  // host never consumes an Escape aimed elsewhere.
+  // host never consumes an Escape aimed elsewhere. The compact modal blocks the page and ranks as
+  // a modal; the wide card does not block, so it takes the lowest band and an Escape aimed at an
+  // open menu, tooltip or overlay dismisses that first instead of declining the portal.
   $effect(() => {
     const offer = current;
     if (offer === undefined) return undefined;
-    return escapeCoordinator.register(ESCAPE_PRIORITY.MODAL, () => answer(offer, null));
+    const priority = compact ? ESCAPE_PRIORITY.MODAL : ESCAPE_PRIORITY.TOOL;
+    return escapeCoordinator.register(priority, () => answer(offer, null));
   });
 
-  $effect(() => (dialogEl && compact ? trapFocus(dialogEl) : undefined));
+  // The compact modal traps Tab; the wide card does not, but both return focus to the opener.
+  $effect(() => {
+    if (!dialogEl) return undefined;
+    return compact ? trapFocus(dialogEl) : rememberFocus(dialogEl);
+  });
 
   // Focus the first available option whenever a different offer is shown.
   $effect(() => {

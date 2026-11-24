@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { trapFocus } from "./focusTrap";
+import { rememberFocus, trapFocus } from "./focusTrap";
 
 /** Builds a container of three buttons, attached to the document, and returns it with them. */
 function build(): { root: HTMLElement; a: HTMLButtonElement; b: HTMLButtonElement; c: HTMLButtonElement } {
@@ -69,6 +69,42 @@ describe("trapFocus", () => {
     document.body.appendChild(root);
     trapFocus(root);
     expect(tab(root).defaultPrevented).toBe(true);
+  });
+
+  it("releasing the trap returns focus to the element focused when it was installed", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { root, b } = build();
+    const release = trapFocus(root);
+    b.focus();
+    root.remove();
+    expect(document.activeElement).toBe(document.body);
+    release();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("releasing the trap leaves a deliberate focus move elsewhere alone", () => {
+    const opener = document.createElement("button");
+    const other = document.createElement("button");
+    document.body.append(opener, other);
+    opener.focus();
+    const { root } = build();
+    const release = trapFocus(root);
+    other.focus();
+    release();
+    expect(document.activeElement).toBe(other);
+  });
+
+  it("rememberFocus does nothing when the recorded element left the document", () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { root } = build();
+    const restore = rememberFocus(root);
+    opener.remove();
+    restore();
+    expect(document.activeElement).toBe(document.body);
   });
 
   it("the returned disposer removes the trap", () => {

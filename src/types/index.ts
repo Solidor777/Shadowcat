@@ -111,6 +111,7 @@ export type { GeneratedCrop } from "./generated/engine/GeneratedCrop";
 export type { GeneratedBorder } from "./generated/engine/GeneratedBorder";
 export type { GeneratedBackground } from "./generated/engine/GeneratedBackground";
 export type { VisualTransform } from "./generated/engine/VisualTransform";
+export type { TokenArtFilter } from "./generated/engine/TokenArtFilter";
 export type { TransformAnchor } from "./generated/engine/TransformAnchor";
 export type { VisionAssignment } from "./generated/engine/VisionAssignment";
 export type { AuraEmission } from "./generated/engine/AuraEmission";

@@ -80,7 +80,7 @@
   /** `use:` action registering a folder row's element under its folder id.
    * @param node - The row's element.
    * @param id - The folder's document id.
-   * @returns A teardown removing the registration.
+   * @returns A teardown removing the registration and the row's context-menu trigger.
    * @example
    * ```svelte
    * <div use:trackRow={"folder-id"}></div>
@@ -91,7 +91,12 @@
     destroy: () => void;
   } {
     rowEls.set(id, node);
-    return { destroy: () => rowEls.delete(id) };
+    return {
+      destroy: () => {
+        rowEls.delete(id);
+        rowTriggers.delete(id);
+      },
+    };
   }
 
   /** The drop targets an item drag lands on: every folder row plus the all-items row. The item
@@ -204,6 +209,11 @@
       },
       (event) => renameEl !== null && event.target === renameEl,
     );
+  });
+
+  // A rename starts with the input focused, so keyboard users type the new name directly.
+  $effect(() => {
+    renameEl?.focus();
   });
 
   // The delete dialog closes on Escape, takes focus when it opens, and keeps Tab inside itself.
@@ -485,7 +495,7 @@
         />
       {/if}
       {#if movePickerFor === f.id}
-        <div class="move-picker" role="menu">
+        <div class="move-picker" role="group" aria-label={t(labels.move)}>
           <button type="button" data-testid="folder-move-target-root" onclick={() => moveFolder(f.id, null)}>
             {t(labels.moveToRoot)}
           </button>
@@ -562,7 +572,7 @@
   .node {
     flex: 1;
     text-align: left;
-    min-height: 2rem;
+    min-height: 2.75rem;
     border: none;
     background: none;
     cursor: pointer;
@@ -583,12 +593,11 @@
     outline: 2px solid var(--accent);
   }
   .mini.drag-handle {
-    min-width: 2.75rem;
     user-select: none;
   }
   .mini {
-    min-width: 1.75rem;
-    min-height: 1.75rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
     border: none;
     background: none;
     cursor: pointer;
@@ -603,7 +612,7 @@
     border: 1px solid var(--border);
     background: var(--surface-raised);
     button {
-      min-height: 2rem;
+      min-height: 2.75rem;
       text-align: left;
     }
   }
@@ -611,7 +620,7 @@
     color: var(--danger);
   }
   input {
-    min-height: 2rem;
+    min-height: 2.75rem;
     margin-top: 0.375rem;
   }
 </style>
