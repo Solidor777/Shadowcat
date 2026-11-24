@@ -42,6 +42,6 @@ export function createPresentedNoteHandler(deps: PresentedNoteDeps): (msg: Prese
     const doc = deps.documents.get(msg.noteId);
     if (!doc) return;
     deps.openDocument({ docId: msg.noteId });
-    deps.notify(deps.t("notes.presenting", { name: doc.name ?? deps.t("sheetNote.untitled") }), "info");
+    deps.notify(deps.t("notes.presenting", { name: doc.name || deps.t("sheetNote.untitled") }), "info");
   };
 }

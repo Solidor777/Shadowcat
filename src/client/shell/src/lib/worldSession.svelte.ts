@@ -162,8 +162,8 @@ export interface WorldSessionOpts {
    * non-`"activated"` `ModuleActivationOutcome`, from the first-party and external activation
    * passes and `reconcileInstalledModules`. `id` is the install folder id for an external module
    * and the registry id for a first-party one; `detail` is the failure message, or `null` for a
-   * skipped module. The shell surfaces it as a toast; a headless caller (tests) may leave it
-   * unset. */
+   * skipped module. Fired for the GM only, and once per change of a module's problem. The shell
+   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
   onModuleStatus?: (
     id: string,
     status: "skipped-deps-unmet" | "failed" | "load-failed",
@@ -2152,7 +2152,13 @@ export class WorldSession {
     for (const r of resolved) folderByManifestId.set(r.manifest.id, r.folderId);
     const record = (entry: ModuleStatusEntry): void => {
       const key = folderByManifestId.get(entry.id) ?? entry.id;
+      const prior = this.moduleStatus.get(key);
       this.moduleStatus.set(key, { ...entry, id: key });
+      // `ModuleRegistry.activate` re-reports every module that stays inactive on each pass, so
+      // only a change in a module's problem is announced. Only the GM can act on a module
+      // failure; a player's map still fills for readers of `moduleStatus`.
+      if (prior?.status === entry.status && prior.error === entry.error) return;
+      if (this.role !== "gm") return;
       this.opts.onModuleStatus?.(key, entry.status, entry.error ?? null);
     };
     for (const f of failed) record({ id: f.id, status: "load-failed", error: f.error });
