@@ -1662,6 +1662,62 @@ fn one_way_wall_is_transparent_in_the_rest_polygon_and_the_streamed_recast_alike
     );
 }
 
+/// Proximity-wall parity between the rest polygon and the streamed re-raycast: a wall whose
+/// `proximity` tier names sight is absent for a viewpoint within the tier's distance and solid
+/// beyond it, on both paths, because both re-raycast through the `sight_wall_entries` set that
+/// carries `Seg::open_within`. Fails when the streamed path builds its walls without the tier
+/// (the near viewpoint would then stay occluded) or ignores the distance (the far one would see
+/// through).
+#[test]
+fn proximity_wall_opens_within_range_in_the_rest_polygon_and_the_streamed_recast_alike() {
+    let scene = crate::test_ids::test_uuid(10);
+    let user = crate::test_ids::test_uuid(7);
+    let token_id = crate::test_ids::test_uuid(11);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // Vertical sight wall at x=100 opening for a viewer within 1 cell (100 units at the 100-unit
+    // grid), so the token's rest viewpoint (50,50), 50 units away, sees through it.
+    let wall = entity_doc_eng(
+        12,
+        10,
+        "wall",
+        json!({ "seg": {"x1": 100, "y1": -200, "x2": 100, "y2": 200},
+                "blocksSight": true,
+                "proximity": { "within": 1.0, "senses": ["sight"], "soundGain": null } }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall], 0);
+
+    let rest = ecs
+        .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
+        .into_iter()
+        .find(|(sid, _, _)| *sid == scene)
+        .map(|(_, _, p)| p)
+        .expect("the owned token yields a polygon for its scene");
+    assert!(
+        vision::point_in_poly(&rest, (150.0, 50.0)),
+        "within the tier's distance the rest polygon sees through the wall"
+    );
+
+    let streamed_near = ecs.player_vision_polygons_at(user, scene, token_id, (50.0, 50.0));
+    assert_eq!(
+        streamed_near.first(),
+        Some(&rest),
+        "the streamed re-raycast at the same viewpoint matches the rest polygon"
+    );
+
+    // 150 units from the wall: beyond the 100-unit tier, the wall blocks again.
+    let streamed_far = ecs.player_vision_polygons_at(user, scene, token_id, (-50.0, 50.0));
+    assert!(
+        !vision::point_in_poly(&streamed_far[0], (150.0, 50.0)),
+        "beyond the tier's distance the streamed polygon is occluded by the wall"
+    );
+}
+
 /// Returns empty when the user owns no token in the scene, even when `moving_token`
 /// points to an existing token owned by another user.
 #[test]

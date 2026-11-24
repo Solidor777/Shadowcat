@@ -273,11 +273,6 @@ reported it and stopped. Each stays here until the owner rules to build it now o
   read the actor: hiding it means redacting a structural field, which the structural-field
   invariant test forbids. Needs a ruling on whether the copy's origin id may be redacted. (S-M,
   design question)
-- TODO: The trash `empty all` confirmation shows no entry count. (S)
-- TODO: The streamed `MoveStream` vision path has no test for a wall carrying a `proximity` tier;
-  it inherits the tier from the shared wall collectors but nothing pins that. (S)
-- TODO: An effect whose `EffectOrigin.source` is an embedded item shows no origin text in
-  `EffectsList` unless the origin also carries a `label`; resolve the embedded item's name. (S)
 
 ## Needs the final CI pass or a physical device
 
