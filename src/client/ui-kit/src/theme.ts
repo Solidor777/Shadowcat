@@ -117,7 +117,7 @@ const SHARED_SCALE = {
   "font-size-sm": "0.875rem",
   "font-size-md": "1rem",
   "input-height-coarse": "44px",
-  "z-popover": "1000",
+  "z-popover": "50000",
 } as const;
 
 // The default theme. Its color values are a literal transcription of the shell
