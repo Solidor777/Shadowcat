@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { escapeCoordinator, ESCAPE_PRIORITY } from "./escapeCoordinator";
 import { render, fireEvent, waitFor, type RenderResult } from "@testing-library/svelte";
 import { SessionPausedError, type PortalOfferNotice } from "@shadowcat/core";
 import PortalChooser from "./PortalChooser.svelte";
@@ -110,6 +111,33 @@ describe("PortalChooser", () => {
     await fireEvent.keyDown(document, { key: "Escape" });
     expect(declined).toEqual(["o1"]);
     await waitFor(() => expect(view.queryByTestId("portal-chooser")).toBeNull());
+  });
+
+  it("in the wide card, Escape aimed at an open menu closes the menu and leaves the offer", async () => {
+    const { push, declined, view } = mount();
+    push(offer());
+    await waitFor(() => view.getByTestId("portal-chooser"));
+    const closeMenu = vi.fn();
+    const dispose = escapeCoordinator.register(ESCAPE_PRIORITY.MENU, closeMenu);
+    await fireEvent.keyDown(document, { key: "Escape" });
+    dispose();
+    expect(closeMenu).toHaveBeenCalledOnce();
+    expect(declined).toEqual([]);
+    expect(view.queryByTestId("portal-chooser")).not.toBeNull();
+  });
+
+  it("returns focus to the control that held it when the offer arrived", async () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    const { push, view } = mount();
+    push(offer());
+    const options = (await waitFor(() => view.getAllByTestId("portal-option"))) as HTMLButtonElement[];
+    await waitFor(() => expect(document.activeElement).toBe(options[0]));
+    await fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(view.queryByTestId("portal-chooser")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    opener.remove();
   });
 
   it("focuses the first available option and moves focus with the arrow keys", async () => {

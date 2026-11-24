@@ -27,6 +27,17 @@ describe("EscapeCoordinator", () => {
     expect(low).not.toHaveBeenCalled();
   });
 
+  it("ignores an Escape that cancels an IME composition and leaves it undefaulted", () => {
+    const root = new EventTarget();
+    const coordinator = new EscapeCoordinator(root);
+    const close = vi.fn();
+    coordinator.register(10, close);
+    const event = new KeyboardEvent("keydown", { key: "Escape", isComposing: true, cancelable: true, bubbles: true });
+    root.dispatchEvent(event);
+    expect(close).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it("a higher priority wins regardless of registration order", () => {
     const { coordinator, press } = setup();
     const high = vi.fn();

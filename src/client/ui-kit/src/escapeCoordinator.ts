@@ -89,7 +89,8 @@ export class EscapeCoordinator {
    * // private; installed as the capture-phase listener in the constructor
    */
   #onKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape") return;
+    // Escape during an IME composition cancels the composition, not the surface; the IME owns it.
+    if (event.key !== "Escape" || event.isComposing) return;
     let winner: EscapeRegistration | undefined;
     for (const r of this.#registrations) {
       if (r.appliesTo !== undefined && !r.appliesTo(event)) continue;
