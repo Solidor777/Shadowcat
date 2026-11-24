@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor, escapeCoordinator, ESCAPE_PRIORITY } from "@shadowcat/ui-kit";
   import { resolveSceneSettings, sessionFreezes, SessionPausedError, actorDisplayName, resolveTokenActor, templateToRegionShape, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type TokenEngine, type WallEngine, type WallProximity, type WallSense,type RegionEngine, type RegionAnchor, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta, type AmbientLightMode } from "@shadowcat/core";
@@ -7,6 +8,8 @@
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
   import DormantRegionList from "./DormantRegionList.svelte";
   import { portalTokens } from "./portal-use";
+  import { wallBlocksSound } from "./wall-flags";
+  import { MAX_PROXIMITY_CELLS, isValidProximityWithin } from "./server-bounds";
   import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
   const ctx = getAppContext();
@@ -36,7 +39,6 @@
   // here, so a seam the host has can never be left out of this literal without a type error.
   // The two viewedLevel* fields below are ToolContext-only (no AppContext counterpart), so they
   // sit OUTSIDE this checked literal — spread in below — rather than widening the check itself.
-  // svelte-ignore state_referenced_locally
   const hostToolContext = {
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
@@ -66,6 +68,9 @@
     viewedLevelBottom: () => resolvedViewedLevel()?.bottom ?? null,
     movesFrozen: () => movesFrozen,
   });
+  // The rail's unmount (a world session ending included) deactivates the active tool, so a live
+  // shared ruler's keepalive timer stops with it.
+  onDestroy(() => controller.release());
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so
@@ -572,9 +577,6 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** The largest proximity distance, in cells, the server accepts (`MAX_PROXIMITY_CELLS`). */
-  const MAX_PROXIMITY_CELLS = 1000;
-
   /** The senses a wall's proximity tier can open, in the order the editor lists them. */
   const PROXIMITY_SENSES: readonly WallSense[] = ["sight", "light", "sound"];
 
@@ -594,17 +596,24 @@
   }
 
   /** Write the proximity distance from the input's raw string. A value that is not a finite
-   * number in `(0, MAX_PROXIMITY_CELLS]` is ignored: the server rejects the whole update for one.
+   * number in `(0, MAX_PROXIMITY_CELLS]` is not written (the server rejects the whole update for
+   * one): the input shows the stored distance again and a warning says why.
    * @param tier The wall's stored tier.
-   * @param raw The distance input's raw string value, in cells.
+   * @param input The distance input; its text is reset when the value is refused.
    * @example
    * ```
-   * editProximityWithin({ within: 1, senses: ["sight"], soundGain: null }, "3");
+   * declare const input: HTMLInputElement;
+   * editProximityWithin({ within: 1, senses: ["sight"], soundGain: null }, input);
    * ```
    */
-  function editProximityWithin(tier: WallProximity, raw: string): void {
+  function editProximityWithin(tier: WallProximity, input: HTMLInputElement): void {
+    const raw = input.value;
     const within = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(within) || within <= 0 || within > MAX_PROXIMITY_CELLS) return;
+    if (raw.trim() === "" || !isValidProximityWithin(within)) {
+      input.value = String(tier.within);
+      ctx.notify(t("tools.wallProximityOutOfRange", { max: MAX_PROXIMITY_CELLS }), "warning");
+      return;
+    }
     if (within === tier.within) return;
     editProximity({ ...tier, within });
   }
@@ -760,6 +769,12 @@
       {tool.label}
     </button>
   {/each}
+
+  <!-- The reason the move tools do nothing while the session is paused, as text: a tooltip is
+       unreachable on touch. -->
+  {#if movesFrozen}
+    <span class="hint" data-testid="moves-paused-note">{t("tools.paused")}</span>
+  {/if}
 
   {#each sceneTools as tool (tool.id)}
     <button
@@ -1019,9 +1034,9 @@
                whole list into ONE compound region. -->
           {#each controller.regionParts as part, i (i)}
             <div class="trigger-row">
-              <span>{part.shape.kind}</span>
+              <span data-testid="region-part-kind">{t(`tools.regionPartKind.${part.shape.kind}`)}</span>
               <label>
-                <input type="checkbox" data-testid="region-part-hole" bind:checked={part.hole} />
+                <input type="checkbox" data-testid="region-part-hole" checked={part.hole} onchange={(e) => controller.setRegionPartHole(i, e.currentTarget.checked)} />
                 {t("tools.regionPartHole")}
               </label>
               <button type="button" data-testid="region-part-remove" aria-label={t("tools.regionPartRemove")} title={t("tools.regionPartRemove")} onclick={() => controller.removeRegionPartAt(i)}>×</button>
@@ -1068,9 +1083,9 @@
               <input
                 data-testid="region-trigger-scrolling-text"
                 aria-label={t("tools.triggerScrollingText")}
-                title={t("tools.triggerScrollingTextHint", { max: MAX_OVERLAY_DISPLAY_CHARS })}
                 bind:value={trig.effect.text}
               />
+              <span class="hint" data-testid="region-trigger-scrolling-text-hint">{t("tools.triggerScrollingTextHint", { max: MAX_OVERLAY_DISPLAY_CHARS })}</span>
             {/if}
             <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
           </div>
@@ -1146,7 +1161,7 @@
           <input
             type="checkbox"
             data-testid="wall-blocks-sound"
-            checked={eng.blocksSound}
+            checked={wallBlocksSound(eng)}
             onchange={(e) => editSelected("/engine/blocksSound", eng.blocksSound ?? null, e.currentTarget.checked)}
           />
           {t("tools.blocksSound")}
@@ -1214,7 +1229,7 @@
               step="0.5"
               data-testid="wall-proximity-within"
               value={tier.within}
-              onchange={(e) => editProximityWithin(tier, e.currentTarget.value)}
+              onchange={(e) => editProximityWithin(tier, e.currentTarget)}
             />
           </label>
           {#each PROXIMITY_SENSES as sense (sense)}
@@ -1258,9 +1273,9 @@
               editSelected("/engine/door", eng.door ?? null, e.currentTarget.value === "none" ? null : e.currentTarget.value)}
           >
             <option value="none">—</option>
-            <option value="closed">closed</option>
-            <option value="open">open</option>
-            <option value="locked">locked</option>
+            <option value="closed">{t("tools.doorState.closed")}</option>
+            <option value="open">{t("tools.doorState.open")}</option>
+            <option value="locked">{t("tools.doorState.locked")}</option>
           </select>
         </label>
         <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
@@ -1479,8 +1494,22 @@
       min-height: var(--input-height-coarse);
     }
   }
+  /* Every button in the active tool's controls (add and remove rows included) meets the touch
+   * target floor; the remove buttons carry a single glyph and would otherwise be narrow. */
+  .controls button {
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    box-sizing: border-box;
+  }
+  .hint {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
+    font-size: 0.85em;
+    color: var(--text-secondary);
+  }
   .trigger-row {
     display: flex;
+    flex-wrap: wrap;
     flex-direction: row;
     gap: var(--space-1);
     align-items: center;

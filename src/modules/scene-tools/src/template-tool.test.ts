@@ -25,10 +25,11 @@ function setup(
     snap,
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand };
+  const notices: Array<{ message: string; level?: string }> = [];
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand, notify: (message, level) => notices.push({ message, level }) };
   const controller = new ToolController(ctx);
   controller.templateMode = mode;
-  return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared, controller };
+  return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared, controller, notices };
 }
 
 /** Snaps to the nearest 100-unit cell center, matching the default scene's `size: 100` grid —
@@ -158,6 +159,15 @@ test("a cone with an out-of-range authored angle (180, at the exclusive bound) i
   tool.onPointerUp({ x: 10, y: 0 }, ev);
   expect(sent).toHaveLength(0);
   expect(clears()).toBe(1); // the tool still resets its own gesture state
+});
+
+test("a refused template drag raises the out-of-range warning instead of vanishing silently", () => {
+  const { tool, controller, sent, notices } = setup("cone");
+  controller.templateAngle = 180;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 10, y: 0 }, ev);
+  expect(sent).toHaveLength(0);
+  expect(notices).toEqual([{ message: "tools.templateOutOfRange", level: "warning" }]);
 });
 
 test("a cone with an out-of-range authored angle (270, past the bound) is not dispatched", () => {

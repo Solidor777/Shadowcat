@@ -78,10 +78,10 @@ const welcomeFrame = {
 
 // Deliver the Welcome `count` times to exercise reconnect-idempotency (the
 // server re-sends Welcome on every (re)connect).
-function mockConnect(count = 1): Connect {
+function mockConnect(count = 1, role: "gm" | "player" = "player"): Connect {
   return (handlers) => {
     queueMicrotask(() => {
-      for (let i = 0; i < count; i++) handlers.onMessage(JSON.stringify(welcomeFrame));
+      for (let i = 0; i < count; i++) handlers.onMessage(JSON.stringify({ ...welcomeFrame, user_role: role }));
     });
     return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
   };
@@ -2546,6 +2546,7 @@ test("a module whose activation fails gets no stylesheet link", async () => {
 async function enterWithModuleImport(
   importModule: (url: string) => Promise<unknown>,
   onModuleStatus?: (id: string, status: string, detail: string | null) => void,
+  role: "gm" | "player" = "gm",
 ): Promise<WorldSession> {
   const core = await import("@shadowcat/core");
   vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
@@ -2561,7 +2562,7 @@ async function enterWithModuleImport(
   ]);
   const session = new WorldSession({
     selfId: "u1",
-    connect: mockConnect(),
+    connect: mockConnect(1, role),
     modules: [coreUiStub],
     logger: silentLogger,
     importModule,
@@ -2604,6 +2605,53 @@ test("a module whose import fails reaches onModuleStatus as load-failed under it
     expect.stringContaining("import blew up"),
   );
   expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  session.leave();
+});
+
+test("a player's session records a module failure but never calls onModuleStatus", async () => {
+  const onModuleStatus = vi.fn();
+  const session = await enterWithModuleImport(
+    vi.fn().mockRejectedValue(new Error("import blew up")),
+    onModuleStatus,
+    "player",
+  );
+  expect(session.moduleStatus.get("folder-one")?.status).toBe("load-failed");
+  expect(onModuleStatus).not.toHaveBeenCalled();
+  session.leave();
+});
+
+test("a later activation pass does not announce an unchanged module problem again", async () => {
+  const core = await import("@shadowcat/core");
+  const onModuleStatus = vi.fn();
+  const failing = (manifestId: string) => ({
+    manifest: { ...styledModuleManifest, id: manifestId },
+    register: vi.fn().mockRejectedValue(new Error("boom")),
+  });
+  const session = await enterWithModuleImport(
+    vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(failing(url.includes("folder-two") ? "mod-two" : "mod-one")),
+    ),
+    onModuleStatus,
+  );
+  expect(onModuleStatus).toHaveBeenCalledTimes(1);
+  // Enabling a second module runs another activation pass, which retries and re-reports the
+  // still-failing first module.
+  vi.mocked(core.getEnabledModules).mockResolvedValue([
+    { id: "folder-one", validators_enabled: false },
+    { id: "folder-two", validators_enabled: false },
+  ]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue(
+    ["folder-one", "folder-two"].map((id) => ({
+      id,
+      manifest: { ...styledModuleManifest, id: id === "folder-one" ? "mod-one" : "mod-two" },
+      entry_url: `/modules/${id}/index.js`,
+      has_validators: false,
+      validator_load_error: null,
+      engine_compat_ok: true,
+    })),
+  );
+  await session.reconcileInstalledModules();
+  expect(onModuleStatus.mock.calls.map((c) => c[0])).toEqual(["folder-one", "folder-two"]);
   session.leave();
 });
 

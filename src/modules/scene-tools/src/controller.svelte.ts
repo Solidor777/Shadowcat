@@ -20,6 +20,7 @@ import { NotConnectedError, RequestTimeoutError, PathfindError, noticeOncePerGes
 import type { SceneInteraction, ActorSelection, TokenSelection, ShareRulerPreference, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { RulerSharer } from "./ruler-share";
+import { clampAmbientLevel, isValidTemplateAngle, isValidTemplateWidth } from "./server-bounds";
 import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt, pointSegDistance } from "./hit-test";
 
 /** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
@@ -548,6 +549,19 @@ export class ToolController {
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
 
+  /** Deactivates the active tool and returns the canvas to camera pan/zoom. The rail calls it
+   * when it unmounts, so a tool's live state (the shared ruler's keepalive timer included) ends
+   * with the rail rather than outliving the world session. A no-op when no tool is active.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.release();
+   * ```
+   */
+  release(): void {
+    if (this.active) this.toggle(this.active);
+  }
+
   /** Turns a template into a region: dispatches ONE batch (create the region, delete the
    * template) and opens the new region in the rail's region editor so the GM can add behavior
    * and triggers. A template whose shape has no region equivalent (a zero-width line) is
@@ -702,6 +716,24 @@ export class ToolController {
     }
   }
 
+  /** Flip one staged part between additive and hole, and repaint the staged preview so the
+   * overlay shows the part's new fill. A no-op for an index no part occupies.
+   * @param i Index into `regionParts`.
+   * @param hole `true` to subtract the part from the region, `false` to add it.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.stageRegionPart({ kind: "rect", points: [0, 0, 100, 100] }, "s1");
+   * controller.setRegionPartHole(0, true);
+   * ```
+   */
+  setRegionPartHole(i: number, hole: boolean): void {
+    const part = this.regionParts[i];
+    if (!part) return;
+    part.hole = hole;
+    this.ctx.scene.previewOverlay(stagedPartPreviews(this));
+  }
+
   /** Discard the staged part list and leave the compound gesture (the tool's `onDeactivate`
    * path and the remove-the-last-part path both funnel here, so "an empty list is not a
    * compound flow" holds everywhere). Also clears the stage overlay the staged preview
@@ -765,9 +797,11 @@ export class ToolController {
    * (`next` null), without moving it on the canvas: `reanchorRegion` re-expresses the stored
    * shape (offsets from the carrier's centre when anchored, absolute scene units when not) and
    * ONE update writes `/engine/anchor` and `/engine/shape` together, each against its raw stored
-   * value. Refuses with a toast when a carrier does not resolve (the region is dormant, or the
-   * chosen token is not a token on the region's scene), because there is then no centre to
-   * convert against.
+   * value. Refuses with a toast in two cases: the chosen carrier does not resolve (it is not a
+   * token on the region's scene), so there is no centre to offset from; or the region is dormant
+   * (its current carrier does not resolve) and `next` is `null`, so there is no absolute shape
+   * to keep. A dormant region attached to a resolving carrier is accepted and keeps its stored
+   * offsets.
    * @param regionId The region document's id.
    * @param next The new anchor, or `null` to detach.
    * @returns `true` when an update was dispatched.
@@ -1324,7 +1358,8 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
  */
 function regionAmbientOverride(controller: ToolController): AmbientLightOverride | null {
   if (controller.regionBehavior !== "ambient_light") return null;
-  return { mode: controller.regionAmbientMode, level: controller.regionAmbientLevel };
+  const mode = controller.regionAmbientMode;
+  return { mode, level: clampAmbientLevel(mode, controller.regionAmbientLevel) };
 }
 
 /** The `RegionEngine.occludes` body for the region the tool is about to persist: `null` when no
@@ -2148,48 +2183,6 @@ function sizeDir(a: Point, b: Point, cell: number): {
   return { size: d, direction: (Math.atan2(dy, dx) * 180) / Math.PI };
 }
 
-/** `true` when `angle` is a value `TemplateEngine::validate` would accept for a cone's
- * `shape.angle` — `null` (no authored override; the render layer's own default aperture
- * applies) or a finite value in `(0.0, 180.0)` EXCLUSIVE on both ends, matching that
- * function's own bound exactly: `conePoints`' three-point wedge is collinear (zero area) at
- * exactly 180° and opens away from `direction` past it, so neither endpoint is a
- * representable cone. The native `<input min max>` on the angle control is advisory only
- * (nothing stops a typed value outside it, and it does not block the `change` event) — this
- * is the genuine gate: `onPointerUp` calls it before dispatching, so an out-of-range authored
- * angle is refused client-side rather than round-tripping an optimistic placement into a
- * server rejection and rollback.
- * @param angle The authored `templateAngle`, or `null`.
- * @returns Whether a cone template may be dispatched with this angle.
- * @example
- * ```
- * isValidTemplateAngle(null); // true — no override
- * isValidTemplateAngle(60);   // true
- * isValidTemplateAngle(180);  // false — collinear wedge
- * isValidTemplateAngle(200);  // false — opens away from `direction`
- * ```
- */
-function isValidTemplateAngle(angle: number | null): boolean {
-  return angle === null || (Number.isFinite(angle) && angle > 0 && angle < 180);
-}
-
-/** `true` when `width` is a value `TemplateEngine::validate` would accept for `shape.width` —
- * `null`, or finite and `>= 0.0`, matching that function's own rule exactly (a rect/line
- * `width` has no upper bound, unlike `angle`'s wedge geometry). Sibling of
- * `isValidTemplateAngle`; both are the client-side mirror of the SAME server function, kept as
- * a matched pair rather than two independently-derived rules.
- * @param width The authored `templateWidth`, or `null`.
- * @returns Whether a line/rect template may be dispatched with this width.
- * @example
- * ```
- * isValidTemplateWidth(null); // true — no override
- * isValidTemplateWidth(4);    // true
- * isValidTemplateWidth(-5);   // false — TemplateEngine::validate requires >= 0.0
- * ```
- */
-function isValidTemplateWidth(width: number | null): boolean {
-  return width === null || (Number.isFinite(width) && width >= 0);
-}
-
 /** Drag to place a template area (circle/cone/rect/line) anchored at the snapped cell; the
  * drag sets size + direction via `sizeDir`, fed the drag-end point post-snap (matching the
  * anchor's own frame) so a plain click lands within `sizeDir`'s `d < 1` fallback and yields the
@@ -2247,8 +2240,11 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
       const angle = controller.templateMode === "cone" ? controller.templateAngle : null;
       const width = controller.templateMode === "line" || controller.templateMode === "rect" ? controller.templateWidth : null;
       // Refuse to dispatch a `Create` the server's `TemplateEngine::validate` would reject
-      // outright, rather than round-tripping an optimistic placement into a rollback.
-      if (scene && isValidTemplateAngle(angle) && isValidTemplateWidth(width)) {
+      // outright, rather than round-tripping an optimistic placement into a rollback; the
+      // refusal is announced, never a drag that silently vanishes.
+      if (scene && !(isValidTemplateAngle(angle) && isValidTemplateWidth(width))) {
+        ctx.notify?.(ctx.t("tools.templateOutOfRange"), "warning");
+      } else if (scene) {
         const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
         ctx.dispatchIntent([
           {

@@ -230,7 +230,8 @@
       // (unlike `RejectReason`'s fixed key set) — pushed raw, never through `t()`.
       onAudioError: (reason) => notifications.push("warning", reason),
       // A module that failed to load or activate, or was skipped for an unmet dependency, is
-      // named to the GM; `detail` is the failure message, empty for a skip.
+      // named to the GM (`WorldSession` fires this for the GM only); `detail` is the failure
+      // message, empty for a skip.
       onModuleStatus: (id, status, detail) =>
         notifications.push(
           "warning",

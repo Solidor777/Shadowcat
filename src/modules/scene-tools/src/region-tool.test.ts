@@ -104,6 +104,40 @@ test("ambient_light behavior persists the configured mode/level as ambient_overr
   }
 });
 
+test("an out-of-range or cleared ambient level persists as a level the server accepts", () => {
+  // Fails without the clamp: an `override` level of 2 or a cleared input (NaN) is rejected by the
+  // server's region validation, or serializes to JSON null.
+  const { tool, controller, sent } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionBehavior = "ambient_light";
+  controller.regionAmbientMode = "override";
+  for (const level of [2, Number.NaN]) {
+    controller.regionAmbientLevel = level;
+    tool.onPointerDown({ x: 0, y: 0 }, ev);
+    tool.onPointerUp({ x: 100, y: 100 }, ev);
+  }
+  controller.regionAmbientMode = "darken";
+  controller.regionAmbientLevel = -3;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const levels = sent.map((ops) => (ops[0].op === "create" ? (ops[0].doc.engine as { ambient_override: { level: number } }).ambient_override.level : null));
+  expect(levels).toEqual([1, 0, 0]);
+});
+
+test("flipping a staged part to a hole repaints the staged preview", () => {
+  const { tool, controller, previews } = setup();
+  controller.regionShapeMode = "rect";
+  controller.regionCompound = true;
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 100 }, ev);
+  const before = previews();
+  controller.setRegionPartHole(0, true);
+  expect(controller.regionParts[0].hole).toBe(true);
+  expect(previews()).toBe(before + 1);
+  controller.setRegionPartHole(5, true); // no such part: nothing repaints
+  expect(previews()).toBe(before + 1);
+});
+
 test("ticked sense checkboxes persist as occludes; none ticked persists null", () => {
   // Fails if either persist site stops reading the flags (the literal `null` it replaced) or the
   // none-ticked case writes an all-false block, which the server rejects.

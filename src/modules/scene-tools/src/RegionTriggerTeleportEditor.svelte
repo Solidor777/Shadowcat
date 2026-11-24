@@ -82,7 +82,7 @@
         if (effect.type === "portal_choice") effect.prompt = e.currentTarget.value === "" ? null : e.currentTarget.value;
       }}
     />
-    {#each effect.options as option, i (i)}
+    {#each effect.options as option, i (option)}
       <div class="option" data-testid="region-trigger-portal-option">
         <input
           data-testid="region-trigger-portal-label"
@@ -119,6 +119,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+  button {
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    box-sizing: border-box;
   }
   .mode,
   .reveal {
