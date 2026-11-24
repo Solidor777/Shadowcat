@@ -18,6 +18,12 @@ describe("coerceFormula", () => {
     expect(coerceFormula("   ")).toMatchObject({ error: "parse" });
   });
 
+  it("rejects the Number() spellings the lexer does not accept instead of converting them", () => {
+    expect(coerceFormula("0x1F")).toMatchObject({ error: "parse" });
+    expect(coerceFormula("0b11")).toMatchObject({ error: "parse" });
+    expect(coerceFormula("1e3")).toMatchObject({ error: "parse" });
+  });
+
   it("treats a non-finite numeral as a reference, never as a number", () => {
     expect(coerceFormula("Infinity")).toBe("Infinity");
     expect(coerceFormula("NaN")).toBe("NaN");

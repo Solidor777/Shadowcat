@@ -18,9 +18,11 @@ import type { FormulaError } from "./types";
  */
 export function coerceFormula(text: string): number | string | FormulaError {
   const trimmed = text.trim();
-  const n = Number(trimmed);
-  if (trimmed !== "" && Number.isFinite(n)) return n;
   const parsed = parseFormula(trimmed);
   if ("error" in parsed) return parsed;
+  // The lexer decides what a numeric literal is (decimal digits with an optional fraction), so
+  // `Number()` spellings such as "0x1F" or "1e3" never become numbers here: they fail the parse.
+  if (parsed.kind === "num") return parsed.value;
+  if (parsed.kind === "neg" && parsed.operand.kind === "num") return -parsed.operand.value;
   return trimmed;
 }

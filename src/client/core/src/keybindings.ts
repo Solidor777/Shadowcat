@@ -166,7 +166,7 @@ function fallbackKeyName(code: string): string {
 }
 
 /**
- * Whether `target` is a text input, textarea, or `contenteditable` element — keystrokes aimed
+ * Whether `target` is a text input, textarea, select, or `contenteditable` element — keystrokes aimed
  * there are typing, never a binding.
  * @param target The event's `target`.
  * @returns `true` when typing should suppress keybindings.
@@ -181,7 +181,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
   const tag = target.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA";
+  // A focused SELECT consumes typed letters for type-ahead, so it counts as a typing target.
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 /** Options for registering a binding. */

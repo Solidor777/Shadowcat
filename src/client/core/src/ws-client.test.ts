@@ -2209,6 +2209,16 @@ describe("WsClient portal frames", () => {
     client.stop();
     await expect(p).rejects.toThrow();
   });
+
+  it("door, portal and placement requests reject with NotConnectedError when no transport is open", async () => {
+    const idle = new WsClient({ world: "w1", connect: () => Promise.reject(new Error("no")), handlers: noop });
+    await expect(idle.toggleDoor("s1", "wall-1", "open")).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(idle.choosePortal("o1", 0)).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(idle.openPortal("t1")).rejects.toBeInstanceOf(NotConnectedError);
+    await expect(
+      idle.placeEffect("spells", "fireball", "s1", { kind: "circle", points: [0, 0, 3] }),
+    ).rejects.toBeInstanceOf(NotConnectedError);
+  });
 });
 
 describe("WsClient shared-ruler frames", () => {
