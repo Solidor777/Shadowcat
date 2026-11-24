@@ -322,6 +322,27 @@ impl PortMapRuntime {
         }
     }
 
+    /// The router's external address while a mapping is held AND that address is publicly
+    /// routable: the address a host hands to players on the internet. `None` otherwise (nothing
+    /// mapped, the router did not report one, or it is not public). It is the one reader the
+    /// certificate shown to public peers consults ([`crate::tls::TlsRuntime::set_external_source`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(shadowcat::portmap::runtime::PortMapRuntime::disabled().public_address().is_none());
+    /// ```
+    pub fn public_address(&self) -> Option<std::net::IpAddr> {
+        let status = self.status();
+        if status.state != PortMapState::Mapped {
+            return None;
+        }
+        status
+            .external_address
+            .and_then(|text| text.parse().ok())
+            .filter(|ip| is_public_address(*ip))
+    }
+
     /// Stops the task and deletes the mapping within the deletion deadline. Called after the HTTP
     /// drain. A mapping that cannot be deleted expires with its lease.
     ///

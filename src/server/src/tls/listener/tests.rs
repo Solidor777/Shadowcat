@@ -185,6 +185,207 @@ async fn the_snapshot_is_taken_after_the_client_hello_arrives() {
     assert!(served.is_some());
 }
 
+// ---------------------------------------------------------------------------------------------
+// Certificate scope by peer address
+// ---------------------------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+use crate::tls::selfsigned::{RcgenGenerator, SanSources};
+
+/// Interface addresses of the synthetic host: a private one, a public-looking global one and a
+/// unique-local one. A public peer must read none of them.
+const HOST_INTERFACES: [&str; 3] = ["192.168.1.20", "198.51.100.50", "fd00::5"];
+
+/// A runtime with a persisted TLS directory and `HOST_INTERFACES` as the host's interfaces.
+fn host_runtime(dir: &std::path::Path) -> Arc<TlsRuntime> {
+    crate::tls::install_default_provider();
+    TlsRuntime::start_with(
+        &Config {
+            db: "sqlite::memory:".into(),
+            tls_dir: Some(dir.to_string_lossy().into_owned()),
+            ..Config::default()
+        },
+        Arc::new(RcgenGenerator),
+        SanSources {
+            interface_ips: HOST_INTERFACES.iter().map(|s| s.parse().unwrap()).collect(),
+            ..SanSources::default()
+        },
+        time::OffsetDateTime::now_utc(),
+    )
+}
+
+/// Every SAN entry of a DER leaf, DNS names lowercase and addresses in canonical text.
+fn sans_of(der: &[u8]) -> Vec<String> {
+    use x509_parser::extensions::GeneralName;
+    let (_, parsed) = x509_parser::parse_x509_certificate(der).unwrap();
+    let ext = parsed.subject_alternative_name().unwrap().unwrap();
+    ext.value
+        .general_names
+        .iter()
+        .filter_map(|n| match n {
+            GeneralName::DNSName(d) => Some(d.to_string()),
+            GeneralName::IPAddress(b) => match b.len() {
+                4 => Some(std::net::IpAddr::from(<[u8; 4]>::try_from(*b).unwrap()).to_string()),
+                16 => Some(std::net::IpAddr::from(<[u8; 16]>::try_from(*b).unwrap()).to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The SAN entries of the certificate the negotiation presents to a peer at `peer`. The socket is
+/// a loopback pair; `peer` is the address the acceptor would have recorded, the only input scope
+/// selection reads.
+async fn sans_shown_to(runtime: &TlsRuntime, peer: SocketAddr) -> Vec<String> {
+    let cell = runtime.resolver().expect("TLS is on");
+    let snapshot = cell.snapshot();
+    let mut roots = RootCertStore::empty();
+    for cert in [snapshot.fallback(), snapshot.public_fallback()] {
+        roots.add(cert.certified_key().cert[0].clone()).unwrap();
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(crate::tls::ring_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+    let (client_io, server_io, _) = pair().await;
+    let client = tokio::spawn(async move {
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut s = connector.connect(name, client_io).await.unwrap();
+        let leaf = s.get_ref().1.peer_certificates().unwrap()[0]
+            .as_ref()
+            .to_vec();
+        let _ = s.shutdown().await;
+        leaf
+    });
+    let served = negotiate_with(server_io, peer, Some(cell)).await;
+    assert!(served.is_some(), "the handshake completes");
+    sans_of(&client.await.unwrap())
+}
+
+#[tokio::test]
+async fn a_public_peer_never_reads_an_interface_address_and_a_lan_peer_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = host_runtime(dir.path());
+    for public in ["203.0.113.9:4000", "[2001:db8::1]:4000", "100.64.0.7:4000"] {
+        let sans = sans_shown_to(&runtime, public.parse().unwrap()).await;
+        for interface in HOST_INTERFACES {
+            assert!(
+                !sans.contains(&interface.to_string()),
+                "{public} read {interface}: {sans:?}"
+            );
+        }
+        assert!(sans.contains(&"localhost".to_string()), "{sans:?}");
+    }
+    for lan in [
+        "127.0.0.1:4000",
+        "192.168.1.7:4000",
+        "10.1.2.3:4000",
+        "172.20.0.4:4000",
+        "169.254.3.4:4000",
+        "[fd12::9]:4000",
+        "[fe80::9]:4000",
+        "[::1]:4000",
+        "[::ffff:10.0.0.4]:4000",
+    ] {
+        let sans = sans_shown_to(&runtime, lan.parse().unwrap()).await;
+        for interface in HOST_INTERFACES {
+            assert!(
+                sans.contains(&interface.to_string()),
+                "{lan} should read {interface}: {sans:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_public_certificate_lists_the_external_address_once_the_runtime_knows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = host_runtime(dir.path());
+    let public_peer: SocketAddr = "203.0.113.9:4000".parse().unwrap();
+    let lan_peer: SocketAddr = "192.168.1.7:4000".parse().unwrap();
+    let external = Arc::new(Mutex::new(None::<std::net::IpAddr>));
+    let source = external.clone();
+    runtime.set_external_source(Arc::new(move || *source.lock().unwrap()));
+    let now = time::OffsetDateTime::now_utc();
+
+    runtime.maintenance_tick(now);
+    assert!(!sans_shown_to(&runtime, public_peer)
+        .await
+        .contains(&"198.51.100.77".to_string()));
+
+    *external.lock().unwrap() = Some("198.51.100.77".parse().unwrap());
+    runtime.maintenance_tick(now);
+    assert!(sans_shown_to(&runtime, public_peer)
+        .await
+        .contains(&"198.51.100.77".to_string()));
+    assert!(
+        !sans_shown_to(&runtime, lan_peer)
+            .await
+            .contains(&"198.51.100.77".to_string()),
+        "a LAN peer is shown the interface certificate, which carries no external address"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_external_address_replaces_the_public_certificate_and_drops_the_old_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = host_runtime(dir.path());
+    let public_peer: SocketAddr = "203.0.113.9:4000".parse().unwrap();
+    let external = Arc::new(Mutex::new(Some("198.51.100.77".parse().unwrap())));
+    let source = external.clone();
+    runtime.set_external_source(Arc::new(move || *source.lock().unwrap()));
+    let now = time::OffsetDateTime::now_utc();
+    runtime.maintenance_tick(now);
+    let first = runtime
+        .resolver()
+        .unwrap()
+        .snapshot()
+        .public_fallback()
+        .fingerprint()
+        .to_string();
+
+    // The same address again changes nothing.
+    runtime.maintenance_tick(now);
+    let again = runtime
+        .resolver()
+        .unwrap()
+        .snapshot()
+        .public_fallback()
+        .fingerprint()
+        .to_string();
+    assert_eq!(first, again);
+
+    *external.lock().unwrap() = Some("198.51.100.88".parse().unwrap());
+    runtime.maintenance_tick(now);
+    let sans = sans_shown_to(&runtime, public_peer).await;
+    assert!(sans.contains(&"198.51.100.88".to_string()), "{sans:?}");
+    assert!(!sans.contains(&"198.51.100.77".to_string()), "{sans:?}");
+
+    // The address going unknown is not a reason to replace it.
+    let current = runtime
+        .resolver()
+        .unwrap()
+        .snapshot()
+        .public_fallback()
+        .fingerprint()
+        .to_string();
+    *external.lock().unwrap() = None;
+    runtime.maintenance_tick(now);
+    assert_eq!(
+        runtime
+            .resolver()
+            .unwrap()
+            .snapshot()
+            .public_fallback()
+            .fingerprint(),
+        current
+    );
+}
+
 #[tokio::test]
 async fn the_hand_off_queue_has_the_capacity_the_descriptor_budget_subtracts() {
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();

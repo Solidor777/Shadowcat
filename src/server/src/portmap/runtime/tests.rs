@@ -163,6 +163,39 @@ async fn a_private_external_address_is_mapped_not_public() {
 }
 
 #[tokio::test]
+async fn the_public_address_is_known_only_for_a_public_mapping() {
+    let off = PortMapRuntime::with_targets(
+        Arc::new(Config::default()),
+        targets(gateway(3600, [203, 0, 113, 9]).await.addr).await,
+    );
+    off.activate(exposed(), false).await;
+    assert_eq!(off.public_address(), None, "a disabled runtime knows none");
+
+    let fake = gateway(3600, [203, 0, 113, 9]).await;
+    let runtime =
+        PortMapRuntime::with_targets(Arc::new(Config::default()), targets(fake.addr).await);
+    runtime.activate(exposed(), true).await;
+    wait_for(&runtime, |s| s.state == PortMapState::Mapped).await;
+    assert_eq!(
+        runtime.public_address(),
+        Some("203.0.113.9".parse().unwrap())
+    );
+    runtime.shutdown().await;
+
+    let private = gateway(3600, [192, 168, 1, 50]).await;
+    let behind_nat =
+        PortMapRuntime::with_targets(Arc::new(Config::default()), targets(private.addr).await);
+    behind_nat.activate(exposed(), true).await;
+    wait_for(&behind_nat, |s| s.state == PortMapState::MappedNotPublic).await;
+    assert_eq!(
+        behind_nat.public_address(),
+        None,
+        "a router address that is not publicly routable is never a certificate name"
+    );
+    behind_nat.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_mapping_is_renewed_at_half_its_lease() {
     let fake = gateway(2, [203, 0, 113, 9]).await;
     let runtime =

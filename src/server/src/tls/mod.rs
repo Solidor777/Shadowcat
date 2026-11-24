@@ -13,6 +13,13 @@
 //! INVARIANT: The certificate a connection receives, its [`ConnMeta::cert`] and the HSTS decision
 //! all derive from ONE [`resolver::Snapshot::select`] call (see [`resolver`]).
 //!
+//! INVARIANT: Two self-signed certificates exist. A peer on a loopback, private, link-local or
+//! unique-local address receives the one that lists the machine's interface addresses; every other
+//! peer receives one that lists none (only `localhost`, loopback, `tls_hostnames` and the router's
+//! external address when known). The choice is made once, from the accepted socket's peer address,
+//! by [`resolver::PeerScope::of`], so a public player cannot read the host's LAN addresses from the
+//! handshake.
+//!
 //! ACME seam: [`resolver::Snapshot`] carries the TLS-ALPN-01 challenge map and the
 //! primary-certificate slot, and [`resolver::CertResolver::update`] swaps in a derived snapshot.
 //! ACME status is reported through [`TlsSource::Acme`] and [`TlsRuntime`]'s `degraded_from` field.
@@ -26,7 +33,7 @@ pub mod pem;
 pub mod resolver;
 pub mod selfsigned;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -337,7 +344,14 @@ pub struct TlsRuntime {
     state: Mutex<State>,
     /// Immutable inputs.
     settings: Settings,
+    /// Where the router's public address is read from; `None` until
+    /// [`TlsRuntime::set_external_source`] is called.
+    external: Mutex<Option<ExternalSource>>,
 }
+
+/// Reads the router's public address, `None` while it is not known. The port-mapping runtime owns
+/// the fact; the certificate shown to public peers lists whatever this returns.
+pub type ExternalSource = Arc<dyn Fn() -> Option<IpAddr> + Send + Sync>;
 
 /// How many seconds between self-signed expiry checks.
 const SELFSIGNED_CHECK_SECS: i64 = 24 * 60 * 60;
@@ -363,6 +377,7 @@ impl TlsRuntime {
     fn off(config: &Config, error: Option<String>) -> Self {
         Self {
             resolver: None,
+            external: Mutex::new(None),
             state: Mutex::new(State {
                 last_error: error,
                 ..State::default()
@@ -464,6 +479,28 @@ impl TlsRuntime {
             );
         }
 
+        let public = match selfsigned::load_or_generate_public(
+            settings.tls_dir.as_deref(),
+            &settings.tls_hostnames,
+            &settings.sources,
+            None,
+            settings.generator.as_ref(),
+            now,
+            &settings.trash,
+        ) {
+            Ok(public) => public,
+            Err(e) => {
+                tracing::error!(error = %e, "public-peer self-signed certificate unavailable; TLS is disabled for this process, plain HTTP is unaffected");
+                let mut off = Self::off(config, Some(e.to_string()));
+                off.settings = settings;
+                return Arc::new(off);
+            }
+        };
+        if let Some(err) = &public.persist_error {
+            tracing::warn!(error = %err, "public-peer self-signed certificate could not be persisted; it is served from memory only");
+            state.last_error = Some(err.clone());
+        }
+
         let mut primary: Option<Arc<LoadedCert>> = None;
         if let Some(paths) = &settings.pem {
             state.pem_stamp = paths.stamp();
@@ -491,19 +528,23 @@ impl TlsRuntime {
         }
         state.last_selfsigned_check = now.unix_timestamp();
 
-        match Snapshot::new(primary, selfsigned.cert.clone(), Default::default()) {
+        match Snapshot::new(primary, selfsigned.cert.clone(), Default::default())
+            .and_then(|snapshot| snapshot.with_public_fallback(public.cert.clone()))
+        {
             Ok(snapshot) => {
                 let named = snapshot.primary().unwrap_or(snapshot.fallback());
                 tracing::info!(
                     source = ?state.primary_source.unwrap_or(TlsSource::SelfSigned),
                     fingerprint = %named.fingerprint(),
                     fallback_fingerprint = %snapshot.fallback().fingerprint(),
+                    public_fallback_fingerprint = %snapshot.public_fallback().fingerprint(),
                     "TLS certificates active"
                 );
                 Arc::new(Self {
                     resolver: Some(Arc::new(CertResolver::new(snapshot))),
                     state: Mutex::new(state),
                     settings,
+                    external: Mutex::new(None),
                 })
             }
             Err(e) => {
@@ -694,6 +735,79 @@ impl TlsRuntime {
                 .unwrap_or_else(|e| e.into_inner())
                 .last_selfsigned_check = now_unix;
             self.refresh_selfsigned(resolver, now);
+        }
+        self.refresh_public(resolver, now, due);
+    }
+
+    /// Installs the reader of the router's public address. The maintenance tick compares it with
+    /// the certificate shown to public peers on every pass.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// let rt = shadowcat::tls::TlsRuntime::disabled();
+    /// rt.set_external_source(Arc::new(|| Some("203.0.113.9".parse().unwrap())));
+    /// ```
+    pub fn set_external_source(&self, source: ExternalSource) {
+        *self.external.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    /// The router's public address, when a source is installed and knows it.
+    fn external_address(&self) -> Option<IpAddr> {
+        let source = self
+            .external
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        source()
+    }
+
+    /// Re-runs the policy of the certificate shown to public peers and swaps in a replacement
+    /// when one was produced. A known external address the certificate lacks is checked on every
+    /// pass (it is a comparison of two in-memory values); expiry and the hostname rules join the
+    /// check only when `full` is set, the daily cadence of [`TlsRuntime::refresh_selfsigned`].
+    fn refresh_public(&self, resolver: &CertResolver, now: OffsetDateTime, full: bool) {
+        let external = self.external_address();
+        let current = resolver.snapshot();
+        let cert = current.public_fallback();
+        let missing = external.is_some_and(|ip| !cert.san_entries().contains(&ip.to_string()));
+        if !missing && !full {
+            return;
+        }
+        let Some(reason) = selfsigned::regen_reason_public(
+            cert,
+            &self.settings.tls_hostnames,
+            &self.settings.sources,
+            external,
+            now.unix_timestamp(),
+        ) else {
+            return;
+        };
+        match selfsigned::load_or_generate_public(
+            self.settings.tls_dir.as_deref(),
+            &self.settings.tls_hostnames,
+            &self.settings.sources,
+            external,
+            self.settings.generator.as_ref(),
+            now,
+            &self.settings.trash,
+        ) {
+            Ok(replacement) => {
+                if let Some(err) = &replacement.persist_error {
+                    tracing::warn!(error = %err, "regenerated public-peer certificate could not be persisted; it is served from memory only");
+                    self.record_error_text(err);
+                }
+                let fingerprint = replacement.cert.fingerprint().to_string();
+                match resolver.update(|cur| cur.with_public_fallback(replacement.cert)) {
+                    Ok(()) => {
+                        tracing::info!(?reason, %fingerprint, "public-peer certificate regenerated");
+                    }
+                    Err(e) => self.record_error(&e),
+                }
+            }
+            Err(e) => self.record_error(&e),
         }
     }
 

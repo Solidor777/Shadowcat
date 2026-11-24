@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use shadowcat::config::{AcmeChallenge, Config, TlsMode};
 use shadowcat::tls::pem::PemPaths;
-use shadowcat::tls::resolver::{LoadedCert, Snapshot};
+use shadowcat::tls::resolver::{LoadedCert, PeerScope, Snapshot};
 use shadowcat::tls::selfsigned::{
     drifted_addresses, eligible_interface_ips, generate, is_eligible_ip, is_virtual_adapter_name,
     load_or_generate, regen_reason, CertGenerator, Generated, InterfaceInfo, RcgenGenerator,
@@ -747,11 +747,13 @@ fn acme_tls_alpn_selects_the_challenge_certificate_for_its_sni() {
     // The challenge configuration advertises only acme-tls/1; serving configs advertise h2 then
     // http/1.1.
     assert_eq!(
-        snap.config_for(Selected::Challenge).alpn_protocols,
+        snap.config_for(Selected::Challenge, PeerScope::Lan)
+            .alpn_protocols,
         vec![b"acme-tls/1".to_vec()]
     );
     assert_eq!(
-        snap.config_for(Selected::Fallback).alpn_protocols,
+        snap.config_for(Selected::Fallback, PeerScope::Lan)
+            .alpn_protocols,
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     );
 }
