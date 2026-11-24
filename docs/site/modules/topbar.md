@@ -24,8 +24,10 @@ The top bar shows one round badge per member of the world. A badge shows the
 member's avatar when they have one, otherwise the first letter of their name on
 their chosen colour. A small dot on the badge shows whether the member is
 connected: green for online, grey for offline. The dot is hidden for a member
-whose state is not known yet. Hovering a badge shows the member's name, and the
-badge's accessible label adds "online" or "offline".
+whose state is not known yet. Hovering a badge shows the member's name, followed
+by their pronouns in brackets when they have set any, for example "Ana
+(she/her)". The badge's accessible label uses the same text and adds "online" or
+"offline".
 
 The list is live:
 

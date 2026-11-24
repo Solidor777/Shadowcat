@@ -3942,3 +3942,16 @@ once, at the end of the campaign; the items that only CI or a device can confirm
 - **Portal jumps and the trash**: a committed teleport removes the token's `ActiveStream` entry from `Room::moving`, so a portal jump ends the token's move stream (`Room::execute_move` registers the stream before it fires region triggers); the trash "empty all" confirmation shows the entry count and uses `settings.trash.emptyConfirmMore` ("or more") while another page remains; streamed proximity-wall vision has a test; an effect's origin shows an embedded item's name.
 - **Public-peer certificate**: a peer outside the loopback, private, link-local and unique-local ranges (`PeerScope::Public`) receives a second self-signed certificate (`selfsigned-public-cert.pem`) that lists no interface address, only `localhost`, loopback, `tls_hostnames` and the router's external address when `PortMapRuntime::public_address` knows it; `--tls-regenerate` replaces both certificates. The peer-address audit found no other leak: player addresses stay server-side (throttle keys, peer slots, debug logs) and appear in no wire frame, document or backup.
 - **Game settings and onboarding e2e**: the game settings panel shows a vision treatment a module registers while the panel is open (it reads `ContributionRegistry` through a `createSubscriber` bridge); the `onboarding` Playwright project runs `onboarding.spec.ts` against a server with no seeded admin and onboarding on, and a note-present spec covers `present_note`.
+- **Browser-test follow-ups**: a server on an in-memory database kept its data for only 30 minutes,
+  because sqlx reaps a pool connection after its idle and lifetime limits and an in-memory database
+  dies with its last connection; `connect_pool_with_options` now sets both limits to `None`, and
+  the read-only pool, which shares that database through the shared-cache name, relies on the
+  writer staying open. Modal dialogs stack above floating windows: dockview stacks its n-th
+  floating group at 999 + 2n, so `--z-popover` is 50000, above that range and below the drag ghost
+  at 99999. The topbar presence roster shows a member's pronouns after the name. New browser specs:
+  `drag-reorder`, `portal-choice` (three accounts), `module-placement` (with the `placement-fixture`
+  module), `template-region`, `note-permissions`, `note-media`, `live-modules` (with the
+  `live-module-fixture` module), `profile-live`, a scene tools tour offer pin in `onboarding`, and
+  `backups-restore`, a real backup-and-restore round trip on a server the spec starts itself
+  (`e2e-support/server-process.ts`), whose data folder sits under Playwright's per-test output
+  directory so it is cleared every run.

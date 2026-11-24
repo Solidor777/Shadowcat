@@ -26,6 +26,17 @@ contributes into. Internally: a pure layout tree with a `LayoutOp` reducer, an
 - `CompactSwitcher.svelte` — narrow-viewport panel switcher.
 - `PanelMenu.svelte` — per-panel menu (float, minimize, pop out).
 
+## Stacking
+
+A modal dialog always sits above every floating window, however many are open.
+Floating windows stack in order of opening, each one a step above the last
+(the docking library starts at 999 and adds 2 per window). The shared
+`--z-popover` layer, 50000, is above that whole range, and it is where the
+confirm, prompt, merge-conflict, portal-chooser and asset-pick dialogs, context
+menus and notifications draw. Only a drag in progress draws higher, at 99999. A
+dialog or overlay a module adds belongs on `var(--z-popover)`; a fixed number
+near 1000 would hide behind floating windows once a few are open.
+
 ## Contracts & seams
 
 - **Requires** `shadowcat.surface:panel-host` + `shadowcat.surface:panel-dock`;
