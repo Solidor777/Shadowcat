@@ -3926,7 +3926,9 @@ once, at the end of the campaign; the items that only CI or a device can confirm
   min/max highlighting; table folders, typed note pages, heading TOC and anchors, per-user note
   sharing and "present to players".
 - **Accounts, presence and audio**: self-service password change (throttled per account),
-  profile colour, pronouns and avatar, live presence, simultaneous and soundboard playlist modes,
+  profile colour, pronouns and avatar, live presence, a member seated mid-session (a GM seat or an
+  accepted invite) announced to that world's live connections through `ServerMsg::MemberProfile`
+  (now carrying `username`) so the roster shows them without a reconnect, simultaneous and soundboard playlist modes,
   muffled occluded audio, a perceptual volume curve, favourites and a list mode in the asset
   browser.
 - **Client shell**: an Escape coordinator and confirm and prompt dialogs, one pointer-event drag

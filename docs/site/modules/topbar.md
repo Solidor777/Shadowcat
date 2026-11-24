@@ -38,8 +38,9 @@ The list is live:
   **Settings → Profile**, every connected member sees the new colour and avatar
   at once, with no reconnect.
 
-A member who is added to the world while you are connected appears in the list
-the next time your client reconnects.
+- When a member is added to the world while you are connected (the GM seats
+  them, or they accept an invite), they appear in the list at once, with no
+  reconnect. Their dot shows offline until they connect.
 
 ## Contracts & seams
 

@@ -264,16 +264,6 @@ so they wait for a ruling rather than shipping with the uncontested batch.
 - TODO: Scene-switch asset preload broadcast warming `AssetResolver` ahead of `Activate` —
   measure the stutter before building. (M)
 
-## Found while building the options batch — awaiting the owner's build-or-defer ruling
-
-Each item below is real, small and unbuilt. None was deferred on a lane's own authority: a lane
-reported it and stopped. Each stays here until the owner rules to build it now or to defer it.
-
-- TODO: An instanced token's embedded actor copy still shows `source.id` to a player who may not
-  read the actor: hiding it means redacting a structural field, which the structural-field
-  invariant test forbids. Needs a ruling on whether the copy's origin id may be redacted. (S-M,
-  design question)
-
 ## Needs the final CI pass or a physical device
 
 - TODO: Confirm on the three-OS CI matrix: the real cross-device trash move (`Trash::discard`), the
