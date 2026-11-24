@@ -1,0 +1,32 @@
+{
+  "id": "placement-fixture",
+  "version": "1.0.0",
+  "dependencies": {},
+  "engines": { "shadowcat": "*" },
+  "placements": [
+    {
+      "id": "gm-zone",
+      "label": "Fixture GM zone",
+      "who": "gm",
+      "shapes": ["circle"],
+      "maxExtent": 400,
+      "triggers": [{ "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }]
+    },
+    {
+      "id": "open-zone",
+      "label": "Fixture open zone",
+      "who": "player",
+      "shapes": ["circle"],
+      "maxExtent": 400,
+      "triggers": [{ "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }]
+    },
+    {
+      "id": "cast-zone",
+      "label": "Fixture cast zone",
+      "who": "caster_owner",
+      "shapes": ["circle"],
+      "maxExtent": 400,
+      "triggers": [{ "on": "enter", "effect": { "type": "condition_add", "condition": "burning" } }]
+    }
+  ]
+}
