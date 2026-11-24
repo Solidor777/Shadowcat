@@ -26,12 +26,11 @@ test("backup and restore: a world made after a backup is gone once the restore i
   // The data directory the round trip's server keeps its database, assets and backups in.
   const dataDir = path.join(testInfo.outputDir, "data");
   mkdirSync(dataDir, { recursive: true });
-  const databaseUrl = `sqlite:${path.join(dataDir, "shadowcat.db").replaceAll("\\", "/")}`;
   const stamp = Date.now().toString(36);
   const keptWorld = `Kept ${stamp}`;
   const lostWorld = `Lost ${stamp}`;
 
-  let server: RunningServer | undefined = await startServer({ repoRoot: REPO_ROOT, databaseUrl });
+  let server: RunningServer | undefined = await startServer({ repoRoot: REPO_ROOT, dataDir });
   try {
     // First run: back up with one world, then make a second.
     let ctx = await newE2EContext(browser, { baseURL: server.url });
@@ -76,7 +75,7 @@ test("backup and restore: a world made after a backup is gone once the restore i
     await ctx.close();
 
     // Second run on the same data directory: the restore is applied before the database opens.
-    server = await startServer({ repoRoot: REPO_ROOT, databaseUrl });
+    server = await startServer({ repoRoot: REPO_ROOT, dataDir });
     ctx = await newE2EContext(browser, { baseURL: server.url });
     page = await ctx.newPage();
     await login(page, ADMIN.username, ADMIN.password);

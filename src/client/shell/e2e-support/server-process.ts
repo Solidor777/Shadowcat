@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Environment shared by every test server process; each server adds its own `SHADOWCAT_BIND`. The
  * Playwright config's web servers and the servers a spec starts itself (`startServer`) read this one
@@ -32,6 +33,49 @@ export const E2E_SERVER_ENV: Record<string, string> = {
   // alive across repeated local invocations of a subset of specs.
   SHADOWCAT_WORLD_CREATE_PER_MIN_PER_ACCOUNT: "10000",
 };
+
+/** Playwright's output folder (`outputDir` of the config). Playwright empties it at the start of every
+ * run, before any web server starts, so everything under it never accumulates. It is git-ignored as
+ * `test-results/`. */
+export const E2E_OUTPUT_DIR: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "test-results");
+
+/** The folder under `E2E_OUTPUT_DIR` that holds one data folder per test server. */
+export const E2E_SERVER_DATA_DIR: string = path.join(E2E_OUTPUT_DIR, "server-data");
+
+/**
+ * The settings that point a test server's written folders at its own data folder.
+ * `assets` and `trash` are siblings, so `Config::validate`'s rule that the trash must not nest inside
+ * the assets folder holds. The logs and backups folders have no location of their own for an
+ * in-memory database, and for a file-backed one they resolve beside the database file, which the
+ * caller places inside the same data folder.
+ * @param dataDir The server's own data folder.
+ * @returns The `SHADOWCAT_ASSETS_DIR` and `SHADOWCAT_TRASH_DIR` settings.
+ * @example
+ * ```
+ * const env = serverDataEnv("/repo/src/client/shell/test-results/server-data/loopback");
+ * ```
+ */
+export function serverDataEnv(dataDir: string): Record<string, string> {
+  return {
+    SHADOWCAT_ASSETS_DIR: path.join(dataDir, "assets"),
+    SHADOWCAT_TRASH_DIR: path.join(dataDir, "trash"),
+  };
+}
+
+/**
+ * The environment of a shared test server: `E2E_SERVER_ENV`, a data folder of its own named `name`
+ * under `E2E_SERVER_DATA_DIR`, and the server's extra settings.
+ * @param name The server's name; two servers never share one.
+ * @param extra Settings layered last (the bind address and any per-server switches).
+ * @returns The complete environment.
+ * @example
+ * ```
+ * const env = sharedServerEnv("loopback", { SHADOWCAT_BIND: "127.0.0.1:31999" });
+ * ```
+ */
+export function sharedServerEnv(name: string, extra: Record<string, string>): Record<string, string> {
+  return { ...E2E_SERVER_ENV, ...serverDataEnv(path.join(E2E_SERVER_DATA_DIR, name)), ...extra };
+}
 
 /** How long `startServer` waits for a new server's `/health` to answer. */
 const READY_TIMEOUT_MS = 60_000;
@@ -102,21 +146,43 @@ export interface RunningServer {
 export interface StartServerOptions {
   /** The repository root, used as the process's working directory and to find the binary. */
   repoRoot: string;
-  /** The SQLite URL of the server's database; a file URL gives the server a real data directory. */
-  databaseUrl: string;
+  /** The server's data folder: its database file, assets, trash, logs and backups all live inside it.
+   * A caller places it under `E2E_OUTPUT_DIR` so Playwright clears it every run. */
+  dataDir: string;
   /** Environment layered over `E2E_SERVER_ENV` (the bind address is set by `startServer`). */
   env?: Record<string, string>;
 }
 
 /**
+ * The environment of a server a spec starts itself: `E2E_SERVER_ENV` over a file-backed database
+ * inside `options.dataDir`, with the assets and trash folders inside it too.
+ * @param options The data folder and extra environment.
+ * @param port The loopback port the server binds.
+ * @returns The complete environment, without the parent process's own variables.
+ * @example
+ * ```
+ * const env = startedServerEnv({ repoRoot: "/repo", dataDir: "/repo/src/client/shell/test-results/data" }, 41234);
+ * ```
+ */
+export function startedServerEnv(options: StartServerOptions, port: number): Record<string, string> {
+  return {
+    ...E2E_SERVER_ENV,
+    ...serverDataEnv(options.dataDir),
+    SHADOWCAT_DB: `sqlite:${path.join(options.dataDir, "shadowcat.db").replaceAll("\\", "/")}`,
+    ...options.env,
+    SHADOWCAT_BIND: `127.0.0.1:${port}`,
+  };
+}
+
+/**
  * Starts a server process on a free loopback port and waits until its `/health` answers.
  * The process inherits no output; a spec that needs to read its logs starts it another way.
- * @param options The repository root, database URL and extra environment.
+ * @param options The repository root, data folder and extra environment.
  * @returns The running server.
  * @throws When the process exits before it is ready or `/health` never answers.
  * @example
  * ```
- * const server = await startServer({ repoRoot: "/repo", databaseUrl: "sqlite:/tmp/shadowcat.db" });
+ * const server = await startServer({ repoRoot: "/repo", dataDir: "/repo/src/client/shell/test-results/data" });
  * await server.stop();
  * ```
  */
@@ -125,13 +191,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
   const child: ChildProcess = spawn(serverBinaryPath(options.repoRoot, process.env), [], {
     cwd: options.repoRoot,
     stdio: "ignore",
-    env: {
-      ...process.env,
-      ...E2E_SERVER_ENV,
-      SHADOWCAT_DB: options.databaseUrl,
-      ...options.env,
-      SHADOWCAT_BIND: `127.0.0.1:${port}`,
-    },
+    env: { ...process.env, ...startedServerEnv(options, port) },
   });
   const exited = new Promise<number | null>((resolve) => {
     child.once("exit", (code) => resolve(code));
