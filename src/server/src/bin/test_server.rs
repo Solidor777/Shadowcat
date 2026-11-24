@@ -91,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
         config.bind
     );
     config.db = "sqlite::memory:".into();
+    // The harness spawns this server with the repository root as its working directory, where an
+    // in-memory database resolves the trash to `./trash`. A disabled trash removes at once and
+    // never creates that directory.
+    config.trash_retention = shadowcat::trash::TrashRetention::Disabled;
     if let Some(mode) = args.tls {
         config.tls = mode;
     }
