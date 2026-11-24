@@ -330,7 +330,7 @@ export interface AppContext {
    * surface (composer, chat-card roll buttons) resolves against; the one-shot `speakAsToken`
    * takes precedence when pending. See `SpeakAs`'s class doc. */
   speakAs: SpeakAs;
-  /** The session's snap-MODE preference (cell-center vs. nearest-vertex) for scene-tool
+  /** The session's snap-MODE preference (cell-center, nearest-vertex or nearest-edge) for scene-tool
    * placement. Client-local GM authoring state: never persisted to a document and never
    * broadcast, so it needs no conflict/rollback handling; `Stage` pushes it to the engine's
    * `SceneToolHost.setSnapMode` chokepoint. See `SnapModePreference`. */

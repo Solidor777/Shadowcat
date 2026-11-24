@@ -128,8 +128,8 @@ export class EmoteView {
    * @param y The emote anchor's scene y-coordinate.
    * @param emote The emote glyph(s) or caption text to draw.
    * @param rise The total rise over the emote's lifetime, in scene (px) units.
-   * @param kind Which draw treatment this overlay wants; defaults to `"glyph"` (the pre-existing
-   * player-emote behavior every caller before this parameter existed already relied on).
+   * @param kind Which draw treatment this overlay wants; defaults to `"glyph"`, which draws the
+   * player-emote glyph.
    * @example
    * ```ts
    * import { EmoteView } from "@shadowcat/render";

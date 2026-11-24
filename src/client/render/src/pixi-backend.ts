@@ -81,9 +81,10 @@ interface TokenNode {
    * the non-rotating `container` ordered above the art (nameplate over the token's top edge, bars
    * stacked under its bottom edge), or `null` while the last-applied spec had neither. */
   plate: Container | null;
-  /** Identity key of the last-applied `tokenSpec.nameplate`/`bars` plus the token size
-   * (`updateTokenPlate`'s memo): an unchanged key short-circuits the rebuild. */
-  plateKey: string;
+  /** The last-applied `tokenSpec.nameplate`/`bars` plus the token size (`updateTokenPlate`'s
+   * memo), or `null` while the last-applied spec had neither: inputs equal to it short-circuit
+   * the rebuild. */
+  plateInputs: Pick<TokenNodeSpec, "nameplate" | "bars" | "w" | "h"> | null;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -259,6 +260,26 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   // A generated visual's identity is its frame (crop/border/background) plus its art's own key
   // (one recursion level — `art` is never itself `"generated"`).
   return `generated:${v.art ? visualSourceKey(v.art) : "frame-only"}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+}
+
+/** Whether two plate inputs would draw the same nameplate and bars: `updateTokenPlate`'s memo
+ * comparison, field by field so an unchanged re-push allocates nothing.
+ * @param a The inputs the node currently shows, or `null` for no plate.
+ * @param b The inputs about to be applied, or `null` for no plate.
+ * @returns `true` when both are `null`, or when text, size and every bar (fraction, color, label)
+ * match in order.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * samePlateInputs(null, null); // true
+ * ```
+ */
+function samePlateInputs(a: TokenNode["plateInputs"], b: TokenNode["plateInputs"]): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.nameplate !== b.nameplate || a.w !== b.w || a.h !== b.h) return false;
+  if (a.bars === undefined || b.bars === undefined) return a.bars === b.bars;
+  const nextBars = b.bars;
+  return a.bars.length === nextBars.length && a.bars.every((bar, i) => bar.fraction === nextBars[i].fraction && bar.color === nextBars[i].color && bar.label === nextBars[i].label);
 }
 
 /** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
@@ -937,7 +958,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", overlay: null, overlayKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateKey: "", textureUrls: [] };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", overlay: null, overlayKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", facing: null, facingKey: "", fx: null, fxKey: "", plate: null, plateInputs: null, textureUrls: [] };
     this.tokens.set(id, node);
     return node;
   }
@@ -1385,7 +1406,7 @@ export class PixiBackend implements DisplayBackend {
    * token's top edge; the bars stack under its bottom edge, each a dark track with a fill of
    * `fraction` of the token's width in the bar's color and its label centered on it. Everything
    * is a child of one `Container` on the non-rotating `container`, so it stays upright, and is
-   * sized from `tokenSpec.w`/`h` only (no grid math). Memoized by `plateKey`; an absent
+   * sized from `tokenSpec.w`/`h` only (no grid math). Memoized by `plateInputs`; an absent
    * nameplate and bars destroy the container.
    * @param node The token render node whose plate to redraw.
    * @param tokenSpec The resolved token spec; `.nameplate`, `.bars`, `.w` and `.h` are read here.
@@ -1399,12 +1420,12 @@ export class PixiBackend implements DisplayBackend {
    */
   private updateTokenPlate(node: TokenNode, tokenSpec: TokenNodeSpec): void {
     const { nameplate, bars, w, h } = tokenSpec;
-    const key = nameplate === undefined && bars === undefined ? "" : JSON.stringify([nameplate ?? null, bars ?? null, w, h]);
-    if (node.plateKey === key) return;
-    node.plateKey = key;
+    const next = nameplate === undefined && bars === undefined ? null : { nameplate, bars, w, h };
+    if (samePlateInputs(node.plateInputs, next)) return;
+    node.plateInputs = next;
     node.plate?.destroy({ children: true });
     node.plate = null;
-    if (key === "") return;
+    if (next === null) return;
     const plate = new Container();
     const barHeight = Math.max(6, Math.min(w, h) * 0.12);
     if (nameplate !== undefined) {
@@ -1959,7 +1980,7 @@ export class PixiBackend implements DisplayBackend {
   /** `DisplayBackend.drawEmotes`: redraw the emote overlay — destroys the previous frame's
    * `Text` children, then adds one node per overlay, styled by its own `kind` (`EmoteKind`'s
    * own doc): `"glyph"` (a player's 1-4-emoji emote) draws at `GLYPH_FONT_SIZE`, single-line,
-   * never wrapped — byte-for-byte the original treatment this overlay has always had;
+   * never wrapped;
    * `"caption"` (server-authored prose, e.g. a region trigger's `ScrollingText`) draws smaller,
    * at `CAPTION_FONT_SIZE`, word-wrapped to `EMOTE_WRAP_WIDTH` and centered — bounded to a
    * roughly-one-token-tall block because the text it receives is ALREADY display-truncated by

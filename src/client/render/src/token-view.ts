@@ -678,8 +678,8 @@ export class TokenView {
    * ```
    */
   private resolveArtVisual(art: Extract<RenderVisual, { /** Narrows `RenderVisual` to its drawable (non-`"generated"`) union members. */ kind: "image" | "animated" }>): ResolvedArtVisual {
-    // The key is omitted (not set to `undefined`) for an untransformed visual, so its spec is
-    // identical to one built before transforms existed.
+    // The key is omitted (not set to `undefined`) for an untransformed visual, so its spec has
+    // no `transform` key and equals a spec built from an art visual that carries none.
     const transform = art.transform ? { transform: this.resolveTransform(art.transform) } : {};
     return art.kind === "image"
       ? { kind: "image", url: this.assets.url(art.asset), ...transform }

@@ -840,8 +840,10 @@ export class RenderEngine implements SceneToolHost {
 
   /** Whether the fog currently applied reveals a token at `at` — the same mask the canvas paints,
    * including a vision sweep's progressive polygon and the GM fog preview. DOM drawn near a token
-   * (a chat bubble) gates on this so it never shows a position the canvas hides. Fail-closed:
-   * see `isTokenRevealed`.
+   * (a chat bubble) gates on this so it never shows a position the canvas hides. A masked frame
+   * with no visible polygons reveals nothing (see `isTokenRevealed`); before the first visibility
+   * frame the compositor holds `mode: "all"` (no fog applied yet), so every token reads as
+   * revealed until a frame arrives.
    * @param tokenId The token's document id.
    * @param at The token's scene-coordinate position.
    * @returns `true` when a viewer currently sees that position.
@@ -1555,8 +1557,8 @@ export class RenderEngine implements SceneToolHost {
    * wants (`EmoteKind`'s own doc) — this method makes no guess from `emote`'s length.
    * @param tokenId The token document id the overlay plays over.
    * @param emote The emote glyph(s) or caption text.
-   * @param kind Which draw treatment the caller wants; defaults to `"glyph"` (the pre-existing
-   * player-emote behavior every caller before this parameter existed already relied on).
+   * @param kind Which draw treatment the caller wants; defaults to `"glyph"`, which draws the
+   * player-emote glyph.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";

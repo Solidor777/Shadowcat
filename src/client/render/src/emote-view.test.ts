@@ -29,7 +29,7 @@ test("multiple emotes animate independently, anchored at their spawn points", ()
   expect(glyphs[0].y).toBeLessThan(0);
 });
 
-test("add defaults kind to \"glyph\" when omitted, preserving every pre-existing caller", () => {
+test("add defaults kind to \"glyph\" when omitted", () => {
   const v = new EmoteView();
   v.add(0, 0, "😀", 100);
   expect(v.tick(0)[0].kind).toBe("glyph");
