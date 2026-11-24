@@ -432,11 +432,17 @@
     set(vmDoc.id, `/engine/modes/${id}/name`, mode.name, name);
   }
 
+  // `ContributionRegistry` is not a Svelte store: reading `subscribeContributions()` inside the
+  // `$derived` re-runs it when a module registers or unregisters a treatment while the panel is
+  // mounted (a live module enable), the same bridge `Surface` uses.
+  const subscribeContributions = createSubscriber((update) => ctx.contributions.subscribe(update));
+
   /** The treatment names modules registered under `VISION_TREATMENT_CONTRACT`, in contribution
    * order: the names a `custom` render hint can resolve. */
-  const treatmentKinds = $derived(
-    ctx.contributions.contributionsFor(VISION_TREATMENT_CONTRACT).flatMap((c) => (c.visionTreatment ? [c.visionTreatment.kind] : [])),
-  );
+  const treatmentKinds = $derived.by(() => {
+    subscribeContributions();
+    return ctx.contributions.contributionsFor(VISION_TREATMENT_CONTRACT).flatMap((c) => (c.visionTreatment ? [c.visionTreatment.kind] : []));
+  });
 
   /** Mode ids whose params JSON textarea currently holds text that does not parse. */
   let paramsInvalid = $state<Record<string, boolean>>({});

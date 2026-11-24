@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { i18n } from "@shadowcat/ui-kit";
 import {
@@ -212,6 +212,24 @@ describe("vision-mode editor", () => {
     renderPanel(vi.fn(), [buildVisionModesDoc("w1", undefined, "vm1")]);
     const select = screen.getByLabelText("Render hint for vision mode normal") as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(["", "desaturate", "colorWash", "outline"]);
+  });
+
+  it("a treatment registered after the panel mounted makes the custom option appear", async () => {
+    const contributions = new ContributionRegistry();
+    render(GameSettingsPanel, {
+      context: setAppContextForTest({
+        role: "gm", world: "w1", dispatchIntent: vi.fn(), t, contributions,
+        documents: storeWith(buildVisionModesDoc("w1", undefined, "vm1")),
+      }),
+    });
+    const select = screen.getByLabelText("Render hint for vision mode normal") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).not.toContain("custom");
+
+    contributions.contribute(
+      { id: "m:bs", contract: VISION_TREATMENT_CONTRACT, component: null, visionTreatment: { kind: "blood-sense", resolve: () => ({ shape: "none" }) } },
+      { module: "m" },
+    );
+    await waitFor(() => expect([...select.options].map((o) => o.value)).toContain("custom"));
   });
 
   it("add creates a custom-N mode with a full descriptor literal (old: null); a second add picks the next free N", async () => {
