@@ -487,8 +487,8 @@ pub(crate) struct SightSource {
     walls: Vec<vision::Seg>,
     /// LOS polygon from `vp` through `walls` (the whole scene bound when LOS is off).
     poly: Vec<vision::P>,
-    /// The source's facing arc: `los_at`'s re-raycast of a moving source reuses it, because the
-    /// token's rotation does not change mid-move.
+    /// The source's facing arc: `los_at`'s re-raycast of a moving source reuses it, turned to
+    /// the move's committed rotation by `SightSources::turn_source` when the move writes one.
     facing: Option<vision::FacingArc>,
 }
 
@@ -3063,7 +3063,7 @@ impl SceneEcs {
         elevation: f64,
         mover: Option<Uuid>,
     ) -> Option<regions::RegionField> {
-        self.region_field_if(scene, viewer, mover, |band| {
+        self.region_field_if(scene, viewer, mover, false, |band| {
             elevation::band_contains(band, elevation)
         })
     }
@@ -3073,11 +3073,18 @@ impl SceneEcs {
     /// the lighting field's per-LEVEL ambient read tests the level's whole span
     /// (`elevation::band_overlaps_level`). One iteration body feeds both, so the doc-type/
     /// parent/enabled/visibility/shape-parse filtering can never drift between the two.
+    ///
+    /// `ambient_only` skips every region whose behavior is not `ambient_light` BEFORE any
+    /// geometry work (`anchored_region_parts` and the rasterization in `add_parts`): the lighting
+    /// caches' fingerprint reads only the ambient facet, so rasterizing terrain, impassable and
+    /// arrest regions there is pure waste. The skipped regions are exactly the ones whose
+    /// contribution `RegionField::into_ambient_map` discards.
     fn region_field_if(
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
         mover: Option<Uuid>,
+        ambient_only: bool,
         elevation_ok: impl Fn(Option<&eng::ElevationBand>) -> bool,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
@@ -3092,6 +3099,9 @@ impl SceneEcs {
                 continue;
             };
             if !region_eng.enabled {
+                continue;
+            }
+            if ambient_only && region_eng.behavior != "ambient_light" {
                 continue;
             }
             if !engine_tier_visible(doc, viewer) {
@@ -3150,7 +3160,7 @@ impl SceneEcs {
         levels: &[eng::SceneLevel],
         level: &str,
     ) -> BTreeMap<(i32, i32), regions::AmbientAdjustment> {
-        self.region_field_if(scene, None, None, |band| {
+        self.region_field_if(scene, None, None, true, |band| {
             elevation::band_overlaps_level(band, levels, level)
         })
         .map(regions::RegionField::into_ambient_map)
