@@ -1436,3 +1436,57 @@ test("exposes the viewed scene's region geometry forms as data-region-shapes", a
   // form reports its bare kind.
   expect(host.dataset.regionShapes).toBe("r-compound:rect+!circle;r-legacy:circle");
 });
+
+test("writes the wall and region markers only when their values change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") }],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  const observer = new MutationObserver(() => {});
+  observer.observe(host, { attributes: true, attributeFilter: ["data-wall-segments", "data-region-shapes"] });
+  // A commit that touches neither walls nor regions rewrites neither marker.
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 1,
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "sA", {
+      x: 0, y: 0, w: 10, h: 10, rotation: 0,
+      visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null, lock_rotation: false, identity_hidden: false,
+    }, "tok1") }],
+  } as never);
+  expect(host.dataset.tokenCount).toBe("1");
+  expect(observer.takeRecords()).toEqual([]);
+  // A region commit changes the region marker alone.
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 2,
+    ops: [{ op: "create", doc: buildRegionDoc("w1", "sA", {
+      shape: { kind: "circle", points: [50, 50, 25] },
+      behavior: "terrain", cost: 1, cost_by_tag: {}, enabled: true, triggers: [], elevation: null, ambient_override: null, occludes: null, anchor: null,
+    }, "r1") }],
+  } as never);
+  expect(observer.takeRecords().map((r) => r.attributeName)).toEqual(["data-region-shapes"]);
+  expect(host.dataset.regionShapes).toBe("r1:circle");
+  observer.disconnect();
+});

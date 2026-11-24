@@ -11,6 +11,7 @@
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
   import LevelSwitcher from "./LevelSwitcher.svelte";
+  import { facingWedgeVisibleTo } from "./facing-wedge";
 
   /** Options every `createBackend` call carries — declared once so the prop's type annotation
    * and its default's parameter share one shape (an inline copy in each would drift). */
@@ -93,6 +94,21 @@
    * immediately without a manual reconcile call. Gated to GM-only at the control itself — this
    * flag carries no server round-trip and is never read for a non-GM (the control never mounts). */
   let ghostOtherLevels = $state(false);
+
+  /** Writes a `data-*` observability marker on the stage host only when its value differs: a
+   * dataset write is a DOM attribute mutation even when the value is unchanged, and the walls
+   * and regions markers are recomputed on every document commit.
+   * @param key The `dataset` key (camelCase).
+   * @param value The marker's new value.
+   * @example
+   * ```
+   * // private function; not part of the public API
+   * setWhenChanged("wallSegments", "0,0>10,0");
+   * ```
+   */
+  function setWhenChanged(key: string, value: string): void {
+    if (host.dataset[key] !== value) host.dataset[key] = value;
+  }
 
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
@@ -192,9 +208,9 @@
         nameplateFallbackLabel: () => ctx.t("token.nameplateFallback"),
         selectedTokens: () => ctx.tokenSelection.ids,
         ghostOtherLevels: () => ghostOtherLevels,
-        // A token's facing is shown only to a viewer who may turn it (GM always; a player for
-        // their own tokens), so another creature's facing never reaches the canvas.
-        facingWedgeVisible: (doc) => role === "gm" || ctx.canEdit(doc, "/engine/rotation"),
+        // A token's facing is shown only to the GM and the token's owner, so another creature's
+        // facing never reaches a player's canvas.
+        facingWedgeVisible: (doc) => facingWedgeVisibleTo(role, ctx.selfId, doc, documents),
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
         vfxAssets: (id) => {
@@ -424,7 +440,7 @@
         // as `x1,y1>x2,y2`, sorted so the string is order-independent — the exact geometry a
         // wall-tool drag stored, so an e2e can confirm which snap resolution a placement ran
         // under (cell center vs vertex) without inspecting WebGL pixels.
-        host.dataset.wallSegments = documents
+        setWhenChanged("wallSegments", documents
           .query("wall")
           .filter((w) => !vsid || w.parent_id === vsid)
           .map((w) => {
@@ -445,13 +461,13 @@
           })
           .filter((s): s is string => s !== null)
           .sort()
-          .join(";");
+          .join(";"));
         // Read-only observability signal: each viewed-scene region's committed geometry as
         // `id:part+part` in authored order (a `!` prefix marks a hole part), id-sorted like
         // data-wall-segments — lets an e2e confirm which shape form (a bare kind for the
         // legacy singular form, a `+`-joined part list for a compound) and which parts are
         // holes a region doc stored, without inspecting WebGL pixels.
-        host.dataset.regionShapes = documents
+        setWhenChanged("regionShapes", documents
           .query("region")
           .filter((r) => !vsid || r.parent_id === vsid)
           .map((r) => {
@@ -465,7 +481,7 @@
             return `${r.id}:${summary}`;
           })
           .sort()
-          .join(";");
+          .join(";"));
         // Read-only observability signal: each viewed-scene token's last-projected badge chips
         // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
         // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can
