@@ -33,6 +33,10 @@ use crate::trash::Trash;
 pub const CERT_FILE: &str = "selfsigned-cert.pem";
 /// File name of the persisted private key under the TLS directory.
 pub const KEY_FILE: &str = "selfsigned-key.pem";
+/// File name of the persisted certificate shown to public peers (no interface addresses).
+pub const PUBLIC_CERT_FILE: &str = "selfsigned-public-cert.pem";
+/// File name of the private key of the certificate shown to public peers.
+pub const PUBLIC_KEY_FILE: &str = "selfsigned-public-key.pem";
 /// Days of remaining validity at or below which the certificate is regenerated.
 pub const RENEW_WITHIN_DAYS: i64 = 30;
 /// Lifetime of a freshly generated certificate, in days.
@@ -61,12 +65,14 @@ pub struct SanSet {
 /// Local facts the SAN list is derived from. Injected so the policy is testable without a real
 /// host.
 ///
-/// PRIVACY: the self-signed certificate is presented to every peer that completes a TLS
-/// handshake, before any authentication, and machine hostnames commonly embed a person's name.
-/// The hostname (and its `.local` form) therefore enters the certificate only when
+/// PRIVACY: a self-signed certificate is presented to every peer that completes a TLS handshake,
+/// before any authentication, and machine hostnames commonly embed a person's name. The hostname
+/// (and its `.local` form) therefore enters a certificate only when
 /// [`SanSources::advertise_hostname`] is set (`Config::tls_advertise_hostname`); it is detected
 /// regardless so a certificate persisted by an earlier run that DID list it is recognised and
-/// replaced ([`regen_reason`]). Interface addresses are not personal data and are always listed.
+/// replaced ([`regen_reason`]). Interface addresses describe the host's network layout, so they
+/// enter only the certificate shown to a LAN peer ([`SanSet::assemble`]); the certificate shown to
+/// a public peer lists none ([`SanSet::assemble_public`]).
 ///
 /// # Examples
 ///
@@ -370,6 +376,44 @@ impl SanSet {
         set
     }
 
+    /// Builds the SAN list of the certificate shown to a public peer: the same as
+    /// [`SanSet::assemble`] with NO interface address, plus `external` (the router's public
+    /// address, the one the host hands out) when it is known.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::tls::selfsigned::{SanSet, SanSources};
+    ///
+    /// let sources = SanSources {
+    ///     interface_ips: vec!["192.168.1.20".parse().unwrap()],
+    ///     ..Default::default()
+    /// };
+    /// let external = "203.0.113.9".parse().unwrap();
+    /// let sans = SanSet::assemble_public(&[], &sources, Some(external));
+    /// assert!(sans.ips.contains(&external));
+    /// assert!(!sans.ips.contains(&"192.168.1.20".parse().unwrap()));
+    /// ```
+    pub fn assemble_public(
+        tls_hostnames: &[String],
+        sources: &SanSources,
+        external: Option<IpAddr>,
+    ) -> Self {
+        let mut set = Self::assemble(
+            tls_hostnames,
+            &SanSources {
+                interface_ips: Vec::new(),
+                ..sources.clone()
+            },
+        );
+        if let Some(ip) = external {
+            if !set.ips.contains(&ip) {
+                set.ips.push(ip);
+            }
+        }
+        set
+    }
+
     /// Adds one text entry as an IP literal or a lowercase DNS name, skipping duplicates and
     /// empty input.
     fn add_entry(&mut self, entry: Option<&str>) {
@@ -538,6 +582,57 @@ pub enum RegenReason {
     MachineHostnameListed,
     /// `tls_advertise_hostname` is on and the certificate lacks the machine hostname.
     MachineHostnameMissing,
+    /// The certificate shown to public peers lacks the router's current external address. An
+    /// address that left the router's reach is never a reason: only the one players must use now.
+    MissingExternalAddress(IpAddr),
+}
+
+/// Which of the two persisted self-signed certificates an operation handles.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    /// The certificate shown to a LAN peer: lists the eligible interface addresses.
+    Lan,
+    /// The certificate shown to a public peer: lists no interface address, and lists `external`
+    /// (the router's public address) when it is known.
+    Public {
+        /// The router's public address, when the port-mapping runtime knows it.
+        external: Option<IpAddr>,
+    },
+}
+
+impl Kind {
+    /// The persisted certificate file name.
+    fn cert_file(self) -> &'static str {
+        match self {
+            Kind::Lan => CERT_FILE,
+            Kind::Public { .. } => PUBLIC_CERT_FILE,
+        }
+    }
+
+    /// The persisted key file name.
+    fn key_file(self) -> &'static str {
+        match self {
+            Kind::Lan => KEY_FILE,
+            Kind::Public { .. } => PUBLIC_KEY_FILE,
+        }
+    }
+
+    /// The SAN list this kind of certificate carries.
+    fn assemble(self, tls_hostnames: &[String], sources: &SanSources) -> SanSet {
+        match self {
+            Kind::Lan => SanSet::assemble(tls_hostnames, sources),
+            Kind::Public { external } => SanSet::assemble_public(tls_hostnames, sources, external),
+        }
+    }
+
+    /// Eligible interface addresses `cert` lacks (always empty for a public certificate, which
+    /// lists none by design).
+    fn drift(self, cert: &LoadedCert, sources: &SanSources) -> Vec<IpAddr> {
+        match self {
+            Kind::Lan => drifted_addresses(cert, &sources.interface_ips),
+            Kind::Public { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Decides whether a stored certificate must be replaced: near expiry, a configured
@@ -563,6 +658,55 @@ pub enum RegenReason {
 /// );
 /// ```
 pub fn regen_reason(
+    cert: &LoadedCert,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    now_unix: i64,
+) -> Option<RegenReason> {
+    regen_reason_for(Kind::Lan, cert, tls_hostnames, sources, now_unix)
+}
+
+/// [`regen_reason`] for the certificate shown to public peers: the same expiry, `tls_hostnames`
+/// and machine-hostname rules, plus [`RegenReason::MissingExternalAddress`] when `external` is
+/// known and the certificate does not list it. A changed external address replaces the
+/// certificate although a changed interface address never does, because the players' origin
+/// changes with the external address: a browser asks again for a new address regardless, so the
+/// replacement re-warns nobody who was not already warned.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{generate, regen_reason_public, RegenReason, SanSet, SanSources};
+///
+/// let now = time::OffsetDateTime::now_utc();
+/// let cert = generate(&SanSet::default(), now).unwrap().loaded;
+/// let external: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+/// let sources = SanSources::default();
+/// assert_eq!(regen_reason_public(&cert, &[], &sources, None, now.unix_timestamp()), None);
+/// assert_eq!(
+///     regen_reason_public(&cert, &[], &sources, Some(external), now.unix_timestamp()),
+///     Some(RegenReason::MissingExternalAddress(external))
+/// );
+/// ```
+pub fn regen_reason_public(
+    cert: &LoadedCert,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    external: Option<IpAddr>,
+    now_unix: i64,
+) -> Option<RegenReason> {
+    regen_reason_for(
+        Kind::Public { external },
+        cert,
+        tls_hostnames,
+        sources,
+        now_unix,
+    )
+}
+
+/// The single definition of "this stored certificate must be replaced" for both kinds.
+fn regen_reason_for(
+    kind: Kind,
     cert: &LoadedCert,
     tls_hostnames: &[String],
     sources: &SanSources,
@@ -596,6 +740,14 @@ pub fn regen_reason(
         }
     } else if machine.iter().any(|n| listed(n)) {
         return Some(RegenReason::MachineHostnameListed);
+    }
+    if let Kind::Public {
+        external: Some(ip), ..
+    } = kind
+    {
+        if !listed(&ip.to_string()) {
+            return Some(RegenReason::MissingExternalAddress(ip));
+        }
     }
     None
 }
@@ -649,9 +801,9 @@ pub struct SelfSigned {
 }
 
 /// Reads the persisted certificate pair from `dir`.
-fn read_persisted(dir: &Path) -> Result<LoadedCert, TlsError> {
-    let cert_path = dir.join(CERT_FILE);
-    let key_path = dir.join(KEY_FILE);
+fn read_persisted(dir: &Path, kind: Kind) -> Result<LoadedCert, TlsError> {
+    let cert_path = dir.join(kind.cert_file());
+    let key_path = dir.join(kind.key_file());
     let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&cert_path)
         .map_err(|e| TlsError::Pem(format!("{}: {e}", cert_path.display())))?
         .collect::<Result<_, _>>()
@@ -662,11 +814,13 @@ fn read_persisted(dir: &Path) -> Result<LoadedCert, TlsError> {
 }
 
 /// Writes a generated pair under `dir` (key protected owner-only).
-fn persist(dir: &Path, g: &Generated, trash: &Trash) -> Result<(), TlsError> {
-    keyfile::write_private(&dir.join(KEY_FILE), g.key_pem.as_bytes(), trash)
-        .map_err(|e| TlsError::Io(format!("{}: {e}", dir.join(KEY_FILE).display())))?;
-    keyfile::write_private(&dir.join(CERT_FILE), g.cert_pem.as_bytes(), trash)
-        .map_err(|e| TlsError::Io(format!("{}: {e}", dir.join(CERT_FILE).display())))?;
+fn persist(dir: &Path, kind: Kind, g: &Generated, trash: &Trash) -> Result<(), TlsError> {
+    let key_path = dir.join(kind.key_file());
+    let cert_path = dir.join(kind.cert_file());
+    keyfile::write_private(&key_path, g.key_pem.as_bytes(), trash)
+        .map_err(|e| TlsError::Io(format!("{}: {e}", key_path.display())))?;
+    keyfile::write_private(&cert_path, g.cert_pem.as_bytes(), trash)
+        .map_err(|e| TlsError::Io(format!("{}: {e}", cert_path.display())))?;
     Ok(())
 }
 
@@ -696,14 +850,78 @@ pub fn load_or_generate(
     now: OffsetDateTime,
     trash: &Trash,
 ) -> Result<SelfSigned, TlsError> {
+    load_or_generate_kind(
+        Kind::Lan,
+        dir,
+        tls_hostnames,
+        sources,
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// [`load_or_generate`] for the certificate shown to public peers: persisted beside the LAN one,
+/// listing no interface address, and listing `external` when it is known. It follows the same
+/// reuse and regeneration rules ([`regen_reason_public`]).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{load_or_generate_public, RcgenGenerator, SanSources};
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let now = time::OffsetDateTime::now_utc();
+/// let external = "203.0.113.9".parse().unwrap();
+/// let out = load_or_generate_public(Some(dir.path()), &[], &SanSources::default(), Some(external), &RcgenGenerator, now, &trash).unwrap();
+/// assert!(out.cert.san_entries().contains(&"203.0.113.9".to_string()));
+/// ```
+pub fn load_or_generate_public(
+    dir: Option<&Path>,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    external: Option<IpAddr>,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<SelfSigned, TlsError> {
+    load_or_generate_kind(
+        Kind::Public { external },
+        dir,
+        tls_hostnames,
+        sources,
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// The one reuse-or-replace path both certificates share.
+fn load_or_generate_kind(
+    kind: Kind,
+    dir: Option<&Path>,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<SelfSigned, TlsError> {
     let mut regenerated = None;
     if let Some(dir) = dir {
-        if dir.join(CERT_FILE).exists() || dir.join(KEY_FILE).exists() {
-            match read_persisted(dir) {
+        if dir.join(kind.cert_file()).exists() || dir.join(kind.key_file()).exists() {
+            match read_persisted(dir, kind) {
                 Ok(existing) => {
-                    match regen_reason(&existing, tls_hostnames, sources, now.unix_timestamp()) {
+                    match regen_reason_for(
+                        kind,
+                        &existing,
+                        tls_hostnames,
+                        sources,
+                        now.unix_timestamp(),
+                    ) {
                         None => {
-                            let drift = drifted_addresses(&existing, &sources.interface_ips);
+                            let drift = kind.drift(&existing, sources);
                             return Ok(SelfSigned {
                                 cert: Arc::new(existing),
                                 persisted: true,
@@ -722,10 +940,10 @@ pub fn load_or_generate(
             }
         }
     }
-    let sans = SanSet::assemble(tls_hostnames, sources);
+    let sans = kind.assemble(tls_hostnames, sources);
     let g = generator.generate(&sans, now)?;
     let (persisted, persist_error) = match dir {
-        Some(dir) => match persist(dir, &g, trash) {
+        Some(dir) => match persist(dir, kind, &g, trash) {
             Ok(()) => (true, None),
             Err(e) => (false, Some(e.to_string())),
         },
@@ -776,8 +994,65 @@ pub fn force_regenerate(
     now: OffsetDateTime,
     trash: &Trash,
 ) -> Result<Arc<LoadedCert>, TlsError> {
-    let sans = SanSet::assemble(tls_hostnames, sources);
+    force_regenerate_kind(
+        Kind::Lan,
+        dir,
+        tls_hostnames,
+        sources,
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// [`force_regenerate`] for the certificate shown to public peers; `external` is the router's
+/// public address when known (the one-shot command runs without a port-mapping runtime, so it
+/// passes `None` and the running server adds the address on its next check).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{force_regenerate_public, RcgenGenerator, SanSources};
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let now = time::OffsetDateTime::now_utc();
+/// let cert = force_regenerate_public(dir.path(), &[], &SanSources::default(), None, &RcgenGenerator, now, &trash).unwrap();
+/// assert!(cert.san_entries().contains(&"localhost".to_string()));
+/// ```
+pub fn force_regenerate_public(
+    dir: &Path,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    external: Option<IpAddr>,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<Arc<LoadedCert>, TlsError> {
+    force_regenerate_kind(
+        Kind::Public { external },
+        dir,
+        tls_hostnames,
+        sources,
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// The one unconditional-replacement path both certificates share.
+fn force_regenerate_kind(
+    kind: Kind,
+    dir: &Path,
+    tls_hostnames: &[String],
+    sources: &SanSources,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<Arc<LoadedCert>, TlsError> {
+    let sans = kind.assemble(tls_hostnames, sources);
     let g = generator.generate(&sans, now)?;
-    persist(dir, &g, trash)?;
+    persist(dir, kind, &g, trash)?;
     Ok(Arc::new(g.loaded))
 }

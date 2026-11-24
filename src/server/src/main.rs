@@ -136,6 +136,12 @@ async fn main() -> anyhow::Result<()> {
         trash: trash.clone(),
     };
     let portmap = state.portmap.clone();
+    // The certificate shown to public peers lists the router's public address once the mapping
+    // reports it (`tls::TlsRuntime::refresh_public`, driven by the maintenance tick).
+    tls.set_external_source({
+        let portmap = portmap.clone();
+        Arc::new(move || portmap.public_address())
+    });
     let stored_port_forward = shadowcat::portmap::runtime::read_stored_toggle(&state.repo).await;
 
     shadowcat::auth::session::spawn_housekeeping_sweep(&state.repo);
@@ -313,8 +319,9 @@ async fn apply_staged_restore(config: &Config) -> anyhow::Result<()> {
 }
 
 /// One-shot `--tls-regenerate` mode: replaces the persisted self-signed certificate with a fresh
-/// one advertising the current local addresses and configured `tls_hostnames`, prints its
-/// SHA-256 fingerprint, and returns — the caller exits before any server startup runs. Requires
+/// one advertising the current local addresses and configured `tls_hostnames`, and does the same
+/// for the certificate public peers receive (no interface addresses). Prints both SHA-256
+/// fingerprints and returns — the caller exits before any server startup runs. Requires
 /// an on-disk TLS directory (`Config::tls_path`); an in-memory database with no `tls_dir` has
 /// nothing to regenerate because its certificate lives only in process memory.
 fn run_tls_regenerate(config: &Config) -> anyhow::Result<()> {
@@ -323,18 +330,36 @@ fn run_tls_regenerate(config: &Config) -> anyhow::Result<()> {
             "--tls-regenerate requires a persistent TLS directory: the database is in-memory and tls_dir is unset"
         )
     })?;
+    let sources = shadowcat::tls::selfsigned::SanSources::detect(config.tls_advertise_hostname);
+    let now = time::OffsetDateTime::now_utc();
+    let trash = shadowcat::trash::Trash::from_config(config);
     let cert = shadowcat::tls::selfsigned::force_regenerate(
         &dir,
         &config.tls_hostnames,
-        &shadowcat::tls::selfsigned::SanSources::detect(config.tls_advertise_hostname),
+        &sources,
         &shadowcat::tls::selfsigned::RcgenGenerator,
-        time::OffsetDateTime::now_utc(),
-        &shadowcat::trash::Trash::from_config(config),
+        now,
+        &trash,
     )?;
     println!(
         "regenerated {}: sha256 {}",
         shadowcat::tls::selfsigned::cert_path(&dir).display(),
         cert.fingerprint()
+    );
+    let public = shadowcat::tls::selfsigned::force_regenerate_public(
+        &dir,
+        &config.tls_hostnames,
+        &sources,
+        None,
+        &shadowcat::tls::selfsigned::RcgenGenerator,
+        now,
+        &trash,
+    )?;
+    println!(
+        "regenerated {}: sha256 {}",
+        dir.join(shadowcat::tls::selfsigned::PUBLIC_CERT_FILE)
+            .display(),
+        public.fingerprint()
     );
     Ok(())
 }

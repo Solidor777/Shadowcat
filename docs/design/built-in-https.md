@@ -88,14 +88,37 @@ exclusive with `--backup-to`, `--restore-from` and any subcommand).
 Machine hostname (PII): the certificate is presented to every peer that completes a handshake,
 before any authentication, and machine hostnames commonly embed a person's name. The hostname and its
 `<hostname>.local` form therefore enter the SANs ONLY when `tls_advertise_hostname = true` (default
-`false`); interface IP addresses are always listed (not personal data, and reachability outranks
-topology secrecy). The hostname is detected regardless (`SanSources.machine_hostname`) so a
+`false`); the opt-in governs both certificates. The hostname is detected regardless (`SanSources.machine_hostname`) so a
 certificate persisted by an earlier run that listed it is recognised: it is regenerated when the
 opt-in is off and the hostname is present (unless the operator also named it in `tls_hostnames`,
 which is theirs), and regenerated once when the opt-in is turned on and the hostname is absent. A
 hostname that fails host validation (non-ASCII, IP literal, `localhost`) is neither listed nor
 required, so it can never cause a regeneration loop. `regen_reason` and `SanSet::add_entry`
 normalise entries through one function (`normalise_entry`).
+
+Two certificates, chosen by peer (privacy rule). The machine's interface addresses describe the
+host's LAN; a player on the internet has no use for them and must not read them from the handshake
+(personal-information security outranks convenience). So two self-signed certificates exist:
+
+- the LAN certificate, above: `localhost`, loopback, `tls_hostnames` and the eligible interface
+  addresses. A peer whose address is loopback, private (RFC 1918), link-local or IPv6
+  unique-local/link-local gets it (`PeerScope::Lan`);
+- the public certificate (`selfsigned-public-cert.pem` / `selfsigned-public-key.pem`): `localhost`,
+  loopback, `tls_hostnames` and, once the port-mapping runtime knows it, the router's external
+  address. It lists NO interface address. Every other peer, CGNAT included, gets it
+  (`PeerScope::Public`).
+
+Both follow the same reuse, expiry, `tls_hostnames`, machine-hostname opt-in and `--tls-regenerate`
+rules (`--tls-regenerate` replaces both and prints both fingerprints). Interface churn never
+regenerates the public certificate, since it lists none. The external address is polled each
+maintenance tick from `PortMapRuntime::public_address` (only a `Mapped` state with a publicly
+routable address). A KNOWN external address the certificate lacks regenerates it once and the new
+certificate lists only the current address; an address that becomes unknown leaves it unchanged, so a
+router that briefly drops the mapping does not re-warn every player. A player who reaches the server
+by a new address needs the new SAN anyway, so one extra warning at that moment is unavoidable. The
+GM sees player addresses and shares their own; that is inherent and not covered. A port forward
+(DNAT) preserves the player's source address, so the accepted peer is the player's public address;
+a hairpin or reverse-proxy connection shows a LAN or loopback peer and gets the LAN certificate.
 
 Interface enumeration comes from `netdev`. If it fails, generation proceeds with `localhost`,
 loopback and `tls_hostnames` and logs a warning; enumeration failure is never fatal for TLS. Every `tls_hostnames` entry is validated in `Config::validate_tls` (DNS name or IP
@@ -137,7 +160,8 @@ load so the check is a comparison.
 Mechanism: the connection task awaits `LazyConfigAcceptor` to obtain a `StartHandshake`, then runs
 two free functions with no shared mutable state: `hello_phase(&StartHandshake, &Snapshot) ->
 Selected` (reads the hello, calls `Snapshot::select` exactly once) and `finish_phase(start,
-Arc<Snapshot>, Selected, peer)` (calls `into_stream` with `snapshot.config_for(selected)` and builds
+Arc<Snapshot>, Selected, peer)` (calls `into_stream` with `snapshot.config_for(selected,
+PeerScope::of(peer.ip()))`, the one place the peer scope is decided, and builds
 `ConnMeta::tls(peer, selected)`). The caller takes the `Arc<Snapshot>` from the swap cell ONCE and
 passes it to both. `finish_phase` receives the snapshot by value and has NO handle to the swap
 cell, so a second selection or a re-read is impossible by construction; a swap between the two

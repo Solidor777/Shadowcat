@@ -8,6 +8,10 @@
 //! [`Snapshot::select`] call on ONE `Arc<Snapshot>`. [`finish_phase`] receives that snapshot by
 //! value and has no handle to the swap cell, so a second selection (or a re-read of the cell after
 //! a hot swap) is impossible by construction.
+//!
+//! INVARIANT: the self-signed certificate a connection receives depends on [`PeerScope::of`] of the
+//! accepted socket's peer address, decided in exactly one place ([`finish_phase`]). A snapshot
+//! built without a public certificate serves every peer the shared fallback.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -294,8 +298,11 @@ fn build_config(
 struct Configs {
     /// Serves the CA-trusted certificate; `None` when the snapshot has no primary.
     primary: Option<Arc<ServerConfig>>,
-    /// Serves the self-signed certificate.
+    /// Serves the self-signed certificate to a [`PeerScope::Lan`] peer.
     fallback: Arc<ServerConfig>,
+    /// Serves the self-signed certificate to a [`PeerScope::Public`] peer; `None` when the
+    /// snapshot has one self-signed certificate for every peer.
+    public_fallback: Option<Arc<ServerConfig>>,
     /// Serves TLS-ALPN-01 validation certificates; `None` when no challenge is published.
     challenge: Option<Arc<ServerConfig>>,
 }
@@ -319,8 +326,11 @@ struct Configs {
 pub struct Snapshot {
     /// The CA-trusted certificate (operator PEM or ACME-issued), when one is loaded.
     primary: Option<Arc<LoadedCert>>,
-    /// The self-signed certificate; always present.
+    /// The self-signed certificate a [`PeerScope::Lan`] peer receives; always present.
     fallback: Arc<LoadedCert>,
+    /// The self-signed certificate a [`PeerScope::Public`] peer receives; `None` means every peer
+    /// receives `fallback`.
+    public_fallback: Option<Arc<LoadedCert>>,
     /// TLS-ALPN-01 validation certificates keyed by lowercase SNI.
     challenges: BTreeMap<String, Arc<CertifiedKey>>,
     /// Pre-built configurations, one per [`Selected`] outcome.
@@ -345,6 +355,18 @@ impl Snapshot {
         fallback: Arc<LoadedCert>,
         challenges: BTreeMap<String, Arc<CertifiedKey>>,
     ) -> Result<Self, TlsError> {
+        Self::build(primary, fallback, None, challenges)
+    }
+
+    /// Builds a snapshot from every certificate slot and its rustls configurations. Every
+    /// constructor and every `with_*` derivation goes through here, so a derived snapshot cannot
+    /// drop a slot.
+    fn build(
+        primary: Option<Arc<LoadedCert>>,
+        fallback: Arc<LoadedCert>,
+        public_fallback: Option<Arc<LoadedCert>>,
+        challenges: BTreeMap<String, Arc<CertifiedKey>>,
+    ) -> Result<Self, TlsError> {
         let serving_alpn = || {
             ALPN_PROTOCOLS
                 .iter()
@@ -359,6 +381,13 @@ impl Snapshot {
             None => None,
         };
         let fallback_cfg = build_config(Arc::new(FixedCert(fallback.key.clone())), serving_alpn())?;
+        let public_cfg = match &public_fallback {
+            Some(p) => Some(build_config(
+                Arc::new(FixedCert(p.key.clone())),
+                serving_alpn(),
+            )?),
+            None => None,
+        };
         let challenge_cfg = if challenges.is_empty() {
             None
         } else {
@@ -370,10 +399,12 @@ impl Snapshot {
         Ok(Self {
             primary,
             fallback,
+            public_fallback,
             challenges,
             configs: Configs {
                 primary: primary_cfg,
                 fallback: fallback_cfg,
+                public_fallback: public_cfg,
                 challenge: challenge_cfg,
             },
         })
@@ -396,7 +427,12 @@ impl Snapshot {
     /// assert!(next.primary().is_some() && snap.primary().is_none());
     /// ```
     pub fn with_primary(&self, primary: Option<Arc<LoadedCert>>) -> Result<Self, TlsError> {
-        Self::new(primary, self.fallback.clone(), self.challenges.clone())
+        Self::build(
+            primary,
+            self.fallback.clone(),
+            self.public_fallback.clone(),
+            self.challenges.clone(),
+        )
     }
 
     /// A NEW snapshot with the self-signed fallback replaced.
@@ -416,7 +452,39 @@ impl Snapshot {
     /// assert_eq!(next.fallback().fingerprint(), b.fingerprint());
     /// ```
     pub fn with_fallback(&self, fallback: Arc<LoadedCert>) -> Result<Self, TlsError> {
-        Self::new(self.primary.clone(), fallback, self.challenges.clone())
+        Self::build(
+            self.primary.clone(),
+            fallback,
+            self.public_fallback.clone(),
+            self.challenges.clone(),
+        )
+    }
+
+    /// A NEW snapshot whose [`PeerScope::Public`] peers receive `public_fallback` instead of the
+    /// self-signed fallback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use shadowcat::tls::resolver::Snapshot;
+    /// use shadowcat::tls::selfsigned::{generate, SanSet};
+    ///
+    /// let now = time::OffsetDateTime::now_utc();
+    /// let lan = Arc::new(generate(&SanSet::default(), now).unwrap().loaded);
+    /// let public = Arc::new(generate(&SanSet::default(), now).unwrap().loaded);
+    /// let snap = Snapshot::new(None, lan, Default::default()).unwrap();
+    /// let split = snap.with_public_fallback(public.clone()).unwrap();
+    /// assert_eq!(split.public_fallback().fingerprint(), public.fingerprint());
+    /// assert_eq!(snap.public_fallback().fingerprint(), snap.fallback().fingerprint());
+    /// ```
+    pub fn with_public_fallback(&self, public_fallback: Arc<LoadedCert>) -> Result<Self, TlsError> {
+        Self::build(
+            self.primary.clone(),
+            self.fallback.clone(),
+            Some(public_fallback),
+            self.challenges.clone(),
+        )
     }
 
     /// A NEW snapshot with the TLS-ALPN-01 validation certificates replaced.
@@ -436,7 +504,12 @@ impl Snapshot {
         &self,
         challenges: BTreeMap<String, Arc<CertifiedKey>>,
     ) -> Result<Self, TlsError> {
-        Self::new(self.primary.clone(), self.fallback.clone(), challenges)
+        Self::build(
+            self.primary.clone(),
+            self.fallback.clone(),
+            self.public_fallback.clone(),
+            challenges,
+        )
     }
 
     /// The CA-trusted certificate, when loaded.
@@ -455,7 +528,7 @@ impl Snapshot {
         self.primary.as_ref()
     }
 
-    /// The self-signed fallback certificate.
+    /// The self-signed fallback certificate a [`PeerScope::Lan`] peer receives.
     ///
     /// # Examples
     ///
@@ -470,6 +543,24 @@ impl Snapshot {
     /// ```
     pub fn fallback(&self) -> &Arc<LoadedCert> {
         &self.fallback
+    }
+
+    /// The self-signed certificate a [`PeerScope::Public`] peer receives: the one installed by
+    /// [`Snapshot::with_public_fallback`], else the fallback every peer shares.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use shadowcat::tls::resolver::Snapshot;
+    /// use shadowcat::tls::selfsigned::{generate, SanSet};
+    ///
+    /// let fb = Arc::new(generate(&SanSet::default(), time::OffsetDateTime::now_utc()).unwrap().loaded);
+    /// let snap = Snapshot::new(None, fb.clone(), Default::default()).unwrap();
+    /// assert_eq!(snap.public_fallback().fingerprint(), fb.fingerprint());
+    /// ```
+    pub fn public_fallback(&self) -> &Arc<LoadedCert> {
+        self.public_fallback.as_ref().unwrap_or(&self.fallback)
     }
 
     /// THE certificate decision, pure over `(snapshot, sni, alpn, now)`. ALPN `acme-tls/1` with a
@@ -554,35 +645,84 @@ impl Snapshot {
         self.primary.as_ref().filter(|p| p.is_valid_at(now_unix))
     }
 
-    /// The rustls configuration serving `selected`. A `Primary`/`Challenge` request against a
-    /// snapshot without one falls back to the self-signed configuration; [`Snapshot::select`]
-    /// never returns such an outcome for the snapshot that produced it.
+    /// The rustls configuration serving `selected` to a peer of `scope`. A `Primary`/`Challenge`
+    /// request against a snapshot without one falls back to the self-signed configuration for
+    /// `scope`; [`Snapshot::select`] never returns such an outcome for the snapshot that produced
+    /// it. The self-signed outcome is the only one `scope` changes: the operator and challenge
+    /// certificates are CA-facing and carry no interface address.
     ///
     /// # Examples
     ///
     /// ```
     /// use std::sync::Arc;
-    /// use shadowcat::tls::resolver::Snapshot;
+    /// use shadowcat::tls::resolver::{PeerScope, Snapshot};
     /// use shadowcat::tls::selfsigned::{generate, SanSet};
     /// use shadowcat::tls::Selected;
     ///
     /// let fb = Arc::new(generate(&SanSet::default(), time::OffsetDateTime::now_utc()).unwrap().loaded);
     /// let snap = Snapshot::new(None, fb, Default::default()).unwrap();
-    /// assert_eq!(snap.config_for(Selected::Fallback).alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
+    /// let config = snap.config_for(Selected::Fallback, PeerScope::Lan);
+    /// assert_eq!(config.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     /// ```
-    pub fn config_for(&self, selected: Selected) -> Arc<ServerConfig> {
+    pub fn config_for(&self, selected: Selected, scope: PeerScope) -> Arc<ServerConfig> {
+        let self_signed = || match (scope, &self.configs.public_fallback) {
+            (PeerScope::Public, Some(public)) => public.clone(),
+            _ => self.configs.fallback.clone(),
+        };
         match selected {
-            Selected::Primary => self
-                .configs
-                .primary
-                .clone()
-                .unwrap_or_else(|| self.configs.fallback.clone()),
-            Selected::Challenge => self
-                .configs
-                .challenge
-                .clone()
-                .unwrap_or_else(|| self.configs.fallback.clone()),
-            Selected::Fallback => self.configs.fallback.clone(),
+            Selected::Primary => self.configs.primary.clone().unwrap_or_else(self_signed),
+            Selected::Challenge => self.configs.challenge.clone().unwrap_or_else(self_signed),
+            Selected::Fallback => self_signed(),
+        }
+    }
+}
+
+/// Which self-signed certificate a peer is shown, decided once from its socket address.
+///
+/// The self-signed certificate is presented before any authentication, so a [`PeerScope::Public`]
+/// peer must never read a local interface address from it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::resolver::PeerScope;
+///
+/// assert_eq!(PeerScope::of("192.168.1.20".parse().unwrap()), PeerScope::Lan);
+/// assert_eq!(PeerScope::of("203.0.113.9".parse().unwrap()), PeerScope::Public);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerScope {
+    /// Loopback, private, link-local or unique-local: a peer on the host's own network.
+    Lan,
+    /// Any other address, including carrier-grade NAT (`100.64.0.0/10`), which no local network
+    /// owns.
+    Public,
+}
+
+impl PeerScope {
+    /// The scope of a peer at `ip` (an IPv4-mapped IPv6 address counts as its IPv4 address).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::tls::resolver::PeerScope;
+    ///
+    /// assert_eq!(PeerScope::of("::ffff:10.0.0.4".parse().unwrap()), PeerScope::Lan);
+    /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap()), PeerScope::Lan);
+    /// assert_eq!(PeerScope::of("2001:db8::1".parse().unwrap()), PeerScope::Public);
+    /// ```
+    pub fn of(ip: std::net::IpAddr) -> Self {
+        let lan = match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => {
+                let first = v6.segments()[0];
+                v6.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+            }
+        };
+        if lan {
+            PeerScope::Lan
+        } else {
+            PeerScope::Public
         }
     }
 }
@@ -717,7 +857,8 @@ where
 }
 
 /// The finish phase of a TLS accept: completes the handshake with the configuration `selected`
-/// maps to in `snapshot` and records the single selection outcome in the returned [`ConnMeta`].
+/// maps to in `snapshot` for the scope of `peer` ([`PeerScope::of`], the one place a peer address
+/// picks a certificate) and records the single selection outcome in the returned [`ConnMeta`].
 /// Takes the snapshot by value and has no access to the swap cell, so it cannot select a second
 /// time.
 ///
@@ -744,7 +885,7 @@ pub async fn finish_phase<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    let config = snapshot.config_for(selected);
+    let config = snapshot.config_for(selected, PeerScope::of(peer.ip()));
     let stream = start.into_stream(config).await?;
     Ok((stream, ConnMeta::tls(peer, selected)))
 }
