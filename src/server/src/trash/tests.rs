@@ -172,8 +172,9 @@ fn a_move_that_loses_the_race_for_the_source_leaves_no_staging_directory() {
         &staging.join(ITEM_NAME),
         TrashedKind::File,
         |from, to| std::fs::rename(from, to),
+        remove_path,
     );
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    assert_eq!(result.unwrap_err().error.kind(), io::ErrorKind::NotFound);
     assert!(
         trash.list().unwrap().is_empty(),
         "a staging directory is never listed"
@@ -187,9 +188,13 @@ fn cross_device_fallback_copies_a_file_then_removes_the_source() {
     let to = tmp.path().join("to.bin");
     std::fs::write(&from, b"payload").unwrap();
 
-    move_item(&from, &to, TrashedKind::File, |_, _| {
-        Err(io::ErrorKind::CrossesDevices.into())
-    })
+    move_item(
+        &from,
+        &to,
+        TrashedKind::File,
+        |_, _| Err(io::ErrorKind::CrossesDevices.into()),
+        remove_path,
+    )
     .unwrap();
 
     assert_eq!(std::fs::read(&to).unwrap(), b"payload");
@@ -203,9 +208,13 @@ fn cross_device_fallback_copies_a_directory_tree_then_removes_the_source() {
     let expected = tree_of(&from);
     let to = tmp.path().join("copied");
 
-    move_item(&from, &to, TrashedKind::Dir, |_, _| {
-        Err(io::ErrorKind::CrossesDevices.into())
-    })
+    move_item(
+        &from,
+        &to,
+        TrashedKind::Dir,
+        |_, _| Err(io::ErrorKind::CrossesDevices.into()),
+        remove_path,
+    )
     .unwrap();
 
     assert_eq!(tree_of(&to), expected);
@@ -220,11 +229,15 @@ fn cross_device_fallback_keeps_the_source_when_the_copy_fails() {
     // The destination's parent does not exist, so the copy cannot succeed.
     let to = tmp.path().join("missing-parent").join("to.bin");
 
-    let result = move_item(&from, &to, TrashedKind::File, |_, _| {
-        Err(io::ErrorKind::CrossesDevices.into())
-    });
+    let result = move_item(
+        &from,
+        &to,
+        TrashedKind::File,
+        |_, _| Err(io::ErrorKind::CrossesDevices.into()),
+        remove_path,
+    );
 
-    assert!(result.is_err());
+    assert!(!result.unwrap_err().copy_complete);
     assert_eq!(
         std::fs::read(&from).unwrap(),
         b"payload",
@@ -242,9 +255,91 @@ fn a_rename_error_other_than_cross_device_is_returned_untouched() {
         &tmp.path().join("to.bin"),
         TrashedKind::File,
         |_, _| Err(io::ErrorKind::PermissionDenied.into()),
+        remove_path,
     );
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        result.unwrap_err().error.kind(),
+        io::ErrorKind::PermissionDenied
+    );
     assert!(from.exists(), "no fallback runs for other errors");
+}
+
+#[test]
+fn a_failed_source_removal_after_a_finished_copy_keeps_the_copy_as_a_listed_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tree = make_tree(tmp.path());
+    let trash = trash_in(tmp.path(), days(30));
+
+    // The removal deletes part of the source and then fails, as a locked file would.
+    let result = trash.discard_with(
+        &tree,
+        |_, _| Err(io::ErrorKind::CrossesDevices.into()),
+        |from, _| {
+            std::fs::remove_file(from.join("b.bin"))?;
+            Err(io::ErrorKind::PermissionDenied.into())
+        },
+    );
+
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    let entries = trash.list().unwrap();
+    assert_eq!(entries.len(), 1, "the complete copy is a listed entry");
+    assert_eq!(
+        entries[0].size_bytes, 5,
+        "the copy holds the whole tree, including the file the failed removal deleted"
+    );
+}
+
+#[test]
+fn sweep_removes_a_stale_staging_directory_and_keeps_a_fresh_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("trash");
+    let trash = trash_in(tmp.path(), days(1));
+    let staging = dir.join(format!("{STAGING_PREFIX}leftover"));
+    std::fs::create_dir_all(staging.join(ITEM_NAME)).unwrap();
+    std::fs::write(staging.join(ITEM_NAME).join("a.bin"), b"abc").unwrap();
+
+    assert_eq!(
+        trash.sweep(now_ms()).unwrap(),
+        (0, 0),
+        "a directory touched just now is in flight"
+    );
+    assert!(staging.exists());
+
+    assert_eq!(trash.sweep(now_ms() + 10 * MS_PER_DAY).unwrap(), (1, 3));
+    assert!(!staging.exists());
+}
+
+#[test]
+fn empty_removes_a_staging_directory_idle_past_the_grace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("trash");
+    let trash = trash_in(tmp.path(), days(30));
+    let staging = dir.join(format!("{STAGING_PREFIX}leftover"));
+    std::fs::create_dir_all(&staging).unwrap();
+
+    trash.empty_at(now_ms() + 2 * STAGING_GRACE_MS).unwrap();
+
+    assert!(!staging.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_whose_item_cannot_be_read_still_lists_and_does_not_stop_the_sweep() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("trash");
+    let trash = trash_in(tmp.path(), days(1));
+    let bad = plant(&dir, 1, 1);
+    let item = dir.join(&bad).join(ITEM_NAME);
+    std::fs::remove_file(&item).unwrap();
+    std::fs::create_dir_all(item.join("inner")).unwrap();
+    std::fs::set_permissions(&item, std::fs::Permissions::from_mode(0o000)).unwrap();
+    plant(&dir, 2, 1);
+
+    let listed = trash.list();
+
+    std::fs::set_permissions(&item, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(listed.unwrap().len(), 2);
 }
 
 #[test]

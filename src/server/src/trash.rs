@@ -37,6 +37,10 @@ const MS_PER_DAY: u64 = 86_400_000;
 /// How often [`spawn_retention_sweep`] runs a pass.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How long a `.staging-*` directory must sit unmodified before [`Trash::empty`] treats it as
+/// abandoned rather than an in-flight discard. [`Trash::sweep`] uses the retention cutoff instead.
+const STAGING_GRACE_MS: u64 = 60 * 60 * 1000;
+
 /// File name of an entry's manifest inside its entry directory.
 const MANIFEST_FILE: &str = "manifest.json";
 
@@ -385,27 +389,52 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Why [`move_item`] failed, and whether the destination then holds a complete copy.
+#[derive(Debug)]
+struct MoveFailure {
+    /// The underlying I/O error.
+    error: io::Error,
+    /// True when the copy to `to` finished and only the removal of `from` failed. Then `from` may
+    /// be partly gone, so `to` is the only complete copy and must be kept.
+    copy_complete: bool,
+}
+
+impl MoveFailure {
+    /// A failure before any complete copy exists; `from` is untouched.
+    fn before_copy(error: io::Error) -> Self {
+        Self {
+            error,
+            copy_complete: false,
+        }
+    }
+}
+
 /// Moves `from` to `to` with `rename`; when `rename` reports the two paths are on different
-/// devices, copies `from` to `to` and only then removes `from`. The source is removed last so a
-/// failed or interrupted copy leaves it where it was. `rename` is a parameter so a test can
-/// force the cross-device branch without two filesystems.
+/// devices, copies `from` to `to` and only then removes `from` with `remove`. The source is
+/// removed last so a failed or interrupted copy leaves it where it was; a failed removal after a
+/// finished copy is reported with `copy_complete` set. `rename` and `remove` are parameters so a
+/// test can force the cross-device branch and a partial removal without two filesystems.
 fn move_item(
     from: &Path,
     to: &Path,
     kind: TrashedKind,
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
-) -> io::Result<()> {
+    remove: impl FnOnce(&Path, TrashedKind) -> io::Result<()>,
+) -> Result<(), MoveFailure> {
     match rename(from, to) {
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
             match kind {
-                TrashedKind::Dir => copy_tree(from, to)?,
+                TrashedKind::Dir => copy_tree(from, to).map_err(MoveFailure::before_copy)?,
                 TrashedKind::File => {
-                    std::fs::copy(from, to)?;
+                    std::fs::copy(from, to).map_err(MoveFailure::before_copy)?;
                 }
             }
-            remove_path(from, kind)
+            remove(from, kind).map_err(|error| MoveFailure {
+                error,
+                copy_complete: true,
+            })
         }
-        other => other,
+        other => other.map_err(MoveFailure::before_copy),
     }
 }
 
@@ -492,8 +521,11 @@ impl Trash {
     /// the manifest is written, then the item is moved in (renamed, or copied then the source
     /// removed on a cross-device rename), and only then is the staging directory renamed to the
     /// entry id. A failure before the last rename removes the staging directory and returns the
-    /// error with the source untouched. A failure of the last rename keeps the staging directory,
-    /// because it holds the only copy.
+    /// error with the source untouched. A cross-device copy that finished but whose source removal
+    /// then failed leaves the source partly removed, so the staged copy is renamed into a listed
+    /// entry and the removal error is returned. A failure of the last rename keeps the staging
+    /// directory, because it holds the only copy; [`Trash::sweep`] and [`Trash::empty`] remove a
+    /// staging directory once it is stale.
     ///
     /// # Examples
     ///
@@ -510,6 +542,17 @@ impl Trash {
     /// assert_eq!(trash.list().unwrap()[0].size_bytes, 3);
     /// ```
     pub fn discard_sync(&self, path: &Path) -> io::Result<()> {
+        self.discard_with(path, |from, to| std::fs::rename(from, to), remove_path)
+    }
+
+    /// [`Trash::discard_sync`] with the rename and the source removal injected, so a test can
+    /// force the cross-device branch and a partial removal.
+    fn discard_with(
+        &self,
+        path: &Path,
+        rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+        remove: impl FnOnce(&Path, TrashedKind) -> io::Result<()>,
+    ) -> io::Result<()> {
         let kind = match std::fs::symlink_metadata(path) {
             Ok(m) if m.is_dir() => TrashedKind::Dir,
             Ok(_) => TrashedKind::File,
@@ -525,32 +568,40 @@ impl Trash {
             .dir
             .join(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&staging)?;
-        let staged = (|| -> io::Result<bool> {
+        let staged = (|| -> Result<bool, MoveFailure> {
             let manifest = TrashManifest {
                 original_path: std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
                 trashed_at_ms,
                 kind,
             };
-            let bytes = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
-            std::fs::write(staging.join(MANIFEST_FILE), bytes)?;
-            match move_item(path, &staging.join(ITEM_NAME), kind, |from, to| {
-                std::fs::rename(from, to)
-            }) {
+            let bytes = serde_json::to_vec_pretty(&manifest)
+                .map_err(|e| MoveFailure::before_copy(io::Error::other(e)))?;
+            std::fs::write(staging.join(MANIFEST_FILE), bytes).map_err(MoveFailure::before_copy)?;
+            match move_item(path, &staging.join(ITEM_NAME), kind, rename, remove) {
                 Ok(()) => Ok(true),
                 // Another discard of the same path moved it first: nothing left to trash.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-                Err(e) => Err(e),
+                Err(f) if f.error.kind() == io::ErrorKind::NotFound && !f.copy_complete => {
+                    Ok(false)
+                }
+                Err(f) => Err(f),
             }
         })();
+        let entry_id = || format!("{trashed_at_ms}-{}", uuid::Uuid::new_v4());
         match staged {
-            Ok(true) => {
-                let id = format!("{trashed_at_ms}-{}", uuid::Uuid::new_v4());
-                std::fs::rename(&staging, self.dir.join(id))
-            }
+            Ok(true) => std::fs::rename(&staging, self.dir.join(entry_id())),
             Ok(false) => remove_path(&staging, TrashedKind::Dir),
-            Err(e) => {
+            // The copy finished but the source is only partly removed: the staged copy is the
+            // only complete one, so it becomes a listed entry (recoverable, and aged out by the
+            // retention sweep) and the removal error is still returned.
+            Err(f) if f.copy_complete => {
+                if let Err(e) = std::fs::rename(&staging, self.dir.join(entry_id())) {
+                    tracing::warn!(error = %e, "a complete trash copy could not be finalised and stays under its staging name");
+                }
+                Err(f.error)
+            }
+            Err(f) => {
                 let _ = remove_path(&staging, TrashedKind::Dir);
-                Err(e)
+                Err(f.error)
             }
         }
     }
@@ -596,7 +647,12 @@ impl Trash {
                     continue;
                 }
             };
-            let size_bytes = size_of(&entry_dir.join(ITEM_NAME))?;
+            // An unreadable item still lists, with size 0, so it can be removed; failing the whole
+            // listing would stop the sweep and the emptying for every other entry.
+            let size_bytes = size_of(&entry_dir.join(ITEM_NAME)).unwrap_or_else(|e| {
+                tracing::warn!(%id, error = %e, "trash entry size could not be read");
+                0
+            });
             entries.push(TrashEntry {
                 id,
                 manifest,
@@ -623,7 +679,46 @@ impl Trash {
         Ok((count, bytes))
     }
 
-    /// Permanently removes every entry; returns `(count, bytes)` removed.
+    /// Removes every `.staging-*` directory last modified before `cutoff_ms` (Unix milliseconds)
+    /// and returns `(count, bytes)` removed. A staging directory is an in-flight discard or the
+    /// leftover of a crash or a failed final rename; one modified at or after the cutoff is
+    /// treated as in flight and kept.
+    fn remove_stale_staging(&self, cutoff_ms: u64) -> io::Result<(u64, u64)> {
+        let read = match std::fs::read_dir(&self.dir) {
+            Ok(r) => r,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(e),
+        };
+        let (mut count, mut bytes) = (0u64, 0u64);
+        for dirent in read {
+            let dirent = dirent?;
+            if !dirent
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(STAGING_PREFIX))
+            {
+                continue;
+            }
+            let modified_ms = dirent
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|d| u64::try_from(d.as_millis()).ok());
+            // A directory whose age cannot be read is kept: it may be in flight.
+            if modified_ms.is_none_or(|m| m >= cutoff_ms) {
+                continue;
+            }
+            let size = size_of(&dirent.path()).unwrap_or(0);
+            remove_path(&dirent.path(), TrashedKind::Dir)?;
+            count += 1;
+            bytes = bytes.saturating_add(size);
+        }
+        Ok((count, bytes))
+    }
+
+    /// Permanently removes every entry, and every staging directory idle for
+    /// one hour; returns `(count, bytes)` removed.
     ///
     /// # Examples
     ///
@@ -638,7 +733,15 @@ impl Trash {
     /// assert_eq!(trash.empty().unwrap(), (1, 4));
     /// ```
     pub fn empty(&self) -> io::Result<(u64, u64)> {
-        self.remove_entries(&self.list()?)
+        self.empty_at(now_ms())
+    }
+
+    /// [`Trash::empty`] with the clock injected, so a test can age a staging directory.
+    fn empty_at(&self, now_ms: u64) -> io::Result<(u64, u64)> {
+        let (count, bytes) = self.remove_entries(&self.list()?)?;
+        let (stale, stale_bytes) =
+            self.remove_stale_staging(now_ms.saturating_sub(STAGING_GRACE_MS))?;
+        Ok((count + stale, bytes.saturating_add(stale_bytes)))
     }
 
     /// Permanently removes the entry `id`. `Ok(false)` when no such entry exists (a concurrent
@@ -667,7 +770,8 @@ impl Trash {
     }
 
     /// One retention pass: removes every entry trashed more than the retention's day count before
-    /// `now_ms` and returns `(count, bytes)` removed. A no-op under `Never` and `Disabled`.
+    /// `now_ms`, plus every `.staging-*` directory idle for that long, and returns
+    /// `(count, bytes)` removed. A no-op under `Never` and `Disabled`.
     ///
     /// # Examples
     ///
@@ -688,7 +792,9 @@ impl Trash {
             .into_iter()
             .filter(|e| e.manifest.trashed_at_ms < cutoff)
             .collect();
-        self.remove_entries(&expired)
+        let (count, bytes) = self.remove_entries(&expired)?;
+        let (stale, stale_bytes) = self.remove_stale_staging(cutoff)?;
+        Ok((count + stale, bytes.saturating_add(stale_bytes)))
     }
 }
 
