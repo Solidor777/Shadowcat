@@ -119,8 +119,9 @@ Every `ClientMsg` variant:
 | `pong` | Liveness answer |
 | `search` | Full-text query (`limit`, cursor, `subscribe` for live updates); `doc_types` narrows to the listed types (≤16, refused above the cap) |
 | `unsubscribe` | End a live search |
-| `scene_subscribe` | Open a scene-derived channel |
+| `scene_subscribe` | Open a scene-derived channel (`request_id`, `channel`); `as_user` (GM only) views the channel as that user, and `level` scopes explored-fog accumulation for the `vision` channel |
 | `scene_unsubscribe` | Close it |
+| `reset_explored_fog` | GM only: purge explored-fog memory for a `scene`, optionally limited to one `user` and/or one `level`; answered by the `explored_fog_reset` broadcast |
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `emote` | Broadcast a transient emote glyph over a token you effectively own |
 | `ruler_update` | Broadcast your live measured route on a scene you can read, including as a read-only spectator. At most 256 vertices, every coordinate finite and within 1e9 in magnitude. A longer list, or a non-finite coordinate (JSON carries `NaN` and `Infinity` as `null`, which the server rejects as malformed), is answered with a generic `error` to you alone. A frame with a finite coordinate beyond the bound, an `origin` token over 64 bytes, a scene you cannot read, or past your per-user rate budget (720 frames a minute) is dropped silently. The `origin` token is chosen by the client and relayed unchanged so the sending connection can recognize its own frame; `active: false` or an empty route ends the ruler |
@@ -130,6 +131,9 @@ Every `ClientMsg` variant:
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `recalc_roll` | GM only: apply `ops` to the roll named by `message_id` and `roll_id`, re-deriving it and appending a `recalc_history` entry |
+| `revise_audience` | GM only: replace a stored message's `audience` (`message_id`, `audience`) to reveal or conceal it |
+| `present_note` | GM only: tell every connected member's client to open a shared note (`request_id`, `note_id`); authors no document and is relayed as `present_note` |
 | `draw_table` | Draw one or more rows from a rollable `table` document, posted as one `MessageKind::Roll` message — see [Rollable tables](#rollable-tables) |
 | `combat_start` | Activate a combat |
 | `combat_pause` | Deactivate a combat, preserving its clock position |
@@ -142,6 +146,10 @@ Every `ClientMsg` variant:
 | `merge_pull` | Merge an instance's template into it — the server computes the 3-way merge and, when conflict-free, commits it |
 | `merge_push` | Merge a template into every same-world instance visible to the sender |
 | `merge_revert` | Reset an instance's mergeable bands to its template's current state (never conflicts) |
+| `toggle_door` | Flip a wall's door between closed and open (`request_id`, `scene_id`, `wall_id`, `to`); a non-GM must control a token near the door, and only a GM may set or clear `locked`. A refusal is `door_toggle_error` |
+| `place_effect` | Place the effect set a module declared over an area (`request_id`, `module`, `placement`, `scene_id`, `shape`, and `caster` when the declaration needs one); behavior and cost come from the manifest. A refusal is `place_effect_error` |
+| `choose_portal` | Answer a `portal_offer` (`request_id`, `offer_id`, `choice` = the option index, or `null` to decline); the token's owner or a GM only. A refusal is `portal_choice_error` |
+| `open_portal` | Re-issue the portal offer for a token standing in a portal region (`request_id`, `token`); the token's owner or a GM only. The offer arrives as `portal_offer` |
 | `audio_transport` | GM-only playlist/playback transport op (play/pause/seek/skip/gain) |
 | `audio_listen_as` | Set (or clear) this connection's spatial-audio listening token |
 
