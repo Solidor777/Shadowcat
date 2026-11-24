@@ -170,6 +170,11 @@
     align-items: center;
     gap: var(--space-1);
   }
+  button {
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    box-sizing: border-box;
+  }
   .scene-hits {
     list-style: none;
     margin: 0;

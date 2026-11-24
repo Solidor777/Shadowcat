@@ -31,6 +31,15 @@ test("a GM sees tool buttons; selecting toggles the active tool on the scene", a
   expect(select.getAttribute("aria-pressed")).toBe("false");
 });
 
+test("unmounting the rail deactivates the active tool so its live state ends with the session", async () => {
+  const { scene, tools } = captureScene();
+  const { unmount } = render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  expect(tools.at(-1)).not.toBeNull();
+  unmount();
+  expect(tools.at(-1)).toBeNull();
+});
+
 test("selecting a different tool switches the active tool", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
@@ -922,9 +931,13 @@ test("the wall editor's one-way and limited controls dispatch /engine/direction 
 test("the wall editor's proximity controls write the whole /engine/proximity tier with raw-old", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];
+  const notified: Array<{ message: string; level?: string }> = [];
   const docs = editorStore();
   render(ToolRail, {
-    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+    context: setAppContextForTest({
+      role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops),
+      notify: (message, level) => notified.push({ message, level }),
+    }),
   });
   await fireEvent.click(screen.getByTestId("tool-select"));
   tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
@@ -957,8 +970,13 @@ test("the wall editor's proximity controls write the whole /engine/proximity tie
   // The distance writes the whole tier; invalid input writes nothing.
   const count = dispatched.length;
   const within = screen.getByTestId("wall-proximity-within") as HTMLInputElement;
-  for (const bad of ["", "0", "-2", "abc", "1001"]) await fireEvent.change(within, { target: { value: bad } });
+  for (const bad of ["", "0", "-2", "1001"]) {
+    await fireEvent.change(within, { target: { value: bad } });
+    // A refused distance is not left as stale text: the input shows the stored value again.
+    expect(within.value).toBe("1");
+  }
   expect(dispatched.length).toBe(count);
+  expect(notified.filter((n) => n.message === "tools.wallProximityOutOfRange")).toHaveLength(4);
   await fireEvent.change(within, { target: { value: "3" } });
   expect(dispatched.at(-1)![0]).toEqual({
     op: "update", doc_id: wallId, changes: [{ path, old: tier, new: { ...tier, within: 3 } }],
@@ -1045,6 +1063,38 @@ test("the trigger-event select offers every event the server fires, and the row 
 
   await fireEvent.change(select, { target: { value: "turn_start" } });
   expect(select.value).toBe("turn_start");
+});
+
+test("the scrolling-text limit is visible text beside the input, not a tooltip", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "scrolling_text" } });
+  expect(screen.getByTestId("region-trigger-scrolling-text-hint").textContent).toContain("tools.triggerScrollingTextHint");
+  expect(screen.getByTestId("region-trigger-scrolling-text").getAttribute("title")).toBeNull();
+});
+
+test("a paused session shows a non-GM the reason as visible text; a GM sees none", () => {
+  render(ToolRail, { context: setAppContextForTest({ role: "player", documents: pausedStore(true) }) });
+  expect(screen.getByTestId("moves-paused-note").textContent).toBe("tools.paused");
+  cleanup();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", documents: pausedStore(true) }) });
+  expect(screen.queryByTestId("moves-paused-note")).toBeNull();
+});
+
+test("every button in the tool controls and the portal editors meets the touch-target floor", async () => {
+  const controlsButton = toolRailSource.match(/\.controls button\s*\{([^}]*)\}/);
+  expect(controlsButton?.[1]).toContain("min-height: var(--input-height-coarse)");
+  expect(controlsButton?.[1]).toContain("min-width: var(--input-height-coarse)");
+  const editors = await Promise.all([
+    import("./RegionTriggerTeleportEditor.svelte?raw"),
+    import("./PortalTargetFields.svelte?raw"),
+  ]);
+  for (const mod of editors) {
+    const rule = (mod.default as string).match(/\n\s*button\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toContain("min-height: var(--input-height-coarse)");
+    expect(rule?.[1]).toContain("min-width: var(--input-height-coarse)");
+  }
 });
 
 test("selecting teleport seeds the default target (same scene, origin, no elevation/vfx override)", async () => {
@@ -1189,6 +1239,20 @@ test("removing an option drops it from the row", async () => {
   await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
   await fireEvent.click(screen.getAllByTestId("region-trigger-portal-remove")[0]);
   expect(screen.getAllByTestId("region-trigger-portal-option")).toHaveLength(1);
+});
+
+test("removing an option does not hand its search text to the option that took its place", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-several"));
+  await fireEvent.click(screen.getByTestId("region-trigger-portal-add"));
+  const searches = (): HTMLInputElement[] => screen.getAllByTestId("region-trigger-teleport-scene") as HTMLInputElement[];
+  await fireEvent.input(searches()[0], { target: { value: "first" } });
+  await fireEvent.click(screen.getAllByTestId("region-trigger-portal-remove")[0]);
+  expect(searches()).toHaveLength(1);
+  expect(searches()[0].value).toBe("");
 });
 
 /** A store holding a portal region over (0,0)-(100,100) and a token at its centre. */
@@ -1708,6 +1772,7 @@ test("the compound region gesture stages parts via the rail and commits one comp
   // The rail lists both staged parts with a hole checkbox each; flip the second row's.
   await waitFor(() => expect(screen.getAllByTestId("region-part-hole")).toHaveLength(2));
   const holeBoxes = screen.getAllByTestId("region-part-hole");
+  expect(screen.getAllByTestId("region-part-kind")[0].textContent).toBe("tools.regionPartKind.rect");
   await fireEvent.click(holeBoxes[1]);
 
   await fireEvent.click(screen.getByTestId("region-create-commit"));

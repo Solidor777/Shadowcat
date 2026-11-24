@@ -1,4 +1,8 @@
-import { ownerFloorApplies, type ReadableDocuments, type WireDocument, type WorldRole } from "@shadowcat/core";
+import { ownerFloorApplies, type ReadableDocuments, type WireDocument } from "@shadowcat/core";
+import type { AppContext } from "@shadowcat/ui-kit";
+
+/** The viewer's world role, as `AppContext.role` carries it. */
+type ViewerRole = AppContext["role"];
 
 /** Whether a viewer may see a token's facing wedge: the GM, or the token's effective owner
  * (`ownerFloorApplies`: the direct owner, or the owner floor reached through the linked actor).
@@ -17,7 +21,7 @@ import { ownerFloorApplies, type ReadableDocuments, type WireDocument, type Worl
  * ```
  */
 export function facingWedgeVisibleTo(
-  role: WorldRole,
+  role: ViewerRole,
   selfId: string,
   doc: WireDocument,
   documents: ReadableDocuments,
