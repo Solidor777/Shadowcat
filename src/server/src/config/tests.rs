@@ -1426,6 +1426,44 @@ fn trash_dir_sharing_only_a_name_prefix_with_a_sibling_is_accepted() {
 }
 
 #[test]
+fn config_load_rejects_a_trash_dir_that_reaches_the_assets_tree_through_dot_dot_segments() {
+    let tmp = tempfile::tempdir().unwrap();
+    let assets = tmp.path().join("assets");
+    let sneaky = tmp
+        .path()
+        .join("elsewhere")
+        .join("..")
+        .join("assets")
+        .join("trash");
+    let body = toml_for(
+        tmp.path(),
+        &format!(
+            "assets_dir = {:?}\ntrash_dir = {:?}",
+            assets.to_string_lossy(),
+            sneaky.to_string_lossy()
+        ),
+    );
+    assert!(load_toml(&body).is_err());
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn config_load_rejects_a_trash_dir_that_differs_from_the_assets_tree_only_in_case() {
+    let tmp = tempfile::tempdir().unwrap();
+    let assets = tmp.path().join("assets");
+    let shouting = tmp.path().join("ASSETS").join("trash");
+    let body = toml_for(
+        tmp.path(),
+        &format!(
+            "assets_dir = {:?}\ntrash_dir = {:?}",
+            assets.to_string_lossy(),
+            shouting.to_string_lossy()
+        ),
+    );
+    assert!(load_toml(&body).is_err());
+}
+
+#[test]
 fn normalize_route_prefix_yields_one_canonical_form() {
     assert_eq!(normalize_route_prefix("").unwrap(), None);
     assert_eq!(normalize_route_prefix("/").unwrap(), None);

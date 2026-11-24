@@ -6,6 +6,9 @@
 //! [`STREAMED_FILE_PERMITS`] descriptors for this purpose, so the server must never hold more:
 //! every handler that opens a file to stream it takes a permit from one process-wide semaphore
 //! first and keeps it for as long as it holds the file.
+//!
+//! The pool is shared fairly: one user may hold at most `1 / USER_SHARE_DIVISOR` of it, so a
+//! member who opens many streams and never reads them cannot starve every other user's requests.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -13,7 +16,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use uuid::Uuid;
 
 use crate::fd_budget::STREAMED_FILE_PERMITS;
 use crate::http::error::AppError;
@@ -27,10 +32,37 @@ pub const PERMIT_WAIT: Duration = Duration::from_secs(2);
 /// request.
 const RETRY_AFTER_SECS: u64 = 1;
 
-/// A permit to hold one asset file open for streaming; dropping it returns the permit.
-pub type FilePermit = OwnedSemaphorePermit;
+/// The pool is divided into this many shares and one user may hold one share. At 4, one user
+/// holds at most a quarter of the pool, so it takes four hostile accounts to starve the rest;
+/// a page that loads dozens of images over one HTTP/2 connection stays well inside a share.
+const USER_SHARE_DIVISOR: usize = 4;
 
-/// The process-wide pool of streamed-file permits.
+/// A permit to hold one asset file open for streaming. It carries the pool permit and the
+/// holder's share permit; dropping it returns both.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use std::time::Duration;
+/// use shadowcat::http::assets::permits::{FilePermit, StreamedFilePermits};
+///
+/// let permits = StreamedFilePermits::new(2, Duration::from_millis(10));
+/// let permit: FilePermit = permits.acquire(uuid::Uuid::new_v4()).await.unwrap();
+/// assert_eq!(permits.held(), 1);
+/// drop(permit);
+/// assert_eq!(permits.held(), 0);
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct FilePermit {
+    /// The process-wide pool permit.
+    _pool: OwnedSemaphorePermit,
+    /// The holder's per-user share permit.
+    _share: OwnedSemaphorePermit,
+}
+
+/// The process-wide pool of streamed-file permits, with a per-user cap.
 ///
 /// # Examples
 ///
@@ -40,11 +72,12 @@ pub type FilePermit = OwnedSemaphorePermit;
 /// use std::time::Duration;
 /// use shadowcat::http::assets::permits::StreamedFilePermits;
 ///
+/// let user = uuid::Uuid::new_v4();
 /// let permits = Arc::new(StreamedFilePermits::new(1, Duration::from_millis(10)));
-/// let first = permits.acquire().await.unwrap();
-/// assert!(permits.acquire().await.is_err());
+/// let first = permits.acquire(user).await.unwrap();
+/// assert!(permits.acquire(user).await.is_err());
 /// drop(first);
-/// assert!(permits.acquire().await.is_ok());
+/// assert!(permits.acquire(user).await.is_ok());
 /// # }
 /// ```
 #[derive(Debug)]
@@ -53,6 +86,12 @@ pub struct StreamedFilePermits {
     semaphore: Arc<Semaphore>,
     /// Total permits, which `held` subtracts the free ones from.
     capacity: usize,
+    /// Permits one user may hold at once: `capacity / USER_SHARE_DIVISOR`, rounded up so it is
+    /// never zero. A user's permits are counted in `shares`.
+    per_user: usize,
+    /// One semaphore of `per_user` permits per user who has asked for a file. An entry stays for
+    /// the process's life: the account table bounds the map.
+    shares: DashMap<Uuid, Arc<Semaphore>>,
     /// How long `acquire` waits before refusing.
     wait: Duration,
 }
@@ -74,6 +113,8 @@ impl StreamedFilePermits {
         Self {
             semaphore: Arc::new(Semaphore::new(capacity)),
             capacity,
+            per_user: capacity.div_ceil(USER_SHARE_DIVISOR),
+            shares: DashMap::new(),
             wait,
         }
     }
@@ -93,8 +134,10 @@ impl StreamedFilePermits {
         Self::new(STREAMED_FILE_PERMITS, PERMIT_WAIT)
     }
 
-    /// Takes one permit, waiting at most the pool's wait. Expiry is a 503 with `Retry-After`,
-    /// returned before any response header is written.
+    /// Takes one permit for `user`, waiting at most the pool's wait. The user's own share is taken
+    /// first, so a user at their cap waits only against their own requests and holds no place in
+    /// the pool's queue. Expiry is a 503 with `Retry-After`, returned before any response header
+    /// is written.
     ///
     /// # Examples
     ///
@@ -105,18 +148,32 @@ impl StreamedFilePermits {
     /// use shadowcat::http::assets::permits::StreamedFilePermits;
     ///
     /// let permits = Arc::new(StreamedFilePermits::new(2, Duration::from_millis(10)));
-    /// let permit = permits.acquire().await.unwrap();
+    /// let permit = permits.acquire(uuid::Uuid::new_v4()).await.unwrap();
     /// assert_eq!(permits.held(), 1);
     /// drop(permit);
     /// assert_eq!(permits.held(), 0);
     /// # }
     /// ```
-    pub async fn acquire(&self) -> Result<FilePermit, AppError> {
-        let acquired = tokio::time::timeout(self.wait, self.semaphore.clone().acquire_owned())
-            .await
-            .map_err(|_| AppError::Unavailable {
-                retry_after_secs: RETRY_AFTER_SECS,
-            })?;
+    pub async fn acquire(&self, user: Uuid) -> Result<FilePermit, AppError> {
+        let share = self
+            .shares
+            .entry(user)
+            .or_insert_with(|| Arc::new(Semaphore::new(self.per_user)))
+            .clone();
+        let both = async {
+            let share_permit = share.acquire_owned().await?;
+            let pool_permit = self.semaphore.clone().acquire_owned().await?;
+            Ok::<_, tokio::sync::AcquireError>(FilePermit {
+                _pool: pool_permit,
+                _share: share_permit,
+            })
+        };
+        let acquired =
+            tokio::time::timeout(self.wait, both)
+                .await
+                .map_err(|_| AppError::Unavailable {
+                    retry_after_secs: RETRY_AFTER_SECS,
+                })?;
         acquired.map_err(|e| {
             tracing::error!(?e, "streamed-file permit pool closed");
             AppError::Internal

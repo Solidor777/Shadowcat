@@ -59,6 +59,7 @@ async fn get(path: &Path, content_type: &str, route: Route, headers: &HeaderMap)
         headers,
         &Method::GET,
         &ample(),
+        Uuid::nil(),
     )
     .await
     .unwrap()
@@ -70,6 +71,7 @@ async fn head(path: &Path, content_type: &str, route: Route, headers: &HeaderMap
         headers,
         &Method::HEAD,
         &ample(),
+        Uuid::nil(),
     )
     .await
     .unwrap()
@@ -187,14 +189,14 @@ async fn head_of_a_missing_file_is_reported_like_a_get() {
     let path = dir.path().join("absent");
     for method in [Method::GET, Method::HEAD] {
         let mut s = spec(&path, "audio/ogg", Route::Embed);
-        let error = serve_file(s, &HeaderMap::new(), &method, &ample())
+        let error = serve_file(s, &HeaderMap::new(), &method, &ample(), Uuid::nil())
             .await
             .err()
             .unwrap();
         assert!(matches!(error, AppError::NotFound), "{method}");
         s = spec(&path, "audio/ogg", Route::Embed);
         s.missing = MissingFile::Internal;
-        let error = serve_file(s, &HeaderMap::new(), &method, &ample())
+        let error = serve_file(s, &HeaderMap::new(), &method, &ample(), Uuid::nil())
             .await
             .err()
             .unwrap();
@@ -266,6 +268,7 @@ async fn get_with(
         headers,
         &Method::GET,
         permits,
+        Uuid::nil(),
     )
     .await
 }
@@ -357,12 +360,13 @@ async fn a_response_without_file_bytes_holds_no_permit() {
 async fn head_is_answered_while_every_permit_is_held() {
     let (_dir, path) = stored(&file_bytes(100));
     let permits = std::sync::Arc::new(single());
-    let _held = permits.acquire().await.unwrap();
+    let _held = permits.acquire(Uuid::nil()).await.unwrap();
     let response = serve_file(
         spec(&path, "audio/ogg", Route::Embed),
         &request(None, None),
         &Method::HEAD,
         &permits,
+        Uuid::nil(),
     )
     .await
     .unwrap();
@@ -377,7 +381,7 @@ async fn an_exhausted_pool_refuses_before_the_file_is_opened() {
     let dir = tempfile::tempdir().unwrap();
     let absent = dir.path().join("absent");
     let permits = std::sync::Arc::new(single());
-    let _held = permits.acquire().await.unwrap();
+    let _held = permits.acquire(Uuid::nil()).await.unwrap();
     let error = get_with(&permits, &absent, &request(None, None))
         .await
         .err()

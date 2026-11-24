@@ -92,8 +92,8 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `modules_dir` | `modules/` beside the db | Installed community modules |
 | `log_dir` | `logs/` beside the db | Rolling daily log-file output root (retains 14 files; stdout logging is unaffected) |
 | `backups_dir` | `backups/` beside the db | In-app backup output root |
-| `backup_keep_last` | *(unset: keep all)* | After each in-app backup, keep at least this many of the newest backups |
-| `backup_keep_days` | *(unset: keep all)* | After each in-app backup, keep backups newer than this many days. With both limits set, a backup is removed only when it fails both. The newest backup is never removed |
+| `backup_keep_last` | *(unset: keep all)* | After each in-app backup, keep at least this many of the newest backups. A removed backup moves into the trash and keeps using disk until `trash_retention` expires |
+| `backup_keep_days` | *(unset: keep all)* | After each in-app backup, keep backups newer than this many days. With both limits set, a backup is removed only when it fails both. The newest backup is never removed. A removed backup moves into the trash and keeps using disk until `trash_retention` expires |
 | `trash_retention` | `30` | Days a deleted file stays in the trash before the hourly sweep removes it. A positive whole number, `"never"` (entries stay until an admin empties them) or `"disabled"` (delete at once, no trash). `0` stops the server at start: write `"disabled"` for immediate deletion |
 | `trash_dir` | `trash/` beside the db | Where deleted files are kept. The server stops at start if it is the same as, inside, or around `assets_dir`, `backups_dir`, `modules_dir` or `log_dir` |
 | `upload_max_bytes` | 25 MiB | Upload size cap (players) |

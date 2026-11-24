@@ -106,10 +106,12 @@ pub struct Cli {
     /// In-server backup output root override (default: sibling `backups/`).
     #[arg(long)]
     pub backups_dir: Option<String>,
-    /// Keep at least this many of the newest in-app backups (`Config.backup_keep_last`).
+    /// Keep at least this many of the newest in-app backups (`Config.backup_keep_last`). Pruned
+    /// backups move into the trash and keep using disk until `trash_retention` expires.
     #[arg(long)]
     pub backup_keep_last: Option<u32>,
-    /// Keep in-app backups newer than this many days (`Config.backup_keep_days`).
+    /// Keep in-app backups newer than this many days (`Config.backup_keep_days`). Pruned backups
+    /// move into the trash and keep using disk until `trash_retention` expires.
     #[arg(long)]
     pub backup_keep_days: Option<u32>,
     /// Trash retention override: a positive number of days, `never` or `disabled`.
@@ -305,10 +307,12 @@ pub struct Config {
     pub backups_dir: Option<String>,
     /// Retention: keep the newest N in-app backups. `None` = no count limit. With
     /// `backup_keep_days` also set, a backup survives when EITHER limit keeps it (union), and
-    /// the newest backup is never pruned (`backup::catalog::plan_prune`).
+    /// the newest backup is never pruned (`backup::catalog::plan_prune`). A pruned backup moves
+    /// into the trash, so it keeps using disk until `trash_retention` expires.
     pub backup_keep_last: Option<u32>,
     /// Retention: keep in-app backups younger than N days. `None` = no age limit. Both limits
-    /// `None` keeps every backup.
+    /// `None` keeps every backup. A pruned backup moves into the trash, so it keeps using disk
+    /// until `trash_retention` expires.
     pub backup_keep_days: Option<u32>,
     /// How long a discarded file survives in the trash: a positive number of days (default 30),
     /// `"never"` (no automatic sweep) or `"disabled"` (every removal is immediate and
@@ -927,24 +931,58 @@ impl Config {
 
     /// Whether `a` and `b` name the same directory or one is an ancestor of the other, compared
     /// component-wise (so `assets-extra` is not under `assets`) after resolving a relative path
-    /// against the current directory.
+    /// against the current directory, folding `.` and `..` segments, and, on Windows and macOS
+    /// whose default filesystems ignore case, comparing case-insensitively. Symlinks are not
+    /// resolved: the directories need not exist at load time.
     ///
     /// # Examples
     ///
     /// ```text
     /// paths_nest("/d/trash", "/d/assets") == false
     /// paths_nest("/d/assets/trash", "/d/assets") == true
+    /// paths_nest("/d/x/../assets/trash", "/d/assets") == true
     /// ```
     fn paths_nest(a: &std::path::Path, b: &std::path::Path) -> bool {
-        let absolute = |p: &std::path::Path| {
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                std::env::current_dir().unwrap_or_default().join(p)
-            }
-        };
-        let (a, b) = (absolute(a), absolute(b));
+        let (a, b) = (Self::nesting_form(a), Self::nesting_form(b));
         a.starts_with(&b) || b.starts_with(&a)
+    }
+
+    /// The form of `path` that [`Config::paths_nest`] compares: absolute, with `.` dropped, each
+    /// `..` folded into the segment before it, and lower-cased where the platform's default
+    /// filesystem ignores case.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// nesting_form("/d/x/../a") == nesting_form("/d/a")
+    /// ```
+    fn nesting_form(path: &std::path::Path) -> std::path::PathBuf {
+        use std::path::Component;
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+        let fold_case = cfg!(any(windows, target_os = "macos"));
+        let mut out = std::path::PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                Component::CurDir => {}
+                // A `..` at the root stays at the root, as the filesystem resolves it.
+                Component::ParentDir => {
+                    out.pop();
+                }
+                other => {
+                    let part = other.as_os_str();
+                    if fold_case {
+                        out.push(part.to_string_lossy().to_lowercase());
+                    } else {
+                        out.push(part);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Resolve the trash storage root: explicit `trash_dir`, else a sibling `trash/` beside the db

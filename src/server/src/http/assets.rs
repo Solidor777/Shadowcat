@@ -698,6 +698,7 @@ pub async fn serve(
             &headers,
             &method,
             &state.file_permits,
+            user.id,
         )
         .await;
     }
@@ -745,6 +746,7 @@ pub async fn serve(
                 &headers,
                 &method,
                 &state.file_permits,
+                user.id,
             )
             .await;
         }
@@ -820,6 +822,7 @@ pub async fn serve(
         &headers,
         &method,
         &state.file_permits,
+        user.id,
     )
     .await
 }

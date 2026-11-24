@@ -307,7 +307,8 @@ pub async fn create_backup(
 /// that separation.
 ///
 /// Stage-then-swap: every fallible copy lands in a sibling staging path first
-/// — `<db_path>.restore-tmp` for the db, `<assets_dir>.restore-tmp` for the
+/// — `db_path.with_extension("restore-tmp")` (`shadowcat.restore-tmp` beside
+/// `shadowcat.db`) for the db, `<assets_dir>.restore-tmp` for the
 /// assets tree — before any live path is touched, and the real destinations are
 /// only ever touched by `rename`, never by an in-place write. A directory
 /// rename is NOT a replace on any of the three OSes when the destination is
@@ -434,7 +435,7 @@ pub async fn restore_backup(
     }
     if let Err(e) = tokio::fs::rename(&assets_stage, assets_dir).await {
         if had_assets {
-            let _ = tokio::fs::rename(&assets_old, assets_dir).await;
+            undo_rename(&assets_old, assets_dir).await;
         }
         discard_staged(trash, &[&db_stage, &assets_stage]).await;
         return Err(e.into());
@@ -443,9 +444,9 @@ pub async fn restore_backup(
     // untouched, and the assets swap above is undone by moving the new tree back out of the way
     // and the old one back in.
     if let Err(e) = tokio::fs::rename(&db_stage, db_path).await {
-        let _ = tokio::fs::rename(assets_dir, &assets_stage).await;
+        undo_rename(assets_dir, &assets_stage).await;
         if had_assets {
-            let _ = tokio::fs::rename(&assets_old, assets_dir).await;
+            undo_rename(&assets_old, assets_dir).await;
         }
         discard_staged(trash, &[&db_stage, &assets_stage]).await;
         return Err(e.into());
@@ -483,6 +484,26 @@ async fn stage_restore_copies(
     tokio::fs::copy(backup_db, db_stage).await?;
     copy_dir_recursive(&backup_dir.join("assets"), assets_stage).await?;
     Ok(())
+}
+
+/// Renames `from` to `to` as one step of undoing a half-applied restore. The restore is already
+/// failing and must return its own error, so a failed undo is logged at `error` (the live
+/// assets may then be the backup's or parked under a `.restore-*` name) rather than returned.
+///
+/// # Examples
+///
+/// ```text
+/// undo_rename(&assets_old, assets_dir).await;
+/// ```
+async fn undo_rename(from: &Path, to: &Path) {
+    if let Err(e) = tokio::fs::rename(from, to).await {
+        tracing::error!(
+            from = %from.display(),
+            to = %to.display(),
+            error = %e,
+            "restore undo failed; the assets tree may be left under a .restore-* name"
+        );
+    }
 }
 
 /// Moves each existing staging path into `trash`; a path that is absent or cannot be moved is
