@@ -82,18 +82,19 @@ describe("OnboardingHost", () => {
     expect(settings.slice).toEqual({ disabled: true });
   });
 
-  it("Not now hides the toast this session but offers again next session", async () => {
+  it("Not now hides the toast and the tour is not offered again in a later session", async () => {
     mountAnchor("example.a");
     const settings = memorySettings();
     const first = session([tour()], settings);
     await waitFor(() => expect(first.view.getByTestId("tour-offer")).toBeTruthy());
     await fireEvent.click(first.view.getByTestId("tour-offer-later"));
     expect(first.view.queryByTestId("tour-offer")).toBeNull();
-    expect(settings.writes).toEqual([]);
+    expect(settings.writes).toEqual([{ "g:example.intro": 1 }]);
     first.view.unmount();
 
     const second = session([tour()], settings);
-    await waitFor(() => expect(second.view.getByTestId("tour-offer")).toBeTruthy());
+    await second.controller.evaluate();
+    expect(second.view.queryByTestId("tour-offer")).toBeNull();
   });
 
   it("offers nothing when the server switch is off", async () => {

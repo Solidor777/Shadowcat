@@ -100,7 +100,7 @@ test("setup creates the first admin, the Welcome screen follows, and the first w
   await expect(offer).toHaveCount(0);
 });
 
-test("a GM's offer answers Not now by returning next session, and Start walks a tour whose finish moves the offer on", async ({
+test("a GM's Not now spends that tour's offer, and Start walks a tour whose finish moves the offer on", async ({
   page,
   browser,
 }) => {
@@ -112,7 +112,7 @@ test("a GM's offer answers Not now by returning next session, and Start walks a 
   await login(page, gmName, MEMBER_PASSWORD);
   await createAndEnterWorld(page, worldName);
 
-  // Not now closes the offer without recording anything, so the next session offers again.
+  // Not now records the offered tour as done, so the next session offers the next tour.
   const offer = page.getByTestId("tour-offer");
   await expect(offer).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("tour-offer-later").click();

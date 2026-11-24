@@ -50,12 +50,20 @@ describe("TourController.evaluate", () => {
 });
 
 describe("TourController answers to the offer", () => {
-  it("Not now closes the offer and records nothing", async () => {
-    const { controller, settings } = makeController({ tours: [tour()], mounted: ["example.a"] });
-    await controller.evaluate();
-    controller.dismissOffer();
-    expect(controller.offer).toBeNull();
-    expect(settings.writes).toEqual([]);
+  it("Not now closes the offer and records the tour as done, so a later session does not offer it again", async () => {
+    const first = makeController({ tours: [tour()], mounted: ["example.a"] });
+    await first.controller.evaluate();
+    first.controller.dismissOffer();
+    expect(first.controller.offer).toBeNull();
+    expect(first.settings.writes).toEqual([{ "g:example.intro": 1 }]);
+
+    const nextSession = makeController({
+      tours: [tour()],
+      mounted: ["example.a"],
+      settings: memorySettings({ "g:example.intro": 1 }),
+    });
+    await nextSession.controller.evaluate();
+    expect(nextSession.controller.offer).toBeNull();
   });
 
   it("Don't ask again records the switch and closes the offer", async () => {

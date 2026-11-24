@@ -35,11 +35,11 @@ describe("TourOffer", () => {
     expect(controller.active?.tour.id).toBe("example.intro");
   });
 
-  it("Not now dismisses without recording", async () => {
+  it("Not now dismisses and records the tour as done", async () => {
     const { view, controller, settings } = await offered();
     await fireEvent.click(view.getByTestId("tour-offer-later"));
     expect(controller.offer).toBeNull();
-    expect(settings.writes).toEqual([]);
+    expect(settings.writes).toEqual([{ "g:example.intro": 1 }]);
   });
 
   it("Don't ask again records the switch", async () => {
