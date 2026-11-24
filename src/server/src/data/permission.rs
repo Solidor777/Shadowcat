@@ -952,6 +952,14 @@ const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
     "/engine/faction",
 ];
 
+/// Whether `doc` is a token whose secret-identity flag is on. The one predicate
+/// `identity_hidden_pointers` (egress redaction) and the combat expiry note's publicity check
+/// both read, so a public line never names what egress withholds.
+pub(crate) fn is_identity_hidden_token(doc: &Document) -> bool {
+    doc.doc_type == TOKEN_DOC_TYPE
+        && flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")))
+}
+
 /// The `OwnerOrGm` entries a secret-identity token adds to its own redaction policy, empty for
 /// every other document: its own `IDENTITY_HIDDEN_POINTERS` plus the identity pointers of each
 /// embedded actor copy of an instanced token (`IDENTITY_HIDDEN_COPY_POINTERS`) — the copy
@@ -962,8 +970,7 @@ const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
 /// deserializing a `TokenEngine`: `own_overrides` runs for every `doc_type` and must not
 /// assume one document's shape.
 fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
-    let active = doc.doc_type == TOKEN_DOC_TYPE
-        && flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
+    let active = is_identity_hidden_token(doc);
     let copies = if active {
         doc.embedded
             .get(EMBEDDED_ACTOR_COLLECTION)
