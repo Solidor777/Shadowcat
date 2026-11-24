@@ -4,6 +4,7 @@
 
 export {
   DEFAULT_CONE_ANGLE_DEGREES,
+  isDrawableConeAngle,
   rectPoints,
   ellipsePoints,
   circlePoints,

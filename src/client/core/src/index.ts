@@ -73,7 +73,7 @@ export type {
 export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
-export { DEFAULT_CONE_ANGLE_DEGREES, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, linePoints } from "./geometry";
+export { DEFAULT_CONE_ANGLE_DEGREES, isDrawableConeAngle, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, linePoints } from "./geometry";
 export { bandContains, levelOf } from "./levels";
 export type { SceneLevel, ElevationBand } from "./levels";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";

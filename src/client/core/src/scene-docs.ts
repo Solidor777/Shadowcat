@@ -6,7 +6,7 @@
 export type { WireDocument } from "./wire";
 import { randomUuid } from "./uuid";
 import type { WireDocument, WireOperation } from "./wire";
-import { DEFAULT_CONE_ANGLE_DEGREES, conePoints, linePoints, squarePoints } from "./geometry";
+import { DEFAULT_CONE_ANGLE_DEGREES, isDrawableConeAngle, conePoints, linePoints, squarePoints } from "./geometry";
 import type { ReadableDocuments } from "./store";
 import type { FootprintExtent } from "./footprints";
 import type {
@@ -1584,7 +1584,8 @@ export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDoc
 
 /** Why a template cannot become a region: `"zero_width_line"` is a `"line"` with an absent or
  * non-positive `width` (a zero-width polygon covers no cell centre, so the region would never
- * contain anything); `"unknown_shape"` is a `kind` no region geometry matches. */
+ * contain anything); `"unknown_shape"` is a `kind` no region geometry matches, or a `"cone"`
+ * whose `angle` is not drawable (`isDrawableConeAngle`), which the render layer does not draw. */
 export type TemplateRegionRefusal = "zero_width_line" | "unknown_shape";
 
 /** Result of {@link templateToRegionShape}: the region geometry covering exactly what the
@@ -1644,6 +1645,7 @@ export function templateToRegionShape(shape: TemplateShape): TemplateRegionShape
     case "circle":
       return { ok: true, shape: { kind: "circle", points: [x, y, size] } };
     case "cone":
+      if (!isDrawableConeAngle(angle)) return { ok: false, reason: "unknown_shape" };
       return { ok: true, shape: { kind: "polygon", points: conePoints(x, y, size, direction, angle ?? DEFAULT_CONE_ANGLE_DEGREES) } };
     case "rect":
       return { ok: true, shape: { kind: "polygon", points: squarePoints(x, y, size, direction, width ?? size) } };
