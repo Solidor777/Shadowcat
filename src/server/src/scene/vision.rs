@@ -339,7 +339,26 @@ pub(crate) const MAX_LIMITED_CROSSINGS: u8 = 1;
 /// sampling in `visibility_polygon` is unconditional, so a skipped `limited` wall's own
 /// endpoints are still angle-sampled as candidate vertices — the polygon boundary still bends
 /// at its edge when the wall is the far side of the visible region.
+///
+/// A set with none of the three per-ray flags (`one_way`, `limited`, `open_within`) never skips
+/// a hit, so its answer is the first minimum-`t` hit; that case is one allocation-free pass,
+/// the common one for the movement and light collectors and for a scene with no such walls.
 fn nearest_hit(origin: P, dir: P, segs: &[Seg]) -> Option<P> {
+    if !segs
+        .iter()
+        .any(|s| s.one_way.is_some() || s.limited || s.open_within.is_some())
+    {
+        let mut best: Option<f64> = None;
+        for s in segs {
+            if let Some(t) = ray_segment(origin, dir, s) {
+                // Strict `<` keeps the earliest input-order hit on a tie, as the stable sort does.
+                if best.is_none_or(|b| t < b) {
+                    best = Some(t);
+                }
+            }
+        }
+        return best.map(|t| (origin.0 + t * dir.0, origin.1 + t * dir.1));
+    }
     let mut hits: Vec<(f64, &Seg)> = segs
         .iter()
         .filter_map(|s| ray_segment(origin, dir, s).map(|t| (t, s)))
