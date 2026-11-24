@@ -58,7 +58,7 @@ async function fillOption(gm: Page, index: number, label: string, dest: Point): 
   await row.getByTestId("region-trigger-teleport-y").blur();
 }
 
-test("portal choice: the owner picks a destination, a decline stays put, and the GM is offered too", async ({
+test("portal choice: the owner picks a destination, a decline stays put, and the GM is offered too, and a second player is offered none", async ({
   page,
   browser,
   account,
@@ -83,13 +83,29 @@ test("portal choice: the owner picks a destination, a decline stays put, and the
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
 
+  // A second player who does not own the token: the chooser must never reach this account.
+  const bystanderName = `bystander-${test.info().workerIndex}-${Date.now().toString(36)}`;
+  await createAccount(gm, bystanderName, playerPassword);
+  await gm.getByLabel("World role").selectOption("player");
+  await gm.getByRole("button", { name: "Create invite" }).click();
+  const bystanderCode = await gm.getByLabel("Invite code").inputValue();
+  expect(bystanderCode.length).toBeGreaterThan(0);
+  expect(bystanderCode).not.toBe(code);
+
   const playerCtx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: VIEWPORT });
+  const bystanderCtx = await browser.newContext({ baseURL: test.info().project.use.baseURL, viewport: VIEWPORT });
   const player = await playerCtx.newPage();
+  const bystander = await bystanderCtx.newPage();
   try {
     await login(player, playerName, playerPassword);
     await player.getByLabel("Invite code").fill(code);
     await player.getByRole("button", { name: "Join with an invite code" }).click();
     await expect(stageHost(player)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+    await login(bystander, bystanderName, playerPassword);
+    await bystander.getByLabel("Invite code").fill(bystanderCode);
+    await bystander.getByRole("button", { name: "Join with an invite code" }).click();
+    await expect(stageHost(bystander)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
     await gm.getByRole("button", { name: /leave world/i }).click();
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
@@ -149,6 +165,10 @@ test("portal choice: the owner picks a destination, a decline stays put, and the
     // The GM connection is addressed by the same offer.
     await expect(gm.getByTestId("portal-chooser")).toBeVisible({ timeout: 20_000 });
 
+    // The owner's and the GM's choosers are the positive control that the offer has been fanned
+    // out; the second player, who owns nothing here, is offered none.
+    await expect(bystander.getByTestId("portal-chooser")).toHaveCount(0);
+
     // Picking "The Library" moves the token to that option's point.
     await chooser.getByTestId("portal-option").first().click();
     await expect(chooser).not.toBeVisible();
@@ -185,7 +205,9 @@ test("portal choice: the owner picks a destination, a decline stays put, and the
     await expect(chooser).not.toBeVisible();
     const after = await onlyTokenPosition(player);
     expect(after).toEqual(before);
+    await expect(bystander.getByTestId("portal-chooser")).toHaveCount(0);
   } finally {
+    await bystanderCtx.close();
     await playerCtx.close();
   }
 });

@@ -11,6 +11,16 @@ async fn opens_a_single_connection_pool_with_foreign_keys_enabled() {
     assert_eq!(row.0, 1, "foreign_keys pragma must be ON");
 }
 
+/// An in-memory database lives only while a connection to it is open, so the writer pool's one
+/// connection is never reaped by idleness or age: a reaped connection would drop the whole
+/// database and the next connection would open an empty one.
+#[tokio::test]
+async fn the_writer_pool_never_reaps_its_connection() {
+    let pool = connect_pool("sqlite::memory:").await.expect("open pool");
+    assert_eq!(pool.options().get_idle_timeout(), None);
+    assert_eq!(pool.options().get_max_lifetime(), None);
+}
+
 #[tokio::test]
 async fn in_memory_pool_answers_select_one() {
     let pool = connect_pool("sqlite::memory:").await.expect("open pool");

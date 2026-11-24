@@ -86,6 +86,25 @@ test("a member with an avatar renders the image instead of the initial glyph", (
   expect(screen.getByTestId("presence-u2").style.background).toBe("");
 });
 
+test("a member's pronouns follow the name in the badge title and label, ahead of the presence state", async () => {
+  const members = new Map([
+    ["u1", "Ada"],
+    ["u2", "Bo"],
+  ]);
+  const presence = new SvelteMap<string, boolean>([["u1", true]]);
+  const memberProfiles = new SvelteMap([["u1", { colour: null, pronouns: "she/her", avatar: null }]]);
+  render(Presence, { context: setAppContextForTest({ members, presence, memberProfiles }) });
+  const badge = screen.getByTestId("presence-u1");
+  expect(badge.getAttribute("title")).toBe("Ada (she/her)");
+  expect(badge.getAttribute("aria-label")).toBe("Ada (she/her) (topbar.online)");
+  // A member with no pronouns keeps the bare name.
+  expect(screen.getByTestId("presence-u2").getAttribute("title")).toBe("Bo");
+
+  memberProfiles.set("u1", { colour: null, pronouns: "they/them", avatar: null });
+  await tick();
+  expect(screen.getByTestId("presence-u1").getAttribute("title")).toBe("Ada (they/them)");
+});
+
 test("renders an empty roster group when there are no members", () => {
   render(Presence, { context: setAppContextForTest({ members: new Map() }) });
   expect(screen.getByTestId("presence").children.length).toBe(0);
