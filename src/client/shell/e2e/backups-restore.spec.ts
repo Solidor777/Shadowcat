@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, login, newE2EContext } from "./fixtures";
@@ -13,23 +12,21 @@ import type { RunningServer } from "../e2e-support/server-process";
 // stops itself, and the next start applies it before the database opens, so the world made after the
 // backup is gone and the one made before it is back.
 //
-// The data directory is fixed (one folder under the OS temp directory) rather than made fresh per
-// run: a restore returns the database to the state at backup time, so worlds from earlier runs come
-// back with it, and every assertion names this run's own worlds.
+// The data directory is a fresh folder under Playwright's per-test output directory, which Playwright
+// clears at the start of every run, so backups never accumulate and this test makes no delete call.
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-
-/** The data directory the round trip's server keeps its database, assets and backups in. */
-const DATA_DIR = path.join(os.tmpdir(), "shadowcat-e2e-backup-restore");
 
 const ADMIN = { username: "ops", password: "pw-boot" };
 
 test("backup and restore: a world made after a backup is gone once the restore is applied on the next start", async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(240_000);
-  mkdirSync(DATA_DIR, { recursive: true });
-  const databaseUrl = `sqlite:${path.join(DATA_DIR, "shadowcat.db").replaceAll("\\", "/")}`;
+  // The data directory the round trip's server keeps its database, assets and backups in.
+  const dataDir = path.join(testInfo.outputDir, "data");
+  mkdirSync(dataDir, { recursive: true });
+  const databaseUrl = `sqlite:${path.join(dataDir, "shadowcat.db").replaceAll("\\", "/")}`;
   const stamp = Date.now().toString(36);
   const keptWorld = `Kept ${stamp}`;
   const lostWorld = `Lost ${stamp}`;
