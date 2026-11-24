@@ -135,12 +135,38 @@ describe("TrashManager", () => {
     await fireEvent.click(await screen.findByRole("button", { name: "settings.trash.emptyAll" }));
     expect(confirmDialog).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ messageKey: "settings.trash.emptyConfirm", danger: true }),
+      expect.objectContaining({
+        messageKey: "settings.trash.emptyConfirm",
+        messageParams: { n: 2 },
+        danger: true,
+      }),
     );
     await vi.waitFor(() => expect(vi.mocked(emptyTrash)).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(vi.mocked(listTrash)).toHaveBeenCalledTimes(2));
     // 2053 bytes renders through the shared formatter as "2.0 KiB".
     expect(await screen.findByText("settings.trash.emptyResult|2|2.0 KiB")).toBeTruthy();
+  });
+
+  it("empty-all states the count as a lower bound while more pages exist", async () => {
+    const { listTrash } = await import("@shadowcat/core");
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    const full = Array.from({ length: 200 }, (_, i) => ({
+      id: `${5000 - i}-00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
+      original_path: `/data/f${i}`,
+      kind: "file" as const,
+      trashed_at_ms: 5000 - i,
+      size_bytes: 1,
+    }));
+    vi.mocked(listTrash).mockResolvedValueOnce(full);
+    render(TrashManager, { context: setAppContextForTest({ serverRole: "admin" }) });
+    await fireEvent.click(await screen.findByRole("button", { name: "settings.trash.emptyAll" }));
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageKey: "settings.trash.emptyConfirmMore",
+        messageParams: { n: 200 },
+      }),
+    );
   });
 
   it("a full page offers Load more, which fetches the page after the last entry", async () => {

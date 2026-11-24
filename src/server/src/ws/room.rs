@@ -2297,34 +2297,6 @@ impl Room {
             }
         }
 
-        // Region triggers, fired AFTER the position commit AND the combat decrement: a
-        // `ResourceDelta` trigger can write the very combatant/resource the decrement just
-        // wrote, so effects run last and read freshly committed state (the decrement's own
-        // pre-image was captured pre-commit and must not be raced by an effect write). A
-        // SEPARATE commit under `WriteOrigin::Trigger`, never batched with the
-        // client-origin position write — the same split discipline the position commit above
-        // states. The zero-progress early return above never reaches here, and it has no
-        // entered cells to report in any case — and its skipped membership update means a
-        // zero-progress move also does NOT heal a stale `SceneEcs::region_membership`
-        // entry (e.g. post-restart): healing defers to the first move with real progress.
-        self.fire_region_triggers(
-            repo,
-            ctx,
-            TriggerReport {
-                scene: token_scene,
-                token,
-                entered: outcome.entered_cells.clone(),
-                arrest_stop: outcome.arrested.then_some(outcome.stop),
-                occupancy: vec![stop_cell],
-                enter_only: None,
-            },
-            ts,
-            true,
-        )
-        .await;
-        self.fire_attached_region_triggers(repo, ctx, token, ts, true)
-            .await;
-
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
             request_id,
@@ -2352,6 +2324,8 @@ impl Room {
         // long sessions (tokens that moved once and never moved again do not leak permanently).
         // Sub-ms floor: a non-zero-progress move whose duration rounds to 0 ms would let the
         // next request pass immediately; ceil().max(1) guarantees end > now for any real move.
+        // Registered BEFORE the region triggers below fire: a teleport trigger ends this
+        // token's active stream (`apply_region_trigger_effects`), which removes this entry.
         {
             let mut moving = self.moving.lock().await;
             moving.retain(|_, st| now < st.end_ms);
@@ -2365,6 +2339,34 @@ impl Room {
                 },
             );
         }
+
+        // Region triggers, fired AFTER the position commit AND the combat decrement: a
+        // `ResourceDelta` trigger can write the very combatant/resource the decrement just
+        // wrote, so effects run last and read freshly committed state (the decrement's own
+        // pre-image was captured pre-commit and must not be raced by an effect write). A
+        // SEPARATE commit under `WriteOrigin::Trigger`, never batched with the
+        // client-origin position write — the same split discipline the position commit above
+        // states. The zero-progress early return above never reaches here, and it has no
+        // entered cells to report in any case — and its skipped membership update means a
+        // zero-progress move also does NOT heal a stale `SceneEcs::region_membership`
+        // entry (e.g. post-restart): healing defers to the first move with real progress.
+        self.fire_region_triggers(
+            repo,
+            ctx,
+            TriggerReport {
+                scene: token_scene,
+                token,
+                entered: outcome.entered_cells.clone(),
+                arrest_stop: outcome.arrested.then_some(outcome.stop),
+                occupancy: vec![stop_cell],
+                enter_only: None,
+            },
+            ts,
+            true,
+        )
+        .await;
+        self.fire_attached_region_triggers(repo, ctx, token, ts, true)
+            .await;
 
         Ok(MoveExecution {
             #[cfg(test)]
@@ -3218,6 +3220,11 @@ impl Room {
                 // chain can never loop. The destination's other effects (conditions, resources,
                 // notices) fire exactly as if the token had been placed there.
                 if teleported.is_some() {
+                    // The hop ends the token's active move stream: its glide no longer
+                    // describes where the token is, and the moving lock must not refuse the
+                    // next move. Every teleport path (fixed trigger, chosen portal option)
+                    // reaches here through this funnel.
+                    self.moving.lock().await.remove(&token);
                     let new_footprint = {
                         let ecs = self.scene.read().await;
                         // The ONE footprint-cell computation every fire site shares

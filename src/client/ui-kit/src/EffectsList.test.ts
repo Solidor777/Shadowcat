@@ -51,6 +51,14 @@ describe("listEffects", () => {
     ]);
   });
 
+  it("names an effect's origin after the embedded item it came from when the origin has no label", () => {
+    const ring = doc("i1", "item", { name: "Ring of Warding", embedded: { effect: [effect("e2", "Ring glow", { transfer: true, origin: { source: "i1" } })] } });
+    const actor = doc("a1", "actor", { embedded: { effect: [effect("e1", "Ward", { origin: { source: "i1" } })], item: [ring] } });
+    expect(listEffects(actor, none, "Effect").map((e) => e.origin)).toEqual(["Ring of Warding", "Ring of Warding"]);
+    const labelled = doc("a2", "actor", { embedded: { effect: [effect("e3", "Ward", { origin: { source: "i1", label: "Aldric" } })], item: [ring] } });
+    expect(listEffects(labelled, none, "Effect")[0].origin).toBe("Aldric");
+  });
+
   it("reads a token through its embedded actor copy and labels an unnamed effect", () => {
     const token = doc("t1", "token", { embedded: { actor: [doc("a1", "actor", { embedded: { effect: [effect("e1", null, { active: false })] } })] } });
     expect(listEffects(token, none, "Effect")).toEqual([{ id: "e1", name: "Effect", active: false, origin: null }]);

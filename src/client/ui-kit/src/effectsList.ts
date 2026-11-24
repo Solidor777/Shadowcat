@@ -52,6 +52,9 @@ interface EffectDoc {
   doc: WireDocument;
   /** The document's decoded `EffectEngine` body. */
   engine: EffectEngine;
+  /** The actor-shaped document the effect was read from; its embedded items resolve an origin
+   * `source` that the store's top level does not hold. */
+  bearer: WireDocument;
 }
 
 /**
@@ -70,12 +73,12 @@ interface EffectDoc {
 function embeddedEffects(actor: WireDocument): EffectDoc[] {
   const out: EffectDoc[] = [];
   for (const doc of actor.embedded?.effect ?? []) {
-    if (doc.engine) out.push({ doc, engine: doc.engine as EffectEngine });
+    if (doc.engine) out.push({ doc, engine: doc.engine as EffectEngine, bearer: actor });
   }
   for (const item of actor.embedded?.item ?? []) {
     for (const doc of item.embedded?.effect ?? []) {
       const engine = doc.engine as EffectEngine | undefined;
-      if (engine?.transfer) out.push({ doc, engine });
+      if (engine?.transfer) out.push({ doc, engine, bearer: actor });
     }
   }
   return out;
@@ -116,11 +119,15 @@ function effectBearer(host: WireDocument): WireDocument | undefined {
  * ```
  */
 export function listEffects(host: WireDocument, lookup: EffectLookup, unnamed: string, anchor?: string): EffectEntry[] {
-  const entry = ({ doc, engine }: EffectDoc): EffectEntry => ({
+  const entry = ({ doc, engine, bearer }: EffectDoc): EffectEntry => ({
     id: doc.id,
     name: doc.name ?? unnamed,
     active: engine.active,
-    origin: effectOriginText(engine.origin, lookup),
+    // An origin source may be an item embedded in the bearer, which `lookup.get` cannot see.
+    origin: effectOriginText(engine.origin, {
+      get: (id) => lookup.get(id) ?? bearer.embedded?.item?.find((item) => item.id === id),
+      query: lookup.query,
+    }),
   });
   const own = effectBearer(host);
   const entries = own ? embeddedEffects(own).filter(({ engine }) => !anchor || !engine.duration?.anchor || engine.duration.anchor === anchor).map(entry) : [];
