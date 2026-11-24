@@ -72,14 +72,10 @@ fn alternating_rule_threads_parity_across_consecutive_diagonals() {
 }
 
 #[test]
-fn orthogonal_rule_prices_a_hand_dragged_diagonal_by_euclidean_fallback() {
-    // `Orthogonal` removes the diagonal edge from the ROUTER's neighbor set only; the
-    // executor's per-cell gate is deliberately untouched (a continuous drag is still gated by
-    // the wall/mask/region checks exactly as under any other rule). The pricing consequence:
-    // a hand-dragged one-cell diagonal is a transition `neighbors_with_cost` does not enumerate
-    // under this rule, so `execute_move`'s GridStepped arm falls back to the Euclidean span — the
-    // same fallback a >1-cell jump takes. Pinned so the consequence is visible rather than
-    // incidental: √2 ≈ 1.414, not the 2.0 two orthogonal steps would cost.
+fn orthogonal_rule_prices_a_gm_hand_dragged_diagonal_by_euclidean_fallback() {
+    // A GM is exempt from the gameplay gates, `Orthogonal` included, so a GM's hand-dragged
+    // one-cell diagonal is a transition `neighbors_with_cost` does not enumerate and
+    // `execute_move`'s GridStepped arm prices it by the Euclidean span: √2 ≈ 1.414.
     let (ecs, scene, token) = scene_with_rule("orthogonal");
     let out = execute_move(
         &ecs,
@@ -105,6 +101,55 @@ fn orthogonal_rule_prices_a_hand_dragged_diagonal_by_euclidean_fallback() {
     );
     assert_eq!(out.stop, (100.0, 100.0));
     assert!(!out.truncated);
+}
+
+#[test]
+fn orthogonal_rule_stops_a_players_hand_built_diagonal_and_leaves_other_rules_alone() {
+    // A crafted `MoveRequest` path is not routed, so the executor itself must refuse the
+    // diagonal step a scene set to `Orthogonal` forbids: the walk halts at the start, uncharged.
+    let (ecs, scene, token) = scene_with_rule("orthogonal");
+    let mask = empty_mask();
+    let gate = || MoveGateInputs {
+        scene,
+        restriction: MovementRestriction::Unrestricted,
+        visible: &mask,
+        cell: FIXTURE_GRID_SIZE,
+        budget: None,
+        traits: MoveTraits::default(),
+        mover_elevation: crate::scene::elevation::GROUND,
+    };
+    let diagonal = [(0.0, 0.0), (100.0, 100.0)];
+    let out = execute_move(&ecs, gate(), token, &diagonal, false, 0.4).expect("admissible");
+    assert_eq!(out.stop, (0.0, 0.0));
+    assert!(out.truncated);
+    assert!(out.cost.abs() < 1e-9);
+
+    // An orthogonal step under the same rule is unaffected.
+    let orthogonal = [(0.0, 0.0), (100.0, 0.0)];
+    let out = execute_move(&ecs, gate(), token, &orthogonal, false, 0.4).expect("admissible");
+    assert_eq!(out.stop, (100.0, 0.0));
+    assert!(!out.truncated);
+
+    // Another rule still admits the same diagonal for a player.
+    let (ecs, scene, token) = scene_with_rule("chebyshev");
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
+        },
+        token,
+        &diagonal,
+        false,
+        0.4,
+    )
+    .expect("admissible");
+    assert_eq!(out.stop, (100.0, 100.0));
 }
 
 #[test]

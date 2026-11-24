@@ -482,6 +482,9 @@ pub(crate) fn execute_move(
     let movement_model = ecs.resolve_scene(scene).movement_model;
     let mut parity: u8 = 0;
     let world_per_cell = grid.world_units_per_cell();
+    // The diagonal rule shapes only a square grid's neighbor set; a hex grid ignores it.
+    let orthogonal_only = ecs.resolve_grid_kind(scene) == crate::scene::GridKind::Square
+        && ecs.resolved_diagonal_rule() == crate::scene::pathfinding::DiagonalRule::Orthogonal;
 
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
@@ -593,15 +596,27 @@ pub(crate) fn execute_move(
             // exactly as unweighted here and in the router. Cost accrues regardless of the
             // gameplay exemption; only `budget` can stop the walk on cost.
             let step = match movement_model {
-                MovementModel::GridStepped => grid
-                    .neighbors_with_cost(last_region_cell, parity)
-                    .into_iter()
-                    .find(|(c, _, _)| *c == next_cell)
-                    .map(|(_, sc, p)| {
-                        parity = p;
-                        sc
-                    })
-                    .unwrap_or_else(|| euclidean_span_cells(prev, next, world_per_cell)),
+                MovementModel::GridStepped => {
+                    let listed = grid
+                        .neighbors_with_cost(last_region_cell, parity)
+                        .into_iter()
+                        .find(|(c, _, _)| *c == next_cell);
+                    // `Orthogonal` is a movement rule, not only a routing preference: a
+                    // non-GM step the shape's neighbor set omits is a diagonal the rule
+                    // forbids, so it halts the walk like any other gameplay gate. Without
+                    // this a hand-built path walks diagonals at the cheaper Euclidean span.
+                    if listed.is_none() && check_regions && orthogonal_only {
+                        stopped_early = true;
+                        break;
+                    }
+                    match listed {
+                        Some((_, sc, p)) => {
+                            parity = p;
+                            sc
+                        }
+                        None => euclidean_span_cells(prev, next, world_per_cell),
+                    }
+                }
                 MovementModel::Continuous => {
                     euclidean_span_cells(last_transition_pos, next, world_per_cell)
                 }
