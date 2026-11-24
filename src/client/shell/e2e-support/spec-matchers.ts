@@ -23,6 +23,11 @@ export const LONG_AUDIO_PLAYTHROUGH_SPEC = /long-audio-playthrough\.spec\.ts$/;
  * under a subpath (`Config.route_prefix`), where every same-origin request must carry the prefix. */
 export const ROUTE_PREFIX_SPEC = /route-prefix\.spec\.ts$/;
 
+/** The first-use onboarding spec. It runs only under the `onboarding` project, against a server of
+ * its own with no seeded admin and the tour offers on: every other server runs with onboarding off
+ * so the offer's toast never covers the controls a spec drives. */
+export const ONBOARDING_SPEC = /onboarding\.spec\.ts$/;
+
 /** The WebM/Ogg derivative decode spec. It runs under the two `webm-decode-*` projects, one per
  * engine whose `decodeAudioData` it measures, against the shared loopback server. */
 export const WEBM_DECODE_SPEC = /webm-decode\.spec\.ts$/;

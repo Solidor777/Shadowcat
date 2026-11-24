@@ -13,6 +13,7 @@ import {
   LONG_AUDIO_PLAYTHROUGH_SPEC,
   LONG_AUDIO_SPEC,
   MEDIA_RANGE_SPEC,
+  ONBOARDING_SPEC,
   ROUTE_PREFIX_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
@@ -64,6 +65,10 @@ const MEDIA_RANGE_PORT = PORTS.mediaRange;
 /** Port of the loopback test server the `route-prefix` project targets: a server of its own because
  * it runs mounted under `ROUTE_PREFIX`, which no other spec may share. */
 const ROUTE_PREFIX_PORT = PORTS.routePrefix;
+
+/** Port of the loopback test server the `onboarding` project targets: a server of its own because it
+ * runs with the first-use tour offers on and with no seeded admin, which no other spec may share. */
+const ONBOARDING_PORT = PORTS.onboarding;
 
 /** The subpath the route-prefix server is mounted under (`Config.route_prefix`). */
 const ROUTE_PREFIX = "/ttrpg";
@@ -165,6 +170,20 @@ const SERVER_ENV = {
   // alive across repeated local invocations of a subset of specs.
   SHADOWCAT_WORLD_CREATE_PER_MIN_PER_ACCOUNT: "10000",
 };
+
+/** The onboarding server's environment: `SERVER_ENV` without the seeded admin and without the
+ * switch that turns the tour offers off.
+ * @returns The environment, with the loopback bind on `ONBOARDING_PORT`.
+ * @example
+ * ```
+ * const env = onboardingServerEnv();
+ * ```
+ */
+function onboardingServerEnv(): Record<string, string> {
+  const omitted = ["SHADOWCAT_ADMIN_USER", "SHADOWCAT_ADMIN_PASSWORD", "SHADOWCAT_ONBOARDING_ENABLED"];
+  const kept = Object.entries(SERVER_ENV).filter(([key]) => !omitted.includes(key));
+  return { ...Object.fromEntries(kept), SHADOWCAT_BIND: `127.0.0.1:${ONBOARDING_PORT}` };
+}
 
 /** The built-in-HTTPS and upgrade projects, which browse to the machine's real interface address.
  * @param LAN_IP The address the projects target.
@@ -386,7 +405,7 @@ export default defineConfig({
   projects: [
     {
       name: "loopback",
-      testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, ROUTE_PREFIX_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC],
+      testIgnore: [LAN_SPEC, MEDIA_RANGE_SPEC, ONBOARDING_SPEC, ROUTE_PREFIX_SPEC, WEBM_DECODE_SPEC, LONG_AUDIO_SPEC, LONG_AUDIO_PLAYTHROUGH_SPEC, ...ANY_HTTPS_SPEC],
       use: CHROMIUM_LAUNCH,
     },
     // `decodeAudioData` of the server's Opus derivatives, once per engine that decodes them in Web
@@ -417,6 +436,13 @@ export default defineConfig({
       name: "route-prefix",
       testMatch: ROUTE_PREFIX_SPEC,
       use: { baseURL: `http://127.0.0.1:${ROUTE_PREFIX_PORT}${ROUTE_PREFIX}/`, ...CHROMIUM_LAUNCH },
+    },
+    {
+      // The first-use tour offers on a server with no seeded admin: its tests create the first
+      // admin through the setup screen and read the Welcome screen that follows it.
+      name: "onboarding",
+      testMatch: ONBOARDING_SPEC,
+      use: { baseURL: `http://127.0.0.1:${ONBOARDING_PORT}`, ...CHROMIUM_LAUNCH },
     },
     ...(LAN_IP === undefined ? [] : [...httpsProjects(LAN_IP), ...longAudioProjects(LAN_IP)]),
   ],
@@ -489,6 +515,16 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
       env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${ROUTE_PREFIX_PORT}`, SHADOWCAT_ROUTE_PREFIX: ROUTE_PREFIX },
+    },
+    {
+      // No `SHADOWCAT_ADMIN_USER`/`SHADOWCAT_ADMIN_PASSWORD`: the first start has no admin, so the
+      // entry flow runs setup then the Welcome screen. The tour offers stay on (the server default).
+      command: `"${bin}"`,
+      cwd: repoRoot,
+      url: `http://127.0.0.1:${ONBOARDING_PORT}/health`,
+      timeout: 120_000,
+      reuseExistingServer: !process.env.CI,
+      env: onboardingServerEnv(),
     },
     ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP), longAudioServer(LAN_IP)]),
   ],
