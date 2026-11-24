@@ -5,7 +5,7 @@ import { test, expect, login, openPanel } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 // Media pages of the note sheet. A note whose `engine.kind` is an image, a PDF or a video renders
-// that asset in place of a text body: an `<img>`, an `<embed type="application/pdf">` and a
+// that asset in place of a text body: an `<img>`, a link to the PDF and a
 // `<video>`. When the asset is deleted the sheet shows the missing-media placeholder instead, and
 // "Change media" swaps an image page to another asset of the same kind. The UI has no control that
 // creates a media page, so the notes are created through the documents API by cloning a note the
@@ -202,10 +202,11 @@ test("note media: image, PDF and video pages render, a deleted asset shows the p
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
 
-  // PDF: the embed points at the stored asset and no placeholder shows.
+  // PDF: the server serves the asset as an attachment, so the page links to it rather than embedding it.
   const handout = await openNote("Handout");
   await expect(handout.getByTestId("note-media")).toHaveAttribute("data-media-kind", "pdf");
-  await expect(handout.locator('embed[type="application/pdf"]')).toHaveAttribute("src", new RegExp(idOf("paper.pdf")));
+  await expect(handout.getByTestId("note-media-pdf-link")).toHaveAttribute("href", new RegExp(idOf("paper.pdf")));
+  await expect(handout.locator("embed")).toHaveCount(0);
   await expect(handout.getByTestId("note-media-missing")).toHaveCount(0);
   // Floating sheets stack over one another; each is closed once checked so a later one is clickable.
   await handout.getByRole("button", { name: "Close" }).click();

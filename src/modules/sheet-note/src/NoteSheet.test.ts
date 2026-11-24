@@ -229,7 +229,7 @@ describe("NoteSheet read-only for a non-writer", () => {
 });
 
 describe("NoteSheet visibility", () => {
-  it("shows the visibility select for the author (grantAuthor's core:edit_permissions), gated by the REAL resolveCaps + canWritePath", async () => {
+  it("shows the permissions editor's default select for the author (grantAuthor's core:edit_permissions), gated by the REAL resolveCaps + canWritePath", async () => {
     const calls: unknown[] = [];
     const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
@@ -241,13 +241,13 @@ describe("NoteSheet visibility", () => {
       canEdit: (d, path) => canWritePath(path, resolveCaps(d.permissions, SELF, "player", { by_role: {}, by_user: {} }), false, []),
     });
     const { getByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
-    await fireEvent.change(getByTestId("note-visibility"), { target: { value: "observer" } });
+    await fireEvent.change(getByTestId("permissions-default"), { target: { value: "observer" } });
     expect(calls).toEqual([
       [{ op: "update", doc_id: "n1", changes: [{ path: "/permissions/default", old: "none", new: "observer" }] }],
     ]);
   });
 
-  it("hides the visibility select for a non-author observer, using the same real gate", () => {
+  it("hides the permissions editor's default select for a non-author observer, using the same real gate", () => {
     const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });
     doc.permissions.default = "observer";
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
@@ -258,7 +258,7 @@ describe("NoteSheet visibility", () => {
       canEdit: (d, path) => canWritePath(path, resolveCaps(d.permissions, "someone-else", "player", { by_role: {}, by_user: {} }), false, []),
     });
     const { queryByTestId } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
-    expect(queryByTestId("note-visibility")).toBeNull();
+    expect(queryByTestId("permissions-default")).toBeNull();
   });
 });
 
@@ -332,12 +332,15 @@ describe("NoteSheet typed pages", () => {
     expect(media.querySelector("img")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);
     const body = getByTestId("note-body");
     expect(media.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.querySelector("embed, video")).toBeNull();
+    expect(container.querySelector("embed, video, [data-testid='note-media-pdf-link']")).toBeNull();
   });
 
-  it("a pdf page renders an embed and a video page renders a video element", () => {
+  it("a pdf page renders a link that opens the PDF in a new tab and a video page renders a video element", () => {
     const pdf = sheetFor({ kind: "pdf", asset_id: ASSET });
-    expect(pdf.getByTestId("note-media").querySelector("embed")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);
+    const link = pdf.getByTestId("note-media-pdf-link");
+    expect(link.getAttribute("href")).toBe(`/api/assets/${ASSET}`);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(pdf.getByTestId("note-media").querySelector("embed")).toBeNull();
     pdf.unmount();
     const video = sheetFor({ kind: "video", asset_id: ASSET });
     expect(video.getByTestId("note-media").querySelector("video")?.getAttribute("src")).toBe(`/api/assets/${ASSET}`);

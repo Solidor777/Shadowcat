@@ -56,7 +56,7 @@ test("a GM presenting a private note shares it and opens it on the player's scre
     await gmSheet.getByTestId("note-source").fill("**Read this aloud**");
     await gmSheet.getByTestId("note-save").click();
     await expect(gmSheet.getByTestId("note-body").locator("strong")).toBeVisible({ timeout: 15_000 });
-    await expect(gmSheet.getByTestId("note-visibility")).toHaveValue("none");
+    await expect(gmSheet.getByTestId("permissions-default")).toHaveValue("none");
 
     // Before presenting, the player has no sheet open and sees no note.
     await expect(player.getByRole("dialog", { name: "Sheet", exact: true })).toHaveCount(0);
@@ -65,7 +65,7 @@ test("a GM presenting a private note shares it and opens it on the player's scre
     await gmSheet.getByTestId("note-present").click();
 
     // The sheet shared the note, and the player's sheet opened by itself with the body visible.
-    await expect(gmSheet.getByTestId("note-visibility")).toHaveValue("observer", { timeout: 15_000 });
+    await expect(gmSheet.getByTestId("permissions-default")).toHaveValue("observer", { timeout: 15_000 });
     const playerSheet = player.getByRole("dialog", { name: "Sheet", exact: true }).filter({ hasText: noteName });
     await expect(playerSheet).toBeVisible({ timeout: 15_000 });
     await expect(playerSheet.getByTestId("note-body").locator("strong")).toHaveText("Read this aloud");
