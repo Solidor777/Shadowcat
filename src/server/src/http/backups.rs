@@ -158,7 +158,8 @@ fn backup_error(e: BackupError) -> AppError {
 /// the `VACUUM INTO` + assets copy: the backup's database metadata and file bytes are mutually
 /// consistent. Database writers need no gating, `VACUUM INTO` is transactionally consistent
 /// against a live writer by itself. A prune failure after a successful backup is logged, not
-/// returned: the backup exists.
+/// returned: the backup exists. A [`BackupKind::PreRestore`] backup skips the prune, because the
+/// restore it precedes may name a backup the policy would otherwise remove.
 ///
 /// # Errors
 ///
@@ -216,9 +217,13 @@ pub async fn create_in_app_backup(
     )
     .await
     .map_err(backup_error)?;
-    let policy = BackupRetention::from_config(&state.config);
-    if let Err(e) = prune(&root, &policy, now_ms(), &state.trash).await {
-        tracing::warn!(error = %e, "backup retention prune failed");
+    // A pre-restore backup never prunes: it is the newest entry, so the prune would trash the
+    // older backups the policy no longer keeps, and the restore target can be one of them.
+    if !matches!(kind, BackupKind::PreRestore) {
+        let policy = BackupRetention::from_config(&state.config);
+        if let Err(e) = prune(&root, &policy, now_ms(), &state.trash).await {
+            tracing::warn!(error = %e, "backup retention prune failed");
+        }
     }
     Ok((id, manifest))
 }

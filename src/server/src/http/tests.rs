@@ -3518,6 +3518,35 @@ async fn restore_takes_a_pre_restore_backup_writes_the_marker_and_requests_shutd
     );
 }
 
+/// The safety backup a restore takes must not prune the backup being restored. Fails if
+/// `create_in_app_backup` prunes after a `PreRestore` backup: with `backup_keep_last = 2` the
+/// pre-restore backup and the newer one are kept and the older restore target is trashed.
+#[tokio::test]
+async fn restoring_the_oldest_backup_under_a_retention_limit_keeps_it_for_the_next_start() {
+    let (mut state, tmp) = file_backed_state().await;
+    with_retaining_trash(&mut state, &tmp);
+    state.config = Arc::new(crate::config::Config {
+        backup_keep_last: Some(2),
+        ..(*state.config).clone()
+    });
+    seed_admin(&state, "root").await;
+    let admin = login_server(&state, "root").await;
+    let oldest = post_backup(&admin).await;
+    let _newer = post_backup(&admin).await;
+
+    admin
+        .post(&format!("/api/admin/backups/{oldest}/restore"))
+        .await
+        .assert_status_ok();
+
+    let listing = crate::backup::catalog::list_backups(&tmp.path().join("backups"));
+    assert!(
+        listing.iter().any(|e| e.id == oldest),
+        "the restore target survives the safety backup"
+    );
+    assert!(state.trash.list().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn restore_of_an_unknown_id_changes_nothing() {
     let (state, tmp) = file_backed_state().await;
