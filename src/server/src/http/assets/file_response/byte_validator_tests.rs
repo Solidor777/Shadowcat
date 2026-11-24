@@ -56,7 +56,7 @@ async fn serve(
     method: Method,
     request: &HeaderMap,
 ) -> Result<Response, AppError> {
-    serve_file(spec(path), request, &method, permits).await
+    serve_file(spec(path), request, &method, permits, Uuid::nil()).await
 }
 
 /// The `ETag` a plain GET of `path` carries.
@@ -190,7 +190,7 @@ async fn a_validator_hit_needs_a_permit() {
     let etag = etag_of(&path).await;
     let request = headers(&[(header::IF_NONE_MATCH, &etag)]);
     let permits = single();
-    let held = permits.acquire().await.unwrap();
+    let held = permits.acquire(Uuid::nil()).await.unwrap();
     let refused = serve(&permits, &path, Method::GET, &request)
         .await
         .err()
@@ -222,7 +222,7 @@ async fn head_takes_a_permit_on_the_byte_validated_arm() {
     let etag = etag_of(&path).await;
     let hit = headers(&[(header::IF_NONE_MATCH, &etag)]);
     let permits = single();
-    let held = permits.acquire().await.unwrap();
+    let held = permits.acquire(Uuid::nil()).await.unwrap();
     for request in [HeaderMap::new(), hit.clone()] {
         let refused = serve(&permits, &path, Method::HEAD, &request)
             .await
@@ -258,7 +258,8 @@ async fn the_old_validator_after_a_rewrite_is_neither_a_304_nor_a_valid_if_range
     std::fs::write(&path, bytes(10_000, 0)).unwrap();
     let old = etag_of(&path).await;
     std::fs::write(&path, bytes(12_000, 3)).unwrap();
-    let permits = StreamedFilePermits::new(8, Duration::from_millis(20));
+    // Three responses stay open for one user at once, so each user's share must hold three.
+    let permits = StreamedFilePermits::new(16, Duration::from_millis(20));
 
     let revalidated = serve(
         &permits,

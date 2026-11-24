@@ -367,7 +367,8 @@ fn multipart_segments(
 /// Answers a request for the stored file `spec` describes: the range decision over the file's
 /// length, then the matching 200, 206 or 416 with the body streamed from the file.
 ///
-/// A GET takes a permit from `permits` (a bounded wait, then 503), opens the file and takes the
+/// A GET takes a permit from `permits` for `user` (a bounded wait, then 503, and never more than
+/// the user's share of the pool), opens the file and takes the
 /// length from that handle, so the length, the validator and the bytes streamed describe one file
 /// even when a replace renames over the name mid-request. A HEAD with a version-derived validator
 /// reads the length from the file's metadata, takes no permit and opens nothing; with a
@@ -377,6 +378,7 @@ pub(super) async fn serve_file(
     headers: &HeaderMap,
     method: &Method,
     permits: &StreamedFilePermits,
+    user: Uuid,
 ) -> Result<Response, AppError> {
     let class = classify(&spec.content_type, spec.disposition, spec.route);
     let missing = |e: std::io::Error| {
@@ -395,7 +397,7 @@ pub(super) async fn serve_file(
             (metadata.len(), etag.clone(), None)
         }
         (Validator::Version(etag), false) => {
-            let permit = permits.acquire().await?;
+            let permit = permits.acquire(user).await?;
             let file = File::open(spec.path).await.map_err(missing)?;
             let len = file.metadata().await.map_err(|_| AppError::Internal)?.len();
             (len, etag.clone(), Some((file, permit)))
@@ -404,7 +406,7 @@ pub(super) async fn serve_file(
             // A HEAD must name the validator its GET would, so it reads the same head. It opens a
             // descriptor, so it takes a permit like every other open; both are released when the
             // arm ends, ahead of the response.
-            let _permit = permits.acquire().await?;
+            let _permit = permits.acquire(user).await?;
             let mut file = File::open(spec.path).await.map_err(missing)?;
             let (len, etag) = file_validator(&mut file, stem).await?;
             if let Some(not_modified) = not_modified(headers, &etag) {
@@ -413,7 +415,7 @@ pub(super) async fn serve_file(
             (len, etag, None)
         }
         (Validator::OfFile { stem }, false) => {
-            let permit = permits.acquire().await?;
+            let permit = permits.acquire(user).await?;
             let mut file = File::open(spec.path).await.map_err(missing)?;
             let (len, etag) = file_validator(&mut file, stem).await?;
             // The validator exists only after the open, so this 304 holds the permit it took; the

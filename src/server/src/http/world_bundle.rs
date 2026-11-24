@@ -128,7 +128,7 @@ impl std::io::Write for ChannelWriter {
 /// ```
 pub async fn export_world(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Path(world): Path<Uuid>,
 ) -> Result<Response, AppError> {
     // Owned (not borrowed) so it can move into the detached task below,
@@ -140,7 +140,7 @@ pub async fn export_world(
     // streamed-file permit before any header exists: an exhausted pool is a 503, and the permit
     // is released with `read_permit` when the producing task ends, which a cut or dropped
     // download triggers (the dropped receiver fails the next `ChannelWriter` write).
-    let file_permit = state.file_permits.acquire().await?;
+    let file_permit = state.file_permits.acquire(admin.id).await?;
     let data = state.repo.export_world_rows(world).await?;
     let assets_dir = state.config.assets_path();
 
