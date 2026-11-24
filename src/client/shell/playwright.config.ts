@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "./e2e-support/egress-window";
 import { pickLanAddress } from "./e2e-support/lan-address";
 import { resolveE2ePorts } from "./e2e-support/ports";
-import { E2E_SERVER_ENV, serverBinaryPath } from "./e2e-support/server-process";
+import {
+  E2E_OUTPUT_DIR,
+  E2E_SERVER_DATA_DIR,
+  E2E_SERVER_ENV,
+  serverBinaryPath,
+  serverDataEnv,
+  sharedServerEnv,
+} from "./e2e-support/server-process";
 import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
@@ -152,7 +159,11 @@ const SERVER_ENV = E2E_SERVER_ENV;
 function onboardingServerEnv(): Record<string, string> {
   const omitted = ["SHADOWCAT_ADMIN_USER", "SHADOWCAT_ADMIN_PASSWORD", "SHADOWCAT_ONBOARDING_ENABLED"];
   const kept = Object.entries(SERVER_ENV).filter(([key]) => !omitted.includes(key));
-  return { ...Object.fromEntries(kept), SHADOWCAT_BIND: `127.0.0.1:${ONBOARDING_PORT}` };
+  return {
+    ...Object.fromEntries(kept),
+    ...serverDataEnv(path.join(E2E_SERVER_DATA_DIR, "onboarding")),
+    SHADOWCAT_BIND: `127.0.0.1:${ONBOARDING_PORT}`,
+  };
 }
 
 /** The built-in-HTTPS and upgrade projects, which browse to the machine's real interface address.
@@ -338,11 +349,10 @@ function longAudioServer(ip: string) {
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     stdout: WINDOWED_SERVER_STDOUT,
-    env: {
-      ...SERVER_ENV,
+    env: sharedServerEnv("long-audio", {
       SHADOWCAT_BIND: `0.0.0.0:${LONG_AUDIO_PORT}`,
       SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
-    },
+    }),
   };
 }
 
@@ -365,13 +375,17 @@ function httpsServer(ip: string) {
       url: `http://${ip}:${HTTPS_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: `0.0.0.0:${HTTPS_PORT}` },
+      env: sharedServerEnv("https", { SHADOWCAT_BIND: `0.0.0.0:${HTTPS_PORT}` }),
     }
   );
 }
 
 export default defineConfig({
   testDir: "./e2e",
+  // Playwright empties this folder at the start of every run, before any web server starts. The
+  // test servers keep their uploads and trash under `E2E_SERVER_DATA_DIR`, inside it, so a run
+  // leaves nothing in the repo root and the folder never grows.
+  outputDir: E2E_OUTPUT_DIR,
   projects: [
     {
       name: "loopback",
@@ -451,7 +465,10 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       // `SHADOWCAT_MODULES_DIR` points discovery at the test-only fixture modules, which no
       // world enables unless a spec does and which are not part of `dist/` or the binary.
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${LOOPBACK_PORT}`, SHADOWCAT_MODULES_DIR: FIXTURE_MODULES_DIR },
+      env: sharedServerEnv("loopback", {
+        SHADOWCAT_BIND: `127.0.0.1:${LOOPBACK_PORT}`,
+        SHADOWCAT_MODULES_DIR: FIXTURE_MODULES_DIR,
+      }),
     },
     {
       // The documented LAN configuration: a bind beyond loopback. Server policy keyed on a
@@ -462,7 +479,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${LAN_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: `0.0.0.0:${LAN_PORT}` },
+      env: sharedServerEnv("lan", { SHADOWCAT_BIND: `0.0.0.0:${LAN_PORT}` }),
     },
     {
       command: `"${bin}"`,
@@ -471,11 +488,10 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
       stdout: WINDOWED_SERVER_STDOUT,
-      env: {
-        ...SERVER_ENV,
+      env: sharedServerEnv("media-range", {
         SHADOWCAT_BIND: `127.0.0.1:${MEDIA_RANGE_PORT}`,
         SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
-      },
+      }),
     },
     {
       // The same binary mounted under `ROUTE_PREFIX`; its readiness probe lives under the prefix too.
@@ -484,7 +500,10 @@ export default defineConfig({
       url: `http://127.0.0.1:${ROUTE_PREFIX_PORT}${ROUTE_PREFIX}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: { ...SERVER_ENV, SHADOWCAT_BIND: `127.0.0.1:${ROUTE_PREFIX_PORT}`, SHADOWCAT_ROUTE_PREFIX: ROUTE_PREFIX },
+      env: sharedServerEnv("route-prefix", {
+        SHADOWCAT_BIND: `127.0.0.1:${ROUTE_PREFIX_PORT}`,
+        SHADOWCAT_ROUTE_PREFIX: ROUTE_PREFIX,
+      }),
     },
     {
       // No `SHADOWCAT_ADMIN_USER`/`SHADOWCAT_ADMIN_PASSWORD`: the first start has no admin, so the
