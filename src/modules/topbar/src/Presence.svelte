@@ -18,13 +18,17 @@
       const state = online === undefined ? "" : online ? t("topbar.online") : t("topbar.offline");
       const profile = ctx.memberProfiles.get(id);
       const colour = profile?.colour ?? null;
+      // Pronouns follow the name in both the hover title and the accessible label, so every
+      // member's client shows them once the server's `member_profile` frame lands.
+      const display = profile?.pronouns ? `${name} (${profile.pronouns})` : name;
       return {
         id,
-        name,
+        title: display,
         online,
         colour,
+        name,
         avatar: profile?.avatar ?? null,
-        label: state ? `${name} (${state})` : name,
+        label: state ? `${display} (${state})` : display,
       };
     }),
   );
@@ -70,7 +74,7 @@
   {#each roster as m (m.id)}
     <span
       class="sc-presence-badge"
-      title={m.name}
+      title={m.title}
       aria-label={m.label}
       style:background={m.colour ?? undefined}
       style:color={m.colour ? glyphOn(m.colour) : undefined}
