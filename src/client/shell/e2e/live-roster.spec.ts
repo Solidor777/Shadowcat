@@ -3,7 +3,8 @@ import type { Page, Locator } from "@playwright/test";
 
 // Live roster, two sessions. A player who joins after the GM is online sees the GM's dot as
 // online straight away (the Welcome's online set), and a profile change the GM saves reaches
-// the other member's roster badge without a reconnect.
+// the other member's roster badge without a reconnect. The GM's own roster shows the player
+// online while connected and offline once the player's page closes.
 
 const VIEWPORT = { width: 1600, height: 1000 };
 test.use({ viewport: VIEWPORT });
@@ -65,6 +66,12 @@ test("a late joiner sees who is online, and a profile change reaches another mem
     await expect(badge(player, account.username)).toHaveCSS("background-color", "rgb(51, 102, 153)", {
       timeout: 15_000,
     });
+
+    // The GM's own roster shows the player online while connected, and offline once the player's
+    // page closes and its socket drops.
+    await expect(badge(gm, playerName)).toHaveAttribute("aria-label", /\(online\)$/, { timeout: 15_000 });
+    await player.close();
+    await expect(badge(gm, playerName)).toHaveAttribute("aria-label", /\(offline\)$/, { timeout: 15_000 });
   } finally {
     await playerCtx.close();
   }

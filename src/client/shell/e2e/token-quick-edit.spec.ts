@@ -15,7 +15,9 @@ const PNG_1X1 = Buffer.from(
   "base64",
 );
 
-const PLACE_AT = { x: 1010, y: 510 };
+// In canvas-local pixels, inside the canvas: the docked actors panel narrows the canvas, so a point
+// past its right edge lands on the panel instead.
+const PLACE_AT = { x: 380, y: 460 };
 
 test.use({ viewport: { width: 1600, height: 1000 } });
 

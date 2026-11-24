@@ -15,6 +15,7 @@ import {
   LONG_AUDIO_PLAYTHROUGH_SPEC,
   LONG_AUDIO_SPEC,
   MEDIA_RANGE_SPEC,
+  ONBOARDING_SPEC,
   ROUTE_PREFIX_SPEC,
   UPGRADE_CHROMIUM_SPEC,
   UPGRADE_SPEC,
@@ -62,7 +63,7 @@ afterEach(() => {
 });
 
 describe("playwright.config LAN address handling", () => {
-  it("keeps the loopback, webm-decode, media-range-loopback, lan-plain-http and route-prefix projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
+  it("keeps the loopback, webm-decode, media-range-loopback, lan-plain-http, route-prefix and onboarding projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const config = await loadConfig(LOOPBACK_ONLY, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     expect(names(config)).toEqual([
@@ -72,8 +73,9 @@ describe("playwright.config LAN address handling", () => {
       "media-range-loopback",
       "lan-plain-http",
       "route-prefix",
+      "onboarding",
     ]);
-    expect(config.webServer).toHaveLength(4);
+    expect(config.webServer).toHaveLength(5);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain("HTTPS e2e projects OMITTED");
   });
@@ -86,19 +88,20 @@ describe("playwright.config LAN address handling", () => {
   it("adds the HTTPS projects and their server when the host has a LAN address", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const all = names(config);
-    expect(all.slice(0, 6)).toEqual([
+    expect(all.slice(0, 7)).toEqual([
       "loopback",
       "webm-decode-chromium",
       "webm-decode-firefox",
       "media-range-loopback",
       "lan-plain-http",
       "route-prefix",
+      "onboarding",
     ]);
     expect(all).toContain("https-chromium");
     expect(all).toContain("long-audio-https-chromium");
     expect(all).toContain("long-audio-playthrough-http-chromium");
     expect(all.some((n) => n.startsWith("https-upgrade"))).toBe(true);
-    expect(config.webServer).toHaveLength(6);
+    expect(config.webServer).toHaveLength(7);
   });
 
   it("gives the media-range project its own server with the short egress window, and only the long-audio server shares that window", async () => {
@@ -155,15 +158,15 @@ describe("playwright.config port base", () => {
 
   it("binds exactly the historical ports when the base is unset", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined, SHADOWCAT_E2E_PORT_BASE: undefined });
-    expect(usedPorts(config).binds.sort()).toEqual([31999, 32000, 32001, 32002, 32003, 32004]);
+    expect(usedPorts(config).binds.sort()).toEqual([31999, 32000, 32001, 32002, 32003, 32004, 32005]);
   });
 
   it("moves every server bind and every project target together, leaving none on a historical port", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined, SHADOWCAT_E2E_PORT_BASE: "40000" });
     const { binds, targets } = usedPorts(config);
-    expect(binds.sort()).toEqual([39999, 40000, 40001, 40002, 40003, 40004]);
+    expect(binds.sort()).toEqual([39999, 40000, 40001, 40002, 40003, 40004, 40005]);
     for (const port of targets) expect(binds, `a project targets port ${port} with no server`).toContain(port);
-    expect(new Set(targets).size).toBe(6);
+    expect(new Set(targets).size).toBe(7);
   });
 });
 
@@ -353,6 +356,7 @@ describe("spec-to-project assignment", () => {
       if (LAN_SPEC.test(spec)) expected = ["lan-plain-http"];
       else if (MEDIA_RANGE_SPEC.test(spec)) expected = ["media-range-loopback"];
       else if (ROUTE_PREFIX_SPEC.test(spec)) expected = ["route-prefix"];
+      else if (ONBOARDING_SPEC.test(spec)) expected = ["onboarding"];
       else if (WEBM_DECODE_SPEC.test(spec)) expected = projectsMatching(config, WEBM_DECODE_SPEC);
       else if (LONG_AUDIO_PLAYTHROUGH_SPEC.test(spec)) expected = projectsMatching(config, LONG_AUDIO_PLAYTHROUGH_SPEC);
       else if (LONG_AUDIO_SPEC.test(spec)) expected = projectsMatching(config, LONG_AUDIO_SPEC);

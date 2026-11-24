@@ -133,14 +133,20 @@ test("a module-registered custom vision kind paints the player's lighting frame 
 
     // Enable the installed fixture module for this world through the module manager; the save
     // reconciles the running session, so its treatment registers without a reload.
-    await togglePanel(gm, "settings:panel");
+    // The settings panel has been open since the invite step; it is opened here only if closed.
+    await gm.getByTestId("launcher-trigger").click();
+    const settingsItem = gm.getByTestId("launcher-item-settings:panel");
+    if ((await settingsItem.getAttribute("aria-checked")) !== "true") await settingsItem.click();
+    else await gm.keyboard.press("Escape");
     const manager = gm.locator(".module-manager");
+    await expect(manager).toBeVisible();
     await manager.getByRole("checkbox", { name: FIXTURE_MODULE }).check();
     await manager.getByRole("button", { name: "Save" }).click();
     await togglePanel(gm, "settings:panel");
 
     // The registered treatment makes the custom option appear, preselected to its name.
     await togglePanel(gm, "game-settings:panel");
+    await expect(hintSelect.locator("option[value='custom']")).toHaveCount(1);
     await hintSelect.selectOption("custom");
     await expect(gm.getByLabel("Render hint treatment for vision mode custom-1")).toHaveValue(
       FIXTURE_TREATMENT,

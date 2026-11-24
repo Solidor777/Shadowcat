@@ -17,8 +17,10 @@ const PNG_1X1 = Buffer.from(
 );
 
 // Snap is off so the press lands exactly on the token and the move is not rounded away.
-const TOKEN_AT = { x: 1010, y: 510 };
-const TOKEN_TO = { x: 1210, y: 510 };
+// Both points are canvas-local and inside the canvas, which the docked panels narrow below the
+// viewport width.
+const TOKEN_AT = { x: 300, y: 460 };
+const TOKEN_TO = { x: 500, y: 460 };
 const PAUSE_MESSAGE = "Back in five minutes";
 
 const VIEWPORT = { width: 1600, height: 1000 };
@@ -78,6 +80,12 @@ test("a paused session freezes a player's token and combat controls, keeps chat,
     await expect(snap).toHaveAttribute("aria-pressed", "true");
     await snap.click();
     await expect(snap).toHaveAttribute("aria-pressed", "false");
+
+    // Unrestricted movement removes the visibility mask: the player's token carries no sense, so
+    // under the default restriction no drag could ever move it and the resume step would prove nothing.
+    await togglePanel(gm, "game-settings:panel");
+    await gm.getByLabel("Movement restriction", { exact: true }).selectOption("unrestricted");
+    await togglePanel(gm, "game-settings:panel");
 
     await togglePanel(gm, "asset-browser:panel");
     await gm.getByTestId("asset-upload-input").setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });

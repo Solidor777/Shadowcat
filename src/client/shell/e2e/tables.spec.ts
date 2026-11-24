@@ -31,12 +31,12 @@ function drawCards(page: Page): Locator {
 }
 
 /** Reads a folder row's document id from its test id.
- * @param page The page to search.
+ * @param scope The panel to search.
  * @param name The folder's display name.
  * @returns The folder's document id.
  */
-async function folderId(page: Page, name: string): Promise<string> {
-  const node = page.locator('[data-testid^="folder-node-"]:not([data-testid="folder-node-all"])', { hasText: name });
+async function folderId(scope: Locator, name: string): Promise<string> {
+  const node = scope.locator('[data-testid^="folder-node-"]:not([data-testid="folder-node-all"])', { hasText: name });
   const testId = await node.getAttribute("data-testid");
   return (testId ?? "").slice("folder-node-".length);
 }
@@ -62,46 +62,49 @@ test("tables: folders file tables, drag moves between folders, and deleting a fo
 }) => {
   await enterFreshWorld(page, `Table Folders ${Date.now().toString(36)}`, account);
   await openPanel(page, "tables:panel");
+  // The asset browser is open in a fresh world and carries the same folder test ids, so every
+  // locator below is scoped to the tables panel.
+  const panel = page.getByTestId("tables-panel");
 
   // Create a root folder.
-  const folderName = page.getByTestId("folder-create-name");
+  const folderName = panel.getByTestId("folder-create-name");
   await folderName.fill("Prep");
   await folderName.press("Enter");
-  await expect(page.locator('[data-testid^="folder-node-"]', { hasText: "Prep" })).toBeVisible();
-  const prep = await folderId(page, "Prep");
+  await expect(panel.locator('[data-testid^="folder-node-"]', { hasText: "Prep" })).toBeVisible();
+  const prep = await folderId(panel, "Prep");
 
   // A table created at the root, and one created while the folder is selected.
-  await page.getByTestId("tables-name").fill("Alpha");
-  await page.getByTestId("tables-create").click();
-  await page.getByTestId(`folder-node-${prep}`).click();
-  await page.getByTestId("tables-name").fill("Beta");
-  await page.getByTestId("tables-create").click();
-  await expect(page.getByTestId("table-row")).toHaveCount(1);
-  await expect(page.getByTestId("table-row")).toContainText("Beta");
+  await panel.getByTestId("tables-name").fill("Alpha");
+  await panel.getByTestId("tables-create").click();
+  await panel.getByTestId(`folder-node-${prep}`).click();
+  await panel.getByTestId("tables-name").fill("Beta");
+  await panel.getByTestId("tables-create").click();
+  await expect(panel.getByTestId("table-row")).toHaveCount(1);
+  await expect(panel.getByTestId("table-row")).toContainText("Beta");
 
   // Under All both tables list; dragging Alpha's handle onto the folder files it there.
-  await page.getByTestId("folder-node-all").click();
-  await expect(page.getByTestId("table-row")).toHaveCount(2);
-  const alpha = page.getByTestId("table-row").filter({ hasText: "Alpha" });
-  await dragOnto(page, alpha.getByTestId("table-drag"), page.getByTestId(`folder-node-${prep}`));
-  await page.getByTestId(`folder-node-${prep}`).click();
-  await expect(page.getByTestId("table-row")).toHaveCount(2);
+  await panel.getByTestId("folder-node-all").click();
+  await expect(panel.getByTestId("table-row")).toHaveCount(2);
+  const alpha = panel.getByTestId("table-row").filter({ hasText: "Alpha" });
+  await dragOnto(page, alpha.getByTestId("table-drag"), panel.getByTestId(`folder-node-${prep}`));
+  await panel.getByTestId(`folder-node-${prep}`).click();
+  await expect(panel.getByTestId("table-row")).toHaveCount(2);
 
   // Dragging a table onto the All row takes it back to the root.
   await dragOnto(
     page,
-    page.getByTestId("table-row").filter({ hasText: "Alpha" }).getByTestId("table-drag"),
-    page.getByTestId("folder-node-all"),
+    panel.getByTestId("table-row").filter({ hasText: "Alpha" }).getByTestId("table-drag"),
+    panel.getByTestId("folder-node-all"),
   );
-  await expect(page.getByTestId("table-row")).toHaveCount(1);
+  await expect(panel.getByTestId("table-row")).toHaveCount(1);
 
   // Deleting the folder keeps its remaining table: it moves to the root.
-  await page.getByTestId(`folder-delete-${prep}`).click();
-  await page.getByTestId("folder-delete-confirm").click();
-  await expect(page.getByTestId(`folder-node-${prep}`)).toHaveCount(0);
-  await page.getByTestId("folder-node-all").click();
-  await expect(page.getByTestId("table-row")).toHaveCount(2);
-  await expect(page.getByTestId("table-row").filter({ hasText: "Beta" })).toHaveCount(1);
+  await panel.getByTestId(`folder-delete-${prep}`).click();
+  await panel.getByTestId("folder-delete-confirm").click();
+  await expect(panel.getByTestId(`folder-node-${prep}`)).toHaveCount(0);
+  await panel.getByTestId("folder-node-all").click();
+  await expect(panel.getByTestId("table-row")).toHaveCount(2);
+  await expect(panel.getByTestId("table-row").filter({ hasText: "Beta" })).toHaveCount(1);
 });
 
 // Dual-session (GM + invited player) so BOTH recipients' chat cards are asserted — the server is
