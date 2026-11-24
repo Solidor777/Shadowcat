@@ -45,6 +45,12 @@ test("offersPortal needs an enabled region with a portal_choice trigger on a non
   expect(offersPortal(region([{ on: "enter", effect: { type: "teleport", target: choice.effect.type === "portal_choice" ? choice.effect.options[0].target : (null as never) } }]))).toBe(false);
 });
 
+test("offersPortal reads a region document with no triggers key as offering nothing", () => {
+  const doc = region([choice]);
+  delete (doc.engine as Partial<RegionEngine>).triggers;
+  expect(offersPortal(doc)).toBe(false);
+});
+
 test("portalTokens keeps only tokens standing inside a portal region of their own scene", () => {
   const s = store(region([choice]), token("in", 50, 50), token("out", 500, 500), token("other-scene", 50, 50, "s2"));
   expect(portalTokens(["in", "out", "other-scene", "missing"], s)).toEqual(["in"]);

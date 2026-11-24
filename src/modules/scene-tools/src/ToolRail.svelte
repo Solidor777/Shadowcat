@@ -7,6 +7,7 @@
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
   import DormantRegionList from "./DormantRegionList.svelte";
   import { portalTokens } from "./portal-use";
+  import { wallBlocksSound } from "./wall-flags";
   import { MAX_OVERLAY_DISPLAY_CHARS, type SnapMode } from "@shadowcat/render";
 
   const ctx = getAppContext();
@@ -36,7 +37,6 @@
   // here, so a seam the host has can never be left out of this literal without a type error.
   // The two viewedLevel* fields below are ToolContext-only (no AppContext counterpart), so they
   // sit OUTSIDE this checked literal — spread in below — rather than widening the check itself.
-  // svelte-ignore state_referenced_locally
   const hostToolContext = {
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
@@ -1146,7 +1146,7 @@
           <input
             type="checkbox"
             data-testid="wall-blocks-sound"
-            checked={eng.blocksSound}
+            checked={wallBlocksSound(eng)}
             onchange={(e) => editSelected("/engine/blocksSound", eng.blocksSound ?? null, e.currentTarget.checked)}
           />
           {t("tools.blocksSound")}

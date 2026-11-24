@@ -817,14 +817,14 @@ test("the wall editor's blocksSound checkbox authors an explicit override with r
   expect(await screen.findByTestId("wall-editor")).toBeTruthy();
   const wallId = docs.query("wall")[0].id;
 
-  // The fixture wall authors no `blocksSound` (unchecked; absent = inherit blocksSight
-  // server-side), so checking it writes `true` with a null OCC pre-image.
+  // The fixture wall blocks sight and authors no `blocksSound`: it inherits blocksSight, so the
+  // box reads checked, and unchecking it writes an explicit `false` with a null OCC pre-image.
   const box = screen.getByTestId("wall-blocks-sound") as HTMLInputElement;
-  expect(box.checked).toBe(false);
+  expect(box.checked).toBe(true);
   await fireEvent.click(box);
   expect(dispatched.at(-1)![0]).toEqual({
     op: "update", doc_id: wallId,
-    changes: [{ path: "/engine/blocksSound", old: null, new: true }],
+    changes: [{ path: "/engine/blocksSound", old: null, new: false }],
   });
 });
 

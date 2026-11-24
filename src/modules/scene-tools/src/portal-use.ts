@@ -15,7 +15,8 @@ import { topRegionAt } from "./hit-test";
 export function offersPortal(region: WireDocument): boolean {
   const engine = region.engine as RegionEngine | undefined;
   if (!engine || !engine.enabled) return false;
-  return engine.triggers.some((t) => t.effect.type === "portal_choice" && t.on !== "exit");
+  // The server stores a region written before triggers existed without the key (serde default).
+  return (engine.triggers ?? []).some((t) => t.effect.type === "portal_choice" && t.on !== "exit");
 }
 
 /** The ids among `tokenIds` whose centre stands inside a region that offers a portal, so the
