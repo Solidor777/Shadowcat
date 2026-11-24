@@ -825,6 +825,47 @@ async fn restore_succeeds_when_trashing_the_replaced_assets_fails() {
     assert!(!assets_dir.join("live.png").exists());
 }
 
+/// A `MakeWriter` that appends every log line to one shared buffer.
+#[derive(Clone, Default)]
+struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
+    type Writer = LogSink;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// A failed undo rename during a restore leaves a log record. Fails if `undo_rename` drops the
+/// error instead of logging it.
+#[tokio::test]
+async fn a_failed_restore_undo_rename_is_logged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sink = LogSink::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    undo_rename(&tmp.path().join("absent"), &tmp.path().join("target")).await;
+
+    let log = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains("restore undo failed"), "log was: {log}");
+}
+
 /// A restore whose database swap fails after the assets were swapped puts the old assets back.
 /// The live database path is a directory, so renaming the staged file over it fails. Fails if the
 /// assets swap is not rolled back (the live assets would hold `backed.png`).
