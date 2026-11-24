@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { MEDIA_RANGE_EGRESS_WINDOW_SECS } from "./e2e-support/egress-window";
 import { pickLanAddress } from "./e2e-support/lan-address";
 import { resolveE2ePorts } from "./e2e-support/ports";
+import { E2E_SERVER_ENV, serverBinaryPath } from "./e2e-support/server-process";
 import {
   ANY_HTTPS_SPEC,
   HTTPS_SPECS,
@@ -26,14 +27,7 @@ import {
 // globalSetup, so the build must precede `playwright test`). webServer runs the
 // prebuilt binary with an admin seeded and the setup window off.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const bin = path.join(
-  repoRoot,
-  "target",
-  // The long-audio jobs transcode 20-minute tracks at import, which a debug build does about 30
-  // times slower than a release build, so they run the binary `e2e:build:release` produces.
-  process.env.SHADOWCAT_E2E_PROFILE === "release" ? "release" : "debug",
-  process.platform === "win32" ? "shadowcat.exe" : "shadowcat",
-);
+const bin = serverBinaryPath(repoRoot, process.env);
 
 /** The installed-module root of the loopback server: test-only modules, one folder each, kept beside
  * the e2e support code so they never enter the client build or the release binary. */
@@ -143,33 +137,9 @@ const BASE_LAUNCH_ARGS = ["--use-gl=angle", "--autoplay-policy=no-user-gesture-r
  * switches, and WebKit exits on an unknown one (`Unknown option --use-gl=angle`). */
 const CHROMIUM_LAUNCH = { launchOptions: { args: BASE_LAUNCH_ARGS } };
 
-/** Environment shared by every test server process; each server adds its own `SHADOWCAT_BIND`. */
-const SERVER_ENV = {
-  SHADOWCAT_ADMIN_USER: "ops",
-  SHADOWCAT_ADMIN_PASSWORD: "pw-boot",
-  SHADOWCAT_SETUP_TOKEN: "off",
-  SHADOWCAT_DB: "sqlite::memory:",
-  SHADOWCAT_LOG: "warn",
-  // The first-use tour offer is a fixed toast over the bottom-left of the viewport, where tiles and
-  // pickers sit; left on, it intercepts the pointer in every spec that opens a fresh world. The
-  // tours themselves stay reachable through the settings panel's replay buttons.
-  SHADOWCAT_ONBOARDING_ENABLED: "false",
-  // The suite logs in as the same seeded admin identity many times across
-  // specs within the auth-throttle's 60s sliding window (`/api/login` allows
-  // LOGIN_PER_MIN_PER_IDENTITY=10 by default) — relax the budgets so
-  // the e2e login pattern itself can never trip them. The `http::throttle` module's
-  // production default consts are untouched; this only overrides this webServer process.
-  SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY: "10000",
-  SHADOWCAT_LOGIN_PER_MIN_PER_IP: "10000",
-  SHADOWCAT_INVITE_PER_MIN_PER_ACCOUNT: "10000",
-  SHADOWCAT_INVITE_PER_MIN_PER_IP: "10000",
-  // Same reasoning as the login/invite overrides above, for `POST /api/worlds`'s
-  // per-account budget (`WORLD_CREATE_PER_MIN_PER_ACCOUNT=10`): each worker's
-  // seeded identity creates far more than 10 worlds across the whole suite, and
-  // `reuseExistingServer` keeps one server (and its sliding-window throttle state)
-  // alive across repeated local invocations of a subset of specs.
-  SHADOWCAT_WORLD_CREATE_PER_MIN_PER_ACCOUNT: "10000",
-};
+/** Environment shared by every test server process; each server adds its own `SHADOWCAT_BIND`. The
+ * record is `E2E_SERVER_ENV`, shared with the servers a spec starts itself. */
+const SERVER_ENV = E2E_SERVER_ENV;
 
 /** The onboarding server's environment: `SERVER_ENV` without the seeded admin and without the
  * switch that turns the tour offers off.
