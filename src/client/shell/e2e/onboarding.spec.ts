@@ -144,9 +144,29 @@ test("a GM's offer answers Not now by returning next session, and Start walks a 
   await expect(offer).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("tour-offer-start").click();
   await expect(card).toBeVisible();
-  expect(await card.getByRole("heading").innerText()).not.toBe(firstTitle);
+  const secondTitle = await card.getByRole("heading").innerText();
+  expect(secondTitle).not.toBe(firstTitle);
   await page.getByTestId("tour-skip").click();
   await expect(page.getByTestId("tour-overlay")).toHaveCount(0);
+
+  // A fresh GM is offered the scene tools tour (`scene-tools.intro`) among the first-use tours: its
+  // opening step is the tool rail's. Each offered tour is started and skipped until that one's
+  // opening step shows; every skip records the tour as done, so the offers run out if it never comes.
+  const seen = [firstTitle, secondTitle];
+  let sceneToolsOffered = seen.includes("The tool rail");
+  for (let attempt = 0; attempt < 8 && !sceneToolsOffered; attempt++) {
+    await page.reload();
+    await reachStage(page, worldName);
+    if (!(await offer.isVisible({ timeout: 5_000 }).catch(() => false))) break;
+    await page.getByTestId("tour-offer-start").click();
+    await expect(card).toBeVisible();
+    const title = await card.getByRole("heading").innerText();
+    seen.push(title);
+    sceneToolsOffered = title === "The tool rail";
+    await page.getByTestId("tour-skip").click();
+    await expect(page.getByTestId("tour-overlay")).toHaveCount(0);
+  }
+  expect(sceneToolsOffered, `the offered tours opened on: ${seen.join(", ")}`).toBe(true);
 });
 
 test("a GM replays the actors tour from the settings panel", async ({ page, browser }) => {
