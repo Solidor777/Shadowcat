@@ -274,10 +274,10 @@ the tour has nothing to show on the current screen.
 ### What the engine does with your tour
 
 - It offers at most **one** automatic tour per session, in module registration
-  order, as a toast with Start, Not now and Don't ask again. Tours that were not
+  order, as a toast with Take Tour, Not Now and Disable Tutorials. Tours that were not
   offered wait for a later session or the replay list.
 - A finished or skipped tour (Skip, Done or Escape) records its `version` as done
-  and is not offered again until you raise the version. Not now records nothing.
+  and is not offered again until you raise the version. Not Now records the offered tour as done too; Disable Tutorials records every registered tour as done and stops all offers.
 - A server operator can switch off all automatic offers with `onboarding_enabled`
   (see the [hosting guide](/guides/hosting)). Replay still works.
 

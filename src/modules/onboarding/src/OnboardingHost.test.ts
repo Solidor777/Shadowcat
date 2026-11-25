@@ -67,7 +67,7 @@ describe("OnboardingHost", () => {
     expect(second.view.queryByTestId("tour-offer")).toBeNull();
   });
 
-  it("Don't ask again persists across sessions", async () => {
+  it("Disable Tutorials persists across sessions", async () => {
     mountAnchor("example.a");
     const settings = memorySettings();
     const first = session([tour()], settings);
@@ -79,10 +79,10 @@ describe("OnboardingHost", () => {
     const second = session([tour()], settings);
     await second.controller.evaluate();
     expect(second.view.queryByTestId("tour-offer")).toBeNull();
-    expect(settings.slice).toEqual({ disabled: true });
+    expect(settings.slice).toEqual({ disabled: true, "g:example.intro": 1 });
   });
 
-  it("Not now hides the toast and the tour is not offered again in a later session", async () => {
+  it("Not Now hides the toast and the tour is not offered again in a later session", async () => {
     mountAnchor("example.a");
     const settings = memorySettings();
     const first = session([tour()], settings);
@@ -95,6 +95,29 @@ describe("OnboardingHost", () => {
     const second = session([tour()], settings);
     await second.controller.evaluate();
     expect(second.view.queryByTestId("tour-offer")).toBeNull();
+  });
+
+  it("each answer ends in the instructions for reaching tours later, which Got it closes", async () => {
+    for (const answer of ["tour-offer-later", "tour-offer-never"]) {
+      mountAnchor("example.a");
+      const { view } = session([tour()], memorySettings());
+      await waitFor(() => expect(view.getByTestId("tour-offer")).toBeTruthy());
+      await fireEvent.click(view.getByTestId(answer));
+      expect(view.getByTestId("tour-hint").textContent).toContain("onboarding.hint.message");
+      await fireEvent.click(view.getByTestId("tour-hint-dismiss"));
+      expect(view.queryByTestId("tour-hint")).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("after Take Tour the instructions wait until the tour has ended", async () => {
+    mountAnchor("example.a");
+    const { view } = session([tour()], memorySettings());
+    await waitFor(() => expect(view.getByTestId("tour-offer")).toBeTruthy());
+    await fireEvent.click(view.getByTestId("tour-offer-start"));
+    expect(view.queryByTestId("tour-hint")).toBeNull();
+    await fireEvent.click(view.getByTestId("tour-next"));
+    expect(view.getByTestId("tour-hint")).toBeTruthy();
   });
 
   it("offers nothing when the server switch is off", async () => {

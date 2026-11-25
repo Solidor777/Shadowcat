@@ -39,6 +39,7 @@ export const THEME_TOKEN_NAMES = [
   "font-size-sm",
   "font-size-md",
   "input-height-coarse",
+  "statusbar-height",
   // Semantic aliases.
   "surface-sunken",
   "surface-base",
@@ -117,6 +118,7 @@ const SHARED_SCALE = {
   "font-size-sm": "0.875rem",
   "font-size-md": "1rem",
   "input-height-coarse": "44px",
+  "statusbar-height": "2rem",
   "z-popover": "50000",
 } as const;
 

@@ -25,7 +25,7 @@ describe("TourController.evaluate", () => {
     expect(controller.offer).toBeNull();
   });
 
-  it("offers nothing after Don't ask again was chosen in an earlier session", async () => {
+  it("offers nothing after Disable Tutorials was chosen in an earlier session", async () => {
     const settings = memorySettings({ disabled: true });
     const { controller } = makeController({ tours: [tour()], mounted: ["example.a"], settings });
     await controller.evaluate();
@@ -50,7 +50,7 @@ describe("TourController.evaluate", () => {
 });
 
 describe("TourController answers to the offer", () => {
-  it("Not now closes the offer and records the tour as done, so a later session does not offer it again", async () => {
+  it("Not Now closes the offer and records the tour as done, so a later session does not offer it again", async () => {
     const first = makeController({ tours: [tour()], mounted: ["example.a"] });
     await first.controller.evaluate();
     first.controller.dismissOffer();
@@ -66,12 +66,49 @@ describe("TourController answers to the offer", () => {
     expect(nextSession.controller.offer).toBeNull();
   });
 
-  it("Don't ask again records the switch and closes the offer", async () => {
-    const { controller, settings } = makeController({ tours: [tour()], mounted: ["example.a"] });
+  it("Disable Tutorials records the switch, marks every registered tour done, and closes the offer", async () => {
+    const tours = [tour(), tour({ id: "example.gm-only", audience: "gm" }), tour({ id: "example.world", scope: "world", version: 3 })];
+    const { controller, settings } = makeController({
+      tours,
+      mounted: ["example.a"],
+      viewer: { world: "w1", role: "player", serverRole: "user" },
+    });
     await controller.evaluate();
     controller.disableForever();
     expect(controller.offer).toBeNull();
-    expect(settings.writes).toEqual([{ disabled: true }]);
+    expect(settings.slice).toEqual({
+      disabled: true,
+      "g:example.intro": 1,
+      "g:example.gm-only": 1,
+      "w:w1:example.world": 3,
+    });
+  });
+
+  it("every answer to the offer queues the how-to-reach-tours instructions until acknowledged", async () => {
+    const answers = [
+      (c: TourController) => {
+        c.startOffer();
+        expect(c.howTo).toBe(false);
+        c.end();
+      },
+      (c: TourController) => c.dismissOffer(),
+      (c: TourController) => c.disableForever(),
+    ];
+    for (const answer of answers) {
+      const { controller } = makeController({ tours: [tour()], mounted: ["example.a"] });
+      await controller.evaluate();
+      expect(controller.howTo).toBe(false);
+      answer(controller);
+      expect(controller.howTo).toBe(true);
+      controller.acknowledgeHowTo();
+      expect(controller.howTo).toBe(false);
+    }
+  });
+
+  it("starting a tour from the replay list does not queue the instructions", () => {
+    const { controller } = makeController({ tours: [], mounted: ["example.a"] });
+    controller.start(tour());
+    expect(controller.howTo).toBe(false);
   });
 
   it("Start closes the offer and shows the first step", async () => {

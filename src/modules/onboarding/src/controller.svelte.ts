@@ -37,7 +37,10 @@ export interface ActiveTour {
 /** Decides which tour to offer, runs the tour the user starts, and records how it ended.
  *
  * At most one offer is made per controller (one per session), and a tour is offered once per
- * version: any answer to its offer, including "Not now", records it as done. After the user
+ * version: "Not now" records the offered tour as done, and "Disable Tutorials" switches offers off
+ * and records every registered tour as done. Every answer ends with the instructions for starting
+ * a tour later (`howTo`): at once after "Not now" and "Disable Tutorials", and when the tour ends
+ * after "Take Tour". After the user
  * answers, further tours wait for a later session or the replay list. That paces topic tours instead of chaining
  * a new offer behind every finished one. State is reactive; the offer and the running tour are
  * what the overlay components render. Until `attach` supplies the environment, nothing is
@@ -47,8 +50,12 @@ export class TourController {
   offer = $state<TourMeta | null>(null);
   /** The tour currently running, or `null`. */
   active = $state<ActiveTour | null>(null);
+  /** Whether the instructions for reaching tours later are on screen. */
+  howTo = $state(false);
   /** Whether this session already made its one offer. */
   #offered = false;
+  /** Whether the instructions are owed once the tour the user started ends. */
+  #howToAfterTour = false;
   /** The running app's registry, viewer and anchor lookup; `null` until the host attaches. */
   #env: TourEnvironment | null = null;
 
@@ -149,7 +156,19 @@ export class TourController {
    * ```
    */
   startOffer(): void {
-    if (this.offer !== null) this.start(this.offer);
+    if (this.offer === null) return;
+    if (this.start(this.offer)) this.#howToAfterTour = true;
+    else this.howTo = true;
+  }
+
+  /** Closes the instructions for reaching tours later.
+   * @example
+   * ```ts
+   * // wired to the instructions' Got it button
+   * ```
+   */
+  acknowledgeHowTo(): void {
+    this.howTo = false;
   }
 
   /** Closes the offer and records the offered tour's current version as done, so "Not now" spends
@@ -157,24 +176,31 @@ export class TourController {
    * still runs it on request.
    * @example
    * ```ts
-   * // wired to the offer's Not now button
+   * // wired to the offer's Not Now button
    * ```
    */
   dismissOffer(): void {
     const offered = this.offer;
     if (offered !== null && this.#env !== null) this.deps.progress.markDone(offered, this.#env.viewer().world);
     this.offer = null;
+    this.howTo = true;
   }
 
-  /** Switches automatic offers off for this account and closes the offer.
+  /** Switches automatic offers off for this account, records every registered tour as done, and
+   * closes the offer. The replay list still runs any tour.
    * @example
    * ```ts
-   * // wired to the offer's Don't ask again button
+   * // wired to the offer's Disable Tutorials button
    * ```
    */
   disableForever(): void {
     this.deps.progress.setDisabled();
+    if (this.#env !== null) {
+      const world = this.#env.viewer().world;
+      for (const tour of this.#env.tours()) this.deps.progress.markDone(tour, world);
+    }
     this.offer = null;
+    this.howTo = true;
   }
 
   /** Moves to the next step whose target is mounted now, or ends the tour after the last one.
@@ -222,5 +248,9 @@ export class TourController {
     if (current === null || this.#env === null) return;
     this.deps.progress.markDone(current.tour, this.#env.viewer().world);
     this.active = null;
+    if (this.#howToAfterTour) {
+      this.#howToAfterTour = false;
+      this.howTo = true;
+    }
   }
 }

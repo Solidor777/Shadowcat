@@ -3,8 +3,8 @@
 ## Purpose
 
 The sheet for the `note` doc_type, registered at priority 0. Edits title,
-visibility, body (via `SegmentList`), sort order, and the note's tree
-position (parent/children), using the draft-base edit flow so a concurrent
+sharing (through the shared `PermissionsEditor`), body (via `SegmentList`),
+sort order, and the note's tree position (parent/children), using the draft-base edit flow so a concurrent
 remote change surfaces as a conflict rather than being silently overwritten.
 
 ## Contributions
@@ -15,15 +15,16 @@ remote change surfaces as a conflict rather than being silently overwritten.
 
 ## Components
 
-- `NoteSheet.svelte` — title/visibility/sort fields, a draft-base body editor
+- `NoteSheet.svelte` — title and sort fields, the shared `PermissionsEditor` for sharing, a draft-base body editor
   over `SegmentList`, and a children list (sorted by `engine.sort` then
   `created_at`) with a `ctx.canCreate`-gated "new child note" affordance.
 
 ## Contracts & seams
 
 - **Provides** `shadowcat.sheet:note` (multi; via `sheetContract(NOTE_DOC_TYPE)`).
-- The visibility field is gated by `ctx.canEdit(doc, "/permissions/default")`,
-  distinct from the body's own write gate.
+- Sharing is edited only through `PermissionsEditor`, which writes `/permissions/default` and
+  per-user levels and is gated by `ctx.canEdit(doc, "/permissions")`, distinct from the body's own
+  write gate. The sheet has no separate Private/Shared select.
 - Draft-base flow: opening the sheet seeds both a live `draft` and an
   immutable `draftBase` snapshot; Save writes with `draftBase` (not the live
   stored value) as the OCC `old`, so a concurrent remote edit rejects with

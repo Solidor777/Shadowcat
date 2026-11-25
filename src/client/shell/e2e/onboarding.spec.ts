@@ -63,7 +63,7 @@ async function mintAccount(browser: Browser, baseURL: string | undefined, label:
   return username;
 }
 
-test("setup creates the first admin, the Welcome screen follows, and the first world offers a tour that Don't ask again silences", async ({
+test("setup creates the first admin, the Welcome screen follows, and the first world offers a tour that Disable Tutorials silences", async ({
   page,
 }) => {
   await page.goto("/");
@@ -85,11 +85,15 @@ test("setup creates the first admin, the Welcome screen follows, and the first w
   const worldName = `Welcome World ${Date.now().toString(36)}`;
   await createAndEnterWorld(page, worldName);
 
-  // A first-time GM in a fresh world is offered a tour; "Don't ask again" closes it for good.
+  // A first-time GM in a fresh world is offered a tour; "Disable Tutorials" closes it for good.
   const offer = page.getByTestId("tour-offer");
   await expect(offer).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("tour-offer-never").click();
   await expect(offer).toHaveCount(0);
+  // Every answer ends with the instructions for reaching tours later.
+  await expect(page.getByTestId("tour-hint")).toContainText("Replay tours");
+  await page.getByTestId("tour-hint-dismiss").click();
+  await expect(page.getByTestId("tour-hint")).toHaveCount(0);
 
   // Entering again must not offer one (the switch is stored on the account, not the session).
   await page.reload();
@@ -100,7 +104,7 @@ test("setup creates the first admin, the Welcome screen follows, and the first w
   await expect(offer).toHaveCount(0);
 });
 
-test("a GM's Not now spends that tour's offer, and Start walks a tour whose finish moves the offer on", async ({
+test("a GM's Not Now spends that tour's offer, and Start walks a tour whose finish moves the offer on", async ({
   page,
   browser,
 }) => {
@@ -112,7 +116,7 @@ test("a GM's Not now spends that tour's offer, and Start walks a tour whose fini
   await login(page, gmName, MEMBER_PASSWORD);
   await createAndEnterWorld(page, worldName);
 
-  // Not now records the offered tour as done, so the next session offers the next tour.
+  // Not Now records the offered tour as done, so the next session offers the next tour.
   const offer = page.getByTestId("tour-offer");
   await expect(offer).toBeVisible({ timeout: 15_000 });
 
@@ -127,6 +131,7 @@ test("a GM's Not now spends that tour's offer, and Start walks a tour whose fini
 
   await page.getByTestId("tour-offer-later").click();
   await expect(offer).toHaveCount(0);
+  await expect(page.getByTestId("tour-hint")).toContainText("Replay tours");
   await page.reload();
   await reachStage(page, worldName);
   await expect(offer).toBeVisible({ timeout: 15_000 });
@@ -188,6 +193,7 @@ test("a GM replays the actors tour from the settings panel", async ({ page, brow
   // The offer's toast is answered first so it never covers the panels the tour points at.
   await expect(page.getByTestId("tour-offer")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("tour-offer-later").click();
+  await page.getByTestId("tour-hint-dismiss").click();
 
   await openPanel(page, "actors:panel");
   await openPanel(page, "settings:panel");
@@ -233,6 +239,7 @@ test("an invited player is offered a tour and replays the chat tour from setting
     const offer = player.getByTestId("tour-offer");
     await expect(offer).toBeVisible({ timeout: 15_000 });
     await player.getByTestId("tour-offer-later").click();
+    await player.getByTestId("tour-hint-dismiss").click();
 
     // The chat tour is in the player's replay list and starts on the chat panel's own step.
     await openPanel(player, "settings:panel");
