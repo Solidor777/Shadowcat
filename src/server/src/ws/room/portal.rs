@@ -69,6 +69,9 @@ pub(crate) enum PortalChoiceError {
     /// The token stands in no portal region the caller may open.
     #[error("portal rejected")]
     NoPortal,
+    /// The caller spent the per-user write budget (`WsState::message_rate`).
+    #[error("portal rejected")]
+    RateLimited,
     /// A repository read failed.
     #[error("portal rejected")]
     Data(#[from] crate::data::DataError),
@@ -86,6 +89,7 @@ pub(crate) fn portal_choice_wire_message(err: &PortalChoiceError, world_role: Wo
         PortalChoiceError::TokenMoved => "the token is no longer in the offering portal",
         PortalChoiceError::BadChoice => "no such destination",
         PortalChoiceError::NoPortal => "the token is in no portal",
+        PortalChoiceError::RateLimited => "rate limited",
         PortalChoiceError::Data(_) => "internal error",
     }
     .to_string()

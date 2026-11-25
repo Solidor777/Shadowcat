@@ -85,6 +85,7 @@ fn portal_error_frame_is_uniform_for_a_player_and_specific_for_a_gm() {
         text_of(PortalChoiceError::TokenMoved, &player),
         text_of(PortalChoiceError::BadChoice, &player),
         text_of(PortalChoiceError::NoPortal, &player),
+        text_of(PortalChoiceError::RateLimited, &player),
     ];
     assert!(
         player_texts.iter().all(|t| t == &player_texts[0]),
