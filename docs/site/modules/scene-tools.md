@@ -65,6 +65,10 @@ internals (the contract-only element boundary).
   scene while picking, then restore both the original scene and the
   previously active tool.
 
+- **Client copies of server bounds**: `scene-tools/src/__fixtures__/server-bounds.json` is the
+  shared fixture both sides test against (`server-bounds.test.ts` here and the server's
+  `client_bounds_parity` test), so a bound changed on one side fails the other.
+
 ## Pointers
 
 - Source: `src/modules/scene-tools/`
