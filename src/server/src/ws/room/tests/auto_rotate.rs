@@ -185,3 +185,70 @@ async fn execute_move_zero_progress_move_commits_no_update() {
     );
     assert_eq!(rotation_state(&h).await.0, 0.0);
 }
+
+/// Whether `pt` lies inside `poly` (even-odd ray cast).
+fn polygon_contains(poly: &[[f64; 2]], pt: (f64, f64)) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[j]);
+        if (a[1] > pt.1) != (b[1] > pt.1)
+            && pt.0 < (b[0] - a[0]) * (pt.1 - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+#[tokio::test]
+async fn streamed_facing_vision_looks_along_the_bearing_the_move_commits() {
+    // The token faces 0 degrees (east) with a 90 degree facing arc; moving straight down commits
+    // a 90 degree bearing (south). `Room::execute_move` turns the mover's sight source to that
+    // committed bearing before sampling, so the final streamed polygon covers the cells south of
+    // the stop and not those east of it. Without the turn the stream still looks east.
+    let h = movement_scene_with_wall().await;
+    enable_auto_rotate(&h).await;
+    gm_update(
+        &h,
+        world_settings_id(),
+        "/engine/scene/facingVision",
+        serde_json::Value::Null,
+        json!(true),
+    )
+    .await;
+    gm_update(
+        &h,
+        world_settings_id(),
+        "/engine/scene/losRestriction",
+        json!(false),
+        json!(true),
+    )
+    .await;
+    gm_update(
+        &h,
+        h.token_id,
+        "/engine/facing_vision",
+        serde_json::Value::Null,
+        json!({ "arc": 90.0, "near": 0.0 }),
+    )
+    .await;
+    let res = move_down(&h, &h.player).await.unwrap();
+    let crate::ws::protocol::ServerMsg::MoveStream { mover_vision, .. } = res.frame.as_ref() else {
+        panic!("frame must be a MoveStream");
+    };
+    let last = mover_vision
+        .as_ref()
+        .and_then(|v| v.last())
+        .expect("a player mover streams its vision");
+    let (south, east) = ((50.0, 450.0), (450.0, 150.0));
+    assert!(
+        last.polygons.iter().any(|p| polygon_contains(p, south)),
+        "the committed bearing faces south, so the stop sees south"
+    );
+    assert!(
+        !last.polygons.iter().any(|p| polygon_contains(p, east)),
+        "the pre-move facing (east) must not be streamed"
+    );
+}
