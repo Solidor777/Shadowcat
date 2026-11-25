@@ -142,7 +142,7 @@ describe("playwright.config LAN address handling", () => {
   it("serves the lan-plain-http project from the LAN-bound server: the project's name resolves to the LAN address and its port is that server's", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const project = (config.projects ?? []).find((p) => p.name === "lan-plain-http");
-    const args = project?.launchOptions?.args ?? project?.use?.launchOptions?.args ?? [];
+    const args = project?.use?.launchOptions?.args ?? [];
     const host = new URL(String(project?.use?.baseURL)).hostname;
     expect(args).toContain(`--host-resolver-rules=MAP ${host} 192.0.2.20`);
     expect(args.join(" ")).not.toContain("127.0.0.1");
