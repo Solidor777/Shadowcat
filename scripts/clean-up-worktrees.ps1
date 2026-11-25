@@ -4,6 +4,8 @@
 # check below; it is not a general delete tool.
 #
 # A worktree is deleted only when all of these hold:
+#   - its branch name starts with "lane-", the prefix every agent lane uses, so an integration
+#     worktree (such as options-batch-next) is never a candidate even when its tip is merged;
 #   - its branch tip is an ancestor of the target branch (the first argument, or the branch checked
 #     out at the project root), so no commit is lost;
 #   - it is not the target branch itself;
@@ -33,6 +35,7 @@ foreach ($dir in Get-ChildItem -Path $wtDir -Directory) {
   if (-not (Test-Path (Join-Path $path ".git"))) { Write-Host "skip  $name  (not a worktree)"; $skipped++; continue }
   $branch = (git -C $path rev-parse --abbrev-ref HEAD).Trim()
   if ($branch -eq $Target) { Write-Host "skip  $name  (is the target branch)"; $skipped++; continue }
+  if (-not $branch.StartsWith("lane-")) { Write-Host "skip  $name  ($branch is not a lane- branch)"; $skipped++; continue }
   $tip = (git -C $path rev-parse HEAD).Trim()
   git -C $root merge-base --is-ancestor $tip $Target
   if ($LASTEXITCODE -ne 0) { Write-Host "skip  $name  ($branch is not merged into $Target)"; $skipped++; continue }
