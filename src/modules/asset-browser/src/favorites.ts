@@ -25,6 +25,10 @@ export async function getFavorites(): Promise<string[]> {
   return Array.isArray(stored) ? stored.filter((x): x is string => typeof x === "string") : [];
 }
 
+/** Tail of the toggle chain: each toggle waits for the previous one's write, so two quick toggles
+ * cannot both read the same stored list and drop one flip. */
+let toggleChain: Promise<unknown> = Promise.resolve();
+
 /**
  * Flips one asset's favorite state against the server's current list (so a toggle from a second
  * tab does not drop the first tab's additions), and stores the result.
@@ -37,11 +41,16 @@ export async function getFavorites(): Promise<string[]> {
  * const next = await toggleFavorite("00000000-0000-0000-0000-000000000001");
  * ```
  */
-export async function toggleFavorite(id: string): Promise<string[]> {
-  const current = await getFavorites();
-  const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
-  await putUiState({ modules: { [MODULE_ID]: { favorites: next } } });
-  return next;
+export function toggleFavorite(id: string): Promise<string[]> {
+  const run = async (): Promise<string[]> => {
+    const current = await getFavorites();
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    await putUiState({ modules: { [MODULE_ID]: { favorites: next } } });
+    return next;
+  };
+  const result = toggleChain.then(run, run);
+  toggleChain = result.catch(() => {});
+  return result;
 }
 
 /**

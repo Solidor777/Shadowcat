@@ -43,3 +43,17 @@ test("the view mode defaults to grid, reads list when stored, and writes only it
   await setViewMode("list");
   expect(put).toHaveBeenCalledWith({ modules: { "asset-browser": { viewMode: "list" } } });
 });
+
+test("two toggles started together both land: the second reads the list the first wrote", async () => {
+  let stored: string[] = [];
+  vi.spyOn(api, "getUiState").mockImplementation(async () => {
+    const snapshot = [...stored];
+    await new Promise((r) => setTimeout(r, 5)); // the read resolves after a delay, as a network round trip would
+    return stateWith({ favorites: snapshot });
+  });
+  vi.spyOn(api, "putUiState").mockImplementation(async (patch) => {
+    stored = (patch.modules as Record<string, { favorites: string[] }>)["asset-browser"].favorites;
+  });
+  await Promise.all([toggleFavorite("a1"), toggleFavorite("a2")]);
+  expect(stored).toEqual(["a1", "a2"]);
+});
