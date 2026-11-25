@@ -4,15 +4,22 @@
 use super::revise_audience_tests::{harness, send};
 use super::*;
 use crate::data::snapshot::StoredCommand;
-use crate::dice::notation::MAX_NESTING_DEPTH;
+use crate::dice::notation::{MAX_EXPR_JSON_DEPTH, MAX_NESTING_DEPTH};
+
+/// A formula nesting `open`/`close` `levels` deep around a `1`.
+fn nested(open: &str, close: &str, levels: usize) -> String {
+    format!("{}1{}", open.repeat(levels), close.repeat(levels))
+}
 
 /// A formula nesting `open`/`close` to the deepest level the parser accepts.
 fn deepest(open: &str, close: &str) -> String {
-    format!(
-        "{}1{}",
-        open.repeat(MAX_NESTING_DEPTH - 1),
-        close.repeat(MAX_NESTING_DEPTH - 1)
-    )
+    nested(open, close, MAX_NESTING_DEPTH - 1)
+}
+
+/// A flat sum of the most ones the expression depth cap accepts: a left-nested `Expr::Bin` tree
+/// one factor deep, two JSON levels per term.
+fn chain() -> String {
+    vec!["1"; (MAX_EXPR_JSON_DEPTH - 2) / 2 + 1].join("+")
 }
 
 /// A body holding `formula` as an inline roll inside secrets nested as deep as the span budget
@@ -47,7 +54,14 @@ fn reread(events: &[StoredCommand]) {
 // succeeds, then every read of the message row errors and the world's chat cannot load.
 #[tokio::test]
 async fn a_roll_at_the_nesting_cap_reads_back_through_every_document_path() {
-    for formula in [deepest("abs(", ")"), deepest("(", ")"), deepest("-", "")] {
+    // Function calls cost three JSON levels each, and `abs(1+...)` five.
+    for formula in [
+        nested("abs(", ")", (MAX_EXPR_JSON_DEPTH - 2) / 3),
+        nested("abs(1+", ")", (MAX_EXPR_JSON_DEPTH - 2) / 5),
+        deepest("(", ")"),
+        deepest("-", ""),
+        chain(),
+    ] {
         let h = harness().await;
         let id = send(&h, &h.sender, &buried(&formula), Audience::Public).await;
 
