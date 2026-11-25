@@ -123,6 +123,10 @@ export async function deleteAsset(uuid: string): Promise<void> {
   if (!res.ok) throw new Error(`delete failed: ${res.status}`);
 }
 
+/** Most asset ids one `queryAssets` request may name in `ids` (the server answers 400 above it);
+ * a caller holding more sends one request per chunk of this size. */
+export const MAX_QUERY_IDS = 100;
+
 /** Filters for `queryAssets`; every field optional. Passing an empty object still hits the
  * query form (an `AssetPage`), never the bare listing. */
 export interface AssetQuery {
@@ -145,6 +149,9 @@ export interface AssetQuery {
   limit?: number;
   /** A previous page's `next_cursor`. */
   cursor?: string;
+  /** Restrict the result to these asset ids, at most `MAX_QUERY_IDS`. An empty array matches
+   * nothing. The other filters still apply. */
+  ids?: string[];
 }
 
 /** The shape of the server's failure body (`AppError`'s JSON form). */
@@ -213,7 +220,7 @@ async function restError(res: Response, what: string): Promise<Error> {
   return new Error(`${what} failed: ${res.status} ${await restErrorText(res)}`);
 }
 
-/** Query a world's assets: folder / tag / kind / full-text `q` / regex filters, a sort key, and keyset
+/** Query a world's assets: folder / tag / kind / full-text `q` / regex / id-set filters, a sort key, and keyset
  * pagination. Membership-gated (`permission_context`, `http::assets::query::list`). Always the
  * page form; use `listAssets` for the bare whole-world array.
  * @param world The world id to query.
@@ -242,6 +249,7 @@ export async function queryAssets(world: string, q: AssetQuery): Promise<AssetPa
   if (q.sort !== undefined) params.set("sort", q.sort);
   if (q.limit !== undefined) params.set("limit", String(q.limit));
   if (q.cursor !== undefined) params.set("cursor", q.cursor);
+  if (q.ids !== undefined) params.set("ids", q.ids.join(","));
   // `limit` is always sent so an otherwise-empty query still selects the page form.
   if (!params.has("limit")) params.set("limit", "200");
   const res = await fetch(apiPath(`/api/worlds/${world}/assets?${params.toString()}`));

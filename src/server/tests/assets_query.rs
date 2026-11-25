@@ -446,3 +446,116 @@ async fn regex_page_that_fills_with_a_non_matching_row_after_it_ends_on_an_empty
     assert!(names(&second).is_empty());
     assert!(second["next_cursor"].is_null(), "{second}");
 }
+
+/// The id of the asset named `name` in `h`'s world, via the bare listing.
+async fn id_of(h: &Harness, name: &str) -> Uuid {
+    let all: serde_json::Value = h
+        .client
+        .get(format!("http://{}/api/worlds/{}/assets", h.addr, h.world))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let found = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["original_name"] == name)
+        .unwrap_or_else(|| panic!("no asset named {name}"));
+    found["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// GETs the query and returns the status alone.
+async fn status_of(h: &Harness, world: Uuid, query: &str) -> u16 {
+    h.client
+        .get(format!(
+            "http://{}/api/worlds/{}/assets?{}",
+            h.addr, world, query
+        ))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_returns_only_the_named_assets_and_combines_with_other_filters() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let crypt = id_of(&h, "crypt").await;
+    let notes = id_of(&h, "notes.pdf").await;
+    let goblin = id_of(&h, "goblin.png").await;
+
+    assert_eq!(
+        names(&page(&h, &format!("ids={crypt},{notes}")).await),
+        vec!["notes.pdf", "crypt"],
+        "default order is creation time"
+    );
+    // AND-combined with the other filters: notes.pdf is not an image.
+    assert_eq!(
+        names(
+            &page(
+                &h,
+                &format!("ids={crypt},{notes},{goblin}&kind=image&sort=name")
+            )
+            .await
+        ),
+        vec!["crypt", "goblin.png"]
+    );
+    // An id naming no asset matches nothing; present-but-empty is an empty set, never the library.
+    assert!(names(&page(&h, &format!("ids={}", Uuid::new_v4())).await).is_empty());
+    assert!(names(&page(&h, "ids=").await).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_never_reaches_another_worlds_asset() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let other = h.repo.create_world("elsewhere", 0).await.unwrap();
+    let foreign = Uuid::new_v4();
+    h.repo
+        .insert_asset(&Asset {
+            id: foreign,
+            world_id: other.id,
+            storage_key: format!("{}/{}", other.id, foreign),
+            original_name: "foreign.png".into(),
+            content_type: "image/webp".into(),
+            byte_size: 1,
+            created_by: Some(h.user),
+            created_at: 1,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: AssetMeta::unprocessed("image/webp", 1),
+        })
+        .await
+        .unwrap();
+    let own = id_of(&h, "crypt").await;
+
+    // Naming a foreign id through the caller's own world yields nothing of it.
+    assert_eq!(
+        names(&page(&h, &format!("ids={foreign},{own}")).await),
+        vec!["crypt"]
+    );
+    // And the membership gate still refuses a world the caller is not in.
+    assert_eq!(
+        status_of(&h, other.id, &format!("ids={foreign}")).await,
+        403
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ids_filter_is_capped_and_validated() {
+    let h = spawn().await;
+    seed_world(&h).await;
+    let cap = shadowcat::http::assets::query::MAX_IDS;
+    let at_cap = vec![Uuid::new_v4().to_string(); cap].join(",");
+    assert_eq!(status_of(&h, h.world, &format!("ids={at_cap}")).await, 200);
+    let over = vec![Uuid::new_v4().to_string(); cap + 1].join(",");
+    assert_eq!(status_of(&h, h.world, &format!("ids={over}")).await, 400);
+    assert_eq!(status_of(&h, h.world, "ids=not-a-uuid").await, 400);
+}

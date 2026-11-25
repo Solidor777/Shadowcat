@@ -1027,8 +1027,9 @@ impl SqliteRepository {
 
     /// Builds the `query_assets` SELECT without running it, so a caller already inside a
     /// transaction can run the identical filter on its own connection (the single-writer pool
-    /// would deadlock on a second connection acquire). `Ok(None)` means the filter's free-text
-    /// query sanitizes to nothing, which `query_assets` answers with an empty page.
+    /// would deadlock on a second connection acquire). `Ok(None)` means the filter cannot match
+    /// anything (its free-text query sanitizes to nothing, or its id set is empty), which
+    /// `query_assets` answers with an empty page.
     ///
     /// # Examples
     ///
@@ -1093,6 +1094,18 @@ impl SqliteRepository {
                     " AND a.content_type NOT LIKE 'image/%' AND a.content_type NOT LIKE 'audio/%'",
                 );
             }
+        }
+        if let Some(ids) = &filter.ids {
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            // The world predicate above still applies, so a foreign id matches nothing.
+            qb.push(" AND a.id IN (");
+            let mut separated = qb.separated(", ");
+            for id in ids {
+                separated.push_bind(id.to_string());
+            }
+            separated.push_unseparated(")");
         }
         if let Some(q) = &filter.query {
             // The ONE MATCH sanitizer, shared with `Repository::search`; a

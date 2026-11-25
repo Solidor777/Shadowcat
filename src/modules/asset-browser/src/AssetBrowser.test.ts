@@ -160,10 +160,14 @@ function row(id: string) {
 
 /** Stubs the account's stored browser preferences and a three-asset listing. */
 function stubPrefs(slice: Record<string, unknown>) {
-  vi.spyOn(api, "queryAssets").mockResolvedValue({
-    items: [row("a1"), row("a2"), row("a3")],
-    next_cursor: null,
-  } as never);
+  const library = [row("a1"), row("a2"), row("a3")];
+  vi.spyOn(api, "queryAssets").mockImplementation(
+    async (_world, q) =>
+      ({
+        items: q.ids ? library.filter((a) => q.ids?.includes(a.id)) : library,
+        next_cursor: null,
+      }) as never,
+  );
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },
     worlds: {},
@@ -231,7 +235,7 @@ test("an asset notice refetches the listing", async () => {
   await waitFor(() => expect(q.mock.calls.length).toBeGreaterThan(before));
 });
 
-test("toggling the favorites filter narrows the loaded pages without refetching the listing", async () => {
+test("favorites-only mode fetches just the favorites' ids, never the whole library", async () => {
   stubPrefs({ favorites: ["a2"] });
   render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
   await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(3));
@@ -239,30 +243,18 @@ test("toggling the favorites filter narrows the loaded pages without refetching 
   const before = query.mock.calls.length;
   await fireEvent.click(screen.getByTestId("filter-favorites"));
   await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(1));
-  expect(query.mock.calls.length).toBe(before);
+  const after = query.mock.calls.slice(before);
+  expect(after).toHaveLength(1);
+  expect(after[0][1]).toEqual(expect.objectContaining({ ids: ["a2"] }));
 });
 
-test("a failed next-page load keeps its cursor, is not retried in a loop, and is retried when the filter is re-enabled", async () => {
-  vi.spyOn(api, "getUiState").mockResolvedValue({
-    global: { locale: "en", lastWorld: null },
-    worlds: {},
-    modules: { "asset-browser": { favorites: ["a2"] } },
-  });
-  const query = vi
-    .spyOn(api, "queryAssets")
-    .mockResolvedValueOnce({ items: [row("a1")], next_cursor: "c1" } as never)
-    .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValue({ items: [row("a2")], next_cursor: null } as never);
+test("favorites-only mode with no favorites sends no request and shows the empty state", async () => {
+  stubPrefs({ favorites: [] });
   render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
-  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(1));
-
-  await fireEvent.click(screen.getByTestId("filter-favorites")); // auto-fill requests the next page, which fails
-  await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
-  await new Promise((r) => setTimeout(r, 50));
-  expect(query).toHaveBeenCalledTimes(2); // no retry storm
-
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(3));
+  const query = vi.mocked(api.queryAssets);
+  const before = query.mock.calls.length;
   await fireEvent.click(screen.getByTestId("filter-favorites"));
-  await fireEvent.click(screen.getByTestId("filter-favorites"));
-  await waitFor(() => expect(query).toHaveBeenCalledTimes(3));
-  expect(query.mock.calls[2][1]).toEqual(expect.objectContaining({ cursor: "c1" }));
+  await screen.findByTestId("asset-browser-empty");
+  expect(query.mock.calls.length).toBe(before);
 });

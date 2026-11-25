@@ -34,6 +34,11 @@ const REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// Upper bound on SQL pages one regex query walks before returning what it
 /// has (with a cursor), so a sparse match cannot scan a whole world per call.
 const MAX_REGEX_PAGES: usize = 10;
+/// Most ids one request may name in `ids`. A GET carries them in the URL: 100 canonical UUIDs
+/// are 3.7 KB, under the 8 KB request-line limit common proxies enforce, so the filter stays a
+/// plain GET parameter beside the others (cacheable, same cursor contract). A caller with more
+/// ids sends several requests.
+pub const MAX_IDS: usize = 100;
 /// Separator between the sort key and the id inside a cursor.
 const CURSOR_SEP: char = '\u{1f}';
 
@@ -73,6 +78,9 @@ pub struct AssetQuery {
     pub limit: Option<u32>,
     /// Opaque keyset cursor from a previous page's `next_cursor`.
     pub cursor: Option<String>,
+    /// Comma-separated asset ids, at most `MAX_IDS`; only these assets can match. Present but
+    /// empty matches nothing.
+    pub ids: Option<String>,
 }
 
 impl AssetQuery {
@@ -87,6 +95,7 @@ impl AssetQuery {
             && self.sort.is_none()
             && self.limit.is_none()
             && self.cursor.is_none()
+            && self.ids.is_none()
     }
 }
 
@@ -200,6 +209,25 @@ struct Parsed {
     regex: Option<regex::Regex>,
 }
 
+/// Parse the `ids` parameter: comma-separated UUIDs, blanks skipped; more than `MAX_IDS` or a
+/// malformed id is a 400.
+fn parse_ids(text: &str) -> Result<Vec<Uuid>, AppError> {
+    let tokens: Vec<&str> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() > MAX_IDS {
+        return Err(AppError::BadRequest(format!(
+            "ids names more than {MAX_IDS} assets"
+        )));
+    }
+    tokens
+        .into_iter()
+        .map(|t| Uuid::parse_str(t).map_err(|_| AppError::BadRequest("ids must be uuids".into())))
+        .collect()
+}
+
 /// Validate every parameter (each failure is a 400).
 fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
     let folder = match q.folder.as_deref() {
@@ -246,6 +274,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             "limit must be 1..={MAX_LIMIT}"
         )));
     }
+    let ids = q.ids.as_deref().map(parse_ids).transpose()?;
     let after = q.cursor.as_deref().map(decode_cursor).transpose()?;
     let regex = q.name_regex.as_deref().map(compile_regex).transpose()?;
     Ok(Parsed {
@@ -254,6 +283,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             tags,
             kind,
             query: q.q.filter(|n| !n.is_empty()),
+            ids,
         },
         sort,
         limit,
