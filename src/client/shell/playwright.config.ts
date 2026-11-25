@@ -52,7 +52,7 @@ const PORTS = resolveE2ePorts(process.env);
 /** Port of the loopback test server the plain projects target. */
 const LOOPBACK_PORT = PORTS.loopback;
 
-/** Port of the non-loopback test server the `lan-plain-http` project targets. */
+/** Port of the LAN-address test server the `lan-plain-http` project targets. */
 const LAN_PORT = PORTS.lan;
 
 /** Port of the test server the built-in-HTTPS projects target: bound beyond loopback with TLS on
@@ -104,9 +104,9 @@ type Project = NonNullable<PlaywrightTestConfig["projects"]>[number];
 
 /**
  * Resolves the LAN address without letting a machine that has none take down the whole suite.
- * On CI a missing address is a hard failure (the HTTPS projects are part of the gate); elsewhere
- * the LAN/HTTPS projects and their server are omitted with a loud message, so the loopback suite
- * still runs on a loopback-only host.
+ * On CI a missing address is a hard failure (the HTTPS and lan-plain-http projects are part of the
+ * gate); elsewhere those projects and their servers are omitted with a loud message, so the
+ * loopback suite still runs on a loopback-only host.
  * @returns The address, or `undefined` when none exists and the run is not on CI.
  * @example
  * ```
@@ -120,7 +120,7 @@ function resolveLanIp(): string | undefined {
     if (process.env.CI !== undefined) throw e;
     console.warn(
       `
-!!! HTTPS e2e projects OMITTED: ${(e as Error).message}. Only the loopback and lan-plain-http projects run. !!!
+!!! HTTPS and lan-plain-http e2e projects OMITTED: ${(e as Error).message}. The lan-plain-http server binds the LAN address, so it needs one too. Only the loopback projects run. !!!
 `,
     );
     return undefined;
@@ -163,6 +163,49 @@ function onboardingServerEnv(): Record<string, string> {
     ...Object.fromEntries(kept),
     ...serverDataEnv(path.join(E2E_SERVER_DATA_DIR, "onboarding")),
     SHADOWCAT_BIND: `127.0.0.1:${ONBOARDING_PORT}`,
+  };
+}
+
+/** The plain-HTTP LAN project: the browser sees an insecure origin (a non-loopback hostname) that
+ * `--host-resolver-rules` maps to the LAN address the `lan` server binds.
+ * @param ip The LAN address the project's server binds.
+ * @returns The project definition.
+ * @example
+ * ```
+ * const project = lanProject("192.0.2.1");
+ * ```
+ */
+function lanProject(ip: string): Project {
+  return {
+    // Plain-HTTP LAN play: the served origin is not a secure context, so every
+    // `[SecureContext]` browser API is absent and the browser itself decides which.
+    name: "lan-plain-http",
+    testMatch: LAN_SPEC,
+    use: {
+      baseURL: `http://${LAN_HOST}:${LAN_PORT}`,
+      launchOptions: { args: [...BASE_LAUNCH_ARGS, `--host-resolver-rules=MAP ${LAN_HOST} ${ip}`] },
+    },
+  };
+}
+
+/** The test server the `lan-plain-http` project targets. It binds the machine's LAN address, not
+ * every interface, so a local run does not expose its published admin login to the rest of the
+ * network. A bind beyond loopback is what makes server policy keyed on `Config::is_exposed` apply.
+ * @param ip The LAN address the server binds and the readiness probe dials.
+ * @returns The webServer definition.
+ * @example
+ * ```
+ * const server = lanServer("192.0.2.1");
+ * ```
+ */
+function lanServer(ip: string) {
+  return {
+    command: `"${bin}"`,
+    cwd: repoRoot,
+    url: `http://${ip}:${LAN_PORT}/health`,
+    timeout: 120_000,
+    reuseExistingServer: !process.env.CI,
+    env: sharedServerEnv("lan", { SHADOWCAT_BIND: `${ip}:${LAN_PORT}` }),
   };
 }
 
@@ -405,16 +448,7 @@ export default defineConfig({
       testMatch: MEDIA_RANGE_SPEC,
       use: { baseURL: `http://127.0.0.1:${MEDIA_RANGE_PORT}`, ...CHROMIUM_LAUNCH },
     },
-    {
-      // Plain-HTTP LAN play: the served origin is not a secure context, so every
-      // `[SecureContext]` browser API is absent and the browser itself decides which.
-      name: "lan-plain-http",
-      testMatch: LAN_SPEC,
-      use: {
-        baseURL: `http://${LAN_HOST}:${LAN_PORT}`,
-        launchOptions: { args: [...BASE_LAUNCH_ARGS, `--host-resolver-rules=MAP ${LAN_HOST} 127.0.0.1`] },
-      },
-    },
+    ...(LAN_IP === undefined ? [] : [lanProject(LAN_IP)]),
     {
       // The server mounted under a subpath, as a reverse proxy serves it. The base URL carries the
       // prefix and a trailing slash, so a relative `page.goto("./")` lands on the mounted app;
@@ -473,17 +507,6 @@ export default defineConfig({
       }),
     },
     {
-      // The documented LAN configuration: a bind beyond loopback. Server policy keyed on a
-      // non-loopback bind (`Config::is_exposed`) applies only here, so the `lan-plain-http`
-      // project runs against this bind, not the loopback one.
-      command: `"${bin}"`,
-      cwd: repoRoot,
-      url: `http://127.0.0.1:${LAN_PORT}/health`,
-      timeout: 120_000,
-      reuseExistingServer: !process.env.CI,
-      env: sharedServerEnv("lan", { SHADOWCAT_BIND: `0.0.0.0:${LAN_PORT}` }),
-    },
-    {
       command: `"${bin}"`,
       cwd: repoRoot,
       url: `http://127.0.0.1:${MEDIA_RANGE_PORT}/health`,
@@ -517,7 +540,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       env: onboardingServerEnv(),
     },
-    ...(LAN_IP === undefined ? [] : [httpsServer(LAN_IP), longAudioServer(LAN_IP)]),
+    ...(LAN_IP === undefined ? [] : [lanServer(LAN_IP), httpsServer(LAN_IP), longAudioServer(LAN_IP)]),
   ],
   // `trace` is the only forensic channel for a CI-only failure: the suite runs
   // against a real binary on a runner nobody can attach to, so without a
