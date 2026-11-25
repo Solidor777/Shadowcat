@@ -1,6 +1,6 @@
 //! Server-side resolution of `TokenVisual::RandomVariant` pools (`data::sqlite::token_art`): at a
-//! token Create, at a token Update that sets one, and across the linked tokens of a shared actor
-//! whose own pool is saved.
+//! token Create, at a token Update that sets one or clears a linked token's art override, and
+//! across the linked tokens of a shared actor whose own pool is saved.
 
 use super::*;
 use crate::data::asset::query::{AssetFilter, AssetKind, AssetSort, FolderFilter};
@@ -39,16 +39,18 @@ fn empty_overrides() -> TokenOverrides {
 impl SqliteRepository {
     /// Resolves every `TokenVisual::RandomVariant` a token document carries into one concrete
     /// visual, in place, before the document is validated, based and stored; returns whether it
-    /// changed anything. Runs for a token Create (`draw_linked` true) and for a token Update
-    /// (`draw_linked` false), so a pool a GM sets on a placed token is drawn at the save too.
+    /// changed anything. Runs for a token Create and for a token Update, so a pool a GM sets on
+    /// a placed token is drawn at the save too. Every image it draws carries
+    /// `TokenVisual::Image::drawn`.
     ///
     /// Per-token slots are resolved, each by its own draw: `TokenEngine.visual`,
     /// `TokenOverrides.visual`, and the `engine.visual` of every embedded actor copy of an
     /// instanced token. With `draw_linked`, a linked token (`actor_id` set) whose
     /// `overrides.visual` is absent and whose shared actor's `visual` is a pool also draws once
-    /// into the token's OWN `overrides.visual`; the actor document is only read. A Create keeps
-    /// that draw because the token is new; an Update omits it because a token edit that never
-    /// touched art must not redraw the art on every save. A concrete `overrides.visual` the write
+    /// into the token's OWN `overrides.visual`; the actor document is only read. A Create makes
+    /// that draw because the token is new; an Update passes `draw_linked` only when it wrote the
+    /// token's `overrides.visual` (so clearing it draws a fresh pick), because a token edit
+    /// that never touched art must not redraw the art on every save. A concrete `overrides.visual` the write
     /// already carries is an authored choice and suppresses the linked draw, which also makes a
     /// replayed Create a no-op. A pool whose `filter` matches no asset yields its `fallback`. A
     /// body that does not parse as a token engine is left untouched for `validate_engine_tree`
@@ -126,8 +128,9 @@ impl SqliteRepository {
     /// written to each token's own `overrides.visual`; empty unless `actor` is a shared actor
     /// whose `visual` is a pool. Called after an actor Update that wrote the actor's `visual`,
     /// so every save of the pool setting picks again for the tokens already placed, not only for
-    /// tokens created later. A draw replaces a concrete `overrides.visual` a token already holds,
-    /// because a drawn value and an authored one are indistinguishable in storage.
+    /// tokens created later. A token whose `overrides.visual` is a concrete image the server did
+    /// not draw (`TokenVisual::Image::drawn` false, or any other visual kind) holds art a person
+    /// chose and is skipped; a token with no `overrides.visual` or a drawn one is redrawn.
     ///
     /// Each token is rewritten in the caller's transaction (`seq`, `ts`) and its post-image is
     /// returned beside its op so the caller records it for the commit-time snapshot. The writes
@@ -185,6 +188,14 @@ impl SqliteRepository {
                 Some(o) => serde_json::to_value(o)?,
                 None => serde_json::Value::Null,
             };
+            let hand_set = match engine.overrides.as_ref().and_then(|o| o.visual.as_ref()) {
+                None => false,
+                Some(TokenVisual::Image { drawn, .. }) => !drawn,
+                Some(_) => true,
+            };
+            if hand_set {
+                continue;
+            }
             let mut slot = pool.clone();
             Self::draw_into_slot(conn, world_id, &mut slot).await?;
             engine.overrides.get_or_insert_with(empty_overrides).visual = Some(slot);
@@ -233,8 +244,20 @@ impl SqliteRepository {
             Some(asset) => TokenVisual::Image {
                 asset: asset.to_string(),
                 transform: None,
+                drawn: true,
             },
-            None => (**fallback).clone(),
+            // A fallback image is the server's pick when the pool is empty, so it is drawn art
+            // too and a later pool save may replace it.
+            None => match (**fallback).clone() {
+                TokenVisual::Image {
+                    asset, transform, ..
+                } => TokenVisual::Image {
+                    asset,
+                    transform,
+                    drawn: true,
+                },
+                other => other,
+            },
         };
         *slot = drawn;
         Ok(true)

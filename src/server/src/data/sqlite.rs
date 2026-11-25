@@ -2348,9 +2348,18 @@ impl Repository for SqliteRepository {
                     validation::validate_document_id_tree(&doc)?;
                     // A pool a token write sets on its own art slots draws here, so no
                     // token document ever stores one past the save that set it.
-                    let drew_art =
-                        Self::resolve_token_random_variants(&mut tx, world_id, &mut doc, false)
-                            .await?;
+                    // A write to the token's override visual (a Clear included) draws a
+                    // linked token's pick; any other edit leaves its art alone.
+                    let wrote_override_visual = changes.iter().any(|ch| {
+                        crate::data::permission::paths_overlap(&ch.path, "/engine/overrides/visual")
+                    });
+                    let drew_art = Self::resolve_token_random_variants(
+                        &mut tx,
+                        world_id,
+                        &mut doc,
+                        wrote_override_visual,
+                    )
+                    .await?;
                     // Engine band re-validated + normalized post-merge (mutates
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).

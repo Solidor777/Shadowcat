@@ -17,7 +17,7 @@ import type { VisualTransform } from "./VisualTransform";
  * ```
  * use shadowcat::data::engine::TokenVisual;
  *
- * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
+ * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false };
  * let json = serde_json::to_value(&visual).unwrap();
  * // Internally tagged on `kind`, lowercase.
  * assert_eq!(json["kind"], "image");
@@ -30,6 +30,13 @@ export type TokenVisual = { "kind": "image",
  * Asset id of the image.
  */
 asset: string, 
+/**
+ * True when the server drew this image from a `RandomVariant` pool; false for art an
+ * author chose. A pool save redraws only drawn art
+ * (`SqliteRepository::redraw_linked_token_art`), so hand-set art is never replaced. The
+ * flag is the only record of provenance, so it travels with the value.
+ */
+drawn?: boolean, 
 /**
  * Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
  * default.
