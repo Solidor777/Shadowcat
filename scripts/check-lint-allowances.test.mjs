@@ -32,3 +32,39 @@ test("a tracked file deleted in the working tree is not read", () => {
   expect(r.status).toBe(0);
   expect(r.stderr).not.toContain("ENOENT");
 });
+
+// A `svelte-ignore` comment is never approvable: it fails whether or not an allowlist entry names
+// it, in markup and in script, and prose that only names the directive passes.
+const PLANTED = "<!-- svelte-ignore a11y_no_static_element_interactions -->\n<div></div>\n"; // EXAMPLE: planted directive
+
+test("a svelte-ignore comment in markup fails the gate", () => {
+  const dir = makeRepo({ "src/Bad.svelte": PLANTED }, ["src/Bad.svelte"]);
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("NEVER APPROVABLE");
+  expect(r.stderr).toContain("src/Bad.svelte");
+});
+
+test("a svelte-ignore comment in a script fails the gate", () => {
+  const dir = makeRepo({ "src/bad.ts": "// svelte-ignore state_referenced_locally\nexport const a = 1;\n" }); // EXAMPLE: planted directive
+  expect(runScriptIn(dir, GATE).status).toBe(1);
+});
+
+test("a svelte-ignore comment fails even when an allowlist entry names it", () => {
+  const dir = makeRepo(
+    {
+      "src/Bad.svelte": PLANTED,
+      ".claude/suppression-allowlist.toml":
+        '[[allow]]\nfile = "src/Bad.svelte"\nitem = "<file>"\nlint = "svelte-ignore"\nreason = "owner said so"\n',
+    },
+    ["src/Bad.svelte", ".claude/suppression-allowlist.toml"],
+  );
+  const r = runScriptIn(dir, GATE);
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("NEVER APPROVABLE ENTRY");
+});
+
+test("prose that names svelte-ignore without opening a directive passes", () => {
+  const dir = makeRepo({ "src/ok.ts": "// The gate bans the svelte-ignore comment.\nexport const a = 1;\n" });
+  expect(runScriptIn(dir, GATE).status).toBe(0);
+});

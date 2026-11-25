@@ -21,9 +21,9 @@
 // Approval is per instance and belongs to the repository owner, never to the author of the code
 // being suppressed. Approved instances live in the allowlist named below.
 //
-// Dead-code and unused-item lints are never approvable: the suppressed condition must not exist,
-// so a site carrying one fails whether or not an entry names it, and an entry naming one fails in
-// its own right. Every other lint is approvable per instance.
+// Dead-code and unused-item lints, and every `svelte-ignore` comment, are never approvable: the
+// suppressed condition must not exist, so a site carrying one fails whether or not an entry names
+// it, and an entry naming one fails in its own right. Every other lint is approvable per instance.
 //
 // Direction: a BAN gate. It scans the repository corpus (`repoFiles`: tracked plus untracked,
 // non-ignored files, minus files deleted in the working tree), so a new file is checked before
@@ -79,6 +79,15 @@ const SUPPRESSIONS = [
         .filter((s) => /^[@a-z][\w@/-]*$/i.test(s)),
   },
   {
+    name: "svelte",
+    exts: [".svelte", ".ts", ".js", ".mjs"],
+    // A `svelte-ignore` comment silences a compiler warning for the markup that follows it. The
+    // directive must open a comment, so prose that merely names it is not a hit. The lint it names
+    // is irrelevant: the whole family is never approvable, so one extracted name stands for all.
+    re: /(?:<!--|\/\/|\/\*)\s*svelte-ignore\b/,
+    extract: () => ["svelte-ignore"],
+  },
+  {
     name: "typescript",
     exts: [".ts", ".svelte"],
     // These silence every diagnostic on the following line or in the whole file, which is a wider
@@ -90,11 +99,12 @@ const SUPPRESSIONS = [
 
 /**
  * Whether `lint` is one no entry can approve: Rust `dead_code` and the `unused*` family, with or
- * without a tool prefix such as `clippy::`, and ESLint's `no-unused-vars` under any plugin prefix.
+ * without a tool prefix such as `clippy::`, ESLint's `no-unused-vars` under any plugin prefix, and
+ * every `svelte-ignore` comment.
  */
 const neverApprovable = (lint) => {
   const bare = lint.split("::").pop().split("/").pop();
-  return bare === "dead_code" || bare.startsWith("unused") || bare === "no-unused-vars";
+  return bare === "dead_code" || bare.startsWith("unused") || bare === "no-unused-vars" || bare === "svelte-ignore";
 };
 
 /** A declaration this scanner will name as the item a suppression sits on. */
