@@ -117,6 +117,7 @@ async fn place_fixture(enable: bool) -> PlaceFixture {
     );
     let mut scene = wdoc(world.id, scene_id, "scene");
     scene.owner = Some(author);
+    scene.permissions.default = DocRole::Observer;
     scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
     let mut token = wdoc(world.id, token_id, "token");
     token.parent_id = Some(scene_id);
@@ -590,4 +591,64 @@ async fn the_background_sweep_removes_an_expired_region_without_any_request() {
     assert!(matches!(event, crate::ws::room::RoomEvent::Event(_)));
     assert!(f.regions().await.is_empty());
     stop.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn a_player_cannot_place_on_a_scene_they_cannot_read() {
+    use crate::data::document::DocRole;
+    let f = place_fixture(true).await;
+    let hidden_id = crate::test_ids::test_uuid(0xE2A0);
+    let mut hidden = crate::data::document::tests::world_scoped_doc(f.world_id, hidden_id, "scene");
+    hidden.system = json!({ "grid": { "kind": "square", "size": 100 } });
+    hidden.permissions.default = DocRole::None;
+    f.room
+        .publish(
+            f.repo.as_ref(),
+            &f.gm,
+            vec![crate::data::command::Operation::Create { doc: hidden }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let rate = fresh_rate();
+    let mut replies = Vec::new();
+    for ctx in [&f.other, &f.gm] {
+        replies.push(
+            handle_place_effect(
+                &f.room,
+                f.repo.as_ref(),
+                ctx,
+                f.dir.path(),
+                &f.cache,
+                &rate,
+                crate::ws::room::PlaceEffectInputs {
+                    request_id: crate::test_ids::test_uuid(0xE211),
+                    module: "spells".into(),
+                    placement: "open_zone".into(),
+                    scene_id: hidden_id,
+                    shape: circle(3.0),
+                    caster: None,
+                    ts: 0,
+                },
+            )
+            .await,
+        );
+    }
+    let gm_reply = replies.pop().unwrap();
+    assert_eq!(refusal(replies.pop().unwrap()), "placement rejected");
+    assert!(gm_reply.is_none(), "a GM may place anywhere");
+}
+
+#[tokio::test]
+async fn an_idle_expiry_sweep_does_not_wait_for_the_publish_guard() {
+    let f = place_fixture(true).await;
+    let _held = f.room.hold_publish_guard_for_test().await;
+    let swept = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        f.room.expire_due_placements(f.repo.as_ref(), 0),
+    )
+    .await
+    .expect("with nothing due the sweep returns without taking the guard");
+    assert_eq!(swept.unwrap(), 0);
 }
