@@ -1507,6 +1507,12 @@
     font-size: 0.85em;
     color: var(--text-secondary);
   }
+  /* The paused note is a direct child of the rail. A full-width basis would shrink every tool
+   * button in the compact row, so it takes its content width up to a readable cap and wraps there. */
+  .tool-rail > .hint {
+    flex: 0 0 auto;
+    max-width: 14rem;
+  }
   .trigger-row {
     display: flex;
     flex-wrap: wrap;
