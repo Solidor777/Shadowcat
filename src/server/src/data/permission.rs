@@ -510,26 +510,42 @@ fn carried_light_pointers(
     match doc_type {
         "token" => {
             out.push("/engine/overrides/light".to_string());
-            if let Some(arr) = whole.pointer("/embedded/actor").and_then(|v| v.as_array()) {
-                out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}/engine/light")));
-            }
-            // The new subtree only carries embedded actors when the write covers `/embedded`.
-            let new_actors: Option<&Vec<serde_json::Value>> = if path == "/embedded" {
-                new.pointer("/actor").and_then(|v| v.as_array())
-            } else if path == "/embedded/actor" {
-                new.as_array()
-            } else {
-                None
-            };
-            if let Some(arr) = new_actors {
-                out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}/engine/light")));
-            }
+            out.extend(embedded_actor_pointers(whole, path, new, "/engine/light"));
         }
         "actor" => out.push("/engine/light".to_string()),
         _ => {}
     }
     out.sort();
     out.dedup();
+    out
+}
+
+/// `suffix` addressed under each embedded actor copy of a token: `/embedded/actor/<i>{suffix}`.
+/// Indices are enumerated from both the current document (`whole`) and the write's new value
+/// (`new`, which carries embedded actors only when `path` is `/embedded` or `/embedded/actor`),
+/// because an ancestor write can introduce a new embedded actor wholesale. The one enumeration
+/// `carried_light_pointers` and `facing_vision_pointers` share, so the two GM-only pointer
+/// sets cover embedded copies by the same rule.
+fn embedded_actor_pointers(
+    whole: &serde_json::Value,
+    path: &str,
+    new: &serde_json::Value,
+    suffix: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(arr) = whole.pointer("/embedded/actor").and_then(|v| v.as_array()) {
+        out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}{suffix}")));
+    }
+    let new_actors: Option<&Vec<serde_json::Value>> = if path == "/embedded" {
+        new.pointer("/actor").and_then(|v| v.as_array())
+    } else if path == "/embedded/actor" {
+        new.as_array()
+    } else {
+        None
+    };
+    if let Some(arr) = new_actors {
+        out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}{suffix}")));
+    }
     out
 }
 
@@ -780,14 +796,38 @@ fn pointer_value_changed(
 }
 
 /// Each facing-limited-vision pointer only a GM may write, per doc_type: a token's own field, a
-/// token's `overrides` field, and an actor's field (`SceneEcs::token_facing_vision` resolves the
-/// token's own, then the override, then the actor's). A player who owns the document would
-/// otherwise widen their own arc and defeat the GM's facing restriction.
-const FACING_VISION_POINTERS: [(&str, &str); 3] = [
-    (TOKEN_DOC_TYPE, "/engine/facing_vision"),
-    (TOKEN_DOC_TYPE, "/engine/overrides/facing_vision"),
-    ("actor", "/engine/facing_vision"),
-];
+/// token's `overrides` field, the field of each embedded actor copy of an instanced token
+/// (`embedded_actor_pointers`), and an actor's field (`SceneEcs::token_facing_vision` resolves
+/// the token's own, then the override, then the linked actor's or the embedded copy's). A player
+/// who owns the document would otherwise widen their own arc and defeat the GM's facing
+/// restriction. `whole`, `path` and `new` enumerate the embedded copies as
+/// `carried_light_pointers` does.
+fn facing_vision_pointers(
+    doc_type: &str,
+    whole: &serde_json::Value,
+    path: &str,
+    new: &serde_json::Value,
+) -> Vec<String> {
+    match doc_type {
+        TOKEN_DOC_TYPE => {
+            let mut out = vec![
+                "/engine/facing_vision".to_string(),
+                "/engine/overrides/facing_vision".to_string(),
+            ];
+            out.extend(embedded_actor_pointers(
+                whole,
+                path,
+                new,
+                "/engine/facing_vision",
+            ));
+            out.sort();
+            out.dedup();
+            out
+        }
+        "actor" => vec!["/engine/facing_vision".to_string()],
+        _ => Vec::new(),
+    }
+}
 
 /// A JSON value's effective facing arc: absent and `null` are the same "unset" state.
 fn present_value(value: Option<&serde_json::Value>) -> Option<serde_json::Value> {
@@ -795,7 +835,7 @@ fn present_value(value: Option<&serde_json::Value>) -> Option<serde_json::Value>
 }
 
 /// Whether a field change (`path`, `remove`, `new`) applied to a document whose current JSON is
-/// `whole` changes a facing-limited-vision field (`FACING_VISION_POINTERS`). Value-aware at every
+/// `whole` changes a facing-limited-vision field (`facing_vision_pointers`). Value-aware at every
 /// level: restating the current value, directly or through an ancestor write (`/engine`,
 /// `/engine/overrides`), is not a touch.
 ///
@@ -824,14 +864,13 @@ pub fn facing_vision_touched(
     whole: &serde_json::Value,
     new: &serde_json::Value,
 ) -> bool {
-    FACING_VISION_POINTERS
+    facing_vision_pointers(doc_type, whole, path, new)
         .iter()
-        .filter(|(t, _)| *t == doc_type)
-        .any(|(_, p)| pointer_value_changed(p, path, remove, whole, new, present_value))
+        .any(|p| pointer_value_changed(p, path, remove, whole, new, present_value))
 }
 
 /// Whether a document BODY being created carries a facing-limited-vision field
-/// (`FACING_VISION_POINTERS`; `apply_intent`'s Create arm). Complements `facing_vision_touched`.
+/// (`facing_vision_pointers`; `apply_intent`'s Create arm). Complements `facing_vision_touched`.
 ///
 /// # Examples
 ///
@@ -844,10 +883,9 @@ pub fn facing_vision_touched(
 /// assert!(!facing_vision_in_body("token", &without));
 /// ```
 pub fn facing_vision_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
-    FACING_VISION_POINTERS
+    facing_vision_pointers(doc_type, doc_json, "/__none__", &serde_json::Value::Null)
         .iter()
-        .filter(|(t, _)| *t == doc_type)
-        .any(|(_, p)| present_value(doc_json.pointer(p)).is_some())
+        .any(|p| present_value(doc_json.pointer(p)).is_some())
 }
 
 /// Whether a document BODY being created carries an enabled rotation lock (`apply_intent`'s

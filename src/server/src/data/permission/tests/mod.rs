@@ -122,6 +122,8 @@ fn current_doc(doc: Document, created_seq: i64) -> CurrentDoc {
 #[cfg(test)]
 mod core_redaction;
 #[cfg(test)]
+mod gm_only_pointers;
+#[cfg(test)]
 mod identity_hidden;
 #[cfg(test)]
 mod ownership;
