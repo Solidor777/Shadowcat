@@ -40,6 +40,16 @@ fn image(asset: Uuid) -> TokenVisual {
     TokenVisual::Image {
         asset: asset.to_string(),
         transform: None,
+        drawn: false,
+    }
+}
+
+/// A concrete image visual the server drew for `asset`.
+fn drawn_image(asset: Uuid) -> TokenVisual {
+    TokenVisual::Image {
+        asset: asset.to_string(),
+        transform: None,
+        drawn: true,
     }
 }
 
@@ -204,7 +214,7 @@ async fn a_linked_token_draws_into_its_own_overrides_and_leaves_the_actor_a_pool
 
     let stored = stored_token(&r, token.id).await;
     let drawn = stored.overrides.and_then(|o| o.visual);
-    assert_eq!(drawn, Some(image(member)));
+    assert_eq!(drawn, Some(drawn_image(member)));
     assert!(
         matches!(
             stored_actor(&r, actor.id).await.visual,
@@ -246,7 +256,7 @@ async fn an_overrides_pool_is_drawn_in_place() {
         .await
         .overrides
         .and_then(|o| o.visual);
-    assert_eq!(drawn, Some(image(member)));
+    assert_eq!(drawn, Some(drawn_image(member)));
 }
 
 #[tokio::test]
@@ -263,7 +273,7 @@ async fn an_instanced_embedded_actor_copy_is_drawn_and_the_token_visual_stays_no
     let stored = r.get_document(token.id).await.unwrap().unwrap();
     let embedded: ActorEngine =
         serde_json::from_value(stored.embedded["actor"][0].engine.clone().unwrap()).unwrap();
-    assert_eq!(embedded.visual, image(member));
+    assert_eq!(embedded.visual, drawn_image(member));
     assert!(stored_token(&r, token.id).await.visual.is_none());
 }
 
@@ -297,15 +307,18 @@ async fn an_empty_pool_yields_the_fallback_at_every_draw_site() {
     .await
     .unwrap();
 
-    assert_eq!(stored_token(&r, raw.id).await.visual, Some(image(fallback)));
+    assert_eq!(
+        stored_token(&r, raw.id).await.visual,
+        Some(drawn_image(fallback))
+    );
     for id in [linked.id, overridden.id] {
         let drawn = stored_token(&r, id).await.overrides.and_then(|o| o.visual);
-        assert_eq!(drawn, Some(image(fallback)));
+        assert_eq!(drawn, Some(drawn_image(fallback)));
     }
     let stored = r.get_document(instanced.id).await.unwrap().unwrap();
     let embedded: ActorEngine =
         serde_json::from_value(stored.embedded["actor"][0].engine.clone().unwrap()).unwrap();
-    assert_eq!(embedded.visual, image(fallback));
+    assert_eq!(embedded.visual, drawn_image(fallback));
 }
 
 #[tokio::test]
@@ -350,7 +363,7 @@ async fn a_pool_is_scoped_to_the_tokens_world() {
     create(&r, &ctx, w, vec![token.clone()]).await.unwrap();
     assert_eq!(
         stored_token(&r, token.id).await.visual,
-        Some(image(fallback))
+        Some(drawn_image(fallback))
     );
 }
 
@@ -418,13 +431,16 @@ async fn a_pool_set_on_a_placed_token_by_an_update_is_drawn_and_broadcast_drawn(
     )
     .await;
 
-    assert_eq!(stored_token(&r, token.id).await.visual, Some(image(member)));
+    assert_eq!(
+        stored_token(&r, token.id).await.visual,
+        Some(drawn_image(member))
+    );
     let Operation::Update { changes, .. } = &stored.command.ops[0] else {
         panic!("expected the token Update");
     };
     assert_eq!(
         changes[0].new,
-        serde_json::to_value(image(member)).unwrap(),
+        serde_json::to_value(drawn_image(member)).unwrap(),
         "the broadcast carries the drawn value, never the pool"
     );
 }
@@ -438,18 +454,12 @@ async fn saving_an_actors_pool_redraws_every_token_already_linked_to_it() {
     let actor = actor_with(w, image(fallback));
     create(&r, &ctx, w, vec![actor.clone()]).await.unwrap();
     let bare = linked_token(w, actor.id, None);
-    let held = linked_token(w, actor.id, Some(image(fallback)));
     let other = actor_with(w, image(fallback));
     create(&r, &ctx, w, vec![other.clone()]).await.unwrap();
     let unrelated = linked_token(w, other.id, None);
-    create(
-        &r,
-        &ctx,
-        w,
-        vec![bare.clone(), held.clone(), unrelated.clone()],
-    )
-    .await
-    .unwrap();
+    create(&r, &ctx, w, vec![bare.clone(), unrelated.clone()])
+        .await
+        .unwrap();
 
     let stored = update(
         &r,
@@ -462,10 +472,15 @@ async fn saving_an_actors_pool_redraws_every_token_already_linked_to_it() {
     )
     .await;
 
-    for id in [bare.id, held.id] {
-        let drawn = stored_token(&r, id).await.overrides.and_then(|o| o.visual);
-        assert_eq!(drawn, Some(image(member)), "token {id} must be redrawn");
-    }
+    let drawn = stored_token(&r, bare.id)
+        .await
+        .overrides
+        .and_then(|o| o.visual);
+    assert_eq!(
+        drawn,
+        Some(drawn_image(member)),
+        "the linked token must be redrawn"
+    );
     assert!(
         stored_token(&r, unrelated.id)
             .await
@@ -476,7 +491,208 @@ async fn saving_an_actors_pool_redraws_every_token_already_linked_to_it() {
     );
     assert_eq!(
         stored.command.ops.len(),
-        3,
+        2,
         "the actor Update plus one Update per linked token"
+    );
+}
+
+/// An actor with a one-member pool and a token linked to it, the token's art drawn at Create.
+/// Returns (world, GM context, actor id, token id, the pool member, the fallback).
+async fn pool_actor_with_drawn_token() -> (
+    SqliteRepository,
+    Uuid,
+    crate::data::membership::PermissionContext,
+    Uuid,
+    Uuid,
+    Uuid,
+    Uuid,
+) {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let fallback = seed_asset(&r, w, None, &[]).await;
+    let member = seed_asset(&r, w, None, &["bat"]).await;
+    let actor = actor_with(w, pool(None, &["bat"], fallback));
+    create(&r, &ctx, w, vec![actor.clone()]).await.unwrap();
+    let token = linked_token(w, actor.id, None);
+    create(&r, &ctx, w, vec![token.clone()]).await.unwrap();
+    assert_eq!(
+        stored_token(&r, token.id)
+            .await
+            .overrides
+            .and_then(|o| o.visual),
+        Some(drawn_image(member)),
+        "the Create draws once"
+    );
+    (r, w, ctx, actor.id, token.id, member, fallback)
+}
+
+/// Saves the actor's pool again with fallback `to` in place of `from`, which draws for linked
+/// tokens.
+async fn resave_pool(
+    r: &SqliteRepository,
+    ctx: &crate::data::membership::PermissionContext,
+    w: Uuid,
+    actor: Uuid,
+    from: Uuid,
+    to: Uuid,
+) {
+    update(
+        r,
+        ctx,
+        w,
+        actor,
+        "/engine/visual",
+        serde_json::to_value(pool(None, &["bat"], from)).unwrap(),
+        serde_json::to_value(pool(None, &["bat"], to)).unwrap(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn clearing_a_drawn_override_on_a_pool_actor_draws_again_instead_of_leaving_no_art() {
+    let (r, w, ctx, _actor, token, member, _fallback) = pool_actor_with_drawn_token().await;
+
+    let stored = update(
+        &r,
+        &ctx,
+        w,
+        token,
+        "/engine/overrides/visual",
+        serde_json::to_value(drawn_image(member)).unwrap(),
+        serde_json::Value::Null,
+    )
+    .await;
+
+    assert_eq!(
+        stored_token(&r, token)
+            .await
+            .overrides
+            .and_then(|o| o.visual),
+        Some(drawn_image(member)),
+        "a Clear leaves the token with the pool's pick, never with no art"
+    );
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected the token Update");
+    };
+    assert_eq!(
+        changes[0].new,
+        serde_json::to_value(drawn_image(member)).unwrap(),
+        "the broadcast carries the pick, not the null the client sent"
+    );
+}
+
+#[tokio::test]
+async fn an_actor_pool_save_keeps_art_a_gm_set_by_hand_on_a_linked_token() {
+    let (r, w, ctx, actor, token, member, fallback) = pool_actor_with_drawn_token().await;
+    let chosen = seed_asset(&r, w, None, &[]).await;
+    update(
+        &r,
+        &ctx,
+        w,
+        token,
+        "/engine/overrides/visual",
+        serde_json::to_value(drawn_image(member)).unwrap(),
+        serde_json::to_value(image(chosen)).unwrap(),
+    )
+    .await;
+
+    let other_fallback = seed_asset(&r, w, None, &[]).await;
+    resave_pool(&r, &ctx, w, actor, fallback, other_fallback).await;
+
+    assert_eq!(
+        stored_token(&r, token)
+            .await
+            .overrides
+            .and_then(|o| o.visual),
+        Some(image(chosen)),
+        "hand-set art survives a pool save"
+    );
+}
+
+#[tokio::test]
+async fn an_actor_pool_save_keeps_art_a_create_carried_by_hand() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let fallback = seed_asset(&r, w, None, &[]).await;
+    let _member = seed_asset(&r, w, None, &["bat"]).await;
+    let chosen = seed_asset(&r, w, None, &[]).await;
+    let actor = actor_with(w, pool(None, &["bat"], fallback));
+    create(&r, &ctx, w, vec![actor.clone()]).await.unwrap();
+    let token = linked_token(w, actor.id, Some(image(chosen)));
+    create(&r, &ctx, w, vec![token.clone()]).await.unwrap();
+
+    let other_fallback = seed_asset(&r, w, None, &[]).await;
+    resave_pool(&r, &ctx, w, actor.id, fallback, other_fallback).await;
+
+    assert_eq!(
+        stored_token(&r, token.id)
+            .await
+            .overrides
+            .and_then(|o| o.visual),
+        Some(image(chosen))
+    );
+}
+
+#[tokio::test]
+async fn an_actor_pool_save_redraws_art_the_server_drew_and_keeps_it_redrawable() {
+    let (r, w, ctx, actor, token, member, fallback) = pool_actor_with_drawn_token().await;
+    let later = seed_asset(&r, w, None, &["bat"]).await;
+    let spare = seed_asset(&r, w, None, &[]).await;
+    let mut seen: Vec<TokenVisual> = Vec::new();
+    let (mut from, mut to) = (fallback, spare);
+    for _ in 0..40 {
+        resave_pool(&r, &ctx, w, actor, from, to).await;
+        (from, to) = (to, from);
+        let drawn = stored_token(&r, token)
+            .await
+            .overrides
+            .and_then(|o| o.visual);
+        let drawn = drawn.unwrap();
+        if !seen.contains(&drawn) {
+            seen.push(drawn);
+        }
+        if seen.len() == 2 {
+            break;
+        }
+    }
+    assert!(
+        seen.contains(&drawn_image(member)) && seen.contains(&drawn_image(later)),
+        "server-drawn art is redrawn on every save, got {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn editing_another_override_keeps_server_drawn_art_redrawable() {
+    let (r, w, ctx, actor, token, member, fallback) = pool_actor_with_drawn_token().await;
+    update(
+        &r,
+        &ctx,
+        w,
+        token,
+        "/engine/overrides",
+        serde_json::json!({ "visual": drawn_image(member) }),
+        serde_json::json!({ "visual": drawn_image(member), "name": "Renamed" }),
+    )
+    .await;
+    let later = seed_asset(&r, w, None, &["bat"]).await;
+    let spare = seed_asset(&r, w, None, &[]).await;
+    let mut redrawn = false;
+    let (mut from, mut to) = (fallback, spare);
+    for _ in 0..40 {
+        resave_pool(&r, &ctx, w, actor, from, to).await;
+        (from, to) = (to, from);
+        if stored_token(&r, token)
+            .await
+            .overrides
+            .and_then(|o| o.visual)
+            == Some(drawn_image(later))
+        {
+            redrawn = true;
+            break;
+        }
+    }
+    assert!(
+        redrawn,
+        "an unrelated override edit must not freeze the drawn art"
     );
 }

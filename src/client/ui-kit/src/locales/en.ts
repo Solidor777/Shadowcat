@@ -417,7 +417,7 @@ export const en: Messages = {
   "actors.tokenEmissionsHint": "Override the selected token's aura/sound/VFX emissions.",
   "actors.visualKindGenerated": "Generated",
   "actors.visualKindRandomVariant": "Random variant",
-  "actors.randomVariantHint": "Each new token draws one image at random from the images matching this filter.",
+  "actors.randomVariantHint": "Each new token draws one image at random from the images matching this filter. Saving this setting draws again for tokens already linked to this actor, except tokens whose art a GM set by hand.",
   "actors.randomVariantFolder": "Folder",
   "actors.randomVariantAnyFolder": "Any folder",
   "actors.randomVariantTags": "Required tags",

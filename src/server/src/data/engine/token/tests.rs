@@ -443,6 +443,7 @@ fn plain_image() -> TokenVisual {
     TokenVisual::Image {
         asset: Uuid::nil().to_string(),
         transform: None,
+        drawn: false,
     }
 }
 
@@ -462,6 +463,7 @@ fn a_random_variant_validates_its_fallback() {
     let bad = pool_with(TokenVisual::Image {
         asset: "not-a-uuid".to_string(),
         transform: None,
+        drawn: false,
     });
     assert!(bad.validate().is_err());
 }

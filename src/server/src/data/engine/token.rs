@@ -588,6 +588,11 @@ impl FacingVision {
     }
 }
 
+/// Serde skip predicate: omits a `false` flag from the wire form.
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 /// The client-owned token/actor visual union. Internally tagged on
 /// `kind`; serde does not support `deny_unknown_fields` on an internally
 /// tagged enum (a documented limitation — NOT applied here).
@@ -597,7 +602,7 @@ impl FacingVision {
 /// ```
 /// use shadowcat::data::engine::TokenVisual;
 ///
-/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None };
+/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false };
 /// let json = serde_json::to_value(&visual).unwrap();
 /// // Internally tagged on `kind`, lowercase.
 /// assert_eq!(json["kind"], "image");
@@ -612,6 +617,13 @@ pub enum TokenVisual {
     Image {
         /// Asset id of the image.
         asset: String,
+        /// True when the server drew this image from a `RandomVariant` pool; false for art an
+        /// author chose. A pool save redraws only drawn art
+        /// (`SqliteRepository::redraw_linked_token_art`), so hand-set art is never replaced. The
+        /// flag is the only record of provenance, so it travels with the value.
+        #[serde(default, skip_serializing_if = "is_false")]
+        #[ts(optional, type = "boolean")]
+        drawn: bool,
         /// Authored anchor/scale/tint of the art, or `None` for the centered, unscaled, untinted
         /// default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -666,8 +678,10 @@ pub enum TokenVisual {
     /// `engine.visual` of an instanced token). A token document never keeps a `RandomVariant`
     /// past the save that set it. The one place it persists is a SHARED actor's own
     /// `ActorEngine.visual`: there it is the template, each linked token draws independently
-    /// into its own `overrides.visual` when created, and every save of the actor's pool draws
-    /// again for each token already linked (`SqliteRepository::redraw_linked_token_art`).
+    /// into its own `overrides.visual` when created or when its override is cleared, and every
+    /// save of the actor's pool draws again for each linked token whose `overrides.visual` is
+    /// absent or server-drawn (`TokenVisual::Image::drawn`). A linked token whose art a person
+    /// set by hand keeps it (`SqliteRepository::redraw_linked_token_art`).
     #[serde(rename = "randomVariant")]
     RandomVariant {
         /// Candidate pool, scoped to the token's world and to image assets at draw time.
@@ -710,7 +724,9 @@ impl TokenVisual {
     /// `RenderVisual::validate`.
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            TokenVisual::Image { asset, transform } => {
+            TokenVisual::Image {
+                asset, transform, ..
+            } => {
                 crate::data::engine::geometry::validate_asset_ref(asset)
                     .map_err(|m| format!("asset: {m}"))?;
                 validate_transform(transform)
@@ -1102,7 +1118,7 @@ impl AnimatedSource {
 ///
 /// let actor = ActorEngine {
 ///     display_name: "Goblin Scout".to_string(),
-///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None },
+///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string(), transform: None, drawn: false },
 ///     size: Size { w: 1.0, h: 1.0 },
 ///     shape: "square".to_string(),
 ///     faction: None,
