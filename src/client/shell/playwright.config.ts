@@ -400,9 +400,10 @@ function longAudioServer(ip: string) {
   };
 }
 
-/** The test server the HTTPS projects target. It binds the machine's LAN address, not every
- * interface, so a local run does not expose its published admin login to the rest of the network.
- * @param ip The LAN address the server binds and the readiness probe dials.
+/** The test server the HTTPS projects target. It binds every interface because the HTTPS specs
+ * reach this one port on both loopback (the secure-context control, the Firefox named-host leg) and
+ * the LAN address; the lan-plain-http and long-audio servers bind the LAN address alone.
+ * @param ip The LAN address the readiness probe dials.
  * @returns The webServer definition.
  * @example
  * ```
@@ -420,7 +421,7 @@ function httpsServer(ip: string) {
       url: `http://${ip}:${HTTPS_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: sharedServerEnv("https", { SHADOWCAT_BIND: `${ip}:${HTTPS_PORT}` }),
+      env: sharedServerEnv("https", { SHADOWCAT_BIND: `0.0.0.0:${HTTPS_PORT}` }),
     }
   );
 }
