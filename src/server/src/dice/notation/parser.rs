@@ -6,7 +6,9 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::dice::notation::lexer::{describe_token, lex, Token};
-use crate::dice::notation::{ModeKind, ParseContext, ParseError, MAX_NESTING_DEPTH};
+use crate::dice::notation::{
+    ModeKind, ParseContext, ParseError, MAX_EXPR_JSON_DEPTH, MAX_NESTING_DEPTH,
+};
 use crate::dice::spec::{
     BinOp, Comparator, ConstTerm, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind,
     Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, Parity, RollSpec, SuccessConfig,
@@ -99,6 +101,9 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
     if p.pos != p.toks.len() {
         return Err(ParseError::Trailing(p.toks[p.pos].to_string()));
     }
+    if !fits_json_depth(&expr, MAX_EXPR_JSON_DEPTH) {
+        return Err(ParseError::TooDeeplyNested);
+    }
 
     // Explicit cs/cf forces SuccessCount; otherwise the ambient mode governs.
     let success_count = p.success.is_some() || ctx.mode == ModeKind::SuccessCount;
@@ -140,6 +145,38 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         direction: ctx.direction,
         mode,
     })
+}
+
+/// Whether `expr` serializes to at most `budget` JSON levels (object and array nesting, as
+/// `serde_json` counts for its read limit).
+///
+/// A leaf is measured by serializing it, so its dice modifiers are counted exactly. A composite
+/// node adds the levels its externally tagged variant takes: `Neg` one, `Bin` and `BestOf` two,
+/// `Call` three. The recursion stops at `budget` levels, so a chain of thousands of terms costs
+/// no more stack than one at the limit.
+fn fits_json_depth(expr: &Expr, budget: usize) -> bool {
+    match expr {
+        Expr::Dice(_) | Expr::Const(_) => {
+            serde_json::to_value(expr).is_ok_and(|v| value_depth(&v) <= budget)
+        }
+        Expr::Neg(inner) => budget > 1 && fits_json_depth(inner, budget - 1),
+        Expr::Bin { lhs, rhs, .. } => {
+            budget > 2 && fits_json_depth(lhs, budget - 2) && fits_json_depth(rhs, budget - 2)
+        }
+        Expr::Call { args, .. } => {
+            budget > 3 && args.iter().all(|a| fits_json_depth(a, budget - 3))
+        }
+        Expr::BestOf(args) => budget > 2 && args.iter().all(|a| fits_json_depth(a, budget - 2)),
+    }
+}
+
+/// The object and array nesting depth of `value`: a scalar is 0, `{"a": 1}` is 1.
+fn value_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(items) => 1 + items.iter().map(value_depth).max().unwrap_or(0),
+        serde_json::Value::Object(map) => 1 + map.values().map(value_depth).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 impl P {

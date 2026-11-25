@@ -343,4 +343,6 @@ pub(crate) async fn handle_draw_table(
 }
 
 #[cfg(test)]
+mod nested_depth_tests;
+#[cfg(test)]
 mod tests;

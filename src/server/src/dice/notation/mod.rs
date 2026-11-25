@@ -15,13 +15,23 @@ pub use parser::parse;
 /// The parser recurses once per nesting level, so the cap bounds its stack use independently of
 /// the input length.
 ///
-/// The cap also bounds how deep a stored roll's JSON nests. A function-call level serializes as
-/// three JSON levels, and a chat message holds its roll under the document, its engine body,
-/// the segment list, up to `chat::rolls::MAX_SECRET_DEPTH` secrets and the roll's spec, while
-/// every read parses the row with `serde_json`, which refuses past 128 levels. 32 levels keep the
-/// deepest storable message, and the event that records an update to it, under that limit;
-/// `chat::nested_roll_tests` pins it.
+/// This bounds the parser's recursion only. It does not bound the JSON depth of the parsed
+/// `Expr`, which a flat chain such as `1+1+...` deepens at no nesting level; that is
+/// `MAX_EXPR_JSON_DEPTH`.
 pub const MAX_NESTING_DEPTH: usize = 32;
+
+/// Deepest JSON nesting, counting object and array levels, that the `Expr` of a parsed roll may
+/// serialize to.
+///
+/// Every read of a stored message parses its row with `serde_json`, which refuses past 128 levels,
+/// so a roll that is accepted at send must serialize shallow enough to be read back. A chat
+/// message holds its roll under the document, its engine body, the segment list, up to
+/// `chat::rolls::MAX_SECRET_DEPTH` secrets and the roll's spec; a table draw holds its roll under
+/// up to `tables::MAX_DRAW_DEPTH` nested draws. The cap leaves room for the deepest of those
+/// wrappers and for the event that records an update; `chat::nested_roll_tests` and
+/// `tables::tests` pin it with a roll at the cap in each. `parse` refuses an expression past it
+/// with `ParseError::TooDeeplyNested`.
+pub const MAX_EXPR_JSON_DEPTH: usize = 88;
 
 use crate::dice::spec::Direction;
 
@@ -128,7 +138,9 @@ pub enum ParseError {
     /// A second `xf<N>` crit-fail trigger appeared in one roll. Same reasoning as
     /// `DuplicateCritSuccess`.
     DuplicateCritFail,
-    /// Parentheses, unary `-` and function-call arguments nest deeper than `MAX_NESTING_DEPTH`.
+    /// Parentheses, unary `-` and function-call arguments nest deeper than `MAX_NESTING_DEPTH`,
+    /// or the parsed expression serializes deeper than `MAX_EXPR_JSON_DEPTH` (a long chain of
+    /// terms does).
     TooDeeplyNested,
     /// A second `mn<N>` or `mx<N>` appeared on one dice group. A die has one floor and one
     /// ceiling, so a repeat would silently discard one bound.
@@ -182,7 +194,7 @@ impl std::fmt::Display for ParseError {
             ParseError::TooDeeplyNested => {
                 write!(
                     f,
-                    "the dice expression is nested more than {MAX_NESTING_DEPTH} levels deep"
+                    "the dice expression has too many nested brackets or chained terms"
                 )
             }
             ParseError::DuplicateClamp => {

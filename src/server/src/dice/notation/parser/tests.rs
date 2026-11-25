@@ -675,11 +675,10 @@ fn nesting_at_the_cap_parses_and_evaluates_on_a_default_stack() {
         ")".repeat(MAX_NESTING_DEPTH - 1)
     );
     assert_eq!(parse_roll_evaluate_on_default_stack(parens), Ok(()));
-    let calls = format!(
-        "{}1{}",
-        "abs(".repeat(MAX_NESTING_DEPTH - 1),
-        ")".repeat(MAX_NESTING_DEPTH - 1)
-    );
+    // A call level serializes as three JSON levels, so the JSON-depth cap bounds calls first.
+    let call_levels = (crate::dice::notation::MAX_EXPR_JSON_DEPTH - 2) / 3;
+    assert!(call_levels < MAX_NESTING_DEPTH);
+    let calls = format!("{}1{}", "abs(".repeat(call_levels), ")".repeat(call_levels));
     assert_eq!(parse_roll_evaluate_on_default_stack(calls), Ok(()));
 }
 
@@ -707,6 +706,58 @@ fn nesting_past_the_cap_is_refused_on_a_default_stack() {
             Err(ParseError::TooDeeplyNested)
         );
     }
+}
+
+/// Serialized depth of the expression `input` parses to, measured the way `serde_json` counts it.
+fn serialized_depth(input: &str) -> usize {
+    let spec = parse(input, ParseContext::default()).unwrap();
+    super::value_depth(&serde_json::to_value(&spec.expr).unwrap())
+}
+
+#[test]
+fn the_depth_check_agrees_with_the_serialized_depth_of_every_node_kind() {
+    for input in [
+        "1",
+        "1d6",
+        "4d6kh3",
+        "2d6!>5",
+        "3d6mn2mx5",
+        "-1",
+        "1+2",
+        "1+2*3-4",
+        "abs(1)",
+        "min(1,2,3)",
+        "best(1d6,1d8)",
+        "abs(1+abs(2d6*-3))",
+        "best(abs(1),-(2+3d4kh2))",
+    ] {
+        let spec = parse(input, ParseContext::default()).unwrap();
+        let depth = serialized_depth(input);
+        assert!(super::fits_json_depth(&spec.expr, depth), "{input}");
+        assert!(!super::fits_json_depth(&spec.expr, depth - 1), "{input}");
+    }
+}
+
+#[test]
+fn a_chain_of_terms_past_the_json_depth_cap_is_refused_before_it_is_stored() {
+    use crate::dice::notation::MAX_EXPR_JSON_DEPTH;
+    // A left-nested `Bin` tree costs two JSON levels per term at one factor level, so only the
+    // JSON-depth cap, not `MAX_NESTING_DEPTH`, can refuse it.
+    let terms = |n: usize| vec!["1"; n].join("+");
+    let longest = (MAX_EXPR_JSON_DEPTH - 2) / 2 + 1;
+    assert!(serialized_depth(&terms(longest)) <= MAX_EXPR_JSON_DEPTH);
+    assert_eq!(parse_roll_evaluate_on_default_stack(terms(longest)), Ok(()));
+    for n in [longest + 1, 2000] {
+        assert_eq!(
+            parse_roll_evaluate_on_default_stack(terms(n)),
+            Err(ParseError::TooDeeplyNested)
+        );
+    }
+    let mixed = format!("{}1{}", "abs(1+".repeat(31), ")".repeat(31));
+    assert_eq!(
+        parse_roll_evaluate_on_default_stack(mixed),
+        Err(ParseError::TooDeeplyNested)
+    );
 }
 
 /// The modifiers of a single-group notation string.
