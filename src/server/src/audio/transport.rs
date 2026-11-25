@@ -284,8 +284,10 @@ pub(crate) async fn on_active_scene(
 /// Server rule: when the session pause flips, pause or resume the world's playing audio. A pause
 /// (`before.paused` false, `after.paused` true) pauses every track when `after.pause_audio` is
 /// set, marking each track it paused `session_paused`; a resume (true to false) resumes only the
-/// `session_paused` tracks when `before.pause_audio` was set, so a hand-paused track stays paused and a
-/// world whose GM left audio alone is never touched on either edge. Called from
+/// `session_paused` tracks. The decision keys on whether audio is HELD (`paused && pause_audio`)
+/// before and after the write, so flipping the audio switch during a pause pauses or resumes the
+/// flagged tracks at once and no `session_paused` marker outlives the pause. A hand-paused track
+/// stays paused, and a world whose GM left audio alone is never touched. Called from
 /// `Room::publish` with `publish_guard` held, and best-effort like `on_active_scene`: the pause
 /// write itself has committed already, so a failed audio commit never undoes it.
 pub(crate) async fn on_session_pause(
@@ -297,9 +299,10 @@ pub(crate) async fn on_session_pause(
     after: &SessionState,
     now: i64,
 ) {
-    let pausing = !before.paused && after.paused && after.pause_audio;
-    let resuming = before.paused && !after.paused && before.pause_audio;
-    if !pausing && !resuming {
+    let held_before = before.paused && before.pause_audio;
+    let held_after = after.paused && after.pause_audio;
+    let pausing = !held_before && held_after;
+    if !pausing && !(held_before && !held_after) {
         return;
     }
     let Ok(docs) = repo.query_documents(world_id, AUDIO_STATE_DOC_TYPE).await else {

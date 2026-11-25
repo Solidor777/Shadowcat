@@ -147,7 +147,8 @@ impl Room {
     }
 
     /// Place `decl` over `req.shape`: authorize the sender against `decl.who` (a GM always
-    /// passes; a spectator never does), require the scene to exist, clamp the area with
+    /// passes; a spectator never does), require the scene to exist and, for a non-GM, to be
+    /// readable by the sender, clamp the area with
     /// `PlacementDecl::admits`, build the region from the declaration, validate it and commit one
     /// `region` Create under `WriteOrigin::ModulePlacement`. The effect set comes from `decl`
     /// alone; `req` contributes the area, the scene and the caster.
@@ -171,6 +172,14 @@ impl Room {
         let is_gm = ctx.world_role == WorldRole::Gm;
         if !is_gm && (ctx.world_role != WorldRole::Player || decl.who == PlacementWho::Gm) {
             return Err(PlaceEffectError::NotPermitted);
+        }
+
+        // A non-GM needs READ on the target scene, the admission every scene-addressed relay
+        // applies (`ws::scene_broadcast_permitted`); a refusal reads as an unknown scene.
+        if !is_gm
+            && !crate::ws::scene_broadcast_permitted(req.scene_id, ctx, self.world_id, repo).await
+        {
+            return Err(PlaceEffectError::UnknownScene);
         }
 
         let _guard = self.publish_guard.lock().await;
@@ -279,6 +288,13 @@ impl Room {
         }
     }
 
+    /// Holds the world's publish guard until the returned guard drops; lets a test prove a path
+    /// does not queue behind a publish.
+    #[cfg(test)]
+    pub(crate) async fn hold_publish_guard_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.publish_guard.lock().await
+    }
+
     /// Remove every placed region whose expiry stamp (`PLACEMENT_EXPIRES_AT_KEY`) is at or before
     /// `now_ms`, as one `Delete` batch under `WriteOrigin::ModulePlacement`, authored as the
     /// world's seed author (`world_seed::seed_author`, a GM). Returns how many regions were
@@ -296,6 +312,17 @@ impl Room {
         repo: &dyn Repository,
         now_ms: i64,
     ) -> Result<usize, DataError> {
+        // The sweep runs every second per room: check for due regions before queueing on the
+        // guard so an idle sweep never contends with a publish.
+        if self
+            .scene
+            .read()
+            .await
+            .due_placement_regions(now_ms)
+            .is_empty()
+        {
+            return Ok(0);
+        }
         let _guard = self.publish_guard.lock().await;
         let due = self.scene.read().await.due_placement_regions(now_ms);
         if due.is_empty() {

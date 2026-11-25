@@ -226,3 +226,48 @@ async fn set_turn_rule_override(h: &BudgetHandle, rule: &str) {
     .await
     .unwrap();
 }
+
+/// An `Update` of the token's rotation from 0 to 90.
+fn rotation_op(token: Uuid) -> Operation {
+    Operation::Update {
+        doc_id: token,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/rotation".into(),
+            old: json!(0.0),
+            new: json!(90.0),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn only_an_own_turn_rotation_needs_the_world_capability_defaults() {
+    let free = scene_with_rule("free").await;
+    assert!(
+        !free
+            .room
+            .batch_needs_world_defaults(&[rotation_op(free.token_id)])
+            .await,
+        "a rotation under the free rule skips the settings read"
+    );
+    let own = scene_with_rule("own_turn").await;
+    assert!(
+        own.room
+            .batch_needs_world_defaults(&[rotation_op(own.token_id)])
+            .await,
+        "an own-turn rotation resolves the caller's standing"
+    );
+    let other_field = Operation::Update {
+        doc_id: own.token_id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/name".into(),
+            old: json!(null),
+            new: json!("Scout"),
+        }],
+    };
+    assert!(
+        !own.room.batch_needs_world_defaults(&[other_field]).await,
+        "an Update that is not a rotation write skips the settings read"
+    );
+}

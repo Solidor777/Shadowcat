@@ -102,15 +102,7 @@ pub(crate) fn blocks_msg(msg: &ClientMsg) -> bool {
                 choice: Some(_),
                 ..
             }
-            | ClientMsg::CombatStart { .. }
-            | ClientMsg::CombatPause { .. }
-            | ClientMsg::CombatEnd { .. }
-            | ClientMsg::CombatAdvance { .. }
-            | ClientMsg::CombatRewind { .. }
-            | ClientMsg::CombatSort { .. }
-            | ClientMsg::CombatRoll { .. }
-            | ClientMsg::CombatResource { .. }
-    )
+    ) || msg.combat_request_id().is_some()
 }
 
 /// The session state a world-settings document carries; an absent document or field is the
@@ -140,16 +132,8 @@ fn paused_reply(msg: &ClientMsg) -> Option<ServerMsg> {
         });
     }
     let request_id = match msg {
-        ClientMsg::MoveRequest { request_id, .. }
-        | ClientMsg::CombatStart { request_id, .. }
-        | ClientMsg::CombatPause { request_id, .. }
-        | ClientMsg::CombatEnd { request_id, .. }
-        | ClientMsg::CombatAdvance { request_id, .. }
-        | ClientMsg::CombatRewind { request_id, .. }
-        | ClientMsg::CombatSort { request_id, .. }
-        | ClientMsg::CombatRoll { request_id, .. }
-        | ClientMsg::CombatResource { request_id, .. } => *request_id,
-        _ => return None,
+        ClientMsg::MoveRequest { request_id, .. } => *request_id,
+        _ => msg.combat_request_id()?,
     };
     Some(if matches!(msg, ClientMsg::MoveRequest { .. }) {
         ServerMsg::MoveError {

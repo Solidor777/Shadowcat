@@ -275,3 +275,25 @@ async fn a_paused_session_refuses_a_players_accepting_answer_but_not_a_decline_o
     }
     assert_eq!(token_x(&h).await, 450.0);
 }
+
+/// A member's `open_portal` loop is charged to the shared per-user write budget: past it the
+/// request is refused with the uniform `portal_choice_error` instead of taking the world's
+/// publish guard again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_portal_loop_is_refused_once_the_write_budget_is_spent() {
+    let h = spawn().await;
+    let (_owner, _gm, mut ows, _sws, _to_owner, _to_gm) = offered_world(&h).await;
+
+    // 60 requests exceed the 30 per minute budget whatever the hits already spent.
+    for n in 0..60u128 {
+        ows.send(text(serde_json::json!({
+            "type": "open_portal",
+            "request_id": Uuid::from_u128(100 + n),
+            "token": test_doc_id(TOKEN),
+        })))
+        .await
+        .unwrap();
+    }
+    let refused = drain_until_type(&mut ows, "portal_choice_error").await;
+    assert_eq!(refused["message"], "portal rejected");
+}

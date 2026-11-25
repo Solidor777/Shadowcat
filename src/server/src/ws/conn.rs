@@ -1098,15 +1098,19 @@ async fn handle_socket(
                                     // `Event` of the teleport (a decline commits nothing). A
                                     // refusal is a correlated `PortalChoiceError` to this
                                     // connection only.
-                                    let outcome = room
-                                        .handle_choose_portal(
-                                            repo.as_ref(),
-                                            &ctx,
-                                            offer_id,
-                                            choice,
-                                            now_millis(),
-                                        )
-                                        .await;
+                                    let outcome = match portal_rate_check(&message_rate, user_id) {
+                                        Ok(()) => {
+                                            room.handle_choose_portal(
+                                                repo.as_ref(),
+                                                &ctx,
+                                                offer_id,
+                                                choice,
+                                                now_millis(),
+                                            )
+                                            .await
+                                        }
+                                        Err(e) => Err(e),
+                                    };
                                     if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
                                         if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
                                             break;
@@ -1115,9 +1119,13 @@ async fn handle_socket(
                                 }
                                 Ok(ClientMsg::OpenPortal { request_id, token }) => {
                                     // Success is the addressed `PortalOffer` broadcast.
-                                    let outcome = room
-                                        .handle_open_portal(repo.as_ref(), &ctx, token, now_millis())
-                                        .await;
+                                    let outcome = match portal_rate_check(&message_rate, user_id) {
+                                        Ok(()) => {
+                                            room.handle_open_portal(repo.as_ref(), &ctx, token, now_millis())
+                                                .await
+                                        }
+                                        Err(e) => Err(e),
+                                    };
                                     if let Some(err_frame) = portal_error_frame(request_id, outcome, &ctx) {
                                         if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
                                             break;
@@ -1638,6 +1646,21 @@ fn portal_offer_admitted(
     world_role: crate::data::document::WorldRole,
 ) -> bool {
     world_role == crate::data::document::WorldRole::Gm || (!gm_only && owner == Some(user_id))
+}
+
+/// Spends one hit of `user_id`'s shared write budget (`WsState::message_rate`) for a
+/// `ClientMsg::OpenPortal` or `ClientMsg::ChoosePortal`, before the request takes the world's
+/// `publish_guard`. Refuses with `PortalChoiceError::RateLimited` once the budget is spent, so a
+/// request loop cannot stall every other write in the world.
+fn portal_rate_check(
+    rate: &crate::ws::PingRateLimiter,
+    user_id: Uuid,
+) -> Result<(), crate::ws::room::PortalChoiceError> {
+    if rate.check(user_id, now_millis(), crate::ws::MESSAGE_RATE_PER_MIN) {
+        Ok(())
+    } else {
+        Err(crate::ws::room::PortalChoiceError::RateLimited)
+    }
 }
 
 /// The refusal frame for a portal request's outcome: `None` on success, else a correlated

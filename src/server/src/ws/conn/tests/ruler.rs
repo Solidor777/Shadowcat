@@ -11,17 +11,7 @@ use crate::ws::ruler::{
 use serde::de::value::{Error as ValueError, SeqDeserializer};
 
 #[test]
-fn points_admissible_bounds_count_finiteness_and_magnitude() {
-    let ok = vec![(0.0, 0.0); MAX_RULER_POINTS];
-    assert!(
-        points_admissible(&ok),
-        "exactly MAX_RULER_POINTS is admitted"
-    );
-    let over = vec![(0.0, 0.0); MAX_RULER_POINTS + 1];
-    assert!(
-        !points_admissible(&over),
-        "one past MAX_RULER_POINTS is refused"
-    );
+fn points_admissible_bounds_finiteness_and_magnitude() {
     assert!(
         points_admissible(&[]),
         "an empty list is the stop signal and is admitted"

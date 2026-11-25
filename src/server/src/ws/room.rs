@@ -1203,13 +1203,9 @@ impl Room {
             // source admission through `resolve_access_world`, which reads the world's capability
             // grants — an await, which must not run under the scene read guard below. Fetched
             // once, ahead of the guard, and only when this batch contains a token Create (which
-            // reads the mask) or an Update (whose token rotation write resolves the caller's
-            // standing on the token's combatant); every other batch skips the fetch.
-            let needs_world_defaults = ops.iter().any(|op| match op {
-                Operation::Create { doc } => doc.doc_type == "token" && doc.parent_id.is_some(),
-                Operation::Update { .. } => true,
-                _ => false,
-            });
+            // reads the mask) or a token rotation write under the `OwnTurn` rule (which resolves
+            // the caller's standing on the token's combatant); every other batch skips the fetch.
+            let needs_world_defaults = self.batch_needs_world_defaults(&ops).await;
             let world_defaults = if needs_world_defaults {
                 Some(repo.world_cap_defaults(self.world_id).await?)
             } else {
@@ -1242,7 +1238,7 @@ impl Room {
                                 let standing =
                                     if rule == crate::data::engine::FacingTurnRule::OwnTurn {
                                         // Fail closed: the defaults were fetched for every batch
-                                        // holding an Update, so `None` cannot occur.
+                                        // holding an `OwnTurn` rotation write, so `None` cannot occur.
                                         let Some(wd) = world_defaults.as_ref() else {
                                             return Err(DataError::Forbidden);
                                         };
@@ -3407,7 +3403,7 @@ impl Room {
         // hop, not two).
         if let Some(asset) = &target.vfx {
             let vfx_admitted = match effective_owner {
-                Some(owner) => self.vfx_rate.check(owner, ts, 30),
+                Some(owner) => self.vfx_rate.check(owner, ts, crate::ws::VFX_RATE_PER_MIN),
                 None => true,
             };
             if vfx_admitted {
@@ -3549,6 +3545,31 @@ impl Room {
             )
             .await;
         }
+    }
+
+    /// Whether `Room::publish` must fetch the world's capability defaults for `ops`: a token
+    /// Create (its placement gate reads the visible mask) or a token rotation write under the
+    /// scene's `OwnTurn` rule (it resolves the caller's standing on the token's combatant). Every
+    /// other batch, including a rotation under any other rule, skips the settings read.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let needs = room.batch_needs_world_defaults(&ops).await;
+    /// ```
+    async fn batch_needs_world_defaults(&self, ops: &[Operation]) -> bool {
+        let scene = self.scene.read().await;
+        ops.iter().any(|op| match op {
+            Operation::Create { doc } => doc.doc_type == "token" && doc.parent_id.is_some(),
+            Operation::Update { doc_id, changes } => scene
+                .token_rotation_write(*doc_id, changes)
+                .is_some_and(|w| {
+                    w.rotation_changed
+                        && scene.resolve_scene(w.scene).facing_turn_rule
+                            == crate::data::engine::FacingTurnRule::OwnTurn
+                }),
+            _ => false,
+        })
     }
 
     /// The turn/round-scoped region-trigger fire site: fires the turn/round

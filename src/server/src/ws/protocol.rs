@@ -898,6 +898,38 @@ pub enum PathErrorReason {
     Exceeded,
 }
 
+impl ClientMsg {
+    /// The correlation id of a combat intent (`CombatStart`, `CombatPause`, `CombatEnd`,
+    /// `CombatAdvance`, `CombatRewind`, `CombatRoll`, `CombatResource`, `CombatSort`), or `None`
+    /// for any other message. The list `ws::session_pause`'s refusal reads; `ws::conn`'s dispatch
+    /// match has no wildcard arm, so the compiler forces it to name every new variant, and a test
+    /// in `ws::session_pause` pins this list to every `Combat*` variant declared here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::protocol::ClientMsg;
+    /// use uuid::Uuid;
+    ///
+    /// let start = ClientMsg::CombatStart { request_id: Uuid::nil(), combat_id: Uuid::nil() };
+    /// assert_eq!(start.combat_request_id(), Some(Uuid::nil()));
+    /// assert_eq!(ClientMsg::Pong.combat_request_id(), None);
+    /// ```
+    pub fn combat_request_id(&self) -> Option<Uuid> {
+        match self {
+            ClientMsg::CombatStart { request_id, .. }
+            | ClientMsg::CombatPause { request_id, .. }
+            | ClientMsg::CombatEnd { request_id, .. }
+            | ClientMsg::CombatAdvance { request_id, .. }
+            | ClientMsg::CombatRewind { request_id, .. }
+            | ClientMsg::CombatSort { request_id, .. }
+            | ClientMsg::CombatRoll { request_id, .. }
+            | ClientMsg::CombatResource { request_id, .. } => Some(*request_id),
+            _ => None,
+        }
+    }
+}
+
 impl PathErrorReason {
     /// The player-presentable text sent beside this reason.
     ///
