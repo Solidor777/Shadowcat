@@ -1,4 +1,5 @@
 @echo off
-rem Permanently deletes every merged, clean worktree under .worktrees.
-rem Usage: "clean up.bat" [target-branch]   (default: the branch checked out here)
+rem Permanently deletes merged, clean worktrees under .worktrees.
+rem Usage: "clean up.bat" [-Target branch] [branch ...]
+rem   No branch names: every merged, clean worktree. Target defaults to the branch checked out here.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\clean-up-worktrees.ps1" %*
