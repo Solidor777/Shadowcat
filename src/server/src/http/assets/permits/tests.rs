@@ -47,6 +47,34 @@ async fn one_user_cannot_hold_more_than_their_share_of_the_pool() {
     assert_eq!(permits.held(), 2);
 }
 
+/// A pool filled by distinct users, each inside their share, refuses the next user after exactly
+/// the wait with the 503 and `Retry-After` the product sends, and the held count stays at the
+/// pool size. Fails if `acquire` stops taking the pool permit: the ninth request would be granted.
+#[tokio::test(start_paused = true)]
+async fn a_pool_filled_by_other_users_refuses_the_next_user() {
+    let permits = StreamedFilePermits::new(8, Duration::from_millis(700));
+    let mut held = Vec::new();
+    for user in 1..=4u128 {
+        for _ in 0..2 {
+            held.push(permits.acquire(Uuid::from_u128(user)).await.unwrap());
+        }
+    }
+    assert_eq!(
+        permits.held(),
+        8,
+        "four users at their share of two fill the pool"
+    );
+    let started = tokio::time::Instant::now();
+    let error = permits.acquire(Uuid::from_u128(5)).await.err().unwrap();
+    assert_eq!(started.elapsed(), Duration::from_millis(700));
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+    assert_eq!(permits.held(), 8, "the refused request holds nothing");
+    drop(held);
+    assert_eq!(permits.held(), 0);
+}
+
 /// A share permit frees with its holder, so the same user can ask again.
 #[tokio::test(start_paused = true)]
 async fn a_dropped_permit_returns_the_users_share() {
