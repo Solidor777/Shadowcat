@@ -44,4 +44,5 @@
   // reads shell's :root custom properties this way (--space-*, --accent, etc.)
   // without a Sass `@use` dependency, so this follows the same convention.
   --input-height-coarse: 44px;
+  --statusbar-height: 2rem; // the layout's status bar row; the tour offer sits above it
 }

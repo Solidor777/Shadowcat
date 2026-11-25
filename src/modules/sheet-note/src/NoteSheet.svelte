@@ -4,7 +4,7 @@
   import { getPointer, firstChannel, parseNoteBody, parseNotePageKind, buildNoteDoc, appendNoteSortKey, NOTE_DOC_TYPE, type WireDocument } from "@shadowcat/core";
   import { collectHeadings, findAnchor, type TocEntry } from "./note-toc";
 
-  // Note sheet: title + visibility over the envelope/permissions bands, the rendered body
+  // Note sheet: title over the envelope band, sharing through `PermissionsEditor`, the rendered body
   // (server-derived `engine.body`, via `SegmentList`), a draft-base edit flow over the
   // author's raw `engine.source`, sort, and parent/children tree navigation. Reads the
   // OPTIMISTIC store; every write's `old` is the RAW current stored value.
@@ -130,7 +130,6 @@
     mediaUrl === ctx.assets.placeholder() || (mediaErrored && erroredFor === mediaAssetId),
   );
 
-  const canEditVisibility = $derived(!!doc && ctx.canEdit(doc, "/permissions/default"));
   const canEditSource = $derived(!!doc && ctx.canEdit(doc, sourcePath));
   const canEditKind = $derived(!!doc && ctx.canEdit(doc, kindPath));
 
@@ -230,7 +229,7 @@
    * @param value The new default visibility (`"none"` or `"observer"`).
    * @example
    * ```
-   * // private function; not part of the public API — wired to the visibility select
+   * // private function; not part of the public API — used by "Present to players"
    * setVisibility("observer");
    * ```
    */
@@ -326,15 +325,6 @@
       <input data-testid="note-title" aria-label={t("sheetNote.title")} value={name ?? ""}
         onchange={(e) => setName((e.currentTarget as HTMLInputElement).value)} /></label>
 
-    {#if canEditVisibility}
-      <label>{t("sheetNote.visibility")}
-        <select data-testid="note-visibility" aria-label={t("sheetNote.visibility")} value={doc.permissions.default}
-          onchange={(e) => setVisibility((e.currentTarget as HTMLSelectElement).value === "observer" ? "observer" : "none")}>
-          <option value="none">{t("sheetNote.visibilityPrivate")}</option>
-          <option value="observer">{t("sheetNote.visibilityShared")}</option>
-        </select></label>
-    {/if}
-
     <PermissionsEditor {docId} />
 
     {#if ctx.role === "gm"}
@@ -348,7 +338,9 @@
         {:else if pageKind.kind === "image"}
           <img src={mediaUrl} alt={name ?? ""} onerror={markMediaErrored} />
         {:else if pageKind.kind === "pdf"}
-          <embed type="application/pdf" src={mediaUrl} title={name ?? t("sheetNote.title")} />
+          <!-- The server serves a PDF as an attachment, so an inline viewer shows nothing; the page
+               offers a link that opens it in a new tab instead. -->
+          <a class="media-pdf" data-testid="note-media-pdf-link" href={mediaUrl} target="_blank" rel="noopener noreferrer">{t("sheetNote.openPdf")}</a>
         {:else}
           <video src={mediaUrl} controls preload="metadata" onerror={markMediaErrored}>
             <track kind="captions" />
@@ -439,7 +431,7 @@
   .toc a { display: inline-block; min-height: 44px; line-height: 44px; }
   .media { display: flex; flex-direction: column; gap: var(--space-1); }
   .media img, .media video { max-width: 100%; height: auto; }
-  .media embed { width: 100%; min-height: 60vh; }
+  .media-pdf { display: inline-flex; align-items: center; min-height: 44px; }
   .media button { min-height: 44px; }
   .media-missing { opacity: 0.7; font-style: italic; }
   .unrenderable, .missing { opacity: 0.7; font-style: italic; }

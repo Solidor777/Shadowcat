@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { MAX_BARS, type BarAttribute } from "@shadowcat/core";
 import BarsEditor from "./BarsEditor.svelte";
@@ -58,6 +58,24 @@ describe("BarsEditor", () => {
     expect(onCommit.mock.calls[0][0][1]).toMatchObject({ label: "actors.barDefaultLabel", mode: "hover" });
     await fireEvent.click(screen.getByTestId("bar-remove"));
     expect(onCommit).toHaveBeenLastCalledWith([]);
+  });
+
+  it("removing a bar keeps each inline error on the row it describes", async () => {
+    const [first, second, third] = [hp(), { ...hp(), label: "MP" }, { ...hp(), label: "XP" }];
+    const onCommit = vi.fn();
+    const { rerender } = render(BarsEditor, { context: setAppContextForTest({}), props: { bars: [first, second, third], onCommit } });
+    const rows = () => screen.getAllByTestId("bar-row");
+    await fireEvent.change(within(rows()[1]).getByTestId("bar-current"), { target: { value: "((" } });
+    expect(within(rows()[1]).getByRole("alert")).toBeTruthy();
+
+    await fireEvent.click(within(rows()[0]).getByTestId("bar-remove"));
+    await rerender({ bars: [second, third], onCommit });
+    expect(within(rows()[0]).getByRole("alert")).toBeTruthy(); // the error moved up with its bar
+    expect(within(rows()[1]).queryByRole("alert")).toBeNull();
+
+    await fireEvent.click(within(rows()[0]).getByTestId("bar-remove"));
+    await rerender({ bars: [third], onCommit });
+    expect(screen.queryByRole("alert")).toBeNull(); // the removed bar's error is gone
   });
 
   it("add is disabled at the bar cap", () => {

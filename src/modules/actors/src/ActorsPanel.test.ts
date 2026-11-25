@@ -678,6 +678,21 @@ describe("ActorsPanel — locate on scene", () => {
     expect(pans).toEqual(["t-here"]); // the token on the viewed scene, never the one on S2
   });
 
+  it("reads the viewed scene's tokens once per render, however many actors are listed", () => {
+    const queriesFor = (actorCount: number): number => {
+      const ids = Array.from({ length: actorCount }, (_, i) => `a${i}`);
+      const store = storeWith(...ids.map(actor), ...ids.map((id) => token(`t-${id}`, "S1", id)));
+      const spy = vi.spyOn(store, "query");
+      const { unmount } = render(ActorsPanel, {
+        context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, viewedSceneId: "S1", t: realT }),
+      });
+      const calls = spy.mock.calls.filter(([type]) => type === "token").length;
+      unmount();
+      return calls;
+    };
+    expect(queriesFor(12)).toBe(queriesFor(2));
+  });
+
   it("disables the action when the actor has no token on the viewed scene", async () => {
     const pans: string[] = [];
     const scene = new SceneInteractionBridge();

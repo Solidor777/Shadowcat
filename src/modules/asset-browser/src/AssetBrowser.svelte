@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { Asset } from "@shadowcat/types";
   import { getAppContext, sizeClass, type PickAssetOptions } from "@shadowcat/ui-kit";
   import { queryAssets, patchAsset, bulkPatchAssets, type AssetQuery } from "@shadowcat/core";
@@ -35,14 +36,14 @@
 
   const { world, assets: resolver, onAssetChanged, t, notifyProgress } = getAppContext();
 
-  // The pick request's presets seed the filter ONCE — the browser owns it
-  // afterward, so capturing the initial prop value is the intended semantics.
-  // svelte-ignore state_referenced_locally
+  // The pick request's presets seed the filter ONCE — the browser owns it afterward — so the
+  // props are read untracked.
+  const presets = untrack(() => initialFilters);
   let filter = $state<FilterState>({
     query: "",
     queryIsRegex: false,
-    tags: initialFilters?.tags ?? [],
-    kind: initialFilters?.kind,
+    tags: presets?.tags ?? [],
+    kind: presets?.kind,
     sort: "created",
     favoritesOnly: false,
   });
@@ -58,6 +59,9 @@
     filter.favoritesOnly ? items.filter((a) => favorites.includes(a.id)) : items,
   );
   let nextCursor = $state<string | null>(null);
+  /** Whether the last next-page fetch failed; stops the favorites auto-fill from retrying a failing
+   * page in a loop (a scroll to the end, or any reload, clears it). */
+  let pageFailed = $state(false);
   let selected = $state<string[]>([]);
   let error = $state<string | null>(null);
   /** The folder filtering the grid (`null` = all assets, recursive off). */
@@ -145,6 +149,7 @@
       if (gen !== generation) return;
       items = page.items;
       nextCursor = page.next_cursor;
+      pageFailed = false;
       resolver.reconcile(page.items);
       error = null;
     } catch (e) {
@@ -165,6 +170,7 @@
     if (!nextCursor) return;
     const cursor = nextCursor;
     nextCursor = null; // claims the cursor so overlapping onNearEnd fires no duplicate fetch
+    pageFailed = false;
     const gen = generation;
     try {
       const page = await queryAssets(world, { ...currentQuery(), cursor });
@@ -174,6 +180,8 @@
       resolver.reconcile(page.items);
     } catch (e) {
       if (gen !== generation) return;
+      nextCursor = cursor; // the page is still unread, so a later scroll can retry it
+      pageFailed = true;
       error = t("assetBrowser.error", { message: String(e) });
     }
   }
@@ -183,6 +191,29 @@
   // the window.
   let cooldown: ReturnType<typeof setTimeout> | null = null;
   let trailing = false;
+
+  /** Whether a filter change alters what the server returns. The favorites filter narrows the
+   * fetched pages client-side (`displayed`), so toggling it alone needs no refetch.
+   * @param prev - The current filter.
+   * @param next - The incoming filter.
+   * @returns `true` when any server-side field differs.
+   * @example
+   * ```
+   * // private function; used by `onFilterChange` below
+   * declare const a: FilterState;
+   * changesListing(a, { ...a, favoritesOnly: true }); // false
+   * ```
+   */
+  function changesListing(prev: FilterState, next: FilterState): boolean {
+    return (
+      prev.query !== next.query ||
+      prev.queryIsRegex !== next.queryIsRegex ||
+      prev.kind !== next.kind ||
+      prev.sort !== next.sort ||
+      prev.tags.length !== next.tags.length ||
+      prev.tags.some((tag, i) => tag !== next.tags[i])
+    );
+  }
 
   /** Applies a filter change and schedules the (debounced) refetch.
    * @param next - The full next filter state from the bar.
@@ -194,7 +225,10 @@
    * ```
    */
   function onFilterChange(next: FilterState): void {
+    const refetch = changesListing(filter, next);
+    if (next.favoritesOnly !== filter.favoritesOnly) pageFailed = false; // re-enabling the filter retries
     filter = next;
+    if (!refetch) return;
     if (cooldown) {
       trailing = true;
       return;
@@ -260,14 +294,16 @@
   // The favorites filter narrows the fetched pages client-side, so a page with few favorites
   // could never scroll far enough to trigger load-more: keep fetching while it is on.
   $effect(() => {
-    if (filter.favoritesOnly && nextCursor) void loadMore();
+    if (filter.favoritesOnly && nextCursor && !pageFailed) untrack(() => void loadMore());
   });
 
   // Load on mount; reload when any asset notice lands (created/moved change
   // listings; deleted drops tiles; replaced re-renders thumbs at the bumped
   // version the resolver already reflects).
   $effect(() => {
-    void reload();
+    // Untracked: `reload` reads the filter, and only `onFilterChange` (debounced) and the folder
+    // selection decide when a filter change refetches.
+    untrack(() => void reload());
     return onAssetChanged(() => void reload());
   });
 

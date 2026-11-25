@@ -44,7 +44,7 @@
     padding: 0 var(--space-3);
     height: 100%;
   }
-  /* The row is a fixed `2rem` grid track (`Layout.svelte`); unlike the toolrail's `1fr` row
+  /* The row is a fixed `--statusbar-height` grid track (`Layout.svelte`); unlike the toolrail's `1fr` row
    * it carries no growth cap, so a button left at UA default sizing (unset font/padding/border)
    * renders a few px taller than the track and overflows the grid past 100vh. Inheriting the
    * row's own font-size and using compact padding keeps every statusbar button inside it. */

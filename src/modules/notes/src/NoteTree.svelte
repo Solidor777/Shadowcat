@@ -90,16 +90,19 @@
 
   /** Whether a row's drag handle and keyboard reorder are available.
    * @param doc The note document.
-   * @returns `true` when reordering is on and the viewer may write the note's sort key.
+   * @param level The nodes at the note's level. A renumber after an exhausted sort gap rewrites
+   * siblings' keys in one batch the server rejects whole, so the viewer must be able to write
+   * every sibling's sort key, not only this note's.
+   * @returns `true` when reordering is on and the viewer may write the sort key of every sibling.
    * @example
    * ```
    * // private function; gates the drag handle in the row markup
-   * declare const doc: WireDocument;
-   * canReorder(doc);
+   * declare const doc: WireDocument, level: NoteTreeNode[];
+   * canReorder(doc, level);
    * ```
    */
-  function canReorder(doc: WireDocument): boolean {
-    return reorderable && ctx.canEdit(doc, "/engine/sort");
+  function canReorder(doc: WireDocument, level: NoteTreeNode[]): boolean {
+    return reorderable && ctx.canEdit(doc, "/engine/sort") && level.every((n) => ctx.canEdit(n.doc, "/engine/sort"));
   }
 
   /** Alt+ArrowUp/Down moves the focused row one place among its siblings.
@@ -114,7 +117,7 @@
    * ```
    */
   function onRowKeydown(level: NoteTreeNode[], doc: WireDocument, ev: KeyboardEvent): void {
-    if (!ev.altKey || !canReorder(doc)) return;
+    if (!ev.altKey || !canReorder(doc, level)) return;
     const index = level.findIndex((n) => n.doc.id === doc.id);
     const to = ev.key === "ArrowUp" ? index - 1 : ev.key === "ArrowDown" ? index + 1 : -1;
     if (to < 0 || to >= level.length) return;
@@ -259,7 +262,7 @@
       onpointercancel={trigger.onpointercancel}
       onpointermove={trigger.onpointermove}
     >
-      {#if canReorder(node.doc)}
+      {#if canReorder(node.doc, level)}
         <button
           type="button"
           class="drag-handle"

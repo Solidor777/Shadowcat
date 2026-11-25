@@ -102,6 +102,15 @@ describe("NoteTree sibling reorder", () => {
     ]);
   });
 
+  it("a note among siblings the viewer cannot edit offers no drag handle and no Alt+Arrow move", async () => {
+    const { rows, queryAllByTestId, dispatched } = renderSiblings([1000, 1001, 1002], {
+      canEdit: (doc: { id: string }) => doc.id !== "n1",
+    });
+    expect(queryAllByTestId("note-drag-handle")).toHaveLength(0);
+    await fireEvent.keyDown(rows[2], { key: "ArrowUp", altKey: true });
+    expect(dispatched).toEqual([]);
+  });
+
   it("Alt+Arrow at either end of the siblings dispatches nothing", async () => {
     const { rows, dispatched } = renderSiblings([1000, 2000]);
     await fireEvent.keyDown(rows[0], { key: "ArrowUp", altKey: true });

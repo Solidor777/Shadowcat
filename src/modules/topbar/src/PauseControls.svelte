@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, promptDialog } from "@shadowcat/ui-kit";
+  import { getAppContext, promptDialog, sizeClass } from "@shadowcat/ui-kit";
   import {
     buildUpdate,
     resolveSessionPause,
@@ -31,6 +31,7 @@
   const PAUSE_BINDING = "toggle-pause";
 
   const isGm = $derived(ctx.role === "gm");
+  const compact = $derived(sizeClass() === "compact");
 
   const settingsDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
@@ -132,7 +133,7 @@
 </script>
 
 {#if isGm}
-  <div class="pause-controls">
+  <div class="pause-controls" class:compact>
     <button
       type="button"
       class="pause-toggle"
@@ -159,6 +160,28 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    /* The row's other items cannot shrink, so on a phone the controls shrink and wrap their text
+       instead of pushing the settings entry off screen. */
+    flex: 0 1 auto;
+    min-width: 0;
+    &.compact {
+      gap: var(--space-1);
+      .pause-toggle,
+      .pause-audio {
+        min-width: 0;
+        white-space: normal;
+        font-size: 0.75rem;
+        line-height: 1.1;
+        overflow-wrap: anywhere;
+      }
+      .pause-toggle {
+        padding: 0 var(--space-1);
+        max-width: 5rem;
+      }
+      .pause-audio {
+        max-width: 5.5rem;
+      }
+    }
   }
   .pause-toggle {
     min-width: 44px;

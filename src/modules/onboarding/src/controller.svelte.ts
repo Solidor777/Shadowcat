@@ -36,8 +36,9 @@ export interface ActiveTour {
 
 /** Decides which tour to offer, runs the tour the user starts, and records how it ended.
  *
- * At most one offer is made per controller (one per session): after the user answers it, further
- * tours wait for a later session or the replay list. That paces topic tours instead of chaining
+ * At most one offer is made per controller (one per session), and a tour is offered once per
+ * version: any answer to its offer, including "Not now", records it as done. After the user
+ * answers, further tours wait for a later session or the replay list. That paces topic tours instead of chaining
  * a new offer behind every finished one. State is reactive; the offer and the running tour are
  * what the overlay components render. Until `attach` supplies the environment, nothing is
  * offered and `start` refuses. */
@@ -151,14 +152,17 @@ export class TourController {
     if (this.offer !== null) this.start(this.offer);
   }
 
-  /** Closes the offer for this session without recording anything; the tour is offered again in
-   * a later session.
+  /** Closes the offer and records the offered tour's current version as done, so "Not now" spends
+   * the tour's one offer: it is not offered again until its version is bumped, and the replay list
+   * still runs it on request.
    * @example
    * ```ts
    * // wired to the offer's Not now button
    * ```
    */
   dismissOffer(): void {
+    const offered = this.offer;
+    if (offered !== null && this.#env !== null) this.deps.progress.markDone(offered, this.#env.viewer().world);
     this.offer = null;
   }
 

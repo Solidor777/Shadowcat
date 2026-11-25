@@ -230,3 +230,39 @@ test("an asset notice refetches the listing", async () => {
   notify?.({ uuid: "a9", op: "created", version: 1 });
   await waitFor(() => expect(q.mock.calls.length).toBeGreaterThan(before));
 });
+
+test("toggling the favorites filter narrows the loaded pages without refetching the listing", async () => {
+  stubPrefs({ favorites: ["a2"] });
+  render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(3));
+  const query = vi.mocked(api.queryAssets);
+  const before = query.mock.calls.length;
+  await fireEvent.click(screen.getByTestId("filter-favorites"));
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(1));
+  expect(query.mock.calls.length).toBe(before);
+});
+
+test("a failed next-page load keeps its cursor, is not retried in a loop, and is retried when the filter is re-enabled", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+    modules: { "asset-browser": { favorites: ["a2"] } },
+  });
+  const query = vi
+    .spyOn(api, "queryAssets")
+    .mockResolvedValueOnce({ items: [row("a1")], next_cursor: "c1" } as never)
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValue({ items: [row("a2")], next_cursor: null } as never);
+  render(AssetBrowser, { props: { mode: "manage" }, context: setAppContextForTest() });
+  await waitFor(() => expect(screen.getAllByTestId("asset-tile")).toHaveLength(1));
+
+  await fireEvent.click(screen.getByTestId("filter-favorites")); // auto-fill requests the next page, which fails
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(query).toHaveBeenCalledTimes(2); // no retry storm
+
+  await fireEvent.click(screen.getByTestId("filter-favorites"));
+  await fireEvent.click(screen.getByTestId("filter-favorites"));
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(3));
+  expect(query.mock.calls[2][1]).toEqual(expect.objectContaining({ cursor: "c1" }));
+});

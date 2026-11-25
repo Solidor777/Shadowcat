@@ -2,7 +2,7 @@
   // Controlled editor for an ordered list of attribute bars. Each bar is a label, a `current` and
   // a `max` (a number or a formula over the token's actor), a colour and a display mode. The host
   // owns the list: every committed edit calls `onCommit` with the whole next list, so one write
-  // carries every bar's change. A formula is checked with `parseFormula` for an inline error
+  // carries every bar's change. A formula is checked with `coerceFormula` for an inline error
   // only; the server stays the authority on what a formula means.
   import { getAppContext } from "@shadowcat/ui-kit";
   import { coerceFormula } from "@shadowcat/formula";
@@ -80,7 +80,8 @@
     onCommit([...bars, { label: t("actors.barDefaultLabel"), current: 0, max: 1, color: "#cc2222", mode: "hover" }]);
   }
 
-  /** Removes bar `index`.
+  /** Removes bar `index` and re-keys the inline errors of the bars after it, so each error stays
+   * on the row it describes and the removed bar's own errors go with it.
    * @param index The bar's position.
    * @example
    * ```
@@ -89,6 +90,14 @@
    * ```
    */
   function removeBar(index: number): void {
+    const shifted: Record<string, string | null> = {};
+    for (const [key, message] of Object.entries(errors)) {
+      const [position, field] = key.split(":");
+      const at = Number(position);
+      if (at < index) shifted[key] = message;
+      else if (at > index) shifted[`${at - 1}:${field}`] = message;
+    }
+    errors = shifted;
     onCommit(bars.filter((_, i) => i !== index));
   }
 </script>
