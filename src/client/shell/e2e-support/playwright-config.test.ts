@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 describe("playwright.config LAN address handling", () => {
-  it("keeps the loopback, webm-decode, media-range-loopback, lan-plain-http, route-prefix and onboarding projects and drops every HTTPS project on a host with no LAN address, warning loudly", async () => {
+  it("keeps the loopback, webm-decode, media-range-loopback, route-prefix and onboarding projects and drops lan-plain-http and every HTTPS project on a host with no LAN address, warning loudly", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const config = await loadConfig(LOOPBACK_ONLY, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     expect(names(config)).toEqual([
@@ -71,13 +71,13 @@ describe("playwright.config LAN address handling", () => {
       "webm-decode-chromium",
       "webm-decode-firefox",
       "media-range-loopback",
-      "lan-plain-http",
       "route-prefix",
       "onboarding",
     ]);
-    expect(config.webServer).toHaveLength(5);
+    expect(config.webServer).toHaveLength(4);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0][0])).toContain("HTTPS e2e projects OMITTED");
+    expect(String(warn.mock.calls[0][0])).toContain("e2e projects OMITTED");
+    expect(String(warn.mock.calls[0][0])).toContain("lan-plain-http");
   });
 
   it("throws on CI when no LAN address exists, because the HTTPS projects are part of the gate", async () => {
@@ -135,8 +135,21 @@ describe("playwright.config LAN address handling", () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const binds = [config.webServer ?? []].flat().map((s) => String(s.env?.SHADOWCAT_BIND));
     const portsOf = (prefix: string) => binds.filter((b) => b.startsWith(prefix)).length;
-    expect(portsOf("192.0.2.20:")).toBe(2);
-    expect(portsOf("0.0.0.0:")).toBe(1);
+    expect(portsOf("192.0.2.20:")).toBe(3);
+    expect(portsOf("0.0.0.0:")).toBe(0);
+  });
+
+  it("serves the lan-plain-http project from the LAN-bound server: the project's name resolves to the LAN address and its port is that server's", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const project = (config.projects ?? []).find((p) => p.name === "lan-plain-http");
+    const args = project?.launchOptions?.args ?? project?.use?.launchOptions?.args ?? [];
+    const host = new URL(String(project?.use?.baseURL)).hostname;
+    expect(args).toContain(`--host-resolver-rules=MAP ${host} 192.0.2.20`);
+    expect(args.join(" ")).not.toContain("127.0.0.1");
+    const port = new URL(String(project?.use?.baseURL)).port;
+    const server = [config.webServer ?? []].flat().find((s) => s.env?.SHADOWCAT_BIND === `192.0.2.20:${port}`);
+    expect(server, "a server is bound to the LAN address on the project's port").toBeDefined();
+    expect(server?.url).toBe(`http://192.0.2.20:${port}/health`);
   });
 
   it("points every long-audio project at the long-audio server's port and no other project at it", async () => {
