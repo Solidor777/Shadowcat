@@ -48,13 +48,22 @@
   let depth = $state(audio.duck.depth);
 
   let prefs = $state<DuckingPreferences>(readDuckingMirror(localStorage));
-  let osStatus = $state<OsMonitorStatus>(controller.osMonitor.getStatus());
+  // Placeholder until the effect below reads the controller's monitor; `OsMonitorSource` starts in
+  // "connecting" and the effect runs before the first paint.
+  let osStatus = $state<OsMonitorStatus>("connecting");
   let micDenial = $state<MicVadDenialReason | null>(null);
   let watchListText = $state(prefs.watchList.join(", "));
 
   onMount(() => {
     controller.applyPreferences(prefs);
-    return controller.osMonitor.onStatusChange((s) => (osStatus = s));
+  });
+
+  // Follows the current `controller`'s monitor: re-reads its status and re-subscribes when the
+  // prop is replaced, and unsubscribes from the previous monitor on teardown.
+  $effect(() => {
+    const monitor = controller.osMonitor;
+    osStatus = monitor.getStatus();
+    return monitor.onStatusChange((s) => (osStatus = s));
   });
 
   /**
