@@ -6,8 +6,9 @@ use std::net::IpAddr;
 
 use shadowcat::tls::resolver::PeerScope;
 use shadowcat::tls::selfsigned::{
-    force_regenerate_public, load_or_generate, load_or_generate_public, regen_reason_public,
-    RcgenGenerator, RegenReason, SanSet, SanSources, PUBLIC_CERT_FILE, PUBLIC_KEY_FILE,
+    force_regenerate_public, load_or_generate, load_or_generate_host, load_or_generate_public,
+    regen_reason_for_host, regen_reason_public, RcgenGenerator, RegenReason, SanSet, SanSources,
+    HOST_CERT_FILE, HOST_KEY_FILE, PUBLIC_CERT_FILE, PUBLIC_KEY_FILE, VALIDITY_DAYS,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -70,7 +71,7 @@ fn the_scope_follows_the_peer_address_and_nothing_else() {
 }
 
 #[test]
-fn a_shared_address_is_public_whatever_it_looks_like() {
+fn a_listed_trusted_proxy_is_public_whatever_it_looks_like() {
     for shared in [
         "127.0.0.1",
         "::1",
@@ -85,6 +86,53 @@ fn a_shared_address_is_public_whatever_it_looks_like() {
             "{shared}"
         );
     }
+}
+
+#[test]
+fn a_loopback_peer_is_the_host_machine_unless_it_is_a_listed_proxy() {
+    for loopback in ["127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"] {
+        assert_eq!(
+            PeerScope::of(ip(loopback), false),
+            PeerScope::Host,
+            "{loopback}"
+        );
+    }
+}
+
+#[test]
+fn the_host_san_set_lists_localhost_names_only() {
+    let host = SanSet::assemble_host();
+    assert_eq!(host.dns, vec!["localhost".to_string()]);
+    assert_eq!(host.ips, vec![ip("127.0.0.1"), ip("::1")]);
+}
+
+#[test]
+fn the_host_certificate_persists_names_nothing_configured_and_is_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = now();
+    let first = load_or_generate_host(Some(dir.path()), &RcgenGenerator, t, &test_trash()).unwrap();
+    assert!(first.persisted);
+    assert!(dir.path().join(HOST_CERT_FILE).is_file());
+    assert!(dir.path().join(HOST_KEY_FILE).is_file());
+    let mut entries = first.cert.san_entries();
+    entries.sort();
+    assert_eq!(entries, ["127.0.0.1", "::1", "localhost"]);
+    let again = load_or_generate_host(Some(dir.path()), &RcgenGenerator, t, &test_trash()).unwrap();
+    assert_eq!(first.cert.fingerprint(), again.cert.fingerprint());
+    assert_eq!(regen_reason_for_host(&again.cert, t.unix_timestamp()), None);
+    let near_expiry = (t + Duration::days(VALIDITY_DAYS - 1)).unix_timestamp();
+    assert_eq!(
+        regen_reason_for_host(&again.cert, near_expiry),
+        Some(RegenReason::NearExpiry)
+    );
+    let replaced = load_or_generate_host(
+        Some(dir.path()),
+        &RcgenGenerator,
+        t + Duration::days(VALIDITY_DAYS - 1),
+        &test_trash(),
+    )
+    .unwrap();
+    assert_ne!(first.cert.fingerprint(), replaced.cert.fingerprint());
 }
 
 #[test]

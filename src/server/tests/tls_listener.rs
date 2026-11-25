@@ -11,6 +11,7 @@ use std::time::Duration;
 use shadowcat::config::{Config, TlsMode};
 use shadowcat::http::conn_serve::ConnSource;
 use shadowcat::tls::listener::{ConnStream, Limits, SniffListener, TcpAccept};
+use shadowcat::tls::resolver::PeerScope;
 use shadowcat::tls::selfsigned::SanSources;
 use shadowcat::tls::{ConnMeta, Selected, TlsRuntime};
 use shadowcat_test_support::tls::{handshake_any, sha256_hex};
@@ -120,7 +121,12 @@ async fn an_accepted_connection_has_tcp_nodelay_set_plain_and_tls() {
 #[tokio::test]
 async fn an_ip_literal_or_sni_less_connection_gets_the_self_signed_fallback_carrying_the_ip_san() {
     let (mut l, addr, rt) = listener_with_runtime(memory_config(), Limits::default()).await;
-    let fallback_fp = rt.admin_status().fallback_fingerprint.unwrap();
+    // The client is a loopback peer, so the certificate is the host-machine one, and the admin
+    // status of that same peer scope reports the identical fingerprint.
+    let fallback_fp = rt
+        .admin_status_for(PeerScope::Host, time::OffsetDateTime::now_utc())
+        .fallback_fingerprint
+        .unwrap();
     for sni in [None, Some("localhost"), Some("uncovered.example")] {
         let fp = accept_fingerprint(&mut l, addr, sni).await;
         assert_eq!(fp, fallback_fp, "sni {sni:?}");
@@ -145,7 +151,15 @@ async fn an_ip_literal_or_sni_less_connection_gets_the_self_signed_fallback_carr
         ips.contains(&vec![127, 0, 0, 1]),
         "loopback IP SAN present: {ips:?}"
     );
+    assert!(
+        ips.iter()
+            .all(|ip| ip == &vec![127, 0, 0, 1] || ip == &LOOPBACK_V6),
+        "the host-machine certificate names loopback addresses only: {ips:?}"
+    );
 }
+
+/// The 16-byte IP SAN of `::1`.
+const LOOPBACK_V6: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 /// Handshakes with `sni`, returns the presented leaf's fingerprint.
 async fn accept_fingerprint(l: &mut SniffListener, addr: SocketAddr, sni: Option<&str>) -> String {

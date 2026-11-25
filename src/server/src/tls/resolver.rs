@@ -11,7 +11,7 @@
 //!
 //! INVARIANT: the self-signed certificate a connection receives depends on [`PeerScope::of`] of the
 //! accepted socket's peer address, decided in exactly one place ([`finish_phase`]). A snapshot
-//! built without a public certificate serves every peer the shared fallback.
+//! built without a public or host certificate serves that scope the shared fallback.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -303,6 +303,9 @@ struct Configs {
     /// Serves the self-signed certificate to a [`PeerScope::Public`] peer; `None` when the
     /// snapshot has one self-signed certificate for every peer.
     public_fallback: Option<Arc<ServerConfig>>,
+    /// Serves the self-signed certificate to a [`PeerScope::Host`] peer; `None` when the
+    /// snapshot has no host-machine certificate.
+    host_fallback: Option<Arc<ServerConfig>>,
     /// Serves TLS-ALPN-01 validation certificates; `None` when no challenge is published.
     challenge: Option<Arc<ServerConfig>>,
 }
@@ -331,6 +334,9 @@ pub struct Snapshot {
     /// The self-signed certificate a [`PeerScope::Public`] peer receives; `None` means every peer
     /// receives `fallback`.
     public_fallback: Option<Arc<LoadedCert>>,
+    /// The self-signed certificate a [`PeerScope::Host`] peer receives: it names only localhost,
+    /// 127.0.0.1 and ::1. `None` means a host peer receives the fallback every peer shares.
+    host_fallback: Option<Arc<LoadedCert>>,
     /// TLS-ALPN-01 validation certificates keyed by lowercase SNI.
     challenges: BTreeMap<String, Arc<CertifiedKey>>,
     /// Pre-built configurations, one per [`Selected`] outcome.
@@ -355,7 +361,7 @@ impl Snapshot {
         fallback: Arc<LoadedCert>,
         challenges: BTreeMap<String, Arc<CertifiedKey>>,
     ) -> Result<Self, TlsError> {
-        Self::build(primary, fallback, None, challenges)
+        Self::build(primary, fallback, None, None, challenges)
     }
 
     /// Builds a snapshot from every certificate slot and its rustls configurations. Every
@@ -365,6 +371,7 @@ impl Snapshot {
         primary: Option<Arc<LoadedCert>>,
         fallback: Arc<LoadedCert>,
         public_fallback: Option<Arc<LoadedCert>>,
+        host_fallback: Option<Arc<LoadedCert>>,
         challenges: BTreeMap<String, Arc<CertifiedKey>>,
     ) -> Result<Self, TlsError> {
         let serving_alpn = || {
@@ -388,6 +395,13 @@ impl Snapshot {
             )?),
             None => None,
         };
+        let host_cfg = match &host_fallback {
+            Some(h) => Some(build_config(
+                Arc::new(FixedCert(h.key.clone())),
+                serving_alpn(),
+            )?),
+            None => None,
+        };
         let challenge_cfg = if challenges.is_empty() {
             None
         } else {
@@ -400,11 +414,13 @@ impl Snapshot {
             primary,
             fallback,
             public_fallback,
+            host_fallback,
             challenges,
             configs: Configs {
                 primary: primary_cfg,
                 fallback: fallback_cfg,
                 public_fallback: public_cfg,
+                host_fallback: host_cfg,
                 challenge: challenge_cfg,
             },
         })
@@ -431,6 +447,7 @@ impl Snapshot {
             primary,
             self.fallback.clone(),
             self.public_fallback.clone(),
+            self.host_fallback.clone(),
             self.challenges.clone(),
         )
     }
@@ -456,6 +473,7 @@ impl Snapshot {
             self.primary.clone(),
             fallback,
             self.public_fallback.clone(),
+            self.host_fallback.clone(),
             self.challenges.clone(),
         )
     }
@@ -483,6 +501,35 @@ impl Snapshot {
             self.primary.clone(),
             self.fallback.clone(),
             Some(public_fallback),
+            self.host_fallback.clone(),
+            self.challenges.clone(),
+        )
+    }
+
+    /// A NEW snapshot whose [`PeerScope::Host`] peers receive `host_fallback` instead of the
+    /// self-signed fallback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use shadowcat::tls::resolver::Snapshot;
+    /// use shadowcat::tls::selfsigned::{generate, SanSet};
+    ///
+    /// let now = time::OffsetDateTime::now_utc();
+    /// let lan = Arc::new(generate(&SanSet::default(), now).unwrap().loaded);
+    /// let host = Arc::new(generate(&SanSet::default(), now).unwrap().loaded);
+    /// let snap = Snapshot::new(None, lan, Default::default()).unwrap();
+    /// let split = snap.with_host_fallback(host.clone()).unwrap();
+    /// assert_eq!(split.host_fallback().fingerprint(), host.fingerprint());
+    /// assert_eq!(snap.host_fallback().fingerprint(), snap.fallback().fingerprint());
+    /// ```
+    pub fn with_host_fallback(&self, host_fallback: Arc<LoadedCert>) -> Result<Self, TlsError> {
+        Self::build(
+            self.primary.clone(),
+            self.fallback.clone(),
+            self.public_fallback.clone(),
+            Some(host_fallback),
             self.challenges.clone(),
         )
     }
@@ -508,6 +555,7 @@ impl Snapshot {
             self.primary.clone(),
             self.fallback.clone(),
             self.public_fallback.clone(),
+            self.host_fallback.clone(),
             challenges,
         )
     }
@@ -561,6 +609,47 @@ impl Snapshot {
     /// ```
     pub fn public_fallback(&self) -> &Arc<LoadedCert> {
         self.public_fallback.as_ref().unwrap_or(&self.fallback)
+    }
+
+    /// The self-signed certificate a [`PeerScope::Host`] peer receives: the one installed by
+    /// [`Snapshot::with_host_fallback`], else the fallback every peer shares.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use shadowcat::tls::resolver::Snapshot;
+    /// use shadowcat::tls::selfsigned::{generate, SanSet};
+    ///
+    /// let fb = Arc::new(generate(&SanSet::default(), time::OffsetDateTime::now_utc()).unwrap().loaded);
+    /// let snap = Snapshot::new(None, fb.clone(), Default::default()).unwrap();
+    /// assert_eq!(snap.host_fallback().fingerprint(), fb.fingerprint());
+    /// ```
+    pub fn host_fallback(&self) -> &Arc<LoadedCert> {
+        self.host_fallback.as_ref().unwrap_or(&self.fallback)
+    }
+
+    /// The self-signed certificate a peer of `scope` receives. [`Snapshot::config_for`] and the
+    /// admin status both read the certificate through this one function, so what an admin is
+    /// told is the certificate that admin's browser gets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use shadowcat::tls::resolver::{PeerScope, Snapshot};
+    /// use shadowcat::tls::selfsigned::{generate, SanSet};
+    ///
+    /// let fb = Arc::new(generate(&SanSet::default(), time::OffsetDateTime::now_utc()).unwrap().loaded);
+    /// let snap = Snapshot::new(None, fb.clone(), Default::default()).unwrap();
+    /// assert_eq!(snap.self_signed_for(PeerScope::Host).fingerprint(), fb.fingerprint());
+    /// ```
+    pub fn self_signed_for(&self, scope: PeerScope) -> &Arc<LoadedCert> {
+        match scope {
+            PeerScope::Lan => &self.fallback,
+            PeerScope::Public => self.public_fallback(),
+            PeerScope::Host => self.host_fallback(),
+        }
     }
 
     /// THE certificate decision, pure over `(snapshot, sni, alpn, now)`. ALPN `acme-tls/1` with a
@@ -665,9 +754,13 @@ impl Snapshot {
     /// assert_eq!(config.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     /// ```
     pub fn config_for(&self, selected: Selected, scope: PeerScope) -> Arc<ServerConfig> {
-        let self_signed = || match (scope, &self.configs.public_fallback) {
-            (PeerScope::Public, Some(public)) => public.clone(),
-            _ => self.configs.fallback.clone(),
+        let self_signed = || {
+            let scoped = match scope {
+                PeerScope::Lan => None,
+                PeerScope::Public => self.configs.public_fallback.as_ref(),
+                PeerScope::Host => self.configs.host_fallback.as_ref(),
+            };
+            scoped.unwrap_or(&self.configs.fallback).clone()
         };
         match selected {
             Selected::Primary => self.configs.primary.clone().unwrap_or_else(self_signed),
@@ -678,16 +771,17 @@ impl Snapshot {
 }
 
 /// Which self-signed certificate a peer is shown, decided once from its socket address and from
-/// whether that address is shared by players the server cannot tell apart.
+/// whether that address is a listed trusted proxy.
 ///
-/// The self-signed certificate is presented before any authentication, so a [`PeerScope::Public`]
-/// peer must never read a local interface address from it. A peer that is a listed trusted proxy
-/// or a loopback peer (`Config::is_cap_exempt`) fronts players whose addresses are unknown: a
-/// tunnel agent or a TCP-passthrough proxy forwards internet players from such an address. Those
-/// peers are `Public`. Remaining limit: a router that rewrites the source address of forwarded
-/// connections to a private LAN address, or a passthrough proxy on another LAN machine that is not
-/// a listed trusted proxy, is indistinguishable from a LAN player and is shown the LAN
-/// certificate.
+/// The self-signed certificate is presented before any authentication, so only a
+/// [`PeerScope::Lan`] peer may read a local interface address from it. A listed trusted proxy
+/// fronts players whose addresses are unknown, so it is `Public`. A loopback peer is the host
+/// machine itself (the GM's own browser) or a tunnel agent running on it; it is `Host` and
+/// receives a certificate that names only localhost, 127.0.0.1 and ::1, which serves the host's
+/// browser and shows a same-machine tunnel's players nothing of the host's network. Remaining
+/// limit: a router that rewrites the source address of forwarded connections to a private LAN
+/// address, or a passthrough proxy on another LAN machine that is not a listed trusted proxy, is
+/// indistinguishable from a LAN player and is shown the LAN certificate.
 ///
 /// # Examples
 ///
@@ -696,22 +790,24 @@ impl Snapshot {
 ///
 /// assert_eq!(PeerScope::of("192.168.1.20".parse().unwrap(), false), PeerScope::Lan);
 /// assert_eq!(PeerScope::of("203.0.113.9".parse().unwrap(), false), PeerScope::Public);
+/// assert_eq!(PeerScope::of("127.0.0.1".parse().unwrap(), false), PeerScope::Host);
 /// assert_eq!(PeerScope::of("127.0.0.1".parse().unwrap(), true), PeerScope::Public);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerScope {
-    /// Private, link-local or unique-local (or loopback when not shared): a peer on the host's
-    /// own network.
+    /// Private, link-local or unique-local: a peer on the host's own network.
     Lan,
     /// Any other address, including carrier-grade NAT (`100.64.0.0/10`), which no local network
-    /// owns.
+    /// owns, and every listed trusted proxy.
     Public,
+    /// Loopback: the host machine itself.
+    Host,
 }
 
 impl PeerScope {
     /// The scope of a peer at `ip` (an IPv4-mapped IPv6 address counts as its IPv4 address).
-    /// `shared_address` is `Config::is_cap_exempt` for the peer (a listed trusted proxy or a
-    /// loopback peer): every player behind such an address shares it, so the peer is `Public`.
+    /// `trusted_proxy` is `Config::is_trusted_proxy` for the peer: every player behind such an
+    /// address shares it, so the peer is `Public` even on loopback.
     ///
     /// # Examples
     ///
@@ -720,18 +816,23 @@ impl PeerScope {
     ///
     /// assert_eq!(PeerScope::of("::ffff:10.0.0.4".parse().unwrap(), false), PeerScope::Lan);
     /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap(), false), PeerScope::Lan);
+    /// assert_eq!(PeerScope::of("::1".parse().unwrap(), false), PeerScope::Host);
     /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap(), true), PeerScope::Public);
     /// assert_eq!(PeerScope::of("2001:db8::1".parse().unwrap(), false), PeerScope::Public);
     /// ```
-    pub fn of(ip: std::net::IpAddr, shared_address: bool) -> Self {
-        if shared_address {
+    pub fn of(ip: std::net::IpAddr, trusted_proxy: bool) -> Self {
+        if trusted_proxy {
             return PeerScope::Public;
         }
-        let lan = match ip.to_canonical() {
-            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        let ip = ip.to_canonical();
+        if ip.is_loopback() {
+            return PeerScope::Host;
+        }
+        let lan = match ip {
+            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
             std::net::IpAddr::V6(v6) => {
                 let first = v6.segments()[0];
-                v6.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+                first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
             }
         };
         if lan {
@@ -873,7 +974,7 @@ where
 
 /// The finish phase of a TLS accept: completes the handshake with the configuration `selected`
 /// maps to in `snapshot` for the scope of `peer` ([`PeerScope::of`], the one place a peer address
-/// picks a certificate; `shared_address` is `Config::is_cap_exempt` for `peer`) and records the single selection outcome in the returned [`ConnMeta`].
+/// picks a certificate; `trusted_proxy` is `Config::is_trusted_proxy` for `peer`) and records the single selection outcome in the returned [`ConnMeta`].
 /// Takes the snapshot by value and has no access to the swap cell, so it cannot select a second
 /// time.
 ///
@@ -896,12 +997,12 @@ pub async fn finish_phase<IO>(
     snapshot: Arc<Snapshot>,
     selected: Selected,
     peer: SocketAddr,
-    shared_address: bool,
+    trusted_proxy: bool,
 ) -> std::io::Result<(TlsStream<IO>, ConnMeta)>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    let config = snapshot.config_for(selected, PeerScope::of(peer.ip(), shared_address));
+    let config = snapshot.config_for(selected, PeerScope::of(peer.ip(), trusted_proxy));
     let stream = start.into_stream(config).await?;
     Ok((stream, ConnMeta::tls(peer, selected)))
 }

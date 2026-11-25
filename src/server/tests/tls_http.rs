@@ -242,8 +242,22 @@ async fn hsts_matrix_default_none_opt_in_on_trusted_native_tls_only() {
     assert_eq!(res.headers().get(hsts).unwrap(), "max-age=600");
 
     // A native-TLS IP-literal connection (self-signed fallback) NEVER gets it, even though the
-    // configured source is the operator certificate.
-    let ip_client = h.https_client();
+    // configured source is the operator certificate. This harness lists 127.0.0.1 as a trusted
+    // proxy, so the loopback client is shown the public self-signed certificate.
+    let public_der = h
+        .tls
+        .resolver()
+        .unwrap()
+        .snapshot()
+        .public_fallback()
+        .certified_key()
+        .cert[0]
+        .clone();
+    let ip_client = reqwest::Client::builder()
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(reqwest::Certificate::from_der(public_der.as_ref()).unwrap())
+        .build()
+        .unwrap();
     let res = ip_client
         .get(format!("https://{}/health", h.addr))
         .send()

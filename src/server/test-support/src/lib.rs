@@ -331,15 +331,16 @@ impl Harness {
             .unwrap()
     }
 
-    /// DER of the certificate an IP-literal / SNI-less connection receives (the self-signed
-    /// fallback).
+    /// DER of the certificate an IP-literal / SNI-less connection from this machine's loopback
+    /// receives (the self-signed host-machine certificate): every harness client is a loopback
+    /// peer.
     pub fn fallback_cert_der(&self) -> rustls::pki_types::CertificateDer<'static> {
         let snapshot = self
             .tls
             .resolver()
             .expect("TLS is enabled for this harness")
             .snapshot();
-        snapshot.fallback().certified_key().cert[0].clone()
+        snapshot.host_fallback().certified_key().cert[0].clone()
     }
 
     /// The socket address the server listens on.

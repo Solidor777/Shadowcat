@@ -200,11 +200,17 @@ const HOST_INTERFACES: [&str; 3] = ["192.168.1.20", "198.51.100.50", "fd00::5"];
 
 /// A runtime with a persisted TLS directory and `HOST_INTERFACES` as the host's interfaces.
 fn host_runtime(dir: &std::path::Path) -> Arc<TlsRuntime> {
+    host_runtime_naming(dir, Vec::new())
+}
+
+/// [`host_runtime`] with `tls_hostnames` configured.
+fn host_runtime_naming(dir: &std::path::Path, tls_hostnames: Vec<String>) -> Arc<TlsRuntime> {
     crate::tls::install_default_provider();
     TlsRuntime::start_with(
         &Config {
             db: "sqlite::memory:".into(),
             tls_dir: Some(dir.to_string_lossy().into_owned()),
+            tls_hostnames,
             ..Config::default()
         },
         Arc::new(RcgenGenerator),
@@ -239,15 +245,15 @@ fn sans_of(der: &[u8]) -> Vec<String> {
 /// The SAN entries of the certificate the negotiation presents to a peer at `peer`. The socket is
 /// a loopback pair; `peer` is the address the acceptor would have recorded, the only input scope
 /// selection reads.
-async fn sans_shown_to(
-    runtime: &TlsRuntime,
-    peer: SocketAddr,
-    shared_address: bool,
-) -> Vec<String> {
+async fn sans_shown_to(runtime: &TlsRuntime, peer: SocketAddr, trusted_proxy: bool) -> Vec<String> {
     let cell = runtime.resolver().expect("TLS is on");
     let snapshot = cell.snapshot();
     let mut roots = RootCertStore::empty();
-    for cert in [snapshot.fallback(), snapshot.public_fallback()] {
+    for cert in [
+        snapshot.fallback(),
+        snapshot.public_fallback(),
+        snapshot.host_fallback(),
+    ] {
         roots.add(cert.certified_key().cert[0].clone()).unwrap();
     }
     let cfg = rustls::ClientConfig::builder_with_provider(crate::tls::ring_provider())
@@ -266,7 +272,7 @@ async fn sans_shown_to(
         let _ = s.shutdown().await;
         leaf
     });
-    let served = negotiate_with(server_io, peer, shared_address, Some(cell)).await;
+    let served = negotiate_with(server_io, peer, trusted_proxy, Some(cell)).await;
     assert!(served.is_some(), "the handshake completes");
     sans_of(&client.await.unwrap())
 }
@@ -305,40 +311,114 @@ async fn a_public_peer_never_reads_an_interface_address_and_a_lan_peer_does() {
 }
 
 #[tokio::test]
-async fn a_loopback_or_trusted_proxy_peer_never_reads_an_interface_address() {
-    // A tunnel agent or passthrough proxy opens the connection from loopback or a listed proxy
-    // address, so the player behind it is unknown. The exemption is the one the acceptor computes.
+async fn a_loopback_peer_reads_localhost_names_only_and_a_listed_proxy_the_public_certificate() {
+    // The host machine's own browser connects from loopback and receives a certificate naming
+    // only localhost, 127.0.0.1 and ::1: no interface address, no configured hostname. A listed
+    // trusted proxy fronts unknown players and receives the public certificate, which carries the
+    // configured hostnames but no interface address.
     let dir = tempfile::tempdir().unwrap();
-    let runtime = host_runtime(dir.path());
+    let runtime = host_runtime_naming(dir.path(), vec!["game.example".into()]);
     let config = Config {
-        trusted_proxies: vec!["10.0.0.9".parse().unwrap()],
+        trusted_proxies: vec!["10.0.0.9".parse().unwrap(), "127.0.0.2".parse().unwrap()],
         ..Default::default()
     };
-    for shared in [
-        "127.0.0.1:4000",
-        "[::1]:4000",
-        "[::ffff:127.0.0.1]:4000",
-        "10.0.0.9:4000",
-    ] {
-        let peer: SocketAddr = shared.parse().unwrap();
-        assert!(config.is_cap_exempt(peer.ip()), "{shared}");
-        let sans = sans_shown_to(&runtime, peer, config.is_cap_exempt(peer.ip())).await;
+    for loopback in ["127.0.0.1:4000", "[::1]:4000", "[::ffff:127.0.0.1]:4000"] {
+        let peer: SocketAddr = loopback.parse().unwrap();
+        assert!(!config.is_trusted_proxy(peer.ip()), "{loopback}");
+        let mut sans = sans_shown_to(&runtime, peer, config.is_trusted_proxy(peer.ip())).await;
+        sans.sort();
+        assert_eq!(sans, ["127.0.0.1", "::1", "localhost"], "{loopback}");
+    }
+    for proxy in ["10.0.0.9:4000", "127.0.0.2:4000"] {
+        let peer: SocketAddr = proxy.parse().unwrap();
+        assert!(config.is_trusted_proxy(peer.ip()), "{proxy}");
+        let sans = sans_shown_to(&runtime, peer, config.is_trusted_proxy(peer.ip())).await;
         for interface in HOST_INTERFACES {
             assert!(
                 !sans.contains(&interface.to_string()),
-                "{shared} read {interface}: {sans:?}"
+                "{proxy} read {interface}: {sans:?}"
             );
         }
+        assert!(
+            sans.contains(&"game.example".to_string()),
+            "{proxy} is shown the public certificate: {sans:?}"
+        );
     }
     let other: SocketAddr = "10.0.0.10:4000".parse().unwrap();
-    assert!(!config.is_cap_exempt(other.ip()));
-    let sans = sans_shown_to(&runtime, other, config.is_cap_exempt(other.ip())).await;
+    assert!(!config.is_trusted_proxy(other.ip()));
+    let sans = sans_shown_to(&runtime, other, config.is_trusted_proxy(other.ip())).await;
     assert!(
         HOST_INTERFACES
             .iter()
             .all(|i| sans.contains(&i.to_string())),
         "a private peer that is not a listed proxy keeps the LAN certificate: {sans:?}"
     );
+}
+
+/// The SAN entries of the leaf a real TLS client from loopback reads through a `SniffListener`
+/// built over `runtime` and `config`.
+async fn sans_through_a_sniff_listener(runtime: Arc<TlsRuntime>, config: Config) -> Vec<String> {
+    let snapshot = runtime.resolver().expect("TLS is on").snapshot();
+    let mut roots = RootCertStore::empty();
+    for cert in [
+        snapshot.fallback(),
+        snapshot.public_fallback(),
+        snapshot.host_fallback(),
+    ] {
+        roots.add(cert.certified_key().cert[0].clone()).unwrap();
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(crate::tls::ring_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = tcp.local_addr().unwrap();
+    let mut listener = SniffListener::new(tcp, runtime, Arc::new(config), Limits::default());
+    let client = tokio::spawn(async move {
+        let io = TcpStream::connect(addr).await.unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut s = connector.connect(name, io).await.unwrap();
+        let leaf = s.get_ref().1.peer_certificates().unwrap()[0]
+            .as_ref()
+            .to_vec();
+        let _ = s.shutdown().await;
+        leaf
+    });
+    let _served = listener.accept().await.unwrap();
+    sans_of(&client.await.unwrap())
+}
+
+#[tokio::test]
+async fn the_sniff_listener_acceptor_hands_the_trusted_proxy_decision_to_the_negotiation() {
+    // A loopback client reaches the certificate choice only through the acceptor, which computes
+    // the trusted-proxy flag and passes it on. Both outcomes are observable here: an unlisted
+    // loopback peer is shown the host-machine certificate and a listed one the public
+    // certificate, and neither lists an interface address. An acceptor that passed the wrong
+    // flag would show the LAN certificate (interface addresses) or swap the two.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = host_runtime_naming(dir.path(), vec!["game.example".into()]);
+
+    let mut unlisted = sans_through_a_sniff_listener(runtime.clone(), Config::default()).await;
+    unlisted.sort();
+    assert_eq!(unlisted, ["127.0.0.1", "::1", "localhost"]);
+
+    let listed = sans_through_a_sniff_listener(
+        runtime,
+        Config {
+            trusted_proxies: vec!["127.0.0.1".parse().unwrap()],
+            ..Default::default()
+        },
+    )
+    .await;
+    for interface in HOST_INTERFACES {
+        assert!(
+            !listed.contains(&interface.to_string()),
+            "a loopback client read {interface}: {listed:?}"
+        );
+    }
+    assert!(listed.contains(&"game.example".to_string()), "{listed:?}");
 }
 
 #[tokio::test]

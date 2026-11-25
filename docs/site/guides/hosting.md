@@ -146,7 +146,7 @@ it creates it (`0700` / owner-only access list); a directory you point `tls_dir`
 exists keeps its permissions. If the operating system refuses to restrict the key file, the key is
 not written at all: the server logs it and serves an in-memory certificate for that run.
 
-Shadowcat keeps two such certificates and picks one by where the player connects from. A player on
+Shadowcat keeps three such certificates and picks one by where the connection comes from. A player on
 your local network (a private or link-local address) gets a certificate that covers
 `localhost`, the loopback addresses, every entry of `tls_hostnames`, and the LAN and global
 addresses of the machine's network adapters at the time it was generated (virtual adapters such as
@@ -155,19 +155,24 @@ certificate that lists none of the machine's adapter addresses, so they cannot l
 network layout from it; it covers `localhost`, the loopback addresses, every entry of
 `tls_hostnames` and, when port forwarding is on and the router reported it, your router's public
 address. If that public address changes, the second certificate is replaced once (players see the
-browser warning again). The address appears on that certificate at the next one-minute check after the router reports it. Both certificates follow the rules below.
+browser warning again). The address appears on that certificate at the next one-minute check after the router reports it. The third certificate is for the machine that runs Shadowcat: your own
+browser, connecting from `localhost`, gets a certificate that names only `localhost`, `127.0.0.1`
+and `::1`. It carries no adapter address, no `tls_hostnames` entry and no machine name. All three follow the rules below.
 
 A player counts as being on your local network only when the connection reaches the server from a
 private address that is not your own machine and not a proxy listed in `trusted_proxies`. A
-connection that comes from loopback or a listed proxy (a tunnel agent or a TCP-passthrough proxy
-on the same machine, for example) fronts players the server cannot tell apart, so it gets the
-second certificate. One limit remains: a router that rewrites the source address of forwarded
+connection from your own machine (loopback) gets the third certificate. A tunnel or proxy that
+runs on your machine also connects from loopback, so the players behind it see the third
+certificate too, which tells them nothing about your network; you do not need to turn the tunnel
+off to host. A connection from a proxy you list in `trusted_proxies` gets the second certificate,
+whether it is on your machine or not. The admin TLS status shows each admin the fingerprint of the
+certificate their own browser receives, so an admin on your machine sees the third. One limit remains: a router that rewrites the source address of forwarded
 connections to a private address, or a passthrough proxy on another machine of your network that
 is not in `trusted_proxies`, looks like a local player and is shown the first certificate,
 including your adapter addresses. List such a proxy in `trusted_proxies`. Neither lists the
 machine's hostname unless you set `tls_advertise_hostname = true` (see the table above for why); a
 browser then shows a name-mismatch error on top of the trust warning if a player types that name.
-Each is regenerated only when it expires within 30 days, when the file cannot be read, when a
+The first two are regenerated only when they expire within 30 days (the third only for that reason or an unreadable file), when the file cannot be read, when a
 `tls_hostnames` entry is missing from it, or when it lists the machine hostname while
 `tls_advertise_hostname` is off (for example after you turn the option back off). A new network address does **not** regenerate either — that
 would make every player accept the browser warning again after each DHCP change; the log notes the
@@ -177,7 +182,7 @@ mismatch once instead. Force a new certificate with:
 ./shadowcat --tls-regenerate
 ```
 
-which regenerates both, prints the new fingerprints and exits (it cannot be combined with `--backup-to`,
+which regenerates all three, prints the new fingerprints and exits (it cannot be combined with `--backup-to`,
 `--restore-from` or a subcommand).
 
 **What players see.** A self-signed certificate is not vouched for by any authority, so each
