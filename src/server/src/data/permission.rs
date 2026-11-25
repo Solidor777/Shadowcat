@@ -311,8 +311,7 @@ pub fn mirror_current_snapshot<'a>(
         let _ = collect_overrides(d, "", &mut overrides);
         let touches_perms = matches!(
             op,
-            Operation::Update { changes, .. }
-                if changes.iter().any(|c| touches_permissions(&c.path))
+            Operation::Update { changes, .. } if retracts_hidden(&d.doc_type, changes)
         );
         per_op.push(Some(OpSnapshot {
             owner_at_commit: effective_owner_via(d, actor_lookup),
@@ -962,25 +961,57 @@ const IDENTITY_HIDDEN_COPY_POINTERS: [&str; 4] = [
 /// deserializing a `TokenEngine`: `own_overrides` runs for every `doc_type` and must not
 /// assume one document's shape.
 fn identity_hidden_pointers(doc: &Document) -> impl Iterator<Item = (String, Visibility)> {
-    let active = doc.doc_type == TOKEN_DOC_TYPE
-        && flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")));
-    let copies = if active {
-        doc.embedded
-            .get(EMBEDDED_ACTOR_COLLECTION)
-            .map_or(0, Vec::len)
+    let pointers = if identity_active(doc) {
+        identity_pointers(doc)
     } else {
-        0
+        Vec::new()
     };
-    let own = IDENTITY_HIDDEN_POINTERS
-        .iter()
-        .filter(move |_| active)
-        .map(|p| (*p).to_string());
+    pointers.into_iter().map(|p| (p, Visibility::OwnerOrGm))
+}
+
+/// Whether `doc` is a token whose `identity_hidden` flag is on.
+fn identity_active(doc: &Document) -> bool {
+    doc.doc_type == TOKEN_DOC_TYPE
+        && flag_on(doc.engine.as_ref().and_then(|e| e.get("identity_hidden")))
+}
+
+/// Every pointer the secret-identity flag governs on a token (`IDENTITY_HIDDEN_POINTERS` plus
+/// `IDENTITY_HIDDEN_COPY_POINTERS` for each embedded actor copy), whatever the flag's current
+/// value; empty for any other `doc_type`. `identity_hidden_pointers` is this set while the flag
+/// is on, and the reveal half of `filter_command`'s flag-flip delivery re-sends exactly this set
+/// once the flag is off, so the two cannot disagree about which fields the flag covers.
+fn identity_pointers(doc: &Document) -> Vec<String> {
+    if doc.doc_type != TOKEN_DOC_TYPE {
+        return Vec::new();
+    }
+    let copies = doc
+        .embedded
+        .get(EMBEDDED_ACTOR_COLLECTION)
+        .map_or(0, Vec::len);
+    let own = IDENTITY_HIDDEN_POINTERS.iter().map(|p| (*p).to_string());
     let copy_identity = (0..copies).flat_map(|i| {
         IDENTITY_HIDDEN_COPY_POINTERS
             .iter()
             .map(move |p| format!("/embedded/{EMBEDDED_ACTOR_COLLECTION}/{i}{p}"))
     });
-    own.chain(copy_identity).map(|p| (p, Visibility::OwnerOrGm))
+    own.chain(copy_identity).collect()
+}
+
+/// The pointer of a token's secret-identity flag.
+const IDENTITY_FLAG_POINTER: &str = "/engine/identity_hidden";
+
+/// Whether an `Update` to a `doc_type` document changes what a non-owner may hold without
+/// being a whole-document READ transition: a write into `permissions`, or (on a token) a write
+/// that overlaps the secret-identity flag (`IDENTITY_FLAG_POINTER`, directly or through an
+/// ancestor such as `/engine`). Such an op captures the commit-time hidden set
+/// (`OpSnapshot::retraction_hidden_at_commit`) so `filter_command` can null what a recipient
+/// already holds and may no longer see. The one decision both snapshot builders and
+/// `filter_command` read.
+pub(crate) fn retracts_hidden(doc_type: &str, changes: &[FieldChange]) -> bool {
+    changes.iter().any(|c| {
+        touches_permissions(&c.path)
+            || (doc_type == TOKEN_DOC_TYPE && paths_overlap(&c.path, IDENTITY_FLAG_POINTER))
+    })
 }
 
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
@@ -2025,9 +2056,8 @@ fn collect_hidden(
 /// just-hidden field is retracted from recipients who can no longer see it. A `system`
 /// field literally named `permissions` over-triggers, which is safe (it only re-nulls
 /// already-hidden fields).
-/// Consumed cross-module by `SqliteRepository::build_op_snapshot` to decide whether an Update
-/// op's commit-time snapshot needs a retraction set.
-pub(crate) fn touches_permissions(path: &str) -> bool {
+/// One of the two triggers of `retracts_hidden`; also gates `scrub_recipient_lists`.
+fn touches_permissions(path: &str) -> bool {
     path.split('/').any(|seg| seg == "permissions")
 }
 
@@ -2388,7 +2418,7 @@ pub fn filter_command<'a>(
                     // through THIS recipient's commit-time access only — never the union, and
                     // never whatever is live now. Each retracting command owns its own
                     // retraction moment.
-                    if changes.iter().any(|c| touches_permissions(&c.path)) {
+                    if retracts_hidden(&commit_doc.doc_type, changes) {
                         if let Some(retraction) = &op_snapshot.retraction_hidden_at_commit {
                             for ptr in hidden_from_overrides(retraction, &access_commit) {
                                 kept.push(FieldChange {
@@ -2396,6 +2426,26 @@ pub fn filter_command<'a>(
                                     path: ptr,
                                     old: serde_json::Value::Null,
                                     new: serde_json::Value::Null,
+                                });
+                            }
+                        }
+                    }
+                    // Reveal: a flag flip to off leaves a recipient holding the stripped
+                    // copy, so every identity pointer it may now see is re-sent with its
+                    // current value. A pointer another override still hides stays out.
+                    if retracts_hidden(&commit_doc.doc_type, changes) && !identity_active(&cur.doc)
+                    {
+                        let whole = serde_json::to_value(&cur.doc).unwrap_or_default();
+                        for ptr in identity_pointers(&cur.doc) {
+                            let covered = hidden
+                                .iter()
+                                .any(|h| *h == ptr || ptr.starts_with(&format!("{h}/")));
+                            if let (false, Some(value)) = (covered, whole.pointer(&ptr)) {
+                                kept.push(FieldChange {
+                                    remove: false,
+                                    path: ptr,
+                                    old: serde_json::Value::Null,
+                                    new: value.clone(),
                                 });
                             }
                         }

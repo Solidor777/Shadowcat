@@ -359,3 +359,125 @@ fn identity_hidden_copy_pointers_reach_the_merge_oracle_and_the_commit_time_snap
         }
     }
 }
+
+// ---- a live flip of the flag reaches already-connected recipients ----
+
+/// What a stranger's connection receives for an Update of token `after` that wrote `changes`.
+fn flip_delta(mut after: Document, changes: Vec<FieldChange>) -> Vec<FieldChange> {
+    after.permissions.default = DocRole::Observer;
+    let id = after.id;
+    let cmd = Command {
+        seq: 1,
+        world_id: crate::test_ids::test_uuid(7),
+        author: crate::test_ids::test_uuid(9),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: id,
+            changes,
+        }],
+    };
+    let current = HashMap::from([(id, current_doc(after, 1))]);
+    let lookup = |_: &Uuid| None;
+    let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
+    let ctx = PermissionContext {
+        user_id: crate::test_ids::test_uuid(2),
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snapshot,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    match out.ops.into_iter().next() {
+        Some(Operation::Update { changes, .. }) => changes,
+        other => panic!("expected an Update, got {other:?}"),
+    }
+}
+
+/// The write that turns the flag `to`.
+fn flag_change(to: bool) -> Vec<FieldChange> {
+    vec![FieldChange {
+        remove: false,
+        path: "/engine/identity_hidden".into(),
+        old: serde_json::json!(!to),
+        new: serde_json::json!(to),
+    }]
+}
+
+#[test]
+fn turning_the_flag_on_nulls_the_identity_a_connected_stranger_holds() {
+    let got = flip_delta(token(true), flag_change(true));
+    for pointer in [
+        "/name",
+        "/engine/visual",
+        "/engine/overrides/visual",
+        "/engine/overrides/name",
+        "/engine/overrides/disposition",
+        "/engine/actor_id",
+    ] {
+        assert!(
+            got.iter()
+                .any(|c| c.path == pointer && c.new.is_null() && !c.remove),
+            "{pointer} must be retracted, got {got:?}"
+        );
+    }
+    assert!(!serde_json::to_string(&got).unwrap().contains(REAL_NAME));
+}
+
+#[test]
+fn turning_the_flag_off_delivers_the_real_identity_to_a_connected_stranger() {
+    let got = flip_delta(token(false), flag_change(false));
+    let name = got.iter().find(|c| c.path == "/name").expect("name sent");
+    assert_eq!(name.new, REAL_NAME);
+    for pointer in [
+        "/engine/visual",
+        "/engine/overrides/visual",
+        "/engine/overrides/name",
+        "/engine/overrides/disposition",
+        "/engine/actor_id",
+    ] {
+        assert!(
+            got.iter().any(|c| c.path == pointer && !c.new.is_null()),
+            "{pointer} must be delivered, got {got:?}"
+        );
+    }
+}
+
+#[test]
+fn a_flag_flip_through_an_ancestor_write_reaches_the_stranger_too() {
+    let mut after = token(true);
+    let engine = after.engine.clone().unwrap();
+    let got = flip_delta(
+        after.clone(),
+        vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: serde_json::json!({}),
+            new: engine,
+        }],
+    );
+    after.name = None;
+    assert!(
+        got.iter().any(|c| c.path == "/name" && c.new.is_null()),
+        "an `/engine` write that sets the flag must retract the name, got {got:?}"
+    );
+}
+
+#[test]
+fn turning_the_flag_off_withholds_a_pointer_an_author_override_still_hides() {
+    let mut after = token(false);
+    after
+        .permissions
+        .property_overrides
+        .insert("/engine/visual".into(), Visibility::GmOnly);
+    let got = flip_delta(after, flag_change(false));
+    assert!(
+        got.iter()
+            .all(|c| c.path != "/engine/visual" || c.new.is_null()),
+        "a still-hidden pointer must carry no value, got {got:?}"
+    );
+    assert!(got.iter().any(|c| c.path == "/name"));
+}

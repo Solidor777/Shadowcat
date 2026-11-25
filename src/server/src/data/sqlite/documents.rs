@@ -198,9 +198,8 @@ impl SqliteRepository {
                 let mut overrides_full = Vec::new();
                 crate::data::permission::collect_overrides(doc, "", &mut overrides_full)
                     .map_err(|e| DataError::OpFailed(e.to_string()))?;
-                let touches_perms = changes
-                    .iter()
-                    .any(|c| crate::data::permission::touches_permissions(&c.path));
+                let touches_perms =
+                    crate::data::permission::retracts_hidden(&doc.doc_type, changes);
                 let retraction_hidden_at_commit = if touches_perms {
                     Some(overrides_full.clone())
                 } else {
