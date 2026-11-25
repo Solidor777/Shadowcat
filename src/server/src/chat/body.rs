@@ -90,17 +90,29 @@ struct Composer<'a, 'd> {
     /// charges its spans here before any of them is composed, so the total never exceeds
     /// `rolls::MAX_INLINE_ROLLS`.
     spans_left: usize,
+    /// Secret recipient names still allowed across the whole message. Each `@name` secret span
+    /// charges its names here before its first lookup, so one send never runs more than
+    /// `MAX_WHISPER_RECIPIENTS` member lookups however many spans it holds.
+    recipients_left: usize,
 }
 
 impl Composer<'_, '_> {
-    /// Sanitizes `text` and folds its image sources into `image_urls`.
+    /// Sanitizes `text` and, at `depth` 0, folds its image sources into `image_urls`.
     ///
     /// Each `sanitize` call dedups WITHIN its own text only; a URL repeated across two
     /// different Text chunks (e.g. the same image before and after an inline roll) must not
     /// queue two identical enrichment jobs / `Segment::Image`s.
-    fn push_text(&mut self, text: &str, segments: &mut Vec<Segment>) {
+    ///
+    /// A text inside a secret (`depth` above 0) queues no image job: the post-publish pipeline
+    /// appends the fetched image as a top-level `Segment::Image`, which would show the image
+    /// and its alt text to readers the secret excludes. A secret that must show an image uses
+    /// an `[[asset:...]]` span, which composes inside the secret's own content.
+    fn push_text(&mut self, text: &str, segments: &mut Vec<Segment>, depth: usize) {
         let sanitized = sanitize::sanitize(text, self.deps.policy);
         segments.extend(sanitized.segments);
+        if depth > 0 {
+            return;
+        }
         for src in sanitized.image_urls {
             if !self
                 .image_urls
@@ -115,17 +127,18 @@ impl Composer<'_, '_> {
     /// The visibility a secret span's `spec` names. `gm` is `GmOnly`; a `@name` list resolves
     /// each name against the world's members (fail-closed on an unknown name) and appends the
     /// author, deduplicated, since `Visibility::Recipients` matches by exact membership.
-    async fn secret_visibility(&self, spec: &str) -> Result<Visibility, ComposeError> {
+    async fn secret_visibility(&mut self, spec: &str) -> Result<Visibility, ComposeError> {
         match rolls::parse_secret_spec(spec).map_err(ComposeError::Roll)? {
             rolls::SecretSpec::Gm => Ok(Visibility::GmOnly),
             rolls::SecretSpec::Users(names) => {
                 // Capped BEFORE the first lookup: resolving first would run one database
                 // round-trip per attacker-supplied name.
-                if names.len() > super::MAX_WHISPER_RECIPIENTS {
+                if names.len() > self.recipients_left {
                     return Err(ComposeError::Roll(
                         rolls::RollError::TooManySecretRecipients,
                     ));
                 }
+                self.recipients_left -= names.len();
                 let mut recipients = vec![self.deps.author];
                 for name in names {
                     let id = self
@@ -151,7 +164,7 @@ impl Composer<'_, '_> {
                 rolls::scan_body_capped(body, self.spans_left).map_err(ComposeError::Roll)?;
             let mut segments = Vec::with_capacity(chunks.len());
             if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-                self.push_text(body, &mut segments);
+                self.push_text(body, &mut segments, depth);
                 return Ok(segments);
             }
             self.spans_left -= chunks
@@ -160,7 +173,7 @@ impl Composer<'_, '_> {
                 .count();
             for chunk in chunks {
                 match chunk {
-                    rolls::BodyChunk::Text(t) => self.push_text(t, &mut segments),
+                    rolls::BodyChunk::Text(t) => self.push_text(t, &mut segments, depth),
                     rolls::BodyChunk::Inline(formula) => match self.mode {
                         ScanMode::NoExecute => return Err(ComposeError::Inline),
                         ScanMode::Execute => {
@@ -306,6 +319,7 @@ pub(crate) async fn compose_message(
         roll_host: None,
         image_urls: Vec::new(),
         spans_left: rolls::MAX_INLINE_ROLLS,
+        recipients_left: super::MAX_WHISPER_RECIPIENTS,
     };
     let segments = composer.compose_chunks(body, 0).await?;
     Ok((segments, composer.image_urls))

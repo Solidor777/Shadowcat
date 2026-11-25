@@ -159,6 +159,29 @@
     });
   }
 
+  /** Svelte action for the html segment's container: a click on a same-page fragment link
+   * (`href="#..."`) never reaches the browser's navigation. The hash router owns
+   * `location.hash`, so a default fragment navigation would unmount the world session. A
+   * surrounding view that owns the fragment targets (a note body) scrolls to them itself.
+   * @param node The element holding the sanitized html.
+   * @returns The action handle that removes the listener.
+   * @example
+   * ```
+   * // internal; applied as `use:keepFragmentLinksOnPage` on the html container
+   * declare const node: HTMLElement;
+   * const handle = keepFragmentLinksOnPage(node);
+   * handle.destroy();
+   * ```
+   */
+  function keepFragmentLinksOnPage(node: HTMLElement): { /** Removes the click listener. */ destroy: () => void } {
+    const onClick = (event: MouseEvent): void => {
+      const href = (event.target as Element).closest("a")?.getAttribute("href");
+      if (href?.startsWith("#")) event.preventDefault();
+    };
+    node.addEventListener("click", onClick);
+    return { destroy: () => node.removeEventListener("click", onClick) };
+  }
+
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
    * channel — never re-executes the carrying message's own roll. A statted button is
    * per-clicker: the send carries the clicker's own actor binding (the pending one-shot
@@ -203,7 +226,7 @@
     the raw source URL is structurally never stored on any of those segments (only a Uuid asset
     id is), so there is no code path by which the viewer's browser could fetch a remote,
     attacker-chosen resource through this component. -->
-    <span class="seg-html">{@html s.sanitized_html}</span>
+    <span class="seg-html" use:keepFragmentLinksOnPage>{@html s.sanitized_html}</span>
   {:else if s.kind === "roll_embed"}
     <!-- `flavor` is author-written plain text: an escaped text node, never {@html}. -->
     {#if s.flavor}<span class="roll-flavor" data-testid="roll-flavor">{s.flavor}</span>{/if}

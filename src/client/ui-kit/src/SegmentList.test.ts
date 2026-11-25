@@ -49,6 +49,25 @@ describe("SegmentList — the {@html} boundary", () => {
     expect(strong?.textContent).toBe("bold");
   });
 
+  it("cancels a click on a same-page fragment link and leaves an external link alone", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [
+          { kind: "html", sanitized_html: '<a href="#intro">in</a> <a href="https://example.com/">out</a>' },
+        ],
+        channel: "general",
+      },
+      context: setAppContextForTest({}),
+    });
+    const click = (link: Element): MouseEvent => {
+      const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+      link.dispatchEvent(ev);
+      return ev;
+    };
+    expect(click(container.querySelector('a[href="#intro"]')!).defaultPrevented).toBe(true);
+    expect(click(container.querySelector('a[href^="https"]')!).defaultPrevented).toBe(false);
+  });
+
   it("filters out an unknown segment kind without crashing, rendering only known segments", () => {
     const { container } = render(SegmentList, {
       props: {

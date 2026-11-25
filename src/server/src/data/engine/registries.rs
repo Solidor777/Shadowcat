@@ -464,13 +464,14 @@ pub struct ChatSettingsEngine {
     /// `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
     /// an explicit GM override.
     pub link_previews: Option<bool>,
-    /// Whether players who are not party to a blind roll still see that it happened (a card
-    /// saying a blind roll was made, never its formula or result). Absent means `false`: the
-    /// message is invisible to every player except its roller; the GM always sees it.
+    /// Whether players who are not party to a blind roll a player made still see that it
+    /// happened (a card saying a blind roll was made, never its formula or result). It never
+    /// applies to a GM's blind roll. Absent means `false`: the message is invisible to every
+    /// player except its roller; the GM always sees it.
     pub blind_visible_to_players: Option<bool>,
     /// Whether the owner of the actor a GM's blind roll is attributed to sees that the roll
-    /// happened. Absent means `false`. Independent of `blind_visible_to_players`: either one
-    /// being on admits the actor's owner.
+    /// happened. It is the only setting that shows a GM's blind roll to a player. Absent means
+    /// `false`.
     pub blind_visible_to_actor_owner: Option<bool>,
 }
 

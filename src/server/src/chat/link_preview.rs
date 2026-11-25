@@ -423,7 +423,9 @@ pub async fn enrich(
             matches!(p, PendingEnrichment::PreviewImage { preview_url, .. }
                 if *preview_url == preview.url)
         });
-        if !queued {
+        // The image fetch is its own outbound GET, charged here for a cached preview and a
+        // fresh one alike; a refused job leaves the card without its image.
+        if !queued && rate.check(user, now_ms, PREVIEW_FETCH_PER_MIN) {
             pending.push(PendingEnrichment::PreviewImage {
                 cache_urls: Vec::new(),
                 preview_url: preview.url.clone(),

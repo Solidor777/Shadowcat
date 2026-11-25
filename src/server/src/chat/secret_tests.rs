@@ -73,6 +73,170 @@ async fn compose(body: &str) -> Result<Vec<Segment>, rolls::RollError> {
     }
 }
 
+/// Composes `body` like `compose` with inline images on, returning the image sources the
+/// composer collected for the post-publish pipeline.
+async fn compose_images(body: &str) -> Vec<sanitize::ImageSource> {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, crate::auth::role::ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    let policy = settings::ChatContentPolicy {
+        markdown: Some(true),
+        images: Some(true),
+        ..Default::default()
+    };
+    let deps = body::ComposeDeps {
+        repo: &repo,
+        world_id: w.id,
+        channel: "general",
+        actor_owner: None,
+        policy: &policy,
+        author: gm,
+    };
+    body::compose_message(body, deps, body::ScanMode::Execute)
+        .await
+        .unwrap()
+        .1
+}
+
+// Fails if `Composer::push_text` collects image sources at secret depth: the post-publish
+// pipeline then appends a top-level `Segment::Image` that every reader sees.
+#[tokio::test]
+async fn an_image_inside_a_secret_queues_no_fetch() {
+    let img = "![the boss](https://img.example/boss.png)";
+    assert_eq!(
+        compose_images(img).await.len(),
+        1,
+        "control: the same image outside a secret queues a fetch"
+    );
+    assert!(compose_images(&format!("[[secret:gm|{img}]]"))
+        .await
+        .is_empty());
+    assert!(compose_images(&format!("[[secret:@gm|{img}]]"))
+        .await
+        .is_empty());
+    assert_eq!(
+        compose_images(&format!("pre {img} [[secret:gm|{img}]]"))
+            .await
+            .len(),
+        1,
+        "an image outside the secret still queues"
+    );
+}
+
+// Fails if the recipient budget is per span: two spans of 65 names are each under the cap but
+// together run 130 lookups.
+#[tokio::test]
+async fn the_secret_recipient_cap_is_per_message() {
+    let names = |n: usize| vec!["@gm"; n].join(" ");
+    assert!(
+        compose(&format!("[[secret:{}|x]]", names(MAX_WHISPER_RECIPIENTS)))
+            .await
+            .is_ok(),
+        "control: one span at the cap composes"
+    );
+    assert!(matches!(
+        compose(&format!(
+            "[[secret:{}|x]] [[secret:{}|y]]",
+            names(65),
+            names(65)
+        ))
+        .await,
+        Err(rolls::RollError::TooManySecretRecipients)
+    ));
+}
+
+/// The roll id of the first `RollEmbed` inside the first top-level secret of message `id`.
+async fn secret_roll_id(h: &Harness, id: Uuid) -> Uuid {
+    let doc = h.repo.get_document(id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+    let Some(Segment::Secret { content, .. }) = sys
+        .content
+        .iter()
+        .find(|s| matches!(s, Segment::Secret { .. }))
+    else {
+        panic!("a secret segment");
+    };
+    content
+        .iter()
+        .find_map(|s| match s {
+            Segment::RollEmbed { roll_id, .. } => Some(*roll_id),
+            _ => None,
+        })
+        .expect("a roll inside the secret")
+}
+
+// Fails if `handle_edit_message` checks only top-level segments: the edit then erases the roll
+// the secret holds.
+#[tokio::test]
+async fn a_roll_inside_a_secret_is_edit_immutable() {
+    let h = harness().await;
+    let id = send(&h, &h.sender, "x [[secret:gm|[[1d20]]]]", Audience::Public).await;
+    secret_roll_id(&h, id).await;
+    let rate = PingRateLimiter::new();
+    let err = handle_edit_message(
+        MessageRequestCtx {
+            room: &h.room,
+            repo: &h.repo,
+            ctx: &h.sender,
+            rate: &rate,
+            vfx_rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 300,
+            budget_per_min: 30,
+        },
+        id,
+        "rolled nothing".into(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, SendMessageError::RollImmutable));
+}
+
+// Fails if `handle_recalc_roll` searches only top-level segments: a GM then gets
+// `RollNotFound` for a roll a secret holds.
+#[tokio::test]
+async fn a_gm_can_recalculate_a_roll_inside_a_secret() {
+    let h = harness().await;
+    let id = send(&h, &h.sender, "x [[secret:gm|[[1d20]]]]", Audience::Public).await;
+    let roll_id = secret_roll_id(&h, id).await;
+    let rate = PingRateLimiter::new();
+    handle_recalc_roll(
+        RecalcRollRequestCtx {
+            room: &h.room,
+            repo: &h.repo,
+            ctx: &h.gm,
+            rate: &rate,
+            now: 400,
+            budget_per_min: 30,
+        },
+        id,
+        roll_id,
+        vec![crate::dice::RecalcOp::RerollDice(vec![])],
+    )
+    .await
+    .unwrap();
+    let doc = h.repo.get_document(id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+    let Some(Segment::Secret { content, .. }) = sys
+        .content
+        .iter()
+        .find(|s| matches!(s, Segment::Secret { .. }))
+    else {
+        panic!("a secret segment");
+    };
+    assert!(content.iter().any(|s| matches!(
+        s,
+        Segment::RollEmbed { recalc_history: Some(h), .. } if h.len() == 1
+    )));
+}
+
 #[tokio::test]
 async fn a_gm_secret_reaches_the_gm_and_is_stripped_from_a_player() {
     let h = harness().await;
