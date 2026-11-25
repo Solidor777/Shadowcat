@@ -40,6 +40,10 @@ const RULES = {
 // A clean run here is evidence the tags exist, not that the docs are correct.
 
 export default [
+  // Playwright's per-run output: git-ignored, and it holds whole browser profiles (vendor
+  // extensions, minified bundles) that the HTTPS specs launch inside it. Linting it fails the
+  // gate on code nobody wrote, and only on a machine that has run the browser suite.
+  { ignores: ["**/test-results/"] },
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     ignores: [
