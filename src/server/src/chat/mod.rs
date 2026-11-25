@@ -346,12 +346,11 @@ pub enum Segment {
         /// Stable identity for this roll, independent of its position in `content`
         /// -- a recalc targets a roll by this id, never by array index, so it
         /// survives any future reordering (e.g. link-preview enrichment appending
-        /// later segments). Defaults to a fresh id on deserialize so a roll
-        /// embedded before this field existed still round-trips.
+        /// later segments). Defaults to a fresh id on deserialize when the key is absent.
         #[serde(default = "Uuid::new_v4")]
         roll_id: Uuid,
         /// The parsed formula this roll was scored from, kept so a GM can later
-        /// recalculate it. `None` for any roll embedded before this field existed
+        /// recalculate it. `None` when the roll carries no stored spec
         /// -- `handle_recalc_roll` refuses `NoStoredState` on `None`, never
         /// guesses a spec back from `outcome`. GM-visible only (see
         /// `roll_property_overrides`). Boxed: `RollSpec` is large enough
@@ -363,8 +362,7 @@ pub enum Segment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spec: Option<Box<RollSpec>>,
         /// The natural-face roll log `outcome` was evaluated from, kept for the
-        /// same recalculation purpose as `spec` (same None-for-pre-existing rule
-        /// and boxing rationale). GM-visible only.
+        /// same recalculation purpose as `spec` (same boxing rationale). GM-visible only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         raw: Option<Box<RawRoll>>,
         /// Present iff this roll has been recalculated at least once: an ordered,
@@ -376,7 +374,7 @@ pub enum Segment {
         recalc_history: Option<Vec<RecalcEntry>>,
         /// Author-written caption describing the roll (the text after the first `|` of a
         /// `/roll <formula> | <flavor>` body). Plain text, never markup; `None` for a roll sent
-        /// without one and for any roll stored before this field existed. Visible to every
+        /// without one. Visible to every
         /// recipient. A recalculation never touches it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flavor: Option<String>,
@@ -392,7 +390,7 @@ pub enum Segment {
         label: Option<String>,
         /// Optional caption the button re-sends as the flavor of the roll it makes (the text after
         /// the second `|` of a `[[roll:<formula>|<label>|<flavor>]]` span). Plain data, never
-        /// markup; `None` for a button stored before this field existed.
+        /// markup; `None` when the author wrote none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flavor: Option<String>,
     },
@@ -448,7 +446,7 @@ pub enum Segment {
         /// Display text captured at authoring time (the composer's `|<label>` span suffix), or
         /// `None` when the span carried no `|`. `Some` text is never empty and never re-resolved
         /// at render. `#[serde(default)]`: a stored segment may omit the key, which reads as
-        /// `None`; every segment stored before this field became optional carries `Some`.
+        /// `None`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
@@ -3122,4 +3120,4 @@ mod blind_settings_tests;
 mod link_preview_ingest_tests;
 
 #[cfg(test)]
-mod system_payload;
+mod system_payload_tests;
