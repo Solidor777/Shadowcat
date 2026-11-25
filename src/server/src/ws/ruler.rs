@@ -80,16 +80,14 @@ where
 
 /// Whether `points` is an admissible `ClientMsg::RulerUpdate` payload: every coordinate finite and
 /// within `scene::move_exec::MAX_GATE_WALK_COORD` (the magnitude bound every client-supplied scene
-/// coordinate obeys — `vfx::validate_bounds` applies it to a one-shot's anchor), and at most
-/// `MAX_RULER_POINTS` vertices (already enforced at parse time by `deserialize_points`; checked
-/// again so the function is the whole admissibility definition for a list built any other way).
-/// Pure and I/O-free so it runs before the scene-authorization read.
+/// coordinate obeys — `vfx::validate_bounds` applies it to a one-shot's anchor). The vertex
+/// count is bounded at parse time by `deserialize_points`. Pure and I/O-free so it runs before
+/// the scene-authorization read.
 pub(crate) fn points_admissible(points: &[(f64, f64)]) -> bool {
     let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
-    points.len() <= MAX_RULER_POINTS
-        && points
-            .iter()
-            .all(|&(x, y)| x.is_finite() && y.is_finite() && x.abs() <= bound && y.abs() <= bound)
+    points
+        .iter()
+        .all(|&(x, y)| x.is_finite() && y.is_finite() && x.abs() <= bound && y.abs() <= bound)
 }
 
 /// Whether `origin` is an admissible `ClientMsg::RulerUpdate::origin`: at most
