@@ -107,7 +107,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `route_prefix` | *(unset: served at the root)* | Subpath the whole server is served under, e.g. `/ttrpg`, for a reverse proxy that forwards the path unchanged (see [Serving under a subpath](#serving-under-a-subpath)). A leading slash is added and a trailing one removed; segments may use letters, digits and `-` `.` `_` `~` only, anything else stops the server at start |
 | `tls` | `auto` | Built-in HTTPS: `auto` serves TLS on the same port beside plain HTTP, `off` serves plain HTTP only |
 | `tls_cert` / `tls_key` | *(unset)* | Your own certificate chain and private key (PEM); both or neither |
-| `tls_hostnames` | *(empty)* | Extra DNS names / IP addresses the self-signed certificate must cover |
+| `tls_hostnames` | *(empty)* | Extra DNS names / IP addresses the self-signed certificates must cover. Every entry is listed on both certificates, including the one shown to players on the internet, so list only an address you are willing to publish. If you forward a port by hand, put your public address here: only the automatic port forwarding adds it by itself |
 | `tls_advertise_hostname` | `false` | List this machine's hostname (and `<hostname>.local`) in the self-signed certificate. Off by default because the certificate is shown to anyone who connects, before any login, and machine names often contain a person's name. Turn it on if players type the machine name; the price is that the name is visible to every peer that reaches the port. Changing it regenerates the certificate at the next start (browsers warn once more) |
 | `tls_dir` | `tls/` beside the db | Where the self-signed certificate and key are kept |
 | `public_url` | *(unset)* | The `https://` origin players should use (scheme, host and optional port only: user information, a path, a query or a fragment stop the server at start), published in `GET /api/config` |
@@ -147,7 +147,7 @@ exists keeps its permissions. If the operating system refuses to restrict the ke
 not written at all: the server logs it and serves an in-memory certificate for that run.
 
 Shadowcat keeps two such certificates and picks one by where the player connects from. A player on
-your local network (private, link-local or loopback address) gets a certificate that covers
+your local network (a private or link-local address) gets a certificate that covers
 `localhost`, the loopback addresses, every entry of `tls_hostnames`, and the LAN and global
 addresses of the machine's network adapters at the time it was generated (virtual adapters such as
 Docker bridges and Hyper-V switches are skipped). A player on the internet gets a second
@@ -155,7 +155,16 @@ certificate that lists none of the machine's adapter addresses, so they cannot l
 network layout from it; it covers `localhost`, the loopback addresses, every entry of
 `tls_hostnames` and, when port forwarding is on and the router reported it, your router's public
 address. If that public address changes, the second certificate is replaced once (players see the
-browser warning again). Both certificates follow the rules below. Neither lists the
+browser warning again). The address appears on that certificate at the next one-minute check after the router reports it. Both certificates follow the rules below.
+
+A player counts as being on your local network only when the connection reaches the server from a
+private address that is not your own machine and not a proxy listed in `trusted_proxies`. A
+connection that comes from loopback or a listed proxy (a tunnel agent or a TCP-passthrough proxy
+on the same machine, for example) fronts players the server cannot tell apart, so it gets the
+second certificate. One limit remains: a router that rewrites the source address of forwarded
+connections to a private address, or a passthrough proxy on another machine of your network that
+is not in `trusted_proxies`, looks like a local player and is shown the first certificate,
+including your adapter addresses. List such a proxy in `trusted_proxies`. Neither lists the
 machine's hostname unless you set `tls_advertise_hostname = true` (see the table above for why); a
 browser then shows a name-mismatch error on top of the trust warning if a player types that name.
 Each is regenerated only when it expires within 30 days, when the file cannot be read, when a

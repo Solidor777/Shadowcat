@@ -677,22 +677,31 @@ impl Snapshot {
     }
 }
 
-/// Which self-signed certificate a peer is shown, decided once from its socket address.
+/// Which self-signed certificate a peer is shown, decided once from its socket address and from
+/// whether that address is shared by players the server cannot tell apart.
 ///
 /// The self-signed certificate is presented before any authentication, so a [`PeerScope::Public`]
-/// peer must never read a local interface address from it.
+/// peer must never read a local interface address from it. A peer that is a listed trusted proxy
+/// or a loopback peer (`Config::is_cap_exempt`) fronts players whose addresses are unknown: a
+/// tunnel agent or a TCP-passthrough proxy forwards internet players from such an address. Those
+/// peers are `Public`. Remaining limit: a router that rewrites the source address of forwarded
+/// connections to a private LAN address, or a passthrough proxy on another LAN machine that is not
+/// a listed trusted proxy, is indistinguishable from a LAN player and is shown the LAN
+/// certificate.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::tls::resolver::PeerScope;
 ///
-/// assert_eq!(PeerScope::of("192.168.1.20".parse().unwrap()), PeerScope::Lan);
-/// assert_eq!(PeerScope::of("203.0.113.9".parse().unwrap()), PeerScope::Public);
+/// assert_eq!(PeerScope::of("192.168.1.20".parse().unwrap(), false), PeerScope::Lan);
+/// assert_eq!(PeerScope::of("203.0.113.9".parse().unwrap(), false), PeerScope::Public);
+/// assert_eq!(PeerScope::of("127.0.0.1".parse().unwrap(), true), PeerScope::Public);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerScope {
-    /// Loopback, private, link-local or unique-local: a peer on the host's own network.
+    /// Private, link-local or unique-local (or loopback when not shared): a peer on the host's
+    /// own network.
     Lan,
     /// Any other address, including carrier-grade NAT (`100.64.0.0/10`), which no local network
     /// owns.
@@ -701,17 +710,23 @@ pub enum PeerScope {
 
 impl PeerScope {
     /// The scope of a peer at `ip` (an IPv4-mapped IPv6 address counts as its IPv4 address).
+    /// `shared_address` is `Config::is_cap_exempt` for the peer (a listed trusted proxy or a
+    /// loopback peer): every player behind such an address shares it, so the peer is `Public`.
     ///
     /// # Examples
     ///
     /// ```
     /// use shadowcat::tls::resolver::PeerScope;
     ///
-    /// assert_eq!(PeerScope::of("::ffff:10.0.0.4".parse().unwrap()), PeerScope::Lan);
-    /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap()), PeerScope::Lan);
-    /// assert_eq!(PeerScope::of("2001:db8::1".parse().unwrap()), PeerScope::Public);
+    /// assert_eq!(PeerScope::of("::ffff:10.0.0.4".parse().unwrap(), false), PeerScope::Lan);
+    /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap(), false), PeerScope::Lan);
+    /// assert_eq!(PeerScope::of("fd00::1".parse().unwrap(), true), PeerScope::Public);
+    /// assert_eq!(PeerScope::of("2001:db8::1".parse().unwrap(), false), PeerScope::Public);
     /// ```
-    pub fn of(ip: std::net::IpAddr) -> Self {
+    pub fn of(ip: std::net::IpAddr, shared_address: bool) -> Self {
+        if shared_address {
+            return PeerScope::Public;
+        }
         let lan = match ip.to_canonical() {
             std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
             std::net::IpAddr::V6(v6) => {
@@ -858,7 +873,7 @@ where
 
 /// The finish phase of a TLS accept: completes the handshake with the configuration `selected`
 /// maps to in `snapshot` for the scope of `peer` ([`PeerScope::of`], the one place a peer address
-/// picks a certificate) and records the single selection outcome in the returned [`ConnMeta`].
+/// picks a certificate; `shared_address` is `Config::is_cap_exempt` for `peer`) and records the single selection outcome in the returned [`ConnMeta`].
 /// Takes the snapshot by value and has no access to the swap cell, so it cannot select a second
 /// time.
 ///
@@ -872,7 +887,7 @@ where
 /// # async fn demo(snapshot: Arc<Snapshot>, io: tokio::net::TcpStream, peer: std::net::SocketAddr) -> std::io::Result<()> {
 /// let start = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), io).await?;
 /// let selected = hello_phase(&start, &snapshot);
-/// let (_stream, meta) = finish_phase(start, snapshot, selected, peer).await?;
+/// let (_stream, meta) = finish_phase(start, snapshot, selected, peer, false).await?;
 /// assert!(meta.tls);
 /// # Ok(()) }
 /// ```
@@ -881,11 +896,12 @@ pub async fn finish_phase<IO>(
     snapshot: Arc<Snapshot>,
     selected: Selected,
     peer: SocketAddr,
+    shared_address: bool,
 ) -> std::io::Result<(TlsStream<IO>, ConnMeta)>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    let config = snapshot.config_for(selected, PeerScope::of(peer.ip()));
+    let config = snapshot.config_for(selected, PeerScope::of(peer.ip(), shared_address));
     let stream = start.into_stream(config).await?;
     Ok((stream, ConnMeta::tls(peer, selected)))
 }

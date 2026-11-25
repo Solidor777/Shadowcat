@@ -2,9 +2,12 @@
 //! status the admin route reports.
 //!
 //! INVARIANT: at most one mapping is held. The mapping lives in `Shared::slot`, written with no
-//! await between the router's grant and the write, so stopping the task by aborting it at any
-//! await leaves the slot equal to what the router holds, and [`PortMapRuntime::shutdown`] deletes
-//! exactly that.
+//! await between the router's grant and the write, and cleared only after the router's delete
+//! returns, so aborting the task at an await leaves the slot recording the mapping the router may
+//! still hold, and [`PortMapRuntime::shutdown`] deletes exactly that. Limit: a renewal that the
+//! router grants with a different external port or address, aborted before the slot is rewritten,
+//! leaves the old record; that mapping then expires with its lease (a UPnP permanent lease does
+//! not).
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -343,6 +346,20 @@ impl PortMapRuntime {
             .filter(|ip| is_public_address(*ip))
     }
 
+    /// The reader the public-peer certificate consults: [`PortMapRuntime::public_address`] on this
+    /// runtime. `main` installs it with [`crate::tls::TlsRuntime::set_external_source`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let source = shadowcat::portmap::runtime::PortMapRuntime::disabled().external_source();
+    /// assert!(source().is_none());
+    /// ```
+    pub fn external_source(self: &Arc<Self>) -> crate::tls::ExternalSource {
+        let runtime = Arc::clone(self);
+        Arc::new(move || runtime.public_address())
+    }
+
     /// Stops the task and deletes the mapping within the deletion deadline. Called after the HTTP
     /// drain. A mapping that cannot be deleted expires with its lease.
     ///
@@ -425,10 +442,13 @@ async fn hold(shared: &Shared) {
             }
             Err(failure) => {
                 tracing::warn!(reason = failure.reason, detail = %failure.detail, "router port mapping renewal failed");
-                let held = lock(&shared.slot).take();
+                // The slot keeps the record until the delete returns, so an abort during the delete
+                // leaves `stop` a mapping to delete again.
+                let held = lock(&shared.slot).clone();
                 if let Some(old) = held {
                     mapping::delete(&shared.targets, &old).await;
                 }
+                lock(&shared.slot).take();
                 set_state(shared, PortMapState::Failed, Some(failure));
                 return;
             }

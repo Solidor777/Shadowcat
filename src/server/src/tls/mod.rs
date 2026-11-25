@@ -13,9 +13,10 @@
 //! INVARIANT: The certificate a connection receives, its [`ConnMeta::cert`] and the HSTS decision
 //! all derive from ONE [`resolver::Snapshot::select`] call (see [`resolver`]).
 //!
-//! INVARIANT: Two self-signed certificates exist. A peer on a loopback, private, link-local or
-//! unique-local address receives the one that lists the machine's interface addresses; every other
-//! peer receives one that lists none (only `localhost`, loopback, `tls_hostnames` and the router's
+//! INVARIANT: Two self-signed certificates exist. A peer on a private, link-local or
+//! unique-local address that is not a loopback peer or a listed trusted proxy receives the one that
+//! lists the machine's interface addresses; every other peer (including every loopback and
+//! trusted-proxy peer, which fronts players the server cannot see) receives one that lists none (only `localhost`, loopback, `tls_hostnames` and the router's
 //! external address when known). The choice is made once, from the accepted socket's peer address,
 //! by [`resolver::PeerScope::of`], so a public player cannot read the host's LAN addresses from the
 //! handshake.
@@ -475,7 +476,7 @@ impl TlsRuntime {
         if !selfsigned.drift.is_empty() {
             tracing::info!(
                 addresses = ?selfsigned.drift,
-                "certificate does not list these local addresses; browsers show a name mismatch on top of the trust warning. Add a tls_hostnames entry or run --tls-regenerate"
+                "certificate does not list these local addresses; browsers show a name mismatch on top of the trust warning. A tls_hostnames entry puts that address on the certificate, and the certificate shown to internet players lists every tls_hostnames entry too, so add only an address you are willing to publish; or run --tls-regenerate"
             );
         }
 

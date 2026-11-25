@@ -101,24 +101,31 @@ host's LAN; a player on the internet has no use for them and must not read them 
 (personal-information security outranks convenience). So two self-signed certificates exist:
 
 - the LAN certificate, above: `localhost`, loopback, `tls_hostnames` and the eligible interface
-  addresses. A peer whose address is loopback, private (RFC 1918), link-local or IPv6
-  unique-local/link-local gets it (`PeerScope::Lan`);
+  addresses. A peer whose address is private (RFC 1918), link-local or IPv6
+  unique-local/link-local gets it (`PeerScope::Lan`), unless that peer is a loopback peer or a
+  listed `trusted_proxies` entry (`Config::is_cap_exempt`): such a peer fronts players the
+  server cannot see (a tunnel agent or a TCP-passthrough proxy opens the connection from
+  loopback or the proxy's address), so it gets the public certificate;
 - the public certificate (`selfsigned-public-cert.pem` / `selfsigned-public-key.pem`): `localhost`,
   loopback, `tls_hostnames` and, once the port-mapping runtime knows it, the router's external
-  address. It lists NO interface address. Every other peer, CGNAT included, gets it
-  (`PeerScope::Public`).
+  address. It lists NO interface address. Every other peer, CGNAT included, and every
+  loopback or trusted-proxy peer, gets it (`PeerScope::Public`).
 
 Both follow the same reuse, expiry, `tls_hostnames`, machine-hostname opt-in and `--tls-regenerate`
 rules (`--tls-regenerate` replaces both and prints both fingerprints). Interface churn never
 regenerates the public certificate, since it lists none. The external address is polled each
-maintenance tick from `PortMapRuntime::public_address` (only a `Mapped` state with a publicly
+maintenance tick (every 60 seconds, so a new mapping reaches the certificate at the next tick) from `PortMapRuntime::public_address` through `PortMapRuntime::external_source` (only a `Mapped` state with a publicly
 routable address). A KNOWN external address the certificate lacks regenerates it once and the new
 certificate lists only the current address; an address that becomes unknown leaves it unchanged, so a
 router that briefly drops the mapping does not re-warn every player. A player who reaches the server
 by a new address needs the new SAN anyway, so one extra warning at that moment is unavoidable. The
 GM sees player addresses and shares their own; that is inherent and not covered. A port forward
-(DNAT) preserves the player's source address, so the accepted peer is the player's public address;
-a hairpin or reverse-proxy connection shows a LAN or loopback peer and gets the LAN certificate.
+(DNAT) is expected to preserve the player's source address, so the accepted peer would be the
+player's public address; this is not yet checked on a real router. Remaining limit: a router that
+rewrites the source address of forwarded connections to a private LAN address, and a
+passthrough proxy on another LAN machine that is not listed in `trusted_proxies`, look like LAN
+players and are shown the LAN certificate, which lists the host's interface addresses. A hairpin
+connection from a LAN client is a LAN peer by definition.
 
 Interface enumeration comes from `netdev`. If it fails, generation proceeds with `localhost`,
 loopback and `tls_hostnames` and logs a warning; enumeration failure is never fatal for TLS. Every `tls_hostnames` entry is validated in `Config::validate_tls` (DNS name or IP
@@ -160,8 +167,8 @@ load so the check is a comparison.
 Mechanism: the connection task awaits `LazyConfigAcceptor` to obtain a `StartHandshake`, then runs
 two free functions with no shared mutable state: `hello_phase(&StartHandshake, &Snapshot) ->
 Selected` (reads the hello, calls `Snapshot::select` exactly once) and `finish_phase(start,
-Arc<Snapshot>, Selected, peer)` (calls `into_stream` with `snapshot.config_for(selected,
-PeerScope::of(peer.ip()))`, the one place the peer scope is decided, and builds
+Arc<Snapshot>, Selected, peer, shared_address)` (calls `into_stream` with `snapshot.config_for(selected,
+PeerScope::of(peer.ip(), shared_address))`, the one place the peer scope is decided (`shared_address` is `Config::is_cap_exempt` for the peer), and builds
 `ConnMeta::tls(peer, selected)`). The caller takes the `Arc<Snapshot>` from the swap cell ONCE and
 passes it to both. `finish_phase` receives the snapshot by value and has NO handle to the swap
 cell, so a second selection or a re-read is impossible by construction; a swap between the two

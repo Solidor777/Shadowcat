@@ -328,7 +328,7 @@ impl SniffListener {
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             if let Some((io, mut meta)) =
-                                negotiate(sock, peer, &runtime, limits.deadline).await
+                                negotiate(sock, peer, exempt, &runtime, limits.deadline).await
                             {
                                 // The one place the exemption is decided: the same value that
                                 // skipped the admission per-peer cap travels with the connection
@@ -422,11 +422,12 @@ impl ConnSource for SniffListener {
 async fn negotiate(
     sock: TcpStream,
     peer: SocketAddr,
+    shared_address: bool,
     runtime: &TlsRuntime,
     deadline: Duration,
 ) -> Option<(ConnStream, ConnMeta)> {
     let by = Instant::now() + deadline;
-    match tokio::time::timeout_at(by, negotiate_inner(sock, peer, runtime)).await {
+    match tokio::time::timeout_at(by, negotiate_inner(sock, peer, shared_address, runtime)).await {
         Ok(ready) => ready,
         Err(_) => {
             tracing::debug!(%peer, "connection dropped: no complete first request or handshake before the deadline");
@@ -439,9 +440,16 @@ async fn negotiate(
 async fn negotiate_inner(
     sock: TcpStream,
     peer: SocketAddr,
+    shared_address: bool,
     runtime: &TlsRuntime,
 ) -> Option<(ConnStream, ConnMeta)> {
-    negotiate_with(sock, peer, runtime.resolver().map(Arc::as_ref)).await
+    negotiate_with(
+        sock,
+        peer,
+        shared_address,
+        runtime.resolver().map(Arc::as_ref),
+    )
+    .await
 }
 
 /// Sniff, hello and finish in sequence. The two stages are separate functions so a test can land
@@ -449,9 +457,10 @@ async fn negotiate_inner(
 async fn negotiate_with(
     sock: TcpStream,
     peer: SocketAddr,
+    shared_address: bool,
     resolver: Option<&CertResolver>,
 ) -> Option<(ConnStream, ConnMeta)> {
-    match sniff_and_hello(sock, peer, resolver).await {
+    match sniff_and_hello(sock, peer, shared_address, resolver).await {
         Sniffed::Ready(ready) => ready,
         Sniffed::Hello(hello) => finish(*hello).await,
     }
@@ -477,6 +486,8 @@ struct HelloDone {
     selected: Selected,
     /// The peer address, recorded in the connection metadata.
     peer: SocketAddr,
+    /// `Config::is_cap_exempt` for `peer`, which [`super::resolver::PeerScope::of`] reads.
+    shared_address: bool,
 }
 
 /// Sniffs the first byte and, for TLS, reads the ClientHello and selects a certificate. The
@@ -486,6 +497,7 @@ struct HelloDone {
 async fn sniff_and_hello(
     sock: TcpStream,
     peer: SocketAddr,
+    shared_address: bool,
     resolver: Option<&CertResolver>,
 ) -> Sniffed {
     let mut first = [0u8; 1];
@@ -513,6 +525,7 @@ async fn sniff_and_hello(
         snapshot,
         selected,
         peer,
+        shared_address,
     }))
 }
 
@@ -523,8 +536,9 @@ async fn finish(hello: HelloDone) -> Option<(ConnStream, ConnMeta)> {
         snapshot,
         selected,
         peer,
+        shared_address,
     } = hello;
-    match finish_phase(start, snapshot, selected, peer).await {
+    match finish_phase(start, snapshot, selected, peer, shared_address).await {
         Ok((_stream, _)) if selected == Selected::Challenge => None,
         Ok((stream, meta)) => Some((ConnStream::Tls(Box::new(stream)), meta)),
         Err(e) => {

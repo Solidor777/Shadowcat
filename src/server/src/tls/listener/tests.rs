@@ -75,7 +75,8 @@ async fn a_hot_swap_between_hello_and_finish_cannot_split_the_decision() {
 
     let fb = fallback.clone();
     let cell_ref = &cell;
-    let Sniffed::Hello(hello) = sniff_and_hello(server_io, peer, Some(cell_ref)).await else {
+    let Sniffed::Hello(hello) = sniff_and_hello(server_io, peer, false, Some(cell_ref)).await
+    else {
         panic!("a TLS ClientHello reaches the hello stage");
     };
     cell_ref
@@ -119,7 +120,7 @@ async fn a_tls_alpn_01_validation_connection_completes_its_handshake_and_is_drop
         let s = connector.connect(name, client_io).await.unwrap();
         s.get_ref().1.alpn_protocol().map(|p| p.to_vec())
     });
-    let out = negotiate_with(server_io, peer, Some(&cell)).await;
+    let out = negotiate_with(server_io, peer, false, Some(&cell)).await;
     assert!(
         out.is_none(),
         "a validation connection is never handed to HTTP"
@@ -177,7 +178,7 @@ async fn the_snapshot_is_taken_after_the_client_hello_arrives() {
         sock.flush().unwrap();
         conn.complete_io(&mut sock).map(|_| ())
     });
-    let served = negotiate_with(server_io, peer, Some(cell.as_ref())).await;
+    let served = negotiate_with(server_io, peer, false, Some(cell.as_ref())).await;
     client
         .await
         .unwrap()
@@ -238,7 +239,11 @@ fn sans_of(der: &[u8]) -> Vec<String> {
 /// The SAN entries of the certificate the negotiation presents to a peer at `peer`. The socket is
 /// a loopback pair; `peer` is the address the acceptor would have recorded, the only input scope
 /// selection reads.
-async fn sans_shown_to(runtime: &TlsRuntime, peer: SocketAddr) -> Vec<String> {
+async fn sans_shown_to(
+    runtime: &TlsRuntime,
+    peer: SocketAddr,
+    shared_address: bool,
+) -> Vec<String> {
     let cell = runtime.resolver().expect("TLS is on");
     let snapshot = cell.snapshot();
     let mut roots = RootCertStore::empty();
@@ -261,7 +266,7 @@ async fn sans_shown_to(runtime: &TlsRuntime, peer: SocketAddr) -> Vec<String> {
         let _ = s.shutdown().await;
         leaf
     });
-    let served = negotiate_with(server_io, peer, Some(cell)).await;
+    let served = negotiate_with(server_io, peer, shared_address, Some(cell)).await;
     assert!(served.is_some(), "the handshake completes");
     sans_of(&client.await.unwrap())
 }
@@ -271,7 +276,7 @@ async fn a_public_peer_never_reads_an_interface_address_and_a_lan_peer_does() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = host_runtime(dir.path());
     for public in ["203.0.113.9:4000", "[2001:db8::1]:4000", "100.64.0.7:4000"] {
-        let sans = sans_shown_to(&runtime, public.parse().unwrap()).await;
+        let sans = sans_shown_to(&runtime, public.parse().unwrap(), false).await;
         for interface in HOST_INTERFACES {
             assert!(
                 !sans.contains(&interface.to_string()),
@@ -281,17 +286,15 @@ async fn a_public_peer_never_reads_an_interface_address_and_a_lan_peer_does() {
         assert!(sans.contains(&"localhost".to_string()), "{sans:?}");
     }
     for lan in [
-        "127.0.0.1:4000",
         "192.168.1.7:4000",
         "10.1.2.3:4000",
         "172.20.0.4:4000",
         "169.254.3.4:4000",
         "[fd12::9]:4000",
         "[fe80::9]:4000",
-        "[::1]:4000",
         "[::ffff:10.0.0.4]:4000",
     ] {
-        let sans = sans_shown_to(&runtime, lan.parse().unwrap()).await;
+        let sans = sans_shown_to(&runtime, lan.parse().unwrap(), false).await;
         for interface in HOST_INTERFACES {
             assert!(
                 sans.contains(&interface.to_string()),
@@ -299,6 +302,43 @@ async fn a_public_peer_never_reads_an_interface_address_and_a_lan_peer_does() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn a_loopback_or_trusted_proxy_peer_never_reads_an_interface_address() {
+    // A tunnel agent or passthrough proxy opens the connection from loopback or a listed proxy
+    // address, so the player behind it is unknown. The exemption is the one the acceptor computes.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = host_runtime(dir.path());
+    let config = Config {
+        trusted_proxies: vec!["10.0.0.9".parse().unwrap()],
+        ..Default::default()
+    };
+    for shared in [
+        "127.0.0.1:4000",
+        "[::1]:4000",
+        "[::ffff:127.0.0.1]:4000",
+        "10.0.0.9:4000",
+    ] {
+        let peer: SocketAddr = shared.parse().unwrap();
+        assert!(config.is_cap_exempt(peer.ip()), "{shared}");
+        let sans = sans_shown_to(&runtime, peer, config.is_cap_exempt(peer.ip())).await;
+        for interface in HOST_INTERFACES {
+            assert!(
+                !sans.contains(&interface.to_string()),
+                "{shared} read {interface}: {sans:?}"
+            );
+        }
+    }
+    let other: SocketAddr = "10.0.0.10:4000".parse().unwrap();
+    assert!(!config.is_cap_exempt(other.ip()));
+    let sans = sans_shown_to(&runtime, other, config.is_cap_exempt(other.ip())).await;
+    assert!(
+        HOST_INTERFACES
+            .iter()
+            .all(|i| sans.contains(&i.to_string())),
+        "a private peer that is not a listed proxy keeps the LAN certificate: {sans:?}"
+    );
 }
 
 #[tokio::test]
@@ -313,17 +353,17 @@ async fn the_public_certificate_lists_the_external_address_once_the_runtime_know
     let now = time::OffsetDateTime::now_utc();
 
     runtime.maintenance_tick(now);
-    assert!(!sans_shown_to(&runtime, public_peer)
+    assert!(!sans_shown_to(&runtime, public_peer, false)
         .await
         .contains(&"198.51.100.77".to_string()));
 
     *external.lock().unwrap() = Some("198.51.100.77".parse().unwrap());
     runtime.maintenance_tick(now);
-    assert!(sans_shown_to(&runtime, public_peer)
+    assert!(sans_shown_to(&runtime, public_peer, false)
         .await
         .contains(&"198.51.100.77".to_string()));
     assert!(
-        !sans_shown_to(&runtime, lan_peer)
+        !sans_shown_to(&runtime, lan_peer, false)
             .await
             .contains(&"198.51.100.77".to_string()),
         "a LAN peer is shown the interface certificate, which carries no external address"
@@ -361,7 +401,7 @@ async fn a_changed_external_address_replaces_the_public_certificate_and_drops_th
 
     *external.lock().unwrap() = Some("198.51.100.88".parse().unwrap());
     runtime.maintenance_tick(now);
-    let sans = sans_shown_to(&runtime, public_peer).await;
+    let sans = sans_shown_to(&runtime, public_peer, false).await;
     assert!(sans.contains(&"198.51.100.88".to_string()), "{sans:?}");
     assert!(!sans.contains(&"198.51.100.77".to_string()), "{sans:?}");
 

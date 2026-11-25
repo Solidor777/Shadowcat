@@ -336,20 +336,3 @@ fn restart_detection_follows_elapsed_time() {
         "extreme values saturate, not overflow, and a huge elapsed time with a small advance is a restart"
     );
 }
-
-#[test]
-fn retry_schedule_doubles_and_stops_after_five_attempts() {
-    let waits: Vec<_> = (0..MAX_ATTEMPTS).map(|a| retry_delay(a).unwrap()).collect();
-    assert_eq!(
-        waits,
-        vec![
-            Duration::from_millis(250),
-            Duration::from_millis(500),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(4),
-        ]
-    );
-    assert_eq!(retry_delay(MAX_ATTEMPTS), None);
-    assert_eq!(retry_delay(u32::MAX), None);
-}

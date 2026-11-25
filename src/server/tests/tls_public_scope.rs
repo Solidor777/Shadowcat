@@ -39,20 +39,17 @@ fn host(advertise: bool) -> SanSources {
 #[test]
 fn the_scope_follows_the_peer_address_and_nothing_else() {
     for lan in [
-        "127.0.0.1",
         "10.0.0.1",
         "172.16.0.1",
         "172.31.255.254",
         "192.168.0.1",
         "169.254.1.1",
-        "::1",
         "fc00::1",
         "fd12:3456::1",
         "fe80::1",
         "::ffff:192.168.1.5",
-        "::ffff:127.0.0.1",
     ] {
-        assert_eq!(PeerScope::of(ip(lan)), PeerScope::Lan, "{lan}");
+        assert_eq!(PeerScope::of(ip(lan), false), PeerScope::Lan, "{lan}");
     }
     for public in [
         "203.0.113.9",
@@ -64,7 +61,29 @@ fn the_scope_follows_the_peer_address_and_nothing_else() {
         "2606:4700::1",
         "::ffff:203.0.113.9",
     ] {
-        assert_eq!(PeerScope::of(ip(public)), PeerScope::Public, "{public}");
+        assert_eq!(
+            PeerScope::of(ip(public), false),
+            PeerScope::Public,
+            "{public}"
+        );
+    }
+}
+
+#[test]
+fn a_shared_address_is_public_whatever_it_looks_like() {
+    for shared in [
+        "127.0.0.1",
+        "::1",
+        "::ffff:127.0.0.1",
+        "10.0.0.9",
+        "192.168.1.1",
+        "fd00::1",
+    ] {
+        assert_eq!(
+            PeerScope::of(ip(shared), true),
+            PeerScope::Public,
+            "{shared}"
+        );
     }
 }
 
