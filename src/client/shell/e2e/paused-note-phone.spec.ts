@@ -22,10 +22,6 @@ const TOUCH_MIN = 44;
  * Asserts every button of the compact tool strip keeps the touch size and shows its whole label:
  * a squeezed button clips its text, which shows as content wider than the button's own box.
  * @param player The phone-sized player page.
- * @example
- * ```
- * await expectToolButtonsFit(player);
- * ```
  */
 async function expectToolButtonsFit(player: Page): Promise<void> {
   const buttons = await player.locator(".tool-rail > button.tool").evaluateAll((els) =>
@@ -57,10 +53,6 @@ async function expectToolButtonsFit(player: Page): Promise<void> {
  * @param account.password The GM's password.
  * @param baseURL The test server's origin.
  * @returns The player's page and context.
- * @example
- * ```
- * const { player, playerCtx } = await seatPhonePlayer(browser, page, account, baseURL);
- * ```
  */
 async function seatPhonePlayer(
   browser: Browser,
@@ -96,10 +88,6 @@ async function seatPhonePlayer(
 /**
  * Pauses the session as the GM.
  * @param gm The GM's page.
- * @example
- * ```
- * await pauseSession(gm);
- * ```
  */
 async function pauseSession(gm: Page): Promise<void> {
   await gm.getByTestId("topbar-pause-toggle").click();
