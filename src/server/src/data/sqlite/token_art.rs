@@ -301,6 +301,7 @@ impl SqliteRepository {
             tags: filter.tags.clone(),
             kind: Some(AssetKind::Image),
             query: None,
+            ids: None,
         };
         let Some(mut qb) = Self::asset_query_builder(
             world_id,

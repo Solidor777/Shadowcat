@@ -108,3 +108,52 @@ fn q_reaches_the_filter() {
     .unwrap();
     assert_eq!(parsed.filter.query.as_deref(), Some("dragon"));
 }
+
+#[test]
+fn ids_parse_into_the_filter_and_are_capped() {
+    let a = crate::test_ids::test_uuid(1);
+    let b = crate::test_ids::test_uuid(2);
+    let parsed = parse(AssetQuery {
+        ids: Some(format!(" {a}, ,{b}")),
+        ..AssetQuery::default()
+    })
+    .unwrap();
+    assert_eq!(parsed.filter.ids, Some(vec![a, b]));
+    assert!(!AssetQuery {
+        ids: Some(String::new()),
+        ..AssetQuery::default()
+    }
+    .is_bare());
+    let empty = parse(AssetQuery {
+        ids: Some(String::new()),
+        ..AssetQuery::default()
+    })
+    .unwrap();
+    assert_eq!(
+        empty.filter.ids,
+        Some(vec![]),
+        "present but empty is an empty set"
+    );
+
+    let at_cap = vec![a.to_string(); MAX_IDS].join(",");
+    assert!(parse(AssetQuery {
+        ids: Some(at_cap),
+        ..AssetQuery::default()
+    })
+    .is_ok());
+    let over = vec![a.to_string(); MAX_IDS + 1].join(",");
+    assert!(matches!(
+        parse(AssetQuery {
+            ids: Some(over),
+            ..AssetQuery::default()
+        }),
+        Err(AppError::BadRequest(_))
+    ));
+    assert!(matches!(
+        parse(AssetQuery {
+            ids: Some("not-a-uuid".into()),
+            ..AssetQuery::default()
+        }),
+        Err(AppError::BadRequest(_))
+    ));
+}

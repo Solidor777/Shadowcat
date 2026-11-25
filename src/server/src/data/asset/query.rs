@@ -247,6 +247,9 @@ pub struct AssetFilter {
     /// Full-text query over `original_name` and every tag (explicit and
     /// derived), sanitized by `data::search::build_match`.
     pub query: Option<String>,
+    /// Restrict to these asset ids (an id of another world never matches, since the world
+    /// scope still applies). `Some(empty)` matches nothing; `None` applies no id filter.
+    pub ids: Option<Vec<Uuid>>,
 }
 
 /// A keyset position: the sort key and id of the last row already returned.

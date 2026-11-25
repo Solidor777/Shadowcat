@@ -191,6 +191,13 @@ the same sanitizer `search` uses. The asset browser already re-lists on every
 `asset_changed` notice, so `q` is a plain filter under the caller's keyset
 sort — never a ranked, live-updating page.
 
+The same route takes `ids`, a comma-separated list of at most 100 asset ids, so a
+client that knows the assets it wants (the asset browser's favourites) fetches only
+those instead of the whole library. The ids are ANDed with the other filters and
+with the world scope: an id from another world, or one naming no asset, matches
+nothing; `ids=` with no id matches nothing; more than 100 ids, or one that is not
+a UUID, is a 400. A caller with more than 100 ids sends one request per 100.
+
 ## Rollable tables
 
 A `table` document (`TableEngine`: `draw` rule, `rows`, plain-text
