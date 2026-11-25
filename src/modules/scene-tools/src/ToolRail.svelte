@@ -1550,6 +1550,12 @@
     align-items: center;
     overflow-x: auto;
   }
+  /* A tool button in the scrolling strip keeps its whole label on one line at its natural width;
+   * shrinking it would cut the label, and the strip scrolls instead. */
+  .tool-rail.compact > .tool {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
   .tool-rail.compact .controls {
     flex-direction: row;
     align-items: center;
