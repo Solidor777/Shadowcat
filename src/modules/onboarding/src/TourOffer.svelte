@@ -33,7 +33,7 @@
   .offer {
     position: fixed;
     left: var(--space-3);
-    bottom: calc(2rem + var(--space-2));
+    bottom: calc(var(--statusbar-height) + var(--space-2));
     max-width: min(24rem, calc(100vw - var(--space-3) * 2));
     z-index: var(--z-popover);
     display: flex;

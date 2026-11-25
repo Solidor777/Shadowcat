@@ -115,6 +115,16 @@ test("a GM's Not now spends that tour's offer, and Start walks a tour whose fini
   // Not now records the offered tour as done, so the next session offers the next tour.
   const offer = page.getByTestId("tour-offer");
   await expect(offer).toBeVisible({ timeout: 15_000 });
+
+  // The offer sits above the status bar row, which is sized by `--statusbar-height`: growing the
+  // row moves the offer up with it instead of leaving it behind the bar.
+  await page.evaluate(() => document.documentElement.style.setProperty("--statusbar-height", "3rem"));
+  const statusBar = await page.locator("div.statusbar").boundingBox();
+  const offerBox = await offer.boundingBox();
+  expect(statusBar?.height).toBeCloseTo(48, 0);
+  expect((offerBox?.y ?? 0) + (offerBox?.height ?? 0)).toBeLessThanOrEqual(statusBar?.y ?? 0);
+  await page.evaluate(() => document.documentElement.style.removeProperty("--statusbar-height"));
+
   await page.getByTestId("tour-offer-later").click();
   await expect(offer).toHaveCount(0);
   await page.reload();
