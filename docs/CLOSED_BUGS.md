@@ -3,6 +3,18 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Gate gap — `svelte-ignore` suppressions were not scanned
+
+- [Medium, FIXED] `pnpm lint:allowances` read Rust and TypeScript suppressions but not Svelte
+  `svelte-ignore` comments, so the rule against unapproved suppressions was unenforced for
+  `.svelte` files. Fixed in `c475fd5a`: a `svelte-ignore` that opens a comment in a `.svelte`,
+  `.ts`, `.js` or `.mjs` file fails the gate, with or without an allowlist entry (it is never
+  approvable); prose that only names the directive passes. Every annotation was removed by fixing
+  the code, seeding the prop once through `untrack()`: `ToolRail` (`d516a7d9`),
+  `VisualKindEditor` (`5f386f49`), `AssetBrowser` (`727d4601`), and the `SurfaceHarness` and
+  `AppContextCapture` fixtures (`05443e7b`). Tests: four in `check-lint-allowances.test.mjs`;
+  `git grep svelte-ignore -- src` is empty.
+
 ## Server — an in-app restore could swap the database and then fail on the assets, leaving a half restore
 
 - [High, FIXED] `restore_backup` swapped the database file and the assets directory as two

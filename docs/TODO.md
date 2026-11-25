@@ -277,8 +277,23 @@ so they wait for a ruling rather than shipping with the uncontested batch.
   `chat-bubbles`, `account`, `template-region`, `tables` folders, `route-prefix`, the asset-browser
   right-click step).
 - TODO: Check on a real router that the automatic port forwarding opens and removes a mapping
-  (NAT-PMP, PCP and UPnP IGD), and on real Android and iOS devices that touch drag, long-press
+  (NAT-PMP, PCP and UPnP IGD) and that a forward preserves the player's source address (the host
+  privacy rule that gives a forwarded player the public certificate rests on it; a source-rewriting
+  router makes every player look like the router), and on real Android and iOS devices that touch drag, long-press
   context menus and the portal chooser behave (no native menu on long-press, no double menu).
+- TODO: Add a macOS leg for the long-audio WebKit end-to-end project (`long-audio-https-webkit`).
+  The CI run is WebKit on Linux (a GStreamer backend); macOS WebKit is a different media stack, and
+  the open WebKit-on-Linux silence report in `OPEN_BUGS.md` cannot be separated from it without one.
+- TODO: Run on the three-OS CI matrix what the final-review lanes could check on Windows only: the
+  Windows and macOS case-folding trash-nesting test (`nesting_form`); the cross-device trash staging
+  move and its partial-removal listed entry on Linux and macOS; the protection of the
+  `selfsigned-host-*.pem` key file on Windows and macOS; the Linux `audio_monitor` capture stream
+  (needs PipeWire to compile); `cargo test --all` for the client-bounds parity test.
+- TODO: Run in Firefox and WebKit (and on a phone) what was measured in Chromium only: the compact tool
+  strip and its paused note, the GM topbar at 360 px, the tour offer buttons, the note PDF link, and
+  the new end-to-end specs of the fix pass.
+- TODO: Add a hosting-guide note on the per-user share of streamed-file permits (a quarter of the pool
+  per user). Needs the owner's wording call; the permit share is a product behaviour operators can hit.
 
 ## Owner-authorized deferrals: physical devices and manual browser UI (built-in HTTPS)
 - TODO: Run the built-in HTTPS checks that automation cannot reach, on real hardware, and record
