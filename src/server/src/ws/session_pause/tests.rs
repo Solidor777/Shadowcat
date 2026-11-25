@@ -114,6 +114,23 @@ fn blocks_msg_names_the_move_and_combat_requests_only() {
             op: ResourceOp::Delta { amount: -1.0 },
         },
     ];
+    // Every `Combat*` variant declared on `ClientMsg` is one of the combat requests above, so a
+    // new combat intent cannot reach the wire without joining `ClientMsg::combat_request_id`.
+    let protocol = include_str!("../protocol.rs");
+    let client_msg = &protocol[protocol.find("pub enum ClientMsg {").unwrap()..];
+    let client_msg = &client_msg[..client_msg.find("\n}\n").unwrap()];
+    let declared = client_msg
+        .lines()
+        .filter(|l| l.starts_with("    Combat") && l.ends_with('{'))
+        .count();
+    let classified = blocked
+        .iter()
+        .filter(|m| m.combat_request_id().is_some())
+        .count();
+    assert_eq!(
+        declared, classified,
+        "a ClientMsg Combat variant is missing from combat_request_id or from this list"
+    );
     for m in &blocked {
         assert!(blocks_msg(m), "{m:?} is a move or combat control");
         assert!(paused_reply(m).is_some());
