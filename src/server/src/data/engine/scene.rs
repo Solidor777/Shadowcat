@@ -112,11 +112,12 @@ pub enum DiagonalRule {
     /// for the alternating approximation. Cost-only: a diagonal step stays
     /// legal, exactly as under `Chebyshev`/`Euclidean`/`Manhattan`.
     Approximate,
-    /// Diagonal moves are illegal in the router's search graph:
+    /// Diagonal moves are illegal, in the router and in the move executor:
     /// `SquareGrid::neighbors_with_cost` enumerates only the four orthogonal
-    /// directions under this rule, so a diagonal edge is absent rather than
-    /// merely expensive. The one variant that changes ADJACENCY, not just
-    /// cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
+    /// directions under this rule, so a diagonal edge is absent from the search
+    /// graph rather than merely expensive, and `execute_move` halts a non-GM
+    /// walk at any grid step that neighbor set omits (a GM is exempt, like every
+    /// gameplay gate). The one variant that changes ADJACENCY, not just cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
     /// (six uniform axial neighbors; no diagonal/orthogonal split exists).
     Orthogonal,
 }

@@ -324,7 +324,8 @@ impl GridShape for SquareGrid {
             (-1, 1),
             (-1, -1),
         ];
-        // `Orthogonal` removes the diagonal grid EDGES from the router's search graph entirely
+        // `Orthogonal` removes the diagonal grid EDGES from this neighbor set entirely, so the
+        // router never searches them and `execute_move` treats an omitted step as forbidden
         // (adjacency, not cost — an excluded edge is never an A* candidate, which an infinite
         // price would still leave). `step_cost` is therefore never called with a diagonal pair
         // under this rule; its `unreachable!` arm pins that invariant.
