@@ -74,6 +74,25 @@ describe("VisualKindEditor random variant", () => {
     );
   });
 
+  it("a folder created after the editor mounts appears in the folder select", async () => {
+    mockPage([]);
+    const documents = new DocumentStore();
+    const context = setAppContextForTest({
+      role: "gm",
+      world: "w1",
+      documents,
+      dispatchIntent: vi.fn(),
+      pickAsset: vi.fn().mockResolvedValue("fallback-1") as never,
+      assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never,
+    });
+    render(VisualKindEditor, { context, props: { conditionOptions: [], onBuild: vi.fn() } });
+    await fireEvent.change(screen.getAllByLabelText("actors.visualKind")[0], { target: { value: "randomVariant" } });
+    expect(within(screen.getByTestId("random-variant-folder")).queryByText("Goblins")).toBeNull();
+
+    documents.seedDocuments([{ id: "folder-1", doc_type: "asset_folder", name: "Goblins", engine: { sort: 0 } } as never]);
+    await vi.waitFor(() => expect(within(screen.getByTestId("random-variant-folder")).getByText("Goblins")).toBeTruthy());
+  });
+
   it("the nested fallback editor does not offer the random-variant kind", async () => {
     mockPage([]);
     render(VisualKindEditor, { context: ctxFor(), props: { conditionOptions: [], onBuild: vi.fn() } });

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, TagChips } from "@shadowcat/ui-kit";
   import { queryAssets, type TokenVisual, type RenderVisual, type VisualTransform, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
   // The random-variant kind nests this same editor for its fallback visual (self-import).
@@ -29,10 +31,10 @@
     initial?: TokenVisual;
   } = $props();
 
-  // Seeds from `initial` once at mount — see the block comment above the other initial-seeded
-  // states below; capturing the initial prop value is the intended semantics.
-  // svelte-ignore state_referenced_locally
-  let assetId = $state<string | null>(initial?.kind === "image" ? initial.asset : null);
+  // `initial` is read once at mount: the editor owns its state afterward (a host switching edit
+  // targets remounts via `{#key}`), so every state below seeds from this untracked snapshot.
+  const seed = untrack(() => initial);
+  let assetId = $state<string | null>(seed?.kind === "image" ? seed.asset : null);
 
   /** Editor-local flat state for one `AnimatedSource`; `animSourceToSource` projects it into
    * the wire union, keeping only the fields for the active `sourceType`. */
@@ -394,36 +396,30 @@
     return { folder: null, tags: [] };
   }
 
-  // Every state below seeds from the `initial` prop ONCE at mount — the editor owns its state
-  // afterward (a host switching edit targets remounts via `{#key}` instead), so capturing the
-  // initial prop value is the intended semantics, per the prop's own doc.
-  // svelte-ignore state_referenced_locally
-  let visualKind = $state<"image" | "faces" | "animated" | "generated" | "randomVariant">(initial?.kind ?? "image");
-  // svelte-ignore state_referenced_locally
-  let rv = $state<RandomVariantState>(initial?.kind === "randomVariant" ? { folder: initial.filter.folder ?? null, tags: [...initial.filter.tags] } : newRandomVariantState());
+  // Every state below seeds from `seed`, the one-time snapshot of the `initial` prop.
+  let visualKind = $state<"image" | "faces" | "animated" | "generated" | "randomVariant">(seed?.kind ?? "image");
+  let rv = $state<RandomVariantState>(seed?.kind === "randomVariant" ? { folder: seed.filter.folder ?? null, tags: [...seed.filter.tags] } : newRandomVariantState());
   /** The nested fallback editor's latest built visual (`null` while incomplete). `$state.raw`:
    * the value is a finished object this editor never mutates, and deep-proxying it would leak a
    * reactive Proxy into the built document (see `animSourceToSource`). */
   let rvFallback = $state.raw<TokenVisual | null>(null);
   /** The fallback editor's seed, read once at mount from a `"randomVariant"` `initial`. */
-  // svelte-ignore state_referenced_locally
-  const rvFallbackInitial = initial?.kind === "randomVariant" ? initial.fallback : undefined;
+  const rvFallbackInitial = seed?.kind === "randomVariant" ? seed.fallback : undefined;
   /** The deterministic preview of the pool: the first image the filter matches (the same asset
    * `queryAssets` lists first, never a live random pick), `null` while none matches or loading. */
   let rvPreviewAsset = $state<string | null>(null);
   /** Monotonic marker: a slower earlier preview query must not overwrite a newer one. */
   let rvPreviewGeneration = 0;
   /** The `asset_folder` documents offered by the pool's folder select, in document order. */
-  const folderDocs = $derived(ctx.documents.query("asset_folder"));
-  // svelte-ignore state_referenced_locally
-  let topAnim = $state<AnimSourceState>(initial?.kind === "animated" ? animSourceStateFrom(initial.source, initial.fps, initial.loop) : newAnimSourceState());
-  // svelte-ignore state_referenced_locally
-  let topTransform = $state<TransformState>(initial?.kind === "image" || initial?.kind === "animated" ? transformStateFrom(initial.transform) : newTransformState());
-  // svelte-ignore state_referenced_locally
-  let faceRows = $state<FaceRowState[]>(initial?.kind === "faces" ? faceRowStatesFrom(initial.faces) : []);
-  // svelte-ignore state_referenced_locally
-  let defaultFace = $state(initial?.kind === "faces" ? initial.default : "");
-  // svelte-ignore state_referenced_locally
+  const subscribeFolders = createSubscriber((update) => ctx.documents.subscribe(update));
+  const folderDocs = $derived.by(() => {
+    subscribeFolders();
+    return ctx.documents.query("asset_folder");
+  });
+  let topAnim = $state<AnimSourceState>(seed?.kind === "animated" ? animSourceStateFrom(seed.source, seed.fps, seed.loop) : newAnimSourceState());
+  let topTransform = $state<TransformState>(seed?.kind === "image" || seed?.kind === "animated" ? transformStateFrom(seed.transform) : newTransformState());
+  let faceRows = $state<FaceRowState[]>(seed?.kind === "faces" ? faceRowStatesFrom(seed.faces) : []);
+  let defaultFace = $state(seed?.kind === "faces" ? seed.default : "");
   let faceMapRows = $state<{
     /** The condition registry id this row maps from; `""` when unset. */
     conditionId: string;
@@ -431,12 +427,11 @@
      * renamed/removed (dropped by `buildVisual`, not fatal). */
     faceName: string;
   }[]>(
-    initial?.kind === "faces" && initial.faceMap
-      ? Object.entries(initial.faceMap).map(([conditionId, faceName]) => ({ conditionId, faceName }))
+    seed?.kind === "faces" && seed.faceMap
+      ? Object.entries(seed.faceMap).map(([conditionId, faceName]) => ({ conditionId, faceName }))
       : [],
   );
-  // svelte-ignore state_referenced_locally
-  let gen = $state<GeneratedState>(initial?.kind === "generated" ? generatedStateFrom(initial) : newGeneratedState());
+  let gen = $state<GeneratedState>(seed?.kind === "generated" ? generatedStateFrom(seed) : newGeneratedState());
 
   /**
    * Builds the `TokenVisual` the host should save (via `onBuild`), or `null` when the current
