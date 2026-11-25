@@ -1626,10 +1626,10 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // `serde_json::Number`'s own PRIVATE variant names, cited while describing serde_json's internal
   // representation split.
   "PosInt", "NegInt", "Float",
-  // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, the
+  // Further external crate/Web-API types (`url`'s `Url`, the
   // `ammonia` HTML-sanitizer's `PassThrough` element-handling mode, `polyanya`'s `Mesh`/`Layer`,
   // `axum`'s `DefaultBodyLimit`).
-  "Host", "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
+  "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
 ]);
 
 /**
