@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
+import trash from "trash";
 import { CorpusListingError, repoFiles } from "./lib/gate-corpus.mjs";
 import { isDirectEntry } from "./lib/is-main.mjs";
 
@@ -192,6 +193,7 @@ export function committedTracks(committedDir = FIXTURE_DIR) {
  * Runs both checks; returns `{ failures: string[], lines: string[] }`.
  * @param {object} options - run inputs.
  * @param {string} options.python - python interpreter that has NumPy and SciPy.
+ * @param {string} options.regenDir - empty directory the generator writes into; the caller owns it.
  * @param {string} [options.committedDir] - directory holding the committed fixtures.
  * @param {string[]} [options.listingFailures] - the `fixtureListingFailures` result, listed by the
  *   caller before any tool runs so a git failure ends the run before the generator starts.
@@ -199,10 +201,9 @@ export function committedTracks(committedDir = FIXTURE_DIR) {
  * @example
  * compare({ python: "python3", listingFailures: [] });
  */
-export function compare({ python, committedDir = FIXTURE_DIR, listingFailures = [] }) {
+export function compare({ python, regenDir, committedDir = FIXTURE_DIR, listingFailures = [] }) {
   const failures = [...listingFailures];
   const lines = [];
-  const regenDir = mkdtempSync(join(tmpdir(), "shadowcat-audio-fixtures-"));
   const gen = run(python, [GENERATOR, regenDir]);
   if (gen.status !== 0) {
     return { failures: [`generator failed: ${gen.stderr}`], lines };
@@ -258,11 +259,12 @@ export function compare({ python, committedDir = FIXTURE_DIR, listingFailures = 
  * The command: lists the fixtures, checks the tools, then runs `compare`.
  * @param {string[]} argv - command-line arguments after the script name.
  * @param {() => string[]} [probeTools] - reports the missing tools; the tests inject a fixed answer.
- * @returns {number} the process exit code: 0 clean or skipped, 1 on a finding, 2 when git cannot list the files.
+ * @param {typeof compare} [compareRun] - the comparison; the tests inject a fake.
+ * @returns {Promise<number>} the process exit code: 0 clean or skipped, 1 on a finding, 2 when git cannot list the files.
  * @example
- * main(["--require-tools"]);
+ * await main(["--require-tools"]);
  */
-export function main(argv, probeTools = missingTools) {
+export async function main(argv, probeTools = missingTools, compareRun = compare) {
   const requireTools = argv.includes("--require-tools");
   // The fixture listing needs git and the manifest, not the audio tools, so it runs first: a git
   // failure ends the run with one line and status 2 whether or not the tools are installed. Only a
@@ -290,7 +292,16 @@ export function main(argv, probeTools = missingTools) {
     console.log(`${msg}; SKIPPED (pass --require-tools to make this fatal)`);
     return 0;
   }
-  const { failures, lines } = compare({ python: findPython(), listingFailures });
+  // The regenerated fixtures (about 60 MB) are scratch output. The recycle bin keeps the removal
+  // recoverable, as every other removal in this repository does.
+  const regenDir = mkdtempSync(join(tmpdir(), "shadowcat-audio-fixtures-"));
+  let result;
+  try {
+    result = compareRun({ python: findPython(), regenDir, listingFailures });
+  } finally {
+    await trash(regenDir, { glob: false });
+  }
+  const { failures, lines } = result;
   for (const l of lines) console.log(l);
   if (failures.length > 0) {
     for (const f of failures) console.error(`FAIL ${f}`);
@@ -301,5 +312,5 @@ export function main(argv, probeTools = missingTools) {
 }
 
 if (isDirectEntry(import.meta.url)) {
-  process.exit(main(process.argv.slice(2)));
+  process.exit(await main(process.argv.slice(2)));
 }

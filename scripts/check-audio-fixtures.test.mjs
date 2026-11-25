@@ -1,4 +1,4 @@
-import { renameSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -117,19 +117,56 @@ describe("fixtureListingFailures", () => {
 // The command lists the fixtures before it looks for tools and passes `console.log`, so the corpus
 // line is on stdout even when every tool is missing.
 describe("main", () => {
-  it("prints the corpus line on stdout and skips cleanly when the tools are missing", () => {
+  it("prints the corpus line on stdout and skips cleanly when the tools are missing", async () => {
     const printed = [];
     const original = console.log;
     console.log = (line) => printed.push(line);
     let code;
     try {
-      code = main([], () => ["ffmpeg"]);
+      code = await main([], () => ["ffmpeg"]);
     } finally {
       console.log = original;
     }
     expect(code).toBe(0);
     expect(printed[0]).toMatch(/^corpus lint:audio-fixtures: \d+ files$/);
     expect(printed[1]).toContain("SKIPPED");
+  });
+});
+
+// The regenerated fixtures are scratch output; the command sends their directory to the recycle bin
+// on every run, whether the comparison returns or throws.
+describe("main cleanup", () => {
+  /** Runs `main` with a fake comparison and returns the directory it was handed. */
+  const run = async (fake) => {
+    let handed;
+    const original = console.log;
+    console.log = () => {};
+    try {
+      await main([], () => [], (opts) => {
+        handed = opts.regenDir;
+        writeFileSync(join(handed, "scratch.ogg"), "x");
+        return fake();
+      });
+    } catch {
+      // The throwing fake reaches here; the assertion below is about the directory.
+    } finally {
+      console.log = original;
+    }
+    return handed;
+  };
+
+  it("removes the regenerated directory after a comparison", async () => {
+    const dir = await run(() => ({ failures: [], lines: [] }));
+    expect(dir).toBeTruthy();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("removes the regenerated directory when the comparison throws", async () => {
+    const dir = await run(() => {
+      throw new Error("probe failed");
+    });
+    expect(dir).toBeTruthy();
+    expect(existsSync(dir)).toBe(false);
   });
 });
 
