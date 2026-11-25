@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, confirmDialog } from "@shadowcat/ui-kit";
   import {
     DEFAULT_WORLD_SETTINGS,
     resolveSettingProvenance,
@@ -545,6 +545,27 @@
     }
     paramsInvalid[id] = false;
     patchModeRenderHint(id, { params });
+  }
+
+  /** Asks the GM to confirm, then wipes the scene's explored fog for every player (the wipe cannot
+   * be undone, so a stray click must not trigger it).
+   * @param sceneId The scene whose explored fog to reset.
+   * @returns Resolves once the dialog is answered and, when confirmed, the reset is sent.
+   * @example
+   * ```
+   * // private helper; wired to the reset-explored-fog button
+   * void confirmResetExploredFog("scene1");
+   * ```
+   */
+  async function confirmResetExploredFog(sceneId: string): Promise<void> {
+    const confirmed = await confirmDialog(ctx, {
+      titleKey: "gameSettings.scene.resetExploredFogTitle",
+      messageKey: "gameSettings.scene.resetExploredFogConfirm",
+      confirmLabelKey: "gameSettings.scene.resetExploredFog",
+      cancelLabelKey: "gameSettings.scene.resetExploredFogCancel",
+      danger: true,
+    });
+    if (confirmed) ctx.resetExploredFog(sceneId);
   }
 </script>
 
@@ -1180,7 +1201,7 @@
       </label>
 
       <button type="button" data-testid="reset-explored-fog"
-        onclick={() => ctx.resetExploredFog(scene.id)}>
+        onclick={() => void confirmResetExploredFog(scene.id)}>
         {ctx.t("gameSettings.scene.resetExploredFog")}
       </button>
 

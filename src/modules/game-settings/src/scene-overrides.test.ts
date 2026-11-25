@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { SceneSelection } from "@shadowcat/ui-kit";
 import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, type WireDocument } from "@shadowcat/core";
+import { confirmDialog } from "@shadowcat/ui-kit";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
 // Suppress listAssets fetch: the panel's dice-sound picker calls listAssets in an $effect
@@ -14,6 +15,12 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
     ...actual,
     listAssets: vi.fn().mockResolvedValue([]),
   };
+});
+
+// The confirm dialog is answered by the test; its own behaviour is covered with the dialog host.
+vi.mock("@shadowcat/ui-kit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/ui-kit")>();
+  return { ...actual, confirmDialog: vi.fn() };
 });
 
 function gmStoreWith(...docs: WireDocument[]) {
@@ -101,7 +108,8 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("clicking reset-explored-fog calls ctx.resetExploredFog with the currently-selected scene", async () => {
+  it("confirming the reset-explored-fog dialog calls ctx.resetExploredFog with the currently-selected scene", async () => {
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     const resetExploredFog = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {}, "scene1");
@@ -112,7 +120,26 @@ describe("per-scene overrides", () => {
     const button = screen.getByTestId("reset-explored-fog");
     await fireEvent.click(button);
 
-    expect(resetExploredFog).toHaveBeenCalledWith("scene1");
+    await vi.waitFor(() => expect(resetExploredFog).toHaveBeenCalledWith("scene1"));
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ messageKey: "gameSettings.scene.resetExploredFogConfirm", danger: true }),
+    );
+  });
+
+  it("cancelling the reset-explored-fog dialog resets nothing", async () => {
+    vi.mocked(confirmDialog).mockResolvedValue(false);
+    const resetExploredFog = vi.fn();
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", {}, "scene1");
+    render(GameSettingsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(ws, scene), resetExploredFog }),
+    });
+
+    await fireEvent.click(screen.getByTestId("reset-explored-fog"));
+
+    await vi.waitFor(() => expect(confirmDialog).toHaveBeenCalled());
+    expect(resetExploredFog).not.toHaveBeenCalled();
   });
 
   it("setting scene bounds width writes the whole /engine/bounds object (height defaults)", async () => {
