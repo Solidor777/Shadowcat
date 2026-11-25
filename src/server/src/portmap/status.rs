@@ -111,11 +111,18 @@ impl PortMapStatus {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 /// True when `ip` is routable from the internet.
 ///
-/// Private, loopback, link-local, unspecified, multicast, broadcast and carrier-grade NAT
-/// (`100.64.0.0/10`, RFC 6598) addresses, and IPv6 unique-local and link-local addresses, are not.
-/// Documentation ranges are not special-cased.
+/// An IPv4-mapped IPv6 address is judged as its IPv4 address. Private, loopback, link-local,
+/// unspecified, multicast, broadcast, "this network" (`0.0.0.0/8`), IETF protocol assignments
+/// (`192.0.0.0/24`), benchmarking (`198.18.0.0/15`), reserved (`240.0.0.0/4`) and carrier-grade
+/// NAT (`100.64.0.0/10`, RFC 6598) addresses are not public, and neither are IPv6 loopback,
+/// unspecified, multicast, unique-local, link-local, site-local (`fec0::/10`), 6to4
+/// (`2002::/16`) and the NAT64 well-known prefix (`64:ff9b::/96`) addresses. Documentation
+/// ranges are not special-cased, because tests use them.
 ///
 /// # Examples
 ///
@@ -124,13 +131,25 @@ impl PortMapStatus {
 /// assert!(is_public_address("203.0.113.9".parse().unwrap()));
 /// assert!(!is_public_address("192.168.1.1".parse().unwrap()));
 /// assert!(!is_public_address("100.64.0.1".parse().unwrap()));
+/// assert!(!is_public_address("::ffff:192.168.1.1".parse().unwrap()));
+/// assert!(!is_public_address("198.18.0.1".parse().unwrap()));
 /// ```
 pub fn is_public_address(ip: IpAddr) -> bool {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => {
             let carrier_grade = v4.octets().first() == Some(&100)
                 && v4.octets().get(1).is_some_and(|b| (*b & 0xc0) == 0x40);
-            !(v4.is_private()
+            let octets = v4.octets();
+            let this_network = octets.first() == Some(&0);
+            let protocol_assignments = octets.get(..3) == Some(&[192, 0, 0]);
+            let benchmarking =
+                octets.first() == Some(&198) && octets.get(1).is_some_and(|b| (*b & 0xfe) == 18);
+            let reserved = octets.first().is_some_and(|b| *b >= 240);
+            !(this_network
+                || protocol_assignments
+                || benchmarking
+                || reserved
+                || v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
                 || v4.is_unspecified()
@@ -142,7 +161,13 @@ pub fn is_public_address(ip: IpAddr) -> bool {
             let first = v6.segments().first().copied().unwrap_or(0);
             let unique_local = (first & 0xfe00) == 0xfc00;
             let link_local = (first & 0xffc0) == 0xfe80;
-            !(v6.is_loopback()
+            let site_local = (first & 0xffc0) == 0xfec0;
+            let six_to_four = first == 0x2002;
+            let nat64 = v6.segments().get(..6) == Some(&[0x64, 0xff9b, 0, 0, 0, 0]);
+            !(site_local
+                || six_to_four
+                || nat64
+                || v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || unique_local

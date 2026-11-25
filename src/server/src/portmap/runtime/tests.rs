@@ -343,6 +343,82 @@ async fn a_failed_renewal_removes_the_mapping_and_rediscovers() {
 }
 
 #[tokio::test]
+async fn the_slot_keeps_the_mapping_until_the_failed_renewal_delete_returns() {
+    // The router answers the first grant, then goes silent: the renewal fails and the task's
+    // delete retries against the silent router. An abort in that window must still find the
+    // record, so `shutdown` can delete it.
+    let alive = std::sync::Arc::new(AtomicBool::new(true));
+    let switch = std::sync::Arc::clone(&alive);
+    let fake = spawn_udp(move |request| {
+        if !switch.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
+        match request.get(1) {
+            Some(0) => vec![Reply::genuine(natpmp_address_reply(1, [203, 0, 113, 9]))],
+            Some(2) => vec![Reply::genuine(natpmp_map_reply(2, 30000, 30000, 2))],
+            _ => Vec::new(),
+        }
+    })
+    .await;
+    let mut slow = targets(fake.addr).await;
+    slow.retry = RetryPolicy {
+        initial: Duration::from_millis(300),
+        attempts: 3,
+    };
+    let runtime = PortMapRuntime::with_targets(Arc::new(Config::default()), slow);
+    runtime.activate(exposed(), true).await;
+    wait_for(&runtime, |s| s.state == PortMapState::Mapped).await;
+    alive.store(false, Ordering::SeqCst);
+    wait_for_counts(&fake, |(_, deletes)| deletes >= 1).await;
+    assert!(
+        runtime.shared.slot.lock().unwrap().is_some(),
+        "the record stays while the delete is in flight"
+    );
+    runtime.shutdown().await;
+    assert!(runtime.shared.slot.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn the_public_certificate_names_the_address_the_runtime_maps() {
+    // The wiring `main` installs: the runtime's external source feeds the TLS runtime's
+    // maintenance tick, which puts the mapped address on the certificate public peers receive.
+    crate::tls::install_default_provider();
+    let dir = tempfile::tempdir().unwrap();
+    let tls = crate::tls::TlsRuntime::start_with(
+        &Config {
+            db: "sqlite::memory:".into(),
+            tls_dir: Some(dir.path().to_string_lossy().into_owned()),
+            ..Config::default()
+        },
+        Arc::new(crate::tls::selfsigned::RcgenGenerator),
+        crate::tls::selfsigned::SanSources::default(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let fake = gateway(3600, [203, 0, 113, 9]).await;
+    let runtime =
+        PortMapRuntime::with_targets(Arc::new(Config::default()), targets(fake.addr).await);
+    tls.set_external_source(runtime.external_source());
+    let named = |tls: &crate::tls::TlsRuntime| {
+        tls.resolver()
+            .unwrap()
+            .snapshot()
+            .public_fallback()
+            .san_entries()
+            .contains(&"203.0.113.9".to_string())
+    };
+    tls.maintenance_tick(time::OffsetDateTime::now_utc());
+    assert!(!named(&tls), "nothing is mapped yet");
+    runtime.activate(exposed(), true).await;
+    wait_for(&runtime, |s| s.state == PortMapState::Mapped).await;
+    tls.maintenance_tick(time::OffsetDateTime::now_utc());
+    assert!(
+        named(&tls),
+        "the mapped address reaches the public certificate"
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn activation_returns_while_discovery_is_still_waiting() {
     let silent = spawn_udp(|_| Vec::new()).await;
     let mut slow = targets(silent.addr).await;

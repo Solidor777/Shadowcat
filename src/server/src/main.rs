@@ -138,10 +138,7 @@ async fn main() -> anyhow::Result<()> {
     let portmap = state.portmap.clone();
     // The certificate shown to public peers lists the router's public address once the mapping
     // reports it (`tls::TlsRuntime::refresh_public`, driven by the maintenance tick).
-    tls.set_external_source({
-        let portmap = portmap.clone();
-        Arc::new(move || portmap.public_address())
-    });
+    tls.set_external_source(portmap.external_source());
     let stored_port_forward = shadowcat::portmap::runtime::read_stored_toggle(&state.repo).await;
 
     shadowcat::auth::session::spawn_housekeeping_sweep(&state.repo);

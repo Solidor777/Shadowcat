@@ -3,7 +3,8 @@
 //! Encoders return the exact datagram to send. Decoders take the received datagram and return a
 //! typed reply or a [`CodecError`]; they never panic and never read past the buffer. Source-address
 //! filtering and retransmission live in the caller; this module only fixes the bytes and the
-//! retry schedule ([`retry_delay`]).
+//! retry constants ([`INITIAL_RETRY`], [`MAX_ATTEMPTS`]); the schedule is
+//! `client::RetryPolicy::delay`.
 //!
 //! Layouts (all integers big-endian):
 //!
@@ -466,25 +467,6 @@ pub fn gateway_restarted(previous_epoch: u32, current_epoch: u32, elapsed_secs: 
         .saturating_sub(elapsed_secs / 8)
         .saturating_sub(2);
     u64::from(advanced) < floor
-}
-
-/// Wait before retransmission number `attempt + 1`: 250 ms doubling, for `attempt` in
-/// `0..MAX_ATTEMPTS`. `None` once the attempts are exhausted.
-///
-/// # Examples
-///
-/// ```
-/// use std::time::Duration;
-/// use shadowcat::portmap::codec::retry_delay;
-/// assert_eq!(retry_delay(0), Some(Duration::from_millis(250)));
-/// assert_eq!(retry_delay(2), Some(Duration::from_secs(1)));
-/// assert_eq!(retry_delay(5), None);
-/// ```
-pub fn retry_delay(attempt: u32) -> Option<Duration> {
-    if attempt >= MAX_ATTEMPTS {
-        return None;
-    }
-    INITIAL_RETRY.checked_mul(1u32.checked_shl(attempt)?)
 }
 
 /// The 16-byte wire form of an address: IPv4 as an IPv4-mapped IPv6 address.
