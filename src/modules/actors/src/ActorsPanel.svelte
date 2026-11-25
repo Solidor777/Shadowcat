@@ -174,26 +174,20 @@
    * its condition palette follows the whole selection, so it renders only for a single one. */
   const quickEditTokenId = $derived(ctx.tokenSelection.ids.size === 1 ? selectedTokenId : null);
 
-  /** The id of the first token on the viewed scene linked to actor `actorId` (`engine.actor_id`),
-   * or `null` when the actor has no token there. Drives the row's "locate on scene" action and
-   * its enablement.
-   * @param actorId The actor document id.
-   * @returns The token document id, or `null`.
-   * @example
-   * ```
-   * // private helper; read by each row's locate button
-   * locatedTokenId("actor-1"); // "tok1" | null
-   * ```
-   */
-  function locatedTokenId(actorId: string): string | null {
+  /** The id of the first token on the viewed scene linked to each actor (`engine.actor_id`), keyed
+   * by actor id; an actor with no token there has no entry. One token query per recompute, read by
+   * every row's "locate on scene" action and its enablement. */
+  const locatedTokenIds = $derived.by((): Map<string, string> => {
     subscribe();
+    const located = new Map<string, string>();
     const sceneId = ctx.viewedSceneId;
-    if (sceneId === null) return null;
-    const tok = ctx.documents
-      .query("token")
-      .find((d) => d.parent_id === sceneId && (d.engine as TokenEngine | undefined)?.actor_id === actorId);
-    return tok?.id ?? null;
-  }
+    if (sceneId === null) return located;
+    for (const tok of ctx.documents.query("token")) {
+      const actorId = (tok.engine as TokenEngine | undefined)?.actor_id;
+      if (tok.parent_id === sceneId && actorId && !located.has(actorId)) located.set(actorId, tok.id);
+    }
+    return located;
+  });
 
   const factionOptions = $derived.by((): [string, Faction][] => {
     subscribe();
@@ -549,7 +543,7 @@
   />
   <ul class="list" data-tour="actors.list">
     {#each visibleActors as a (a.id)}
-      {@const locatedId = locatedTokenId(a.id)}
+      {@const locatedId = locatedTokenIds.get(a.id) ?? null}
       <li>
         <button
           type="button"
