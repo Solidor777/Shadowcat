@@ -13,13 +13,15 @@
 //! INVARIANT: The certificate a connection receives, its [`ConnMeta::cert`] and the HSTS decision
 //! all derive from ONE [`resolver::Snapshot::select`] call (see [`resolver`]).
 //!
-//! INVARIANT: Two self-signed certificates exist. A peer on a private, link-local or
-//! unique-local address that is not a loopback peer or a listed trusted proxy receives the one that
-//! lists the machine's interface addresses; every other peer (including every loopback and
-//! trusted-proxy peer, which fronts players the server cannot see) receives one that lists none (only `localhost`, loopback, `tls_hostnames` and the router's
+//! INVARIANT: Three self-signed certificates exist. A peer on a private, link-local or
+//! unique-local address that is not a listed trusted proxy receives the one that lists the
+//! machine's interface addresses. A loopback peer (the host machine's own browser, or a tunnel
+//! agent on it) receives one that names only `localhost`, 127.0.0.1 and ::1. Every other peer,
+//! including every listed trusted proxy, which fronts players the server cannot see, receives one
+//! that lists no interface address (`localhost`, loopback, `tls_hostnames` and the router's
 //! external address when known). The choice is made once, from the accepted socket's peer address,
-//! by [`resolver::PeerScope::of`], so a public player cannot read the host's LAN addresses from the
-//! handshake.
+//! by [`resolver::PeerScope::of`], so no player but a LAN peer can read the host's LAN addresses
+//! from the handshake.
 //!
 //! ACME seam: [`resolver::Snapshot`] carries the TLS-ALPN-01 challenge map and the
 //! primary-certificate slot, and [`resolver::CertResolver::update`] swaps in a derived snapshot.
@@ -48,7 +50,7 @@ use crate::config::{AcmeChallenge, Config, TlsMode};
 use crate::trash::Trash;
 
 use self::pem::{PemPaths, PemStamp};
-use self::resolver::{CertResolver, LoadedCert, Snapshot};
+use self::resolver::{CertResolver, LoadedCert, PeerScope, Snapshot};
 use self::selfsigned::{CertGenerator, RcgenGenerator, SanSources};
 
 /// The ALPN protocols the server negotiates on serving connections, in preference order. Published
@@ -502,6 +504,25 @@ impl TlsRuntime {
             state.last_error = Some(err.clone());
         }
 
+        let host = match selfsigned::load_or_generate_host(
+            settings.tls_dir.as_deref(),
+            settings.generator.as_ref(),
+            now,
+            &settings.trash,
+        ) {
+            Ok(host) => host,
+            Err(e) => {
+                tracing::error!(error = %e, "host-machine self-signed certificate unavailable; TLS is disabled for this process, plain HTTP is unaffected");
+                let mut off = Self::off(config, Some(e.to_string()));
+                off.settings = settings;
+                return Arc::new(off);
+            }
+        };
+        if let Some(err) = &host.persist_error {
+            tracing::warn!(error = %err, "host-machine self-signed certificate could not be persisted; it is served from memory only");
+            state.last_error = Some(err.clone());
+        }
+
         let mut primary: Option<Arc<LoadedCert>> = None;
         if let Some(paths) = &settings.pem {
             state.pem_stamp = paths.stamp();
@@ -531,6 +552,7 @@ impl TlsRuntime {
 
         match Snapshot::new(primary, selfsigned.cert.clone(), Default::default())
             .and_then(|snapshot| snapshot.with_public_fallback(public.cert.clone()))
+            .and_then(|snapshot| snapshot.with_host_fallback(host.cert.clone()))
         {
             Ok(snapshot) => {
                 let named = snapshot.primary().unwrap_or(snapshot.fallback());
@@ -539,6 +561,7 @@ impl TlsRuntime {
                     fingerprint = %named.fingerprint(),
                     fallback_fingerprint = %snapshot.fallback().fingerprint(),
                     public_fallback_fingerprint = %snapshot.public_fallback().fingerprint(),
+                    host_fallback_fingerprint = %snapshot.host_fallback().fingerprint(),
                     "TLS certificates active"
                 );
                 Arc::new(Self {
@@ -650,6 +673,29 @@ impl TlsRuntime {
     /// assert!(rt.admin_status_at(time::OffsetDateTime::now_utc()).fingerprint.is_none());
     /// ```
     pub fn admin_status_at(&self, now: OffsetDateTime) -> TlsAdminStatus {
+        self.admin_status_for(PeerScope::Lan, now)
+    }
+
+    /// [`TlsRuntime::admin_status_at`] for an admin whose connection has `scope`: the
+    /// self-signed certificate it reports (`fallback_fingerprint`, and `fingerprint` when no
+    /// operator certificate is loaded) is the one [`Snapshot::self_signed_for`] gives that
+    /// scope, so a host-machine admin is told about the certificate the admin's own browser
+    /// received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::tls::resolver::PeerScope;
+    ///
+    /// let rt = shadowcat::tls::TlsRuntime::start(&shadowcat::config::Config {
+    ///     db: "sqlite::memory:".into(),
+    ///     ..Default::default()
+    /// });
+    /// let host = rt.admin_status_for(PeerScope::Host, time::OffsetDateTime::now_utc());
+    /// let lan = rt.admin_status_for(PeerScope::Lan, time::OffsetDateTime::now_utc());
+    /// assert_ne!(host.fallback_fingerprint, lan.fallback_fingerprint);
+    /// ```
+    pub fn admin_status_for(&self, scope: PeerScope, now: OffsetDateTime) -> TlsAdminStatus {
         let public = self.status_at(now);
         let Some(resolver) = &self.resolver else {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -664,13 +710,14 @@ impl TlsRuntime {
         };
         let snapshot = resolver.snapshot();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let self_signed = snapshot.self_signed_for(scope);
         let named = snapshot
             .primary_at(now.unix_timestamp())
-            .unwrap_or(snapshot.fallback());
+            .unwrap_or(self_signed);
         TlsAdminStatus {
             public,
             fingerprint: Some(named.fingerprint().to_string()),
-            fallback_fingerprint: Some(snapshot.fallback().fingerprint().to_string()),
+            fallback_fingerprint: Some(self_signed.fingerprint().to_string()),
             not_after: Some(named.not_after()),
             degraded_from: state.degraded_from,
             last_error: state.last_error.clone(),
@@ -738,6 +785,41 @@ impl TlsRuntime {
             self.refresh_selfsigned(resolver, now);
         }
         self.refresh_public(resolver, now, due);
+        if due {
+            self.refresh_host(resolver, now);
+        }
+    }
+
+    /// Replaces the host-machine certificate when it is near expiry (the only reason one is
+    /// replaced; it names no configured or machine name).
+    fn refresh_host(&self, resolver: &CertResolver, now: OffsetDateTime) {
+        let current = resolver.snapshot();
+        let Some(reason) =
+            selfsigned::regen_reason_for_host(current.host_fallback(), now.unix_timestamp())
+        else {
+            return;
+        };
+        match selfsigned::load_or_generate_host(
+            self.settings.tls_dir.as_deref(),
+            self.settings.generator.as_ref(),
+            now,
+            &self.settings.trash,
+        ) {
+            Ok(replacement) => {
+                if let Some(err) = &replacement.persist_error {
+                    tracing::warn!(error = %err, "regenerated host-machine certificate could not be persisted; it is served from memory only");
+                    self.record_error_text(err);
+                }
+                let fingerprint = replacement.cert.fingerprint().to_string();
+                match resolver.update(|cur| cur.with_host_fallback(replacement.cert)) {
+                    Ok(()) => {
+                        tracing::info!(?reason, %fingerprint, "host-machine certificate regenerated");
+                    }
+                    Err(e) => self.record_error(&e),
+                }
+            }
+            Err(e) => self.record_error(&e),
+        }
     }
 
     /// Installs the reader of the router's public address. The maintenance tick compares it with

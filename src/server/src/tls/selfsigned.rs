@@ -37,6 +37,10 @@ pub const KEY_FILE: &str = "selfsigned-key.pem";
 pub const PUBLIC_CERT_FILE: &str = "selfsigned-public-cert.pem";
 /// File name of the private key of the certificate shown to public peers.
 pub const PUBLIC_KEY_FILE: &str = "selfsigned-public-key.pem";
+/// File name of the persisted certificate shown to the host machine (localhost names only).
+pub const HOST_CERT_FILE: &str = "selfsigned-host-cert.pem";
+/// File name of the private key of the certificate shown to the host machine.
+pub const HOST_KEY_FILE: &str = "selfsigned-host-key.pem";
 /// Days of remaining validity at or below which the certificate is regenerated.
 pub const RENEW_WITHIN_DAYS: i64 = 30;
 /// Lifetime of a freshly generated certificate, in days.
@@ -414,6 +418,25 @@ impl SanSet {
         set
     }
 
+    /// Builds the SAN list of the certificate shown to the host machine's own browser: `localhost`,
+    /// 127.0.0.1 and ::1 only. No interface address, machine hostname or `tls_hostnames` entry is
+    /// listed, so a tunnel agent on the host that relays internet players shows them nothing of
+    /// the host's network.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::tls::selfsigned::SanSet;
+    ///
+    /// let sans = SanSet::assemble_host();
+    /// assert_eq!(sans.dns, vec!["localhost".to_string()]);
+    /// assert_eq!(sans.ips.len(), 2);
+    /// assert!(sans.ips.iter().all(|ip| ip.is_loopback()));
+    /// ```
+    pub fn assemble_host() -> Self {
+        Self::assemble(&[], &SanSources::default())
+    }
+
     /// Adds one text entry as an IP literal or a lowercase DNS name, skipping duplicates and
     /// empty input.
     fn add_entry(&mut self, entry: Option<&str>) {
@@ -587,7 +610,7 @@ pub enum RegenReason {
     MissingExternalAddress(IpAddr),
 }
 
-/// Which of the two persisted self-signed certificates an operation handles.
+/// Which of the three persisted self-signed certificates an operation handles.
 #[derive(Debug, Clone, Copy)]
 enum Kind {
     /// The certificate shown to a LAN peer: lists the eligible interface addresses.
@@ -598,6 +621,9 @@ enum Kind {
         /// The router's public address, when the port-mapping runtime knows it.
         external: Option<IpAddr>,
     },
+    /// The certificate shown to the host machine's own browser: lists localhost, 127.0.0.1 and
+    /// ::1 only.
+    Host,
 }
 
 impl Kind {
@@ -606,6 +632,7 @@ impl Kind {
         match self {
             Kind::Lan => CERT_FILE,
             Kind::Public { .. } => PUBLIC_CERT_FILE,
+            Kind::Host => HOST_CERT_FILE,
         }
     }
 
@@ -614,6 +641,7 @@ impl Kind {
         match self {
             Kind::Lan => KEY_FILE,
             Kind::Public { .. } => PUBLIC_KEY_FILE,
+            Kind::Host => HOST_KEY_FILE,
         }
     }
 
@@ -622,6 +650,7 @@ impl Kind {
         match self {
             Kind::Lan => SanSet::assemble(tls_hostnames, sources),
             Kind::Public { external } => SanSet::assemble_public(tls_hostnames, sources, external),
+            Kind::Host => SanSet::assemble_host(),
         }
     }
 
@@ -630,7 +659,7 @@ impl Kind {
     fn drift(self, cert: &LoadedCert, sources: &SanSources) -> Vec<IpAddr> {
         match self {
             Kind::Lan => drifted_addresses(cert, &sources.interface_ips),
-            Kind::Public { .. } => Vec::new(),
+            Kind::Public { .. } | Kind::Host => Vec::new(),
         }
     }
 }
@@ -704,7 +733,27 @@ pub fn regen_reason_public(
     )
 }
 
-/// The single definition of "this stored certificate must be replaced" for both kinds.
+/// [`regen_reason`] for the certificate shown to the host machine: only expiry replaces it,
+/// because it lists no configured or machine name.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{generate, regen_reason_for_host, RegenReason, SanSet};
+///
+/// let now = time::OffsetDateTime::now_utc();
+/// let cert = generate(&SanSet::assemble_host(), now).unwrap().loaded;
+/// assert_eq!(regen_reason_for_host(&cert, now.unix_timestamp()), None);
+/// assert_eq!(
+///     regen_reason_for_host(&cert, cert.not_after()),
+///     Some(RegenReason::NearExpiry)
+/// );
+/// ```
+pub fn regen_reason_for_host(cert: &LoadedCert, now_unix: i64) -> Option<RegenReason> {
+    regen_reason_for(Kind::Host, cert, &[], &SanSources::default(), now_unix)
+}
+
+/// The single definition of "this stored certificate must be replaced" for every kind.
 fn regen_reason_for(
     kind: Kind,
     cert: &LoadedCert,
@@ -714,6 +763,10 @@ fn regen_reason_for(
 ) -> Option<RegenReason> {
     if cert.not_after() - now_unix <= RENEW_WITHIN_DAYS * 86_400 {
         return Some(RegenReason::NearExpiry);
+    }
+    if matches!(kind, Kind::Host) {
+        // The host certificate names no configured or machine name, so only expiry replaces it.
+        return None;
     }
     let entries = cert.san_entries();
     let listed = |key: &str| entries.iter().any(|e| e == key);
@@ -898,7 +951,39 @@ pub fn load_or_generate_public(
     )
 }
 
-/// The one reuse-or-replace path both certificates share.
+/// [`load_or_generate`] for the certificate shown to the host machine: persisted beside the
+/// others, listing localhost, 127.0.0.1 and ::1 only. Only expiry replaces it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{load_or_generate_host, RcgenGenerator};
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let now = time::OffsetDateTime::now_utc();
+/// let out = load_or_generate_host(Some(dir.path()), &RcgenGenerator, now, &trash).unwrap();
+/// assert!(out.cert.san_entries().contains(&"localhost".to_string()));
+/// ```
+pub fn load_or_generate_host(
+    dir: Option<&Path>,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<SelfSigned, TlsError> {
+    load_or_generate_kind(
+        Kind::Host,
+        dir,
+        &[],
+        &SanSources::default(),
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// The one reuse-or-replace path every self-signed certificate shares.
 fn load_or_generate_kind(
     kind: Kind,
     dir: Option<&Path>,
@@ -1041,7 +1126,38 @@ pub fn force_regenerate_public(
     )
 }
 
-/// The one unconditional-replacement path both certificates share.
+/// [`force_regenerate`] for the certificate shown to the host machine.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tls::selfsigned::{force_regenerate_host, RcgenGenerator};
+/// use shadowcat::trash::{Trash, TrashRetention};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let trash = Trash::new(dir.path().join("trash"), TrashRetention::default());
+/// let now = time::OffsetDateTime::now_utc();
+/// let cert = force_regenerate_host(dir.path(), &RcgenGenerator, now, &trash).unwrap();
+/// assert!(cert.san_entries().contains(&"localhost".to_string()));
+/// ```
+pub fn force_regenerate_host(
+    dir: &Path,
+    generator: &dyn CertGenerator,
+    now: OffsetDateTime,
+    trash: &Trash,
+) -> Result<Arc<LoadedCert>, TlsError> {
+    force_regenerate_kind(
+        Kind::Host,
+        dir,
+        &[],
+        &SanSources::default(),
+        generator,
+        now,
+        trash,
+    )
+}
+
+/// The one unconditional-replacement path every self-signed certificate shares.
 fn force_regenerate_kind(
     kind: Kind,
     dir: &Path,

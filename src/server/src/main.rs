@@ -317,7 +317,8 @@ async fn apply_staged_restore(config: &Config) -> anyhow::Result<()> {
 
 /// One-shot `--tls-regenerate` mode: replaces the persisted self-signed certificate with a fresh
 /// one advertising the current local addresses and configured `tls_hostnames`, and does the same
-/// for the certificate public peers receive (no interface addresses). Prints both SHA-256
+/// for the certificate public peers receive (no interface addresses) and the one the host
+/// machine receives (localhost names only). Prints both SHA-256
 /// fingerprints and returns — the caller exits before any server startup runs. Requires
 /// an on-disk TLS directory (`Config::tls_path`); an in-memory database with no `tls_dir` has
 /// nothing to regenerate because its certificate lives only in process memory.
@@ -357,6 +358,18 @@ fn run_tls_regenerate(config: &Config) -> anyhow::Result<()> {
         dir.join(shadowcat::tls::selfsigned::PUBLIC_CERT_FILE)
             .display(),
         public.fingerprint()
+    );
+    let host = shadowcat::tls::selfsigned::force_regenerate_host(
+        &dir,
+        &shadowcat::tls::selfsigned::RcgenGenerator,
+        now,
+        &trash,
+    )?;
+    println!(
+        "regenerated {}: sha256 {}",
+        dir.join(shadowcat::tls::selfsigned::HOST_CERT_FILE)
+            .display(),
+        host.fingerprint()
     );
     Ok(())
 }

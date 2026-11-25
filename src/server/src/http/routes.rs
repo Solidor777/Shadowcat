@@ -427,15 +427,26 @@ pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
 ///     trash: std::sync::Arc::new(shadowcat::trash::Trash::new(std::env::temp_dir(), shadowcat::trash::TrashRetention::Disabled)),
 /// };
 /// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
-/// let status = admin_tls(admin, State(state)).await;
+/// let status = admin_tls(admin, State(state), None).await;
 /// assert!(!status.0.public.enabled);
 /// # }
 /// ```
 pub async fn admin_tls(
     _admin: AdminUser,
     State(state): State<AppState>,
+    conn: Option<axum::Extension<axum::extract::ConnectInfo<crate::tls::ConnMeta>>>,
 ) -> Json<crate::tls::TlsAdminStatus> {
-    Json(state.tls.admin_status())
+    // The self-signed certificate reported is the one this admin's own connection received
+    // (`PeerScope::of` is the one decision); without connect-info the peer is treated as LAN.
+    let scope = conn.map_or(crate::tls::resolver::PeerScope::Lan, |c| {
+        let ip = c.0 .0.peer.ip();
+        crate::tls::resolver::PeerScope::of(ip, state.config.is_trusted_proxy(ip))
+    });
+    Json(
+        state
+            .tls
+            .admin_status_for(scope, time::OffsetDateTime::now_utc()),
+    )
 }
 
 /// A real Argon2id hash of a throwaway password, computed once. The unknown-user
