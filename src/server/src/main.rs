@@ -318,7 +318,7 @@ async fn apply_staged_restore(config: &Config) -> anyhow::Result<()> {
 /// One-shot `--tls-regenerate` mode: replaces the persisted self-signed certificate with a fresh
 /// one advertising the current local addresses and configured `tls_hostnames`, and does the same
 /// for the certificate public peers receive (no interface addresses) and the one the host
-/// machine receives (localhost names only). Prints both SHA-256
+/// machine receives (localhost names only). Prints all three SHA-256
 /// fingerprints and returns — the caller exits before any server startup runs. Requires
 /// an on-disk TLS directory (`Config::tls_path`); an in-memory database with no `tls_dir` has
 /// nothing to regenerate because its certificate lives only in process memory.

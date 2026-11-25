@@ -88,7 +88,7 @@ exclusive with `--backup-to`, `--restore-from` and any subcommand).
 Machine hostname (PII): the certificate is presented to every peer that completes a handshake,
 before any authentication, and machine hostnames commonly embed a person's name. The hostname and its
 `<hostname>.local` form therefore enter the SANs ONLY when `tls_advertise_hostname = true` (default
-`false`); the opt-in governs both certificates. The hostname is detected regardless (`SanSources.machine_hostname`) so a
+`false`); the opt-in governs the LAN and public certificates (the host-machine certificate never lists a hostname). The hostname is detected regardless (`SanSources.machine_hostname`) so a
 certificate persisted by an earlier run that listed it is recognised: it is regenerated when the
 opt-in is off and the hostname is present (unless the operator also named it in `tls_hostnames`,
 which is theirs), and regenerated once when the opt-in is turned on and the hostname is absent. A

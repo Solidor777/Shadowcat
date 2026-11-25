@@ -29,7 +29,7 @@ pub const MAX_NESTING_DEPTH: usize = 32;
 /// `chat::rolls::MAX_SECRET_DEPTH` secrets and the roll's spec; a table draw holds its roll under
 /// up to `tables::MAX_DRAW_DEPTH` nested draws. The cap leaves room for the deepest of those
 /// wrappers and for the event that records an update; `chat::nested_roll_tests` and
-/// `tables::tests` pin it with a roll at the cap in each. `parse` refuses an expression past it
+/// `tables::nested_depth_tests` pin it with a roll at the cap in each. `parse` refuses an expression past it
 /// with `ParseError::TooDeeplyNested`.
 pub const MAX_EXPR_JSON_DEPTH: usize = 88;
 
