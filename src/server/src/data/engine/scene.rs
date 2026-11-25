@@ -112,11 +112,12 @@ pub enum DiagonalRule {
     /// for the alternating approximation. Cost-only: a diagonal step stays
     /// legal, exactly as under `Chebyshev`/`Euclidean`/`Manhattan`.
     Approximate,
-    /// Diagonal moves are illegal in the router's search graph:
+    /// Diagonal moves are illegal, in the router and in the move executor:
     /// `SquareGrid::neighbors_with_cost` enumerates only the four orthogonal
-    /// directions under this rule, so a diagonal edge is absent rather than
-    /// merely expensive. The one variant that changes ADJACENCY, not just
-    /// cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
+    /// directions under this rule, so a diagonal edge is absent from the search
+    /// graph rather than merely expensive, and `execute_move` halts a non-GM
+    /// walk at any grid step that neighbor set omits (a GM is exempt, like every
+    /// gameplay gate). The one variant that changes ADJACENCY, not just cost. Inert on a hex scene: `HexGrid` carries no `rule` field at all
     /// (six uniform axial neighbors; no diagonal/orthogonal split exists).
     Orthogonal,
 }
@@ -712,8 +713,9 @@ pub struct AudioOverlay {
     pub spatial: Option<bool>,
     /// Wall-occlusion policy; absent = `Occlusion::Walls`.
     pub occlusion: Option<Occlusion>,
-    /// Gain an occluded emitter is reduced to — never silenced entirely, so a player still
-    /// learns something is behind the door; absent = `0.25`.
+    /// Gain a wall-occluded emitter is reduced to — a wall never silences entirely, so a player
+    /// still learns something is behind the door; absent = `0.25`. A sound-blocking region
+    /// (`RegionEngine::occludes`) is stricter: an emitter across its edge has gain `0`.
     #[serde(rename = "throughWallGain")]
     pub through_wall_gain: Option<f64>,
 }

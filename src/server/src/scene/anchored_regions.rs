@@ -126,6 +126,22 @@ impl SceneEcs {
             .map(|e| e.doc.id)
             .collect();
         tokens.sort();
+        // Each attached region is rasterized ONCE here. The two per-token filters
+        // `trigger_regions` applies (the floor's elevation band and the carrier exemption) are
+        // pure predicates on the region's engine, so they run per token over these rows instead
+        // of re-rasterizing every trigger region once per token.
+        let attached_rows: Vec<(eng::RegionEngine, super::regions::TriggerRegion)> = attached
+            .iter()
+            .filter_map(|&id| {
+                let row = self.trigger_region_row(id)?;
+                let &e = self.index.get(&id)?;
+                let ent = self.world.get::<&SceneEntity>(e).ok()?;
+                Some((
+                    self.engine_as_cached::<eng::RegionEngine>(id, &ent.doc)?,
+                    row,
+                ))
+            })
+            .collect();
         let mut out = Vec::new();
         for token in tokens {
             let Some(pos) = self.token_position(token) else {
@@ -138,17 +154,16 @@ impl SceneEcs {
                 .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
                 .and_then(|ent| self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc))
                 .and_then(|t| t.elevation);
-            let rows = self
-                .trigger_regions(
-                    scene,
-                    super::elevation::elevation_or_ground(elevation),
-                    Some(token),
-                )
-                .unwrap_or_default();
+            let floor = super::elevation::elevation_or_ground(elevation);
             let member = self.region_membership_of(token);
-            let enter_regions: Vec<Uuid> = rows
+            let enter_regions: Vec<Uuid> = attached_rows
                 .iter()
-                .filter(|r| attached.contains(&r.region_id) && r.cells.contains(&cell))
+                .filter(|(region_eng, _)| {
+                    super::elevation::band_contains(region_eng.elevation.as_ref(), floor)
+                        && !exempts_mover(region_eng, Some(token))
+                })
+                .map(|(_, row)| row)
+                .filter(|r| r.cells.contains(&cell))
                 .filter(|r| member.is_none_or(|m| !m.contains(&r.region_id)))
                 .map(|r| r.region_id)
                 .collect();

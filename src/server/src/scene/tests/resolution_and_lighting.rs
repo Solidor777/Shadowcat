@@ -3626,3 +3626,55 @@ fn visible_cells_cache_invalidates_when_an_ambient_region_is_added() {
         "cached and uncached masks agree after the region add"
     );
 }
+
+#[test]
+fn ambient_fingerprint_ignores_non_ambient_regions_and_tracks_ambient_ones() {
+    // The lighting caches fingerprint `SceneEcs::ambient_light_map`, which reads only
+    // `ambient_light` regions. A terrain, impassable or arrest region contributes no ambient
+    // cell, so adding or editing one must hit the cache; an ambient region must miss it. Fails if
+    // the map (or the snapshot beside it) starts carrying a non-ambient region again.
+    let (mut ecs, _user, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1, "cold: one build");
+
+    for (id, behavior) in [(21, "terrain"), (22, "impassable"), (23, "arrest")] {
+        ecs.apply_op(&Operation::Create {
+            doc: region_doc(id, 10, behavior, 3.0, (0.0, 0.0, 300.0, 300.0)),
+        });
+        assert!(
+            ecs.ambient_light_map(scene, &[], "").is_empty(),
+            "a {behavior} region adds no ambient cell"
+        );
+        ecs.lighting_inputs(scene, "", &settings, 100.0);
+        assert_eq!(
+            ecs.lighting_inputs_recompute_count(),
+            1,
+            "adding a {behavior} region must not miss the lighting cache"
+        );
+    }
+    ecs.apply_op(&Operation::Update {
+        doc_id: crate::test_ids::test_uuid(21),
+        changes: vec![fc("/engine/cost", json!(5.0))],
+    });
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "editing a non-ambient region must not miss the lighting cache"
+    );
+
+    ecs.apply_op(&Operation::Create {
+        doc: ambient_region_doc(20, 10, "override", 0.0, (0.0, 0.0, 100.0, 100.0)),
+    });
+    assert!(
+        !ecs.ambient_light_map(scene, &[], "").is_empty(),
+        "the ambient region is read"
+    );
+    ecs.lighting_inputs(scene, "", &settings, 100.0);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        2,
+        "adding an ambient region must miss the lighting cache"
+    );
+}

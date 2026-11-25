@@ -19,7 +19,14 @@
 //! settles the turn wherever it lands, rather than erroring.
 //!
 //! INVARIANT: nothing this module does for a hidden combatant is observable from outside its own
-//! document (no message, no distinguishing op shape). The SAME `recover`/`tick`/`expire_by_policy`
+//! document (no message, no distinguishing op shape), with ONE accepted exception: the boundaries
+//! `record_turn_boundary` and `record_round_boundary` record for every combatant, hidden or not,
+//! drive `Room::fire_turn_round_triggers`,
+//! so a region `TurnStart`/`TurnEnd` trigger the hidden combatant's token stands in fires its
+//! effects when that turn begins or ends, and players watching the map can see when a hidden
+//! combatant's turn starts. Game state yields to play experience here (a region's turn trigger
+//! fires for whoever stands in it, hidden or not), and nothing else about a hidden combatant is
+//! disclosed. The SAME `recover`/`tick`/`expire_by_policy`
 //! calls run for a hidden entry as for a visible one, writing only to that combatant's own
 //! (permission-gated) document and its own hosts' effect documents. Every `Operation::Update` that
 //! `start` and `advance` accumulate is folded, by document id, through `Working::coalesce_updates`
@@ -43,6 +50,7 @@ use crate::data::engine::combat::{
     resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryNotice, ExpiryPoint,
     Formula, Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
 };
+use crate::data::permission::is_identity_hidden_token;
 use crate::data::DataError;
 use crate::dice::{RawRoll, RollOutcome, RollSpec};
 
@@ -707,36 +715,80 @@ fn expiry_mode(snap: &CombatSnapshot) -> ExpiryNotice {
     .expiry_notice
 }
 
-/// The name of the document `id` among `doc` and everything embedded under it, or `None` when
-/// it is absent or unnamed.
-fn embedded_name(doc: &Document, id: Uuid) -> Option<String> {
+/// The document `id` among `doc` and everything embedded under it, or `None` when it is absent.
+fn find_embedded(doc: &Document, id: Uuid) -> Option<&Document> {
     if doc.id == id {
-        return doc.name.clone().filter(|n| !n.is_empty());
+        return Some(doc);
     }
     doc.embedded
         .values()
         .flatten()
-        .find_map(|child| embedded_name(child, id))
+        .find_map(|child| find_embedded(child, id))
+}
+
+/// Whether the document `host` may be NAMED in a line every world member reads: it grants
+/// access by default, no hidden combatant stands on it, and it does not reveal a secret
+/// identity. A secret-identity token (`is_identity_hidden_token`) withholds its name, and an
+/// actor such a token links is withheld too: naming that actor in a public line would join the
+/// token to it, which egress prevents by withholding the token's `actor_id`. Judged on
+/// `permissions.default` only, like `is_hidden`, so a per-user grant on an otherwise unreadable
+/// document leaves the line GM-only: the note under-discloses and never leaks.
+fn host_is_nameable(
+    host: &Document,
+    hosts: &HashMap<Uuid, Document>,
+    combatants: &[Combatant],
+) -> bool {
+    if host.permissions.default == DocRole::None || is_identity_hidden_token(host) {
+        return false;
+    }
+    let host_key = host.id.to_string();
+    let linked_by_secret_token = hosts.values().any(|t| {
+        is_identity_hidden_token(t)
+            && t.engine
+                .as_ref()
+                .and_then(|e| e.get("actor_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(host_key.as_str())
+    });
+    if linked_by_secret_token {
+        return false;
+    }
+    !combatants.iter().any(|c| {
+        is_hidden(c)
+            && matches!(
+                &c.engine.kind,
+                CombatantKind::Actor { token_id, actor_id }
+                    if *token_id == Some(host.id) || *actor_id == Some(host.id)
+            )
+    })
 }
 
 /// The display name of an origin's `source` document, looked up among the combat's hosts and
-/// combatants; `None` when it is not among them (deleted, or never part of this combat).
+/// combatants; `None` when it is not among them (deleted, or never part of this combat), or when
+/// a world member who may not read it could not see it named: the source, and the host or
+/// combatant document that holds it, must both be nameable (`host_is_nameable`, `is_hidden`).
 fn source_name(
     hosts: &HashMap<Uuid, Document>,
     combatants: &[Combatant],
     id: Uuid,
 ) -> Option<String> {
-    hosts
-        .values()
-        .find_map(|h| embedded_name(h, id))
-        .or_else(|| combatants.iter().find_map(|c| embedded_name(&c.doc, id)))
+    let from_host = hosts.values().find_map(|h| {
+        let found = find_embedded(h, id)?;
+        (host_is_nameable(h, hosts, combatants) && found.permissions.default != DocRole::None)
+            .then_some(found)
+    });
+    let found = from_host.or_else(|| {
+        combatants.iter().find_map(|c| {
+            let found = find_embedded(&c.doc, id)?;
+            (!is_hidden(c) && found.permissions.default != DocRole::None).then_some(found)
+        })
+    })?;
+    found.name.clone().filter(|n| !n.is_empty())
 }
 
-/// Whether the note naming `e` may reach every world member: the effect document, its host
-/// document and the combatant that swept it all grant access by default, and no hidden
-/// combatant stands on the host. Judged on `permissions.default` only, like `is_hidden`, so a
-/// per-user grant on an otherwise unreadable document leaves the effect GM-only: the note
-/// under-discloses and never leaks.
+/// Whether the note naming `e` may reach every world member: the effect document and the
+/// combatant that swept it grant access by default, and its host is nameable
+/// (`host_is_nameable`).
 fn effect_is_public(
     e: &ExpiredEffect,
     hosts: &HashMap<Uuid, Document>,
@@ -748,18 +800,10 @@ fn effect_is_public(
     let Some(host) = hosts.get(&e.effect.host) else {
         return false;
     };
-    if host.permissions.default == DocRole::None {
-        return false;
-    }
-    !combatants.iter().any(|c| {
-        is_hidden(c)
-            && (c.doc.id == e.combatant
-                || matches!(
-                    &c.engine.kind,
-                    CombatantKind::Actor { token_id, actor_id }
-                        if *token_id == Some(host.id) || *actor_id == Some(host.id)
-                ))
-    })
+    host_is_nameable(host, hosts, combatants)
+        && !combatants
+            .iter()
+            .any(|c| is_hidden(c) && c.doc.id == e.combatant)
 }
 
 /// The chat notices naming every effect a command expired, as at most TWO `Create` ops: one

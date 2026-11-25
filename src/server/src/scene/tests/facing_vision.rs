@@ -406,6 +406,30 @@ fn streamed_sight_re_raycast_keeps_the_arc() {
 }
 
 #[test]
+fn streamed_sight_looks_along_the_rotation_the_move_commits() {
+    // Mutation: dropping `SightSources::turn_source` keeps the stored 0 degree facing, so the
+    // sample still sees +x and fails the second assertion.
+    let ecs = ecs_with(
+        vec![raw_token(TOKEN_ID, viewer(), 0.0, Some(ninety()))],
+        settings(Some(true)),
+    );
+    let mut sight = ecs.sight_sources(viewer(), WorldRole::Player, &no_world_grants(), scene_id());
+    let token = crate::test_ids::test_uuid(TOKEN_ID);
+    sight.turn_source(token, 180.0);
+    let moved = (1250.0, 1050.0);
+    let polys = sight.los_at(&[(token, moved)]);
+    let (_, poly) = &polys[0];
+    assert!(
+        vision::point_in_poly(poly, (950.0, 1050.0)),
+        "the committed 180 degree bearing looks toward -x"
+    );
+    assert!(
+        !vision::point_in_poly(poly, (1550.0, 1050.0)),
+        "the pre-move +x heading no longer applies"
+    );
+}
+
+#[test]
 fn creature_senses_stay_all_round_with_facing_on() {
     let source = {
         let mut t = raw_token(TOKEN_ID, viewer(), 0.0, Some(ninety()));

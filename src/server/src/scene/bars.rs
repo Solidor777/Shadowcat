@@ -228,8 +228,15 @@ impl SceneEcs {
             .then(|| self.nameplate_for(&seen_token, host, &actor_access, linked))
             .flatten();
 
+        // A linked token whose `actor_id` the recipient does not receive (a secret identity)
+        // gets no bars: the actor's numbers would re-join the token to that actor for any
+        // recipient who can read it. `nameplate_for` applies the same rule to the name.
+        let link_received = !linked
+            || engine_as::<eng::TokenEngine>(&seen_token)
+                .and_then(|t| t.actor_id)
+                .is_some();
         let mut bars = Vec::new();
-        if bar_list.iter().any(|b| b.mode.delivered_to(trusted)) {
+        if link_received && bar_list.iter().any(|b| b.mode.delivered_to(trusted)) {
             let seen_host = if linked {
                 filter_properties(host, &actor_access).ok()?
             } else {

@@ -90,7 +90,8 @@ pub(crate) struct ResolvedAudioOverlay {
     pub(crate) spatial: bool,
     /// Wall-occlusion policy.
     pub(crate) occlusion: eng::Occlusion,
-    /// Gain an occluded emitter is reduced to — never silenced entirely.
+    /// Gain a wall-occluded emitter is reduced to — a wall never silences entirely; a
+    /// sound-blocking region does (`compute_audibility`).
     pub(crate) through_wall_gain: f64,
 }
 
@@ -207,8 +208,8 @@ pub struct AudibleEmitter {
     pub asset: String,
     /// Final resolved gain, `0..=1`: `volume * falloff(t)`, then `* soundGain` of every crossed
     /// wall open to the listener by proximity (`WallProximity::sound_gain`), then `* throughWallGain` if
-    /// occluded under `Occlusion::Walls` (never reduced to exactly `0` by occlusion alone — a
-    /// player still learns something is behind the door).
+    /// occluded under `Occlusion::Walls` (a wall never reduces it to exactly `0` — a player
+    /// still learns something is behind the door — but a crossed sound-blocking region does).
     pub gain: f64,
     /// Stereo pan, `-1..=1`.
     pub pan: f64,
@@ -307,8 +308,16 @@ impl SceneEcs {
             let &e = self.index.get(&id)?;
             let c = self.world.get::<&SceneEntity>(e).ok()?;
             let t = self.engine_as_cached::<eng::TokenEngine>(id, &c.doc)?;
-            let walls = self.sound_walls_for(scene, elevation::elevation_or_ground(t.elevation));
-            Some(((t.x, t.y), walls))
+            let floor = elevation::elevation_or_ground(t.elevation);
+            let walls = self.sound_walls_for(scene, floor);
+            // The outline of every sound-blocking region: a segment crossing one silences the
+            // emitter outright, where a wall only muffles it. These edges are also in `walls`
+            // (`sound_wall_entries` appends them), so a crossing both muffles and silences.
+            let silencers = elevation::walls_at_elevation(
+                &self.region_occluder_entries(scene, eng::WallSense::Sound),
+                floor,
+            );
+            Some(((t.x, t.y), walls, silencers))
         });
 
         let mut emitters = Vec::new();
@@ -351,7 +360,7 @@ impl SceneEcs {
             } else {
                 match &listener_view {
                     None => (0.0, 0.0, false),
-                    Some((lp, walls)) => {
+                    Some((lp, walls, silencers)) => {
                         let dx = pos.0 - lp.0;
                         let dy = pos.1 - lp.1;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -368,6 +377,9 @@ impl SceneEcs {
                             if blocked {
                                 g = (g * overlay.through_wall_gain).max(0.0);
                                 muffled = true;
+                                if silencers.iter().any(|w| segments_cross(*lp, pos, w.a, w.b)) {
+                                    g = 0.0;
+                                }
                             }
                         }
                         (g, pan_for(dx, radius_world), muffled)

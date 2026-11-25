@@ -188,6 +188,58 @@ fn an_effect_everyone_cannot_read_is_named_to_the_gm_alone_under_the_default_set
 }
 
 #[test]
+fn an_effect_on_a_secret_identity_token_is_named_to_the_gm_alone() {
+    let mut host = host_named(0x9A, "Wolf Pack Leader", true);
+    host.doc_type = "token".into();
+    host.engine = Some(json!({ "identity_hidden": true }));
+    style_effect(&mut host, "Bless", true, None);
+    let (_, ops) = advance_over(vec![host], false, None);
+    let n = notices(&ops);
+    assert_eq!(n.len(), 1);
+    assert_eq!(n[0].audience, "gm_only");
+    assert!(n[0].text.contains("Wolf Pack Leader"));
+}
+
+#[test]
+fn an_effect_on_the_actor_a_secret_identity_token_links_is_named_to_the_gm_alone() {
+    let mut actor = host_named(0x9A, "Seraphine", true);
+    style_effect(&mut actor, "Bless", true, None);
+    let mut token = doc(
+        0x500,
+        "token",
+        None,
+        json!({
+            "identity_hidden": true,
+            "actor_id": crate::test_ids::test_uuid(0x9A).to_string(),
+        }),
+    );
+    token.permissions.default = DocRole::Observer;
+    let (_, ops) = advance_over(vec![actor, token], false, None);
+    let n = notices(&ops);
+    assert_eq!(n.len(), 1);
+    assert_eq!(n[0].audience, "gm_only");
+}
+
+#[test]
+fn an_origin_source_nobody_else_can_read_is_left_out_of_the_public_note() {
+    let mut named = host_named(0x9A, "Seraphine", true);
+    let queen = host_named(0x300, "Spider Queen", false);
+    style_effect(
+        &mut named,
+        "Poison",
+        true,
+        Some(EffectOrigin {
+            source: Some(queen.id),
+            label: None,
+        }),
+    );
+    let (_, ops) = advance_over(vec![named, queen], false, None);
+    let n = notices(&ops);
+    assert_eq!(n[0].audience, "public");
+    assert_eq!(n[0].text, "Expired: Poison on Seraphine");
+}
+
+#[test]
 fn a_command_mixing_public_and_private_expiries_posts_one_note_per_audience() {
     let mut host = host_named(0x9A, "Seraphine", true);
     style_effect(&mut host, "Bless", true, None);

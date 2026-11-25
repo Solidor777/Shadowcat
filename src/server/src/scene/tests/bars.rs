@@ -343,6 +343,19 @@ fn a_secret_identity_token_nameplate_is_blank_for_a_non_owner_and_named_for_the_
 }
 
 #[test]
+fn a_secret_identity_linked_token_delivers_no_bars_to_a_non_owner_who_can_read_the_actor() {
+    // Mutation: dropping the `link_received` gate in `token_bars` hands the stranger the actor's
+    // HP numbers, which re-join the token to the readable actor, and fails this.
+    let ecs = ecs_with(
+        linked_token(json!({ "identity_hidden": true })),
+        hp_actor("always"),
+    );
+    assert!(labels(&entry_for(&ecs, &stranger())).is_empty());
+    assert_eq!(labels(&entry_for(&ecs, &owner())), ["HP"]);
+    assert_eq!(labels(&entry_for(&ecs, &gm())), ["HP"]);
+}
+
+#[test]
 fn the_entry_states_the_delivered_nameplate_mode_and_each_bars_mode() {
     // Mutation: dropping `nameplate_mode` from the entry, or `mode` from a bar, fails this.
     let ecs = ecs_with(

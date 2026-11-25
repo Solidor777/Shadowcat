@@ -332,6 +332,38 @@ fn transparent_from_fails_closed_on_a_non_unit_sign_or_non_finite_cross() {
 }
 
 #[test]
+fn nearest_hit_unflagged_fast_path_matches_the_sorted_walk() {
+    // Mutation: a fast path that returns the LAST minimum, or any hit but the minimum, differs
+    // from the sorted walk on this set (it carries a coincident pair and crossing walls) and
+    // fails. The flagged copy adds one `limited` wall no ray below reaches, which forces the
+    // sorted walk without changing any answer.
+    let mut plain = vec![
+        wall_seg((10.0, -20.0), (10.0, 20.0)),
+        wall_seg((10.0, -20.0), (10.0, 20.0)),
+        wall_seg((-30.0, -5.0), (30.0, 35.0)),
+        wall_seg((-8.0, 12.0), (14.0, -9.0)),
+    ];
+    plain.extend(bound().edges());
+    let mut flagged = plain.clone();
+    flagged.push(Seg {
+        a: (900.0, 900.0),
+        b: (900.0, 901.0),
+        one_way: None,
+        limited: true,
+        open_within: None,
+    });
+    for k in 0..72 {
+        let ang = f64::from(k) * std::f64::consts::TAU / 72.0;
+        let dir = (ang.cos(), ang.sin());
+        assert_eq!(
+            nearest_hit((1.0, 2.0), dir, &plain),
+            nearest_hit((1.0, 2.0), dir, &flagged),
+            "ray {k}"
+        );
+    }
+}
+
+#[test]
 fn nearest_hit_limited_wall_lets_a_ray_cross_exactly_one_then_stops_at_a_second() {
     // Two parallel limited walls at x=0 and x=10, approached from x<0: the ray spends its
     // single crossing budget on the first and the second stops it.

@@ -476,7 +476,9 @@ fn compute_audibility_wall_occlusion_reduces_but_never_silences() {
 }
 
 #[test]
-fn a_sound_occluding_region_muffles_an_emitter_behind_it_like_a_wall() {
+fn a_sound_occluding_region_silences_an_emitter_across_its_edge() {
+    // Mutation: dropping the `silencers` crossing test in `compute_audibility` leaves the wall
+    // attenuation (0.25 of the open gain) and fails the zero-gain assertion.
     let user = crate::test_ids::test_uuid(7);
     let region = |occludes: serde_json::Value| {
         entity_doc_eng(
@@ -502,10 +504,9 @@ fn a_sound_occluding_region_muffles_an_emitter_behind_it_like_a_wall() {
         silenced.muffled,
         "the region boundary occludes the sound path"
     );
-    assert!(
-        (silenced.gain - 0.8 * 8.0 / 9.0 * 0.25).abs() < 1e-9,
-        "the same through-wall attenuation a wall applies: {}",
-        silenced.gain
+    assert_eq!(
+        silenced.gain, 0.0,
+        "a silence region mutes the emitter outright, unlike a wall's through-wall gain"
     );
     let sight_only = gain_of(json!({ "sight": true, "light": true, "sound": false }));
     assert!(

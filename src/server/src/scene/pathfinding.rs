@@ -16,7 +16,8 @@
 /// `Orthogonal` shares the same king-move graph; those differ only in diagonal cost + the
 /// admissible heuristic. `Alternating` (PF1e/3.5 "5-10-5") costs diagonals 1,2,1,2… and so
 /// requires a parity bit in the search node. `Orthogonal` is the one ADJACENCY-changing rule:
-/// it removes the diagonal edges from the search graph rather than repricing them.
+/// it removes the diagonal edges from the search graph rather than repricing them, and the move
+/// executor enforces the same omission on a non-GM walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagonalRule {
     /// Diagonals cost 1.0 (equal to orthogonal steps).
@@ -32,10 +33,11 @@ pub enum DiagonalRule {
     /// Diagonals cost 1.5 — a flat multiplier standing in for the
     /// alternating approximation. Cost-only: the king-move graph is unchanged.
     Approximate,
-    /// Diagonal steps are ILLEGAL in the search graph: `SquareGrid::neighbors_with_cost`
+    /// Diagonal steps are ILLEGAL: absent from the search graph (`SquareGrid::neighbors_with_cost`
     /// enumerates only the four orthogonal directions under this rule, so `step_cost` is never
-    /// called with a diagonal pair (its `unreachable!` arm is the tripwire for that
-    /// invariant). Inert on a hex scene — `HexGrid` carries no `rule` field at all (six
+    /// called with a diagonal pair; its `unreachable!` arm is the tripwire for that invariant)
+    /// and refused by `execute_move` for a non-GM walk on a square grid, so a hand-built path
+    /// cannot take a diagonal the router would never emit. Inert on a hex scene — `HexGrid` carries no `rule` field at all (six
     /// uniform axial neighbors; no diagonal/orthogonal split exists to remove).
     Orthogonal,
 }
