@@ -1268,3 +1268,28 @@ are observations awaiting triage, not committed work.
   e2e (its brief forbade it), so it added a retry-until-pass to the region helper. That was
   rejected, because a retry hides which of three mechanisms fails, and the lane's branch was not
   merged. Both flakes remain open (`OPEN_BUGS.md`). Status: Open.
+
+- Title: the lane brief for the ducking warning had a wrong premise.
+  Summary: The brief said a ducking-settings warning made `pnpm -r typecheck` fail. The warning
+  does not fail the gate (it prints and exits 0); the real failure was a TypeScript error in the shell
+  package (`launchOptions` in the playwright config test), fixed in the same pass by reading
+  `use.launchOptions` from the project. The warning was
+  still real (a replaced controller prop left a stale subscription) and is fixed. Other Svelte
+  warnings remain in the tree and do not fail any gate: `ThemeEditor` (`state_referenced_locally`
+  twice) and `Stage` (`non_reactive_update`). Status: Needs Review (owner's call whether the
+  "ban and fix all" ruling covers warnings that are not suppressions).
+
+- Title: the commit gate reads the live skills corpus, so a skill edit in progress fails an unrelated commit.
+  Summary: `pnpm run test:scripts` ran `check-comment-refs.test.mjs` over the plugin checkout; a
+  server-ops skill reference carried an unrecognised candidate token ("moved") and failed this
+  lane's second commit although no file of the lane was involved. Status: Open (the skill owner
+  fixes the line; the commit is retried after).
+
+- Title: lane checks that were inferred or partial.
+  Summary: Lane `fe` did not sabotage-check the GM recalculation, fragment-link and flaky-test
+  tests; lane `fh2` ran Chromium only (Firefox for one probe); no lane ran `pnpm gate:push`
+  (lane rule: one CI pass at the end). The flaky `client_authored_message_create_is_rejected`
+  was the connection's own presence frame, a test defect fixed by waiting for the welcome and
+  using `next_non_presence_frame`, not a product bug. A helper script from lane `fc` was left in the
+  campaign folder because it could not be confirmed safe to trash. Status: Needs Review (the final
+  push gate and the owner's end-to-end lane are where these run).

@@ -28,16 +28,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   end-to-end runner that instruments the three mechanisms, loops the combat-settings spec, and
   fixes the product if one is a race.
 
-## Gate gap — `svelte-ignore` suppressions are not scanned
-
-- [Medium] `pnpm lint:allowances` reads Rust and TypeScript suppressions but not Svelte
-  `svelte-ignore` comments, so the project rule against unapproved suppressions is unenforced for
-  `.svelte` files. `svelte-ignore state_referenced_locally` annotations exist in `VisualKindEditor`
-  (eight), `AssetBrowser`, `ToolRail`, and the `SurfaceHarness` and `AppContextCapture` fixtures.
-  The two `a11y` annotations on the notification row and `MergeConflictModal` were fixed by making
-  the code correct, which is the model for the rest: extend the gate to `svelte-ignore`, then fix
-  or remove each annotation.
-
 ## Upstream — dockview-core `onDidPopoutGroupPositionChange` populates `screenY` from `window.screenX`
 
 - [Low, UPSTREAM — routed around] In the vendored `dockview-core` popout wiring
