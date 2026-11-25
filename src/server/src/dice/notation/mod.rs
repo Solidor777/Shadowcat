@@ -14,7 +14,14 @@ pub use parser::parse;
 ///
 /// The parser recurses once per nesting level, so the cap bounds its stack use independently of
 /// the input length.
-pub const MAX_NESTING_DEPTH: usize = 128;
+///
+/// The cap also bounds how deep a stored roll's JSON nests. A function-call level serializes as
+/// three JSON levels, and a chat message holds its roll under the document, its engine body,
+/// the segment list, up to `chat::rolls::MAX_SECRET_DEPTH` secrets and the roll's spec, while
+/// every read parses the row with `serde_json`, which refuses past 128 levels. 32 levels keep the
+/// deepest storable message, and the event that records an update to it, under that limit;
+/// `chat::nested_roll_tests` pins it.
+pub const MAX_NESTING_DEPTH: usize = 32;
 
 use crate::dice::spec::Direction;
 

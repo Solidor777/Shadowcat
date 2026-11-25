@@ -106,8 +106,8 @@ impl ChatContentPolicy {
         self.emails.unwrap_or(false)
     }
 
-    /// Players other than the roller see that a blind roll happened (absent = false,
-    /// fail-closed).
+    /// Players other than the roller see that a blind roll a player made happened (absent =
+    /// false, fail-closed). Never applies to a GM's blind roll.
     ///
     /// # Examples
     ///

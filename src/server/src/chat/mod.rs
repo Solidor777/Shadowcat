@@ -205,8 +205,8 @@ pub enum Audience {
     /// `roll_property_overrides` registers them under the GM-only tier, so the roller sees a
     /// card saying a blind roll was made and nothing else. Who holds the message at all is
     /// the world's blind-roll settings (`BlindReaders`): the roller and the GM always;
-    /// other players only when `blind_visible_to_players` is on, and the owner of a GM
-    /// roll's actor when `blind_visible_to_actor_owner` is on. Valid only on a message that
+    /// other players only when a player rolled and `blind_visible_to_players` is on, and
+    /// the owner of a GM roll's actor when `blind_visible_to_actor_owner` is on. Valid only on a message that
     /// holds a roll (`SendMessageError::BlindNeedsRoll` otherwise). The sender stays `Owner`
     /// of the document and may delete it.
     Blind,
@@ -791,13 +791,37 @@ fn push_segment_overrides(
     }
 }
 
+/// Whether any segment of `content`, a secret's nested segments included, satisfies `pred`.
+/// The one walk every "does this message hold X" question shares, so two checks about the same
+/// content cannot disagree on whether a secret hides a segment from them.
+fn any_segment(content: &[Segment], pred: &dyn Fn(&Segment) -> bool) -> bool {
+    content.iter().any(|seg| match seg {
+        Segment::Secret { content, .. } => pred(seg) || any_segment(content, pred),
+        _ => pred(seg),
+    })
+}
+
+/// The `RollEmbed` carrying `roll_id`, found at the top level or inside any secret.
+fn find_roll_mut(content: &mut [Segment], roll_id: Uuid) -> Option<&mut Segment> {
+    for seg in content {
+        match seg {
+            Segment::RollEmbed { roll_id: rid, .. } if *rid == roll_id => return Some(seg),
+            Segment::Secret { content, .. } => {
+                if let Some(found) = find_roll_mut(content, roll_id) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether `content` holds a roll (`RollEmbed` or `TableDraw`) anywhere, including inside a
 /// secret. A blind message with none has nothing to hide.
 fn holds_roll(content: &[Segment]) -> bool {
-    content.iter().any(|seg| match seg {
-        Segment::RollEmbed { .. } | Segment::TableDraw(_) => true,
-        Segment::Secret { content, .. } => holds_roll(content),
-        _ => false,
+    any_segment(content, &|seg| {
+        matches!(seg, Segment::RollEmbed { .. } | Segment::TableDraw(_))
     })
 }
 
@@ -1643,17 +1667,18 @@ async fn actor_doc_owner(
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlindReaders {
-    /// Every world member holds the message (the `blind_visible_to_players` setting is on).
+    /// Every world member holds the message (a player rolled it and the
+    /// `blind_visible_to_players` setting is on).
     pub everyone: bool,
     /// Individual users who hold the message though `everyone` is false.
     pub also: Vec<Uuid>,
 }
 
 /// Resolves the `BlindReaders` of a blind message by `roller` in `world_id`, attributed to
-/// `actor_owner`, from the world's chat settings. Players see the message when
-/// `blind_visible_to_players` is on. When the roller is the GM and
-/// `blind_visible_to_actor_owner` is on, the owner of the actor the roll is attributed to
-/// also reads it. Every site that builds or revises a blind message calls this with the stored
+/// `actor_owner`, from the world's chat settings. The two settings never overlap: when the
+/// roller is a player, every player sees the message if `blind_visible_to_players` is on; when
+/// the roller is the GM, only the owner of the actor the roll is attributed to reads it, and
+/// only if `blind_visible_to_actor_owner` is on. Every site that builds or revises a blind message calls this with the stored
 /// roller and attribution, so creation, revision and the later read paths (resync, list,
 /// search) all see one decision; the result is stored in the message's `PermissionSet`.
 pub(crate) async fn resolve_blind_readers(
@@ -1663,19 +1688,21 @@ pub(crate) async fn resolve_blind_readers(
     actor_owner: Option<&ActorOwnerRef>,
 ) -> Result<BlindReaders, SendMessageError> {
     let policy = resolve_content_policy(repo, world_id).await;
-    let mut readers = BlindReaders {
-        everyone: policy.blind_visible_to_players(),
-        also: Vec::new(),
-    };
-    if !policy.blind_visible_to_actor_owner() {
-        return Ok(readers);
+    let players = policy.blind_visible_to_players();
+    let owner_reads = policy.blind_visible_to_actor_owner();
+    if !players && !owner_reads {
+        return Ok(BlindReaders::default());
     }
     let roller_is_gm = repo
         .member_role(world_id, roller)
         .await
         .map_err(SendMessageError::Data)?
         == Some(WorldRole::Gm);
-    if let (true, Some(owner_ref)) = (roller_is_gm, actor_owner) {
+    let mut readers = BlindReaders {
+        everyone: players && !roller_is_gm,
+        also: Vec::new(),
+    };
+    if let (true, true, Some(owner_ref)) = (owner_reads, roller_is_gm, actor_owner) {
         if let Some(doc) = world_actor_doc(repo, world_id, owner_ref)
             .await
             .map_err(SendMessageError::Data)?
@@ -2303,10 +2330,9 @@ pub async fn handle_edit_message(
     // `content`. Editing that message's text would otherwise silently erase
     // the executed roll's audit record even though the top-level `kind`
     // check never fires. Delete remains available for any message.
-    let has_roll_segment = sys
-        .content
-        .iter()
-        .any(|seg| matches!(seg, Segment::RollEmbed { .. } | Segment::RollButton { .. }));
+    let has_roll_segment = any_segment(&sys.content, &|seg| {
+        matches!(seg, Segment::RollEmbed { .. } | Segment::RollButton { .. })
+    });
     if sys.kind == MessageKind::Roll || has_roll_segment {
         return Err(SendMessageError::RollImmutable);
     }
@@ -2823,15 +2849,11 @@ pub async fn handle_recalc_roll(
     let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap_or_default())
         .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
 
-    let idx = sys
-        .content
-        .iter()
-        .position(|seg| matches!(seg, Segment::RollEmbed { roll_id: rid, .. } if *rid == roll_id))
-        .ok_or(RecalcRollError::RollNotFound)?;
+    let target = find_roll_mut(&mut sys.content, roll_id).ok_or(RecalcRollError::RollNotFound)?;
 
     // Read immutably and clone what's needed, so the mutation
     // below never overlaps a live borrow.
-    let (spec_val, raw_val, prev_outcome) = match &sys.content[idx] {
+    let (spec_val, raw_val, prev_outcome) = match &*target {
         Segment::RollEmbed {
             spec: Some(s),
             raw: Some(r),
@@ -2839,7 +2861,7 @@ pub async fn handle_recalc_roll(
             ..
         } => (s.clone(), r.clone(), outcome.clone()),
         Segment::RollEmbed { .. } => return Err(RecalcRollError::NoStoredState),
-        _ => unreachable!("idx matched only Segment::RollEmbed above"),
+        _ => unreachable!("find_roll_mut returns only a Segment::RollEmbed"),
     };
 
     let seed = rolls::entropy_seed();
@@ -2858,7 +2880,7 @@ pub async fn handle_recalc_roll(
         outcome,
         recalc_history,
         ..
-    } = &mut sys.content[idx]
+    } = target
     {
         recalc_history.get_or_insert_with(Vec::new).push(entry);
         *raw = Some(Box::new(new_raw));
@@ -3121,3 +3143,6 @@ mod link_preview_ingest_tests;
 
 #[cfg(test)]
 mod system_payload_tests;
+
+#[cfg(test)]
+mod nested_roll_tests;

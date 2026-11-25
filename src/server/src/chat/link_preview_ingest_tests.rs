@@ -336,6 +336,42 @@ async fn page_with_og_image_yields_a_pending_image_job_and_no_asset_id_yet() {
     }
 }
 
+// Fails if `enrich` queues a `PreviewImage` job without charging the per-user fetch budget:
+// the cached preview then re-queues its image fetch with the budget spent.
+#[tokio::test]
+async fn a_cached_preview_charges_the_fetch_budget_for_its_image_job() {
+    let addr = spawn_stub(Router::new().route(
+        "/",
+        get(|| async {
+            axum::response::Html(
+                r#"<title>Hello</title><meta property="og:image" content="https://og.example/pic.png">"#,
+            )
+        }),
+    ))
+    .await;
+    let f = Fixture::new(hyperlinks_on()).await;
+    let body = format!("check out [link](http://stub.test:{addr}/)");
+
+    let (_, first) = f.send_full(&body, 1).await.unwrap();
+    assert_eq!(
+        first.len(),
+        1,
+        "control: a fresh preview queues its image job"
+    );
+
+    // Spend what is left of the budget inside the same window.
+    while f
+        .preview_rate
+        .check(f.ctx.user_id, 1, PREVIEW_FETCH_PER_MIN)
+    {}
+
+    let (_, second) = f.send_full(&body, 2).await.unwrap();
+    assert!(
+        second.is_empty(),
+        "a cached preview must not re-queue its image fetch past the budget, got {second:?}"
+    );
+}
+
 #[tokio::test]
 async fn redirected_preview_keys_its_image_job_and_cache_row_on_the_posted_candidate() {
     let addr = spawn_stub(

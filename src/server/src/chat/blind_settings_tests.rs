@@ -159,8 +159,9 @@ async fn a_players_blind_roll_is_hidden_from_other_players_unless_the_setting_is
     }
 }
 
-// Fails if `resolve_blind_readers` drops the actor's owner or reads the wrong setting: the
-// owner either never sees the GM's roll or sees it with the setting off.
+// Fails if `resolve_blind_readers` lets `blind_visible_to_players` admit readers of a GM's
+// blind roll (the bystander and the unrelated player then read it), or drops the actor's owner
+// or reads the wrong setting for them.
 #[tokio::test]
 async fn a_gms_blind_roll_reaches_the_actors_owner_only_under_its_setting() {
     for players in [false, true] {
@@ -173,17 +174,16 @@ async fn a_gms_blind_roll_reaches_the_actors_owner_only_under_its_setting() {
             assert!(reads(&h, &h.gm, id).await);
             assert_eq!(
                 reads(&h, &h.friend, id).await,
-                players || actor_owner,
+                actor_owner,
                 "actor owner, players={players} actor_owner={actor_owner}"
             );
-            assert_eq!(
-                reads(&h, &h.bystander, id).await,
-                players,
+            assert!(
+                !reads(&h, &h.bystander, id).await,
                 "bystander, players={players} actor_owner={actor_owner}"
             );
             assert!(
-                !reads(&h, &h.sender, id).await || players,
-                "an unrelated player reads only under the players setting"
+                !reads(&h, &h.sender, id).await,
+                "an unrelated player never reads a GM's blind roll through the players setting"
             );
         }
     }

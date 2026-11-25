@@ -868,7 +868,7 @@ export const en: Messages = {
   "gameSettings.chat.images":
     "Images: asset links and server-fetched copies of linked images; never hotlinked",
   "gameSettings.chat.blindVisibleToPlayers":
-    "Players see that another character rolled blind (never the result)",
+    "Players see that another player rolled blind (never the result)",
   "gameSettings.chat.blindVisibleToActorOwner":
     "A player sees that the GM rolled blind for their character (never the result)",
   "chat.blind.rolled": "Rolled blind",
