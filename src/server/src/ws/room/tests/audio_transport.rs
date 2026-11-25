@@ -754,3 +754,59 @@ async fn a_session_pause_leaves_audio_playing_by_default() {
     assert_eq!(state.playing.len(), 1);
     assert_eq!(state.playing[0].paused_at, None);
 }
+
+/// Publishes the session write `old` to `new` at `now` on `s`'s world.
+async fn write_session(s: &SessionAudio, old: serde_json::Value, new: serde_json::Value, now: i64) {
+    s.room
+        .publish(
+            &s.repo,
+            &s.ctx,
+            vec![Operation::Update {
+                doc_id: s.settings,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/session".into(),
+                    old,
+                    new,
+                }],
+            }],
+            now,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn unticking_pause_audio_mid_pause_resumes_the_tracks_it_paused() {
+    let on = serde_json::json!({ "paused": true, "pauseAudio": true });
+    let off = serde_json::json!({ "paused": true, "pauseAudio": false });
+    let s = play_then_set_session(serde_json::json!(null), on.clone()).await;
+    write_session(&s, on, off.clone(), 4_000).await;
+    let track = audio_state(&s.repo, s.world).await.playing.remove(0);
+    assert_eq!(
+        track.paused_at, None,
+        "the untick resumes the flagged track"
+    );
+    assert!(!track.session_paused, "no marker outlives the switch");
+    // The resume that follows leaves the playing track alone.
+    write_session(
+        &s,
+        off,
+        serde_json::json!({ "paused": false, "pauseAudio": false }),
+        5_000,
+    )
+    .await;
+    let track = audio_state(&s.repo, s.world).await.playing.remove(0);
+    assert_eq!(track.paused_at, None);
+}
+
+#[tokio::test]
+async fn ticking_pause_audio_mid_pause_pauses_every_track() {
+    let off = serde_json::json!({ "paused": true });
+    let on = serde_json::json!({ "paused": true, "pauseAudio": true });
+    let s = play_then_set_session(serde_json::json!(null), off.clone()).await;
+    write_session(&s, off, on, 4_000).await;
+    let track = audio_state(&s.repo, s.world).await.playing.remove(0);
+    assert_eq!(track.paused_at, Some(4_000.0));
+}
