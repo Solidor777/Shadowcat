@@ -827,10 +827,12 @@ per_protocol!(
 );
 
 per_protocol!(
-    requests_past_the_permit_pool_are_refused_with_retry_after_while_the_first_still_stream,
+    requests_past_the_users_share_are_refused_with_retry_after_while_the_first_still_stream,
     protocol,
     async move {
-        let mut media = Media::start(protocol, 2).await;
+        // A pool of 8 gives one user a share of 2 (`StreamedFilePermits` caps a user at a quarter
+        // of the pool); the pool itself is far from exhausted, so the refusal below is the share's.
+        let mut media = Media::start(protocol, 8).await;
         let (id, _) = media.seed_media().await;
         let url = format!("/api/assets/{id}?variant=opus");
         let first = media.get(&url, &[]).await;
@@ -845,7 +847,7 @@ per_protocol!(
             "{protocol:?}"
         );
 
-        // The pool is empty: the third waits its bound and is refused before any header.
+        // The user's share is spent: the third waits its bound and is refused before any header.
         let asked = Instant::now();
         let refused = media.get(&url, &[]).await;
         assert_eq!(refused.status(), 503, "{protocol:?}");
