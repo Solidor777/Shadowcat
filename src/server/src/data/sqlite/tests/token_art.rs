@@ -368,3 +368,115 @@ async fn a_pool_fallback_that_is_a_pool_refuses_the_create() {
     assert!(matches!(err, DataError::BadEngine(_)), "got {err:?}");
     assert!(r.get_document(token.id).await.unwrap().is_none());
 }
+
+/// Applies one `Update` as the GM and returns the stored command.
+async fn update(
+    r: &SqliteRepository,
+    ctx: &crate::data::membership::PermissionContext,
+    w: Uuid,
+    doc_id: Uuid,
+    path: &str,
+    old: serde_json::Value,
+    new: serde_json::Value,
+) -> StoredCommand {
+    r.apply_intent(
+        ctx,
+        w,
+        vec![Operation::Update {
+            doc_id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: path.into(),
+                old,
+                new,
+            }],
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_pool_set_on_a_placed_token_by_an_update_is_drawn_and_broadcast_drawn() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let fallback = seed_asset(&r, w, None, &[]).await;
+    let member = seed_asset(&r, w, None, &["troll"]).await;
+    let token = raw_token(w, image(fallback));
+    create(&r, &ctx, w, vec![token.clone()]).await.unwrap();
+
+    let stored = update(
+        &r,
+        &ctx,
+        w,
+        token.id,
+        "/engine/visual",
+        serde_json::to_value(image(fallback)).unwrap(),
+        serde_json::to_value(pool(None, &["troll"], fallback)).unwrap(),
+    )
+    .await;
+
+    assert_eq!(stored_token(&r, token.id).await.visual, Some(image(member)));
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected the token Update");
+    };
+    assert_eq!(
+        changes[0].new,
+        serde_json::to_value(image(member)).unwrap(),
+        "the broadcast carries the drawn value, never the pool"
+    );
+}
+
+#[tokio::test]
+async fn saving_an_actors_pool_redraws_every_token_already_linked_to_it() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let fallback = seed_asset(&r, w, None, &[]).await;
+    let member = seed_asset(&r, w, None, &["wolf"]).await;
+    let actor = actor_with(w, image(fallback));
+    create(&r, &ctx, w, vec![actor.clone()]).await.unwrap();
+    let bare = linked_token(w, actor.id, None);
+    let held = linked_token(w, actor.id, Some(image(fallback)));
+    let other = actor_with(w, image(fallback));
+    create(&r, &ctx, w, vec![other.clone()]).await.unwrap();
+    let unrelated = linked_token(w, other.id, None);
+    create(
+        &r,
+        &ctx,
+        w,
+        vec![bare.clone(), held.clone(), unrelated.clone()],
+    )
+    .await
+    .unwrap();
+
+    let stored = update(
+        &r,
+        &ctx,
+        w,
+        actor.id,
+        "/engine/visual",
+        serde_json::to_value(image(fallback)).unwrap(),
+        serde_json::to_value(pool(None, &["wolf"], fallback)).unwrap(),
+    )
+    .await;
+
+    for id in [bare.id, held.id] {
+        let drawn = stored_token(&r, id).await.overrides.and_then(|o| o.visual);
+        assert_eq!(drawn, Some(image(member)), "token {id} must be redrawn");
+    }
+    assert!(
+        stored_token(&r, unrelated.id)
+            .await
+            .overrides
+            .and_then(|o| o.visual)
+            .is_none(),
+        "a token linked to another actor is untouched"
+    );
+    assert_eq!(
+        stored.command.ops.len(),
+        3,
+        "the actor Update plus one Update per linked token"
+    );
+}

@@ -1777,7 +1777,7 @@ impl Repository for SqliteRepository {
                     // Random-variant token art resolves to a concrete visual first, so the
                     // derived `base` snapshot, validation, storage and broadcast all see the
                     // drawn value and no token document ever stores a pool.
-                    Self::resolve_token_random_variants(&mut tx, world_id, doc).await?;
+                    Self::resolve_token_random_variants(&mut tx, world_id, doc, true).await?;
                     // `base` is server-owned: derive it from the document's
                     // OWN bands BEFORE any validation runs, so the derived
                     // value is what gets validated, normalized, stored,
@@ -2346,6 +2346,11 @@ impl Repository for SqliteRepository {
                     // checked before, so the id-tree walk is re-run over the full merged
                     // post-image here, in lockstep with `validate_engine_tree` below.
                     validation::validate_document_id_tree(&doc)?;
+                    // A pool a token write sets on its own art slots draws here, so no
+                    // token document ever stores one past the save that set it.
+                    let drew_art =
+                        Self::resolve_token_random_variants(&mut tx, world_id, &mut doc, false)
+                            .await?;
                     // Engine band re-validated + normalized post-merge (mutates
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
@@ -2489,7 +2494,12 @@ impl Repository for SqliteRepository {
                     let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
-                            if ch.path == "/engine" || ch.path.starts_with("/engine/") {
+                            let drawn_embedded = drew_art
+                                && (ch.path == "/embedded" || ch.path.starts_with("/embedded/"));
+                            if ch.path == "/engine"
+                                || ch.path.starts_with("/engine/")
+                                || drawn_embedded
+                            {
                                 if let Some(v) = normalized_doc_json.pointer(&ch.path) {
                                     return FieldChange {
                                         remove: false,
@@ -2512,6 +2522,19 @@ impl Repository for SqliteRepository {
                         doc_id: *doc_id,
                         changes: normalized_changes,
                     });
+                    // Saving an actor's pool picks again for every token already linked
+                    // to it; each rewrite is an explicit Update op so it is logged,
+                    // broadcast per recipient and invertible.
+                    if changes.iter().any(|ch| {
+                        crate::data::permission::paths_overlap(&ch.path, "/engine/visual")
+                    }) {
+                        for (token_op, token) in
+                            Self::redraw_linked_token_art(&mut tx, world_id, &doc, seq, ts).await?
+                        {
+                            post_images.insert(token.id, token);
+                            normalized_ops.push(token_op);
+                        }
+                    }
                 }
             }
         }

@@ -659,13 +659,15 @@ pub enum TokenVisual {
         #[serde(default)]
         background: Option<GeneratedBackground>,
     },
-    /// A pool of candidate images, resolved to one concrete `Image` exactly once, server-side,
-    /// when a token is created (`SqliteRepository::resolve_token_random_variants`), for every
-    /// per-token storage location it appears in (`TokenEngine.visual`, `TokenOverrides.visual`,
-    /// an instanced token's embedded-actor `engine.visual`). A token document never keeps a
-    /// `RandomVariant` past its Create. The one place it persists is a SHARED actor's own
-    /// `ActorEngine.visual`: there it is the template, and each linked token draws independently
-    /// into its own `overrides.visual`.
+    /// A pool of candidate images, resolved to one concrete `Image` server-side on every save
+    /// that writes it (`SqliteRepository::resolve_token_random_variants`, at a token's Create
+    /// and at a token's Update), for every per-token storage location it appears in
+    /// (`TokenEngine.visual`, `TokenOverrides.visual`, each embedded-actor copy's
+    /// `engine.visual` of an instanced token). A token document never keeps a `RandomVariant`
+    /// past the save that set it. The one place it persists is a SHARED actor's own
+    /// `ActorEngine.visual`: there it is the template, each linked token draws independently
+    /// into its own `overrides.visual` when created, and every save of the actor's pool draws
+    /// again for each token already linked (`SqliteRepository::redraw_linked_token_art`).
     #[serde(rename = "randomVariant")]
     RandomVariant {
         /// Candidate pool, scoped to the token's world and to image assets at draw time.
