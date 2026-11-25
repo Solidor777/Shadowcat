@@ -131,12 +131,15 @@ describe("playwright.config LAN address handling", () => {
     }
   });
 
-  it("binds the HTTPS and long-audio servers to the LAN address, never to every interface", async () => {
+  it("binds only the HTTPS server to every interface, and the lan-plain-http and long-audio servers to the LAN address", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const binds = [config.webServer ?? []].flat().map((s) => String(s.env?.SHADOWCAT_BIND));
-    const portsOf = (prefix: string) => binds.filter((b) => b.startsWith(prefix)).length;
-    expect(portsOf("192.0.2.20:")).toBe(3);
-    expect(portsOf("0.0.0.0:")).toBe(0);
+    const portsOf = (prefix: string) => binds.filter((b) => b.startsWith(prefix));
+    expect(portsOf("192.0.2.20:")).toHaveLength(2);
+    const wide = portsOf("0.0.0.0:");
+    expect(wide).toHaveLength(1);
+    const httpsProject = (config.projects ?? []).find((p) => String(p.name).startsWith("https"));
+    expect(String(httpsProject?.use?.baseURL)).toMatch(new RegExp(`:${wide[0].split(":")[1]}$`));
   });
 
   it("serves the lan-plain-http project from the LAN-bound server: the project's name resolves to the LAN address and its port is that server's", async () => {
