@@ -6,10 +6,7 @@ on:
 
 # Job timeouts bound a hang, not a regression: each is twice the longest successful run of its job
 # (per OS leg for `rust`) among the last 100 completed runs of this workflow, rounded up to five
-# minutes. Longest successful run, minutes: rust windows 86.9, rust macos 72.2, rust ubuntu 39.0,
-# web 9.1, e2e 6.3, ui-e2e 16.6, ui-e2e-https 19.3, docs 11.7, audio-fixtures 14.5, e2e-long-audio
-# 27.0, e2e-long-audio-playthrough-h1 33.1, e2e-long-audio-playthrough-h2 31.3. Without a timeout a
-# hung job runs to the platform's six hours.
+# minutes. Without a timeout a hung job runs to the platform's six hours.
 jobs:
   rust:
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 175 || matrix.os == 'macos-latest' && 145 || 80 }}
@@ -83,14 +80,11 @@ jobs:
         run: cargo build --release
       # The send-buffer keep criterion (H2_SEND_BUF_BYTES against the library default) is defined
       # for the release profile: a debug build's per-frame cost dominates the loopback download
-      # and reads 0.66 to 0.79. The criterion is the median over runs of the buffer ratio. Records
-      # at the 160 KiB buffer (buffer_ratio, three runs per leg in each of two CI runs): Linux
-      # 0.950 to 0.969, macOS 0.892 to 0.981, Windows 0.912 to 0.957; one macOS run read 0.892,
-      # under the 0.90 criterion, and the six-run medians are Linux 0.961, macOS 0.932, Windows
-      # 0.936. Every run prints its buffer_ratio and production_ratio per OS leg (stdout, and the
+      # and reads far below the release figure. The criterion is the median over runs of the buffer
+      # ratio. Every run prints its buffer_ratio and production_ratio per OS leg (stdout, and the
       # step summary); the step asserts that every download delivers every byte and that each
-      # run's buffer_ratio is at least BUFFER_RATIO_FLOOR (0.70), 0.110 below the lowest run
-      # recorded at this size (0.810, a bare-server run on macOS).
+      # run's buffer_ratio is at least BUFFER_RATIO_FLOOR (0.70), a margin below the lowest ratio a
+      # healthy run reaches.
       - name: Send-buffer throughput gate (release)
         run: cargo test --release -p shadowcat --test h2_send_buf_gate -- --nocapture
       # Replace and delete over a file a reader holds open: the contract is asserted and the

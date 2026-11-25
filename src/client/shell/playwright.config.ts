@@ -333,8 +333,9 @@ function longAudioProjects(LAN_IP: string): Project[] {
   ];
 }
 
-/** The test server the long-audio projects target.
- * @param ip The address the readiness probe dials.
+/** The test server the long-audio projects target. It binds the machine's LAN address, not every
+ * interface, so a local run does not expose its published admin login to the rest of the network.
+ * @param ip The LAN address the server binds and the readiness probe dials.
  * @returns The webServer definition.
  * @example
  * ```
@@ -350,14 +351,15 @@ function longAudioServer(ip: string) {
     reuseExistingServer: !process.env.CI,
     stdout: WINDOWED_SERVER_STDOUT,
     env: sharedServerEnv("long-audio", {
-      SHADOWCAT_BIND: `0.0.0.0:${LONG_AUDIO_PORT}`,
+      SHADOWCAT_BIND: `${ip}:${LONG_AUDIO_PORT}`,
       SHADOWCAT_EGRESS_WINDOW_SECS: EGRESS_WINDOW_ENV,
     }),
   };
 }
 
-/** The test server the HTTPS projects target.
- * @param ip The address the readiness probe dials.
+/** The test server the HTTPS projects target. It binds the machine's LAN address, not every
+ * interface, so a local run does not expose its published admin login to the rest of the network.
+ * @param ip The LAN address the server binds and the readiness probe dials.
  * @returns The webServer definition.
  * @example
  * ```
@@ -375,7 +377,7 @@ function httpsServer(ip: string) {
       url: `http://${ip}:${HTTPS_PORT}/health`,
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
-      env: sharedServerEnv("https", { SHADOWCAT_BIND: `0.0.0.0:${HTTPS_PORT}` }),
+      env: sharedServerEnv("https", { SHADOWCAT_BIND: `${ip}:${HTTPS_PORT}` }),
     }
   );
 }

@@ -131,11 +131,19 @@ describe("playwright.config LAN address handling", () => {
     }
   });
 
+  it("binds the HTTPS and long-audio servers to the LAN address, never to every interface", async () => {
+    const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
+    const binds = [config.webServer ?? []].flat().map((s) => String(s.env?.SHADOWCAT_BIND));
+    const portsOf = (prefix: string) => binds.filter((b) => b.startsWith(prefix)).length;
+    expect(portsOf("192.0.2.20:")).toBe(2);
+    expect(portsOf("0.0.0.0:")).toBe(1);
+  });
+
   it("points every long-audio project at the long-audio server's port and no other project at it", async () => {
     const config = await loadConfig(WITH_LAN, { CI: undefined, SHADOWCAT_E2E_LAN_IP: undefined });
     const server = [config.webServer ?? []]
       .flat()
-      .find((s) => s.env?.SHADOWCAT_BIND?.startsWith("0.0.0.0:") && s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
+      .find((s) => s.env?.SHADOWCAT_BIND?.startsWith("192.0.2.20:") && s.env?.SHADOWCAT_EGRESS_WINDOW_SECS !== undefined);
     expect(server, "the long-audio server is defined").toBeDefined();
     const port = String(server!.env?.SHADOWCAT_BIND).split(":")[1];
     for (const project of config.projects ?? []) {

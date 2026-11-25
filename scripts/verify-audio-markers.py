@@ -25,7 +25,7 @@ raw = subprocess.run(
 pcm = np.frombuffer(raw, dtype="<f4")
 n_slots = min(len(seq), len(pcm) // (slot * sr))
 bad = 0
-nfft = 1 << 17
+nfft = 1 << 18
 freqs = np.fft.rfftfreq(nfft, 1 / sr)
 band = (freqs >= 100) & (freqs <= 215)
 win = np.hanning(int(4 * sr))
