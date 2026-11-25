@@ -65,7 +65,7 @@ pub struct OpSnapshot {
     /// whole document), this is the full, unpruned set.
     pub overrides_at_commit: Vec<(String, Visibility)>,
     /// Present only when this `Update` op's own `changes` narrow visibility
-    /// (`permission::touches_permissions`): the FULL (unpruned) commit-time hidden-pointer set
+    /// (`permission::retracts_hidden`): the FULL (unpruned) commit-time hidden-pointer set
     /// for the document, with each pointer's `Visibility` tier retained (never a bare pointer
     /// list — the tier is needed to filter per-recipient via `Access::can_see` at replay time,
     /// not apply the same retraction to every recipient regardless of their own access). Always

@@ -1,8 +1,11 @@
-//! Create-time resolution of `TokenVisual::RandomVariant` pools (`data::sqlite::token_art`).
+//! Server-side resolution of `TokenVisual::RandomVariant` pools (`data::sqlite::token_art`): at a
+//! token Create, at a token Update that sets one, and across the linked tokens of a shared actor
+//! whose own pool is saved.
 
 use super::*;
 use crate::data::asset::query::{AssetFilter, AssetKind, AssetSort, FolderFilter};
 use crate::data::engine::{TokenArtFilter, TokenEngine, TokenOverrides, TokenVisual};
+use futures_util::TryStreamExt;
 use sqlx::SqliteConnection;
 
 /// The `doc_type` of a placed token, the only type whose Create carries per-token art slots.
@@ -34,17 +37,22 @@ fn empty_overrides() -> TokenOverrides {
 }
 
 impl SqliteRepository {
-    /// Resolves every `TokenVisual::RandomVariant` a token Create carries into one concrete
-    /// visual, in place, before the document is validated, based and stored.
+    /// Resolves every `TokenVisual::RandomVariant` a token document carries into one concrete
+    /// visual, in place, before the document is validated, based and stored; returns whether it
+    /// changed anything. Runs for a token Create (`draw_linked` true) and for a token Update
+    /// (`draw_linked` false), so a pool a GM sets on a placed token is drawn at the save too.
     ///
-    /// Three per-token slots are resolved, each by its own draw: `TokenEngine.visual`,
-    /// `TokenOverrides.visual`, and an instanced token's embedded-actor `engine.visual`. A linked
-    /// token (`actor_id` set) whose `overrides.visual` is absent and whose shared actor's
-    /// `visual` is a pool draws once into the token's OWN `overrides.visual`; the actor document
-    /// is only read. A concrete `overrides.visual` the Create already carries is an authored
-    /// choice and suppresses that draw, which also makes a replayed Create a no-op. A pool whose
-    /// `filter` matches no asset yields its `fallback`. A body that does not parse as a token
-    /// engine is left untouched for `validate_engine_tree` to refuse.
+    /// Per-token slots are resolved, each by its own draw: `TokenEngine.visual`,
+    /// `TokenOverrides.visual`, and the `engine.visual` of every embedded actor copy of an
+    /// instanced token. With `draw_linked`, a linked token (`actor_id` set) whose
+    /// `overrides.visual` is absent and whose shared actor's `visual` is a pool also draws once
+    /// into the token's OWN `overrides.visual`; the actor document is only read. A Create keeps
+    /// that draw because the token is new; an Update omits it because a token edit that never
+    /// touched art must not redraw the art on every save. A concrete `overrides.visual` the write
+    /// already carries is an authored choice and suppresses the linked draw, which also makes a
+    /// replayed Create a no-op. A pool whose `filter` matches no asset yields its `fallback`. A
+    /// body that does not parse as a token engine is left untouched for `validate_engine_tree`
+    /// to refuse.
     ///
     /// Runs on the transaction's own connection: the single-writer pool would deadlock on a
     /// second acquire.
@@ -52,16 +60,18 @@ impl SqliteRepository {
     /// # Examples
     ///
     /// ```text
-    /// Self::resolve_token_random_variants(&mut *tx, world_id, doc).await?;
+    /// Self::resolve_token_random_variants(&mut *tx, world_id, doc, true).await?;
     /// ```
     pub(super) async fn resolve_token_random_variants(
         conn: &mut SqliteConnection,
         world_id: Uuid,
         doc: &mut Document,
-    ) -> Result<(), DataError> {
+        draw_linked: bool,
+    ) -> Result<bool, DataError> {
         if doc.doc_type != TOKEN_TYPE {
-            return Ok(());
+            return Ok(false);
         }
+        let mut resolved = false;
         if let Some(engine_json) = doc.engine.clone() {
             if let Ok(mut engine) = serde_json::from_value::<TokenEngine>(engine_json) {
                 let mut changed = false;
@@ -75,7 +85,9 @@ impl SqliteRepository {
                     .overrides
                     .as_ref()
                     .is_some_and(|o| o.visual.is_some());
-                if let (Some(actor_id), false) = (engine.actor_id, override_visual_present) {
+                if let (true, Some(actor_id), false) =
+                    (draw_linked, engine.actor_id, override_visual_present)
+                {
                     if let Some(pool) = Self::linked_actor_pool(conn, world_id, actor_id).await? {
                         let mut slot = pool;
                         Self::draw_into_slot(conn, world_id, &mut slot).await?;
@@ -85,13 +97,15 @@ impl SqliteRepository {
                 }
                 if changed {
                     doc.engine = Some(serde_json::to_value(&engine)?);
+                    resolved = true;
                 }
             }
         }
-        if let Some(copy) = doc
+        for copy in doc
             .embedded
             .get_mut(EMBEDDED_ACTOR_KEY)
-            .and_then(|copies| copies.first_mut())
+            .into_iter()
+            .flatten()
         {
             if let Some(serde_json::Value::Object(body)) = copy.engine.as_mut() {
                 let parsed = body
@@ -100,11 +114,104 @@ impl SqliteRepository {
                 if let Some(mut visual) = parsed {
                     if Self::draw_into_slot(conn, world_id, &mut visual).await? {
                         body.insert("visual".into(), serde_json::to_value(&visual)?);
+                        resolved = true;
                     }
                 }
             }
         }
-        Ok(())
+        Ok(resolved)
+    }
+
+    /// The Update ops that give every token linked to `actor` a fresh draw from the actor's pool,
+    /// written to each token's own `overrides.visual`; empty unless `actor` is a shared actor
+    /// whose `visual` is a pool. Called after an actor Update that wrote the actor's `visual`,
+    /// so every save of the pool setting picks again for the tokens already placed, not only for
+    /// tokens created later. A draw replaces a concrete `overrides.visual` a token already holds,
+    /// because a drawn value and an authored one are indistinguishable in storage.
+    ///
+    /// Each token is rewritten in the caller's transaction (`seq`, `ts`) and its post-image is
+    /// returned beside its op so the caller records it for the commit-time snapshot. The writes
+    /// are consequences of the already-authorized actor write, so they carry no per-token
+    /// capability check, like the lifts of a table-folder delete.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let derived = Self::redraw_linked_token_art(&mut *tx, world_id, &actor, seq, ts).await?;
+    /// ```
+    pub(super) async fn redraw_linked_token_art(
+        conn: &mut SqliteConnection,
+        world_id: Uuid,
+        actor: &Document,
+        seq: i64,
+        ts: i64,
+    ) -> Result<Vec<(Operation, Document)>, DataError> {
+        if actor.doc_type != ACTOR_TYPE {
+            return Ok(Vec::new());
+        }
+        let pool = actor
+            .engine
+            .as_ref()
+            .and_then(|e| e.get("visual"))
+            .and_then(|v| serde_json::from_value::<TokenVisual>(v.clone()).ok())
+            .filter(|v| matches!(v, TokenVisual::RandomVariant { .. }));
+        let Some(pool) = pool else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT id FROM documents WHERE world_id = ? AND doc_type = ? \
+             AND json_extract(json, '$.engine.actor_id') = ? ORDER BY id",
+        )
+        .bind(world_id.to_string())
+        .bind(TOKEN_TYPE)
+        .bind(actor.id.to_string())
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut derived = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = Uuid::parse_str(row.get::<String, _>("id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?;
+            let Some(mut token) = Self::load_document(&mut *conn, id).await? else {
+                continue;
+            };
+            let Some(mut engine) = token
+                .engine
+                .clone()
+                .and_then(|e| serde_json::from_value::<TokenEngine>(e).ok())
+            else {
+                continue;
+            };
+            let old_overrides = match &engine.overrides {
+                Some(o) => serde_json::to_value(o)?,
+                None => serde_json::Value::Null,
+            };
+            let mut slot = pool.clone();
+            Self::draw_into_slot(conn, world_id, &mut slot).await?;
+            engine.overrides.get_or_insert_with(empty_overrides).visual = Some(slot);
+            token.engine = Some(serde_json::to_value(&engine)?);
+            validation::validate_engine_tree(&mut token)?;
+            token.updated_at = ts;
+            Self::upsert_document(&mut *conn, &token, seq).await?;
+            let new_overrides = token
+                .engine
+                .as_ref()
+                .and_then(|e| e.get("overrides"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            derived.push((
+                Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/overrides".into(),
+                        old: old_overrides,
+                        new: new_overrides,
+                    }],
+                },
+                token,
+            ));
+        }
+        Ok(derived)
     }
 
     /// Replaces `slot` with its drawn concrete visual when it is a `RandomVariant`; returns
@@ -182,14 +289,20 @@ impl SqliteRepository {
         else {
             return Ok(None);
         };
-        let rows = qb.build().fetch_all(&mut *conn).await?;
-        if rows.is_empty() {
-            return Ok(None);
+        // Algorithm R reservoir sampling of size 1 (Vitter 1985): the i-th streamed row replaces
+        // the kept one with probability 1/i, so every row is kept with probability 1/n while
+        // memory stays one id however large the pool is.
+        let mut rows = qb.build().fetch(&mut *conn);
+        let mut chosen: Option<String> = None;
+        let mut seen: u64 = 0;
+        while let Some(row) = rows.try_next().await? {
+            seen += 1;
+            if crate::chat::rolls::entropy_seed().is_multiple_of(seen) {
+                chosen = Some(row.get("id"));
+            }
         }
-        let index = (crate::chat::rolls::entropy_seed() % rows.len() as u64) as usize;
-        let id: String = rows[index].get("id");
-        Uuid::parse_str(&id)
-            .map(Some)
-            .map_err(|e| DataError::OpFailed(e.to_string()))
+        chosen
+            .map(|id| Uuid::parse_str(&id).map_err(|e| DataError::OpFailed(e.to_string())))
+            .transpose()
     }
 }

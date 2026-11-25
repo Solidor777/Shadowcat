@@ -73,6 +73,12 @@ impl SqliteRepository {
     /// The nested sub-folders themselves are left for the caller's descendant expansion, which
     /// deletes them. Empty for a missing document and for every doc_type but `table_folder`.
     ///
+    /// The lift is part of the folder's delete, not a separate Move: it is authorized by the
+    /// delete gate the caller already applied to the folder, so it does not pass the GM-only gate
+    /// an explicit `Move` op meets. A folder owner who may delete the folder therefore also
+    /// re-files the tables beneath it, which keeps them reachable instead of orphaning or
+    /// deleting them.
+    ///
     /// Both authoritative write loops (`apply_command`, `apply_intent`) call this at the
     /// start of a `Delete`'s expansion, so a folder delete never removes a table by either
     /// path. The moves are explicit ops, so they are logged, broadcast and invertible; a
