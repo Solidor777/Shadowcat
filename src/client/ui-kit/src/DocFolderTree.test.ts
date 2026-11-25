@@ -135,6 +135,22 @@ describe("DocFolderTree parametrization", () => {
     expect(dispatchIntent).toHaveBeenCalledWith([{ op: "move", doc_id: "pb", parent_id: null, old_parent_id: "pa" }]);
   });
 
+  it("starting a rename focuses the rename input", async () => {
+    mount();
+    await fireEvent.click(await screen.findByTestId("folder-rename-pb"));
+    const input = await screen.findByTestId("folder-rename-input-pb");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it("the Move-to picker is a labelled group, not a menu", async () => {
+    mount();
+    await fireEvent.click(await screen.findByTestId("folder-move-pb"));
+    const picker = (await screen.findByTestId("folder-move-target-root")).parentElement as HTMLElement;
+    expect(picker.getAttribute("role")).toBe("group");
+    expect(picker.getAttribute("aria-label")).toBe("probe.move");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("a drop-hover on a folder row highlights it", async () => {
     mount({}, { dropHover: { dragged: "x", over: "pa", placement: "into" } });
     const row = (await screen.findByTestId("folder-node-pa")).closest(".row") as HTMLElement;
