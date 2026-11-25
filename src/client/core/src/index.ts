@@ -187,6 +187,7 @@ export {
   originalUrl,
   restErrorText,
   deleteAssetFolder,
+  MAX_QUERY_IDS,
 } from "./asset-rest";
 export type { AssetQuery } from "./asset-rest";
 export { AssetMetaCache } from "./asset-meta";

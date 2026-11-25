@@ -4,6 +4,7 @@
   import { getAppContext, sizeClass, type PickAssetOptions } from "@shadowcat/ui-kit";
   import { queryAssets, patchAsset, bulkPatchAssets, type AssetQuery } from "@shadowcat/core";
   import FilterBar from "./FilterBar.svelte";
+  import { queryFavoriteAssets } from "./favoritesListing";
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
   import AssetList from "./AssetList.svelte";
@@ -52,16 +53,13 @@
   let favorites = $state<string[]>([]);
   /** The account's layout choice; both layouts share the selection and bulk state below. */
   let viewMode = $state<ViewMode>("grid");
-  /** The listing shown by the grid or list: `items`, narrowed to the favorites when that filter
-   * is on. */
+  /** The listing shown by the grid or list: `items`, narrowed to the current favorites when that
+   * filter is on (so an unstarred asset leaves at once, before the next fetch). */
   const ListingView = $derived(viewMode === "list" ? AssetList : AssetGrid);
   const displayed = $derived(
     filter.favoritesOnly ? items.filter((a) => favorites.includes(a.id)) : items,
   );
   let nextCursor = $state<string | null>(null);
-  /** Whether the last next-page fetch failed; stops the favorites auto-fill from retrying a failing
-   * page in a loop (a scroll to the end, or any reload, clears it). */
-  let pageFailed = $state(false);
   let selected = $state<string[]>([]);
   let error = $state<string | null>(null);
   /** The folder filtering the grid (`null` = all assets, recursive off). */
@@ -145,12 +143,14 @@
   async function reload(): Promise<void> {
     const gen = ++generation;
     try {
-      const page = await queryAssets(world, currentQuery());
+      // Favorites-only fetches just the favorites, whole (no cursor); otherwise the first page.
+      const fetched = filter.favoritesOnly
+        ? { items: await queryFavoriteAssets(world, currentQuery(), favorites), next_cursor: null }
+        : await queryAssets(world, currentQuery());
       if (gen !== generation) return;
-      items = page.items;
-      nextCursor = page.next_cursor;
-      pageFailed = false;
-      resolver.reconcile(page.items);
+      items = fetched.items;
+      nextCursor = fetched.next_cursor;
+      resolver.reconcile(fetched.items);
       error = null;
     } catch (e) {
       if (gen !== generation) return;
@@ -170,7 +170,6 @@
     if (!nextCursor) return;
     const cursor = nextCursor;
     nextCursor = null; // claims the cursor so overlapping onNearEnd fires no duplicate fetch
-    pageFailed = false;
     const gen = generation;
     try {
       const page = await queryAssets(world, { ...currentQuery(), cursor });
@@ -181,7 +180,6 @@
     } catch (e) {
       if (gen !== generation) return;
       nextCursor = cursor; // the page is still unread, so a later scroll can retry it
-      pageFailed = true;
       error = t("assetBrowser.error", { message: String(e) });
     }
   }
@@ -192,8 +190,8 @@
   let cooldown: ReturnType<typeof setTimeout> | null = null;
   let trailing = false;
 
-  /** Whether a filter change alters what the server returns. The favorites filter narrows the
-   * fetched pages client-side (`displayed`), so toggling it alone needs no refetch.
+  /** Whether a filter change alters what the browser fetches. Every field does: the favorites
+   * filter switches the listing between the paged query and the favorites' ids.
    * @param prev - The current filter.
    * @param next - The incoming filter.
    * @returns `true` when any server-side field differs.
@@ -201,13 +199,14 @@
    * ```
    * // private function; used by `onFilterChange` below
    * declare const a: FilterState;
-   * changesListing(a, { ...a, favoritesOnly: true }); // false
+   * changesListing(a, { ...a, favoritesOnly: true }); // true
    * ```
    */
   function changesListing(prev: FilterState, next: FilterState): boolean {
     return (
       prev.query !== next.query ||
       prev.queryIsRegex !== next.queryIsRegex ||
+      prev.favoritesOnly !== next.favoritesOnly ||
       prev.kind !== next.kind ||
       prev.sort !== next.sort ||
       prev.tags.length !== next.tags.length ||
@@ -226,7 +225,6 @@
    */
   function onFilterChange(next: FilterState): void {
     const refetch = changesListing(filter, next);
-    if (next.favoritesOnly !== filter.favoritesOnly) pageFailed = false; // re-enabling the filter retries
     filter = next;
     if (!refetch) return;
     if (cooldown) {
@@ -282,19 +280,16 @@
   // favorites, grid); the listing itself is unaffected.
   $effect(() => {
     void getFavorites().then(
-      (ids) => (favorites = ids),
+      (ids) => {
+        favorites = ids;
+        if (filter.favoritesOnly) void reload(); // the mode was switched on before the list arrived
+      },
       () => {},
     );
     void getViewMode().then(
       (mode) => (viewMode = mode),
       () => {},
     );
-  });
-
-  // The favorites filter narrows the fetched pages client-side, so a page with few favorites
-  // could never scroll far enough to trigger load-more: keep fetching while it is on.
-  $effect(() => {
-    if (filter.favoritesOnly && nextCursor && !pageFailed) untrack(() => void loadMore());
   });
 
   // Load on mount; reload when any asset notice lands (created/moved change
