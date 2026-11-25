@@ -1,15 +1,19 @@
-# Sends every merged, clean worktree under .worktrees to the Recycle Bin, then prunes git's records.
+# Permanently deletes every merged, clean worktree under .worktrees, then prunes git's records.
 #
-# A worktree is removed only when all of these hold:
+# The owner approves permanent deletion for this script only, and only for worktrees that pass every
+# check below; it is not a general delete tool.
+#
+# A worktree is deleted only when all of these hold:
 #   - its branch tip is an ancestor of the target branch (the first argument, or the branch checked
 #     out at the project root), so no commit is lost;
 #   - it is not the target branch itself;
-#   - "git status --porcelain" is empty, so no uncommitted or untracked file is lost (ignored build
-#     output such as target/ and node_modules/ goes to the bin with the folder).
+#   - "git status --porcelain" is empty, so no uncommitted or untracked file is lost. Ignored files
+#     (build output such as target/ and node_modules/) are deleted with the folder.
 # Anything else is skipped with the reason printed. Branches are kept.
 #
-# Deletion goes through the Shell's Recycle Bin verb, never a permanent delete; the bin is emptied by
-# hand. The verb needs a single-threaded apartment, so this script runs under "powershell -STA".
+# All eligible folders go to one "rd /s /q" call. The \\?\ prefix lifts the 260-character path
+# limit, which target/ and node_modules/ exceed. rd removes a junction or symbolic link inside the tree
+# without following it, so pnpm's links into its shared store do not reach the store.
 param([string]$Target)
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +26,7 @@ git -C $root rev-parse --verify --quiet "refs/heads/$Target" | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Host "Target branch '$Target' does not exist."; exit 1 }
 Write-Host "Target branch: $Target"
 
-$shell = New-Object -ComObject Shell.Application
-$removed = 0; $skipped = 0
+$eligible = @(); $skipped = 0
 foreach ($dir in Get-ChildItem -Path $wtDir -Directory) {
   $path = $dir.FullName
   $name = $dir.Name
@@ -35,15 +38,19 @@ foreach ($dir in Get-ChildItem -Path $wtDir -Directory) {
   if ($LASTEXITCODE -ne 0) { Write-Host "skip  $name  ($branch is not merged into $Target)"; $skipped++; continue }
   $dirty = git -C $path status --porcelain
   if ($dirty) { Write-Host "skip  $name  (uncommitted or untracked files)"; $skipped++; continue }
+  $eligible += [pscustomobject]@{ Name = $name; Path = $path; Branch = $branch }
+}
 
-  $item = $shell.Namespace($wtDir).ParseName($name)
-  if ($item) { $item.InvokeVerb("delete") }
-  # The verb returns before the move finishes on a large folder; wait for it to land.
-  for ($i = 0; $i -lt 600 -and (Test-Path $path); $i++) { Start-Sleep -Milliseconds 500 }
-  if (Test-Path $path) { Write-Host "FAIL  $name  (still on disk after the Recycle Bin verb)"; $skipped++; continue }
-  Write-Host "bin   $name  ($branch)"
-  $removed++
+if ($eligible.Count -gt 0) {
+  $args = ($eligible | ForEach-Object { '"\\?\' + $_.Path + '"' }) -join ' '
+  cmd.exe /d /c "rd /s /q $args"
+}
+
+$removed = 0
+foreach ($w in $eligible) {
+  if (Test-Path -LiteralPath $w.Path) { Write-Host "FAIL  $($w.Name)  (still on disk)"; $skipped++ }
+  else { Write-Host "gone  $($w.Name)  ($($w.Branch))"; $removed++ }
 }
 
 git -C $root worktree prune
-Write-Host "Done: $removed sent to the Recycle Bin, $skipped skipped. Empty the bin by hand."
+Write-Host "Done: $removed deleted, $skipped skipped."
