@@ -39,7 +39,7 @@ pnpm gate:push
 | `pnpm lint:docs` | a function, method or class lacks a doc comment with description, params and an `@example` |
 | `pnpm lint:props` | a property, type, enum member or named arrow lacks a doc comment |
 | `pnpm lint:comments` | a code comment or codebase-skill brief names a milestone, task, date, plan or other process-assigned thing |
-| `pnpm lint:allowances` | a lint suppression is not approved (see Lint Suppression) |
+| `pnpm lint:allowances` | a lint suppression is not approved (see Lint Suppression), or a `svelte-ignore` comment exists (never approvable, with or without an allowlist entry) |
 | `pnpm lint:file-size` | a file passes the size limits (see File Size) |
 | `pnpm lint:inline-tests` | a Rust file holds an inline test module body |
 | `pnpm lint:module-docs` | a Rust `mod` item carries an outer doc comment |
@@ -53,7 +53,7 @@ pnpm gate:push
 | `pnpm lint:gate-manifest` | `scripts/gates.toml` and the workflow steps disagree |
 | `pnpm lint:settings-privacy` | a tracked file under `.claude/` carries a user path, an address or a credential |
 | `pnpm lint:binary-size` | the release binary passes 60 MiB |
-| `pnpm lint:audio-fixtures` | the committed long-audio fixtures differ from what the generator produces |
+| `pnpm lint:audio-fixtures` | the committed long-audio fixtures differ from what the generator produces: the duration and loudness checks always run, but byte equality of the `.ogg` files is enforced only when the installed ffmpeg and NumPy versions equal the committed manifest's. It runs with `--require-tools`, so `gate:push` needs ffmpeg (with libvorbis and ffprobe), python, NumPy and SciPy installed and fails without them |
 | `pnpm docs:check-examples`, `pnpm docs:check-rust-examples` | a doc example does not compile, or a Rust function has none |
 | `pnpm build:all` | the build or the strict doc build fails |
 | `git diff --exit-code src/types/generated` | the generated types are stale |
@@ -121,7 +121,7 @@ pnpm gate:push
 - Every suppression silences a diagnostic without fixing what it describes. No agent adds one on its own authority.
 - `dead_code` and `unused*` suppressions are never approvable, as `allow`, as `expect`, or as `eslint-disable` of `no-unused-vars`. There should be no dead code, so there is no sign-off to ask for.
 - Every other suppression needs the user's explicit, per-instance sign-off.
-- Covered: `#[allow(dead_code)]`, `#[allow(unused*)]`, `#[allow(clippy::*)]`, `#[expect(...)]` of any of these, `eslint-disable` of `no-unused-vars`, `@ts-ignore`, `@ts-nocheck`.
+- Covered: `#[allow(dead_code)]`, `#[allow(unused*)]`, `#[allow(clippy::*)]`, `#[expect(...)]` of any of these, `eslint-disable` of `no-unused-vars`, `@ts-ignore`, `@ts-nocheck`, and `svelte-ignore` (never approvable: seed a prop with `untrack()` or fix the code instead).
 - `pnpm lint:allowances` enforces this as a gate, not a ratchet: it is retroactive and nothing is grandfathered. A suppression already in the tree is a defect to fix, not a precedent.
 - Fix the code, never move the annotation: make the item reachable, delete it, or scope it to the build that uses it (`#[cfg(test)]` for test-only code, which must never compile into the release binary). Refactor the signature rather than silencing `too_many_arguments`.
 - If no fix exists, ask how to change the code. Never ask to register a `dead_code` or `unused*` suppression.
@@ -129,7 +129,7 @@ pnpm gate:push
 - **Bad:** `#[allow(dead_code)] pub truncated: bool,`; `#[allow(clippy::too_many_arguments)] fn execute(a: A, …, h: H) {}`
 
 ### File Size
-- Over 5,000 lines is a defect; over 10,000 is a build failure. `pnpm lint:file-size` (`scripts/check-file-lines.mjs`) checks every tracked `rs ts js mjs svelte scss css` file under `src/`, `scripts/`, and `examples/` (generated types excluded). Test lines count. Same gate rules as Lint Suppression: retroactive, nothing grandfathered.
+- Over 5,000 lines is a defect; over 10,000 is a build failure. `pnpm lint:file-size` (`scripts/check-file-lines.mjs`) checks every tracked or untracked, non-ignored `rs ts js mjs svelte scss css` file under `src/`, `scripts/`, and `examples/` (`src/types/generated` excluded; a file deleted in the working tree is skipped), so a new oversize file fails before `git add`. Test lines count. Same gate rules as Lint Suppression: retroactive, nothing grandfathered.
 - Past 5,000 lines the gate fails unless `.claude/file-size-allowlist.toml` has an entry. Every entry needs the user's explicit, per-file authorization in the conversation. No agent adds, edits, or retains one on its own authority. A stale entry (file back under the limit) also fails the gate.
 - Past 10,000 lines there is no override. Split the file.
 - **Good:** Split the file.
