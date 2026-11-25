@@ -212,4 +212,17 @@ describe("DuckingSettings", () => {
     expect(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "").not.toContain("depth");
     controller.dispose();
   });
+
+  it("follows a replaced controller prop: shows the new monitor's status and drops the old subscription", async () => {
+    const first = newController(DEFAULT_DUCKING_PREFERENCES);
+    const second = newController(DEFAULT_DUCKING_PREFERENCES);
+    vi.spyOn(second.osMonitor, "getStatus").mockReturnValue("not-running");
+    const context = setAppContextForTest({ audio: audioFixture() });
+    const { rerender } = render(DuckingSettings, { props: { controller: first }, context });
+    expect(screen.getByText("ducking.osSource.status.connecting")).toBeTruthy();
+    await rerender({ controller: second });
+    expect(screen.getByText("ducking.osSource.status.not-running")).toBeTruthy();
+    first.dispose();
+    second.dispose();
+  });
 });
