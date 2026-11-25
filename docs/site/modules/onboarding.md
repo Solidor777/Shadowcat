@@ -6,8 +6,8 @@ First-run guided tours. Any module contributes a tour as plain data; this module
 is the engine that offers the eligible one, draws it as a spotlight plus a step
 card, remembers which tours each account finished, and lists every tour in a
 "Replay tours" settings section. A tour is always optional: the offer is a
-dismissible toast, never a modal, and the user can skip a running tour, silence
-offers for good, or replay a tour later.
+dismissible toast, never a modal, and the user can skip a running tour, disable
+all tutorials, or replay a tour later.
 
 To ship a tour from your own module, see
 [Contributing a guided tour](/guides/creating-a-module#contributing-a-guided-tour).
@@ -55,18 +55,22 @@ contributes or removes a tour. A tour is offered when all of these hold:
   exactly, `admin` matches a server admin, `any` matches everyone.
 - The viewer has not finished its current version.
 - At least one of its steps has a mounted anchor.
-- The user has not chosen "Don't ask again", and the server has not switched
+- The user has not chosen "Disable Tutorials", and the server has not switched
   tours off (see below).
 
 At most **one** tour is offered per session, the first eligible in module
 registration order. Tours not offered wait for a later session or the replay
-list. The toast has three buttons:
+list. The toast has three buttons, each 44 px tall so they work on a phone:
 
 | Button | Effect |
 |---|---|
-| Start | Runs the tour. |
-| Not now | Closes the toast for this session and records nothing, so the tour is offered again next session. |
-| Don't ask again | Stops all automatic offers for this account. Replay still works. |
+| Take Tour | Runs the tour. |
+| Not Now | Closes the toast and records the offered tour as done, so that tour is not offered again until its `version` is raised. The replay list still runs it. Other tours can still be offered in later sessions. |
+| Disable Tutorials | Stops all automatic offers for this account and records every registered tour as done. Replay still works. |
+
+Whichever button is pressed, a second toast then says how to take a tour later:
+open Settings and choose Replay tours. After Take Tour it appears when the tour
+ends. Its Got it button closes it.
 
 A step whose anchor is not mounted is skipped, and the "Step n of m" counter
 counts only the steps that can be shown. Skip, Done and Escape all end the tour
@@ -79,7 +83,7 @@ it again to everyone who finished an older one.
 with a Replay button on each. Replay starts the tour at its first step that can
 be shown. If no step of the tour is on screen (for example, the tour is for a
 panel that is closed), it shows "This tour has nothing to show on the current
-screen." Replay is not blocked by "Don't ask again" or by the server switch.
+screen." Replay is not blocked by "Disable Tutorials" or by the server switch.
 
 ## Progress storage
 
@@ -91,7 +95,7 @@ It follows the account across devices and worlds. Keys are flat, one per tour:
 |---|---|
 | `g:<tour id>` | The finished version, for a `global`-scoped tour. |
 | `w:<world id>:<tour id>` | The finished version, for a `world`-scoped tour. |
-| `disabled` | `true` once the user chose "Don't ask again". |
+| `disabled` | `true` once the user chose "Disable Tutorials". |
 
 One key per tour means two sessions of one account finishing different tours do
 not overwrite each other. The module keeps this session's own writes in memory
@@ -131,6 +135,7 @@ online repository, because no world (and so no served guide) exists at that poin
 - `OnboardingHost.svelte` — attaches the controller to the running app and
   evaluates the offer; renders the toast and the overlay.
 - `TourOffer.svelte` — the offer toast.
+- `TourHint.svelte` — the toast that says how to take a tour later.
 - `TourOverlay.svelte` — the spotlight, step card, Next/Back/Skip.
 - `ReplaySection.svelte` — the "Replay tours" settings section.
 - `controller.svelte.ts` (`TourController`) — offer, start, step, end.

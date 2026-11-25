@@ -3,6 +3,7 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { TourController } from "./controller.svelte";
   import { appEnvironment } from "./environment";
+  import TourHint from "./TourHint.svelte";
   import TourOffer from "./TourOffer.svelte";
   import TourOverlay from "./TourOverlay.svelte";
 
@@ -30,6 +31,9 @@
 
 {#if controller.offer !== null}
   <TourOffer {controller} />
+{/if}
+{#if controller.howTo}
+  <TourHint {controller} />
 {/if}
 {#if controller.active !== null}
   <TourOverlay {controller} />

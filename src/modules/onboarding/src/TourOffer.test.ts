@@ -35,17 +35,24 @@ describe("TourOffer", () => {
     expect(controller.active?.tour.id).toBe("example.intro");
   });
 
-  it("Not now dismisses and records the tour as done", async () => {
+  it("Not Now dismisses and records the tour as done", async () => {
     const { view, controller, settings } = await offered();
     await fireEvent.click(view.getByTestId("tour-offer-later"));
     expect(controller.offer).toBeNull();
     expect(settings.writes).toEqual([{ "g:example.intro": 1 }]);
   });
 
-  it("Don't ask again records the switch", async () => {
+  it("Disable Tutorials records the switch and the tour as done", async () => {
     const { view, controller, settings } = await offered();
     await fireEvent.click(view.getByTestId("tour-offer-never"));
     expect(controller.offer).toBeNull();
-    expect(settings.writes).toEqual([{ disabled: true }]);
+    expect(settings.slice).toEqual({ disabled: true, "g:example.intro": 1 });
+  });
+
+  it("labels the three buttons Take Tour, Not Now and Disable Tutorials", async () => {
+    const { view } = await offered();
+    expect(view.getByTestId("tour-offer-start").textContent?.trim()).toBe("onboarding.offer.start");
+    expect(view.getByTestId("tour-offer-later").textContent?.trim()).toBe("onboarding.offer.later");
+    expect(view.getByTestId("tour-offer-never").textContent?.trim()).toBe("onboarding.offer.never");
   });
 });

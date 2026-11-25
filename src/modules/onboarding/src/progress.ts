@@ -86,7 +86,7 @@ export class TourProgress {
     this.settings.setUser({ [key]: value }).catch(this.onWriteError);
   }
 
-  /** Whether the user switched tours off for good ("Don't ask again").
+  /** Whether the user switched tours off for good ("Disable Tutorials").
    * @returns `true` when no tour should be offered automatically.
    * @example
    * ```ts

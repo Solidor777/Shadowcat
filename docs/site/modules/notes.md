@@ -33,7 +33,7 @@ Create, per-row Delete/Move-to, and expand/collapse.
 - Search sends `ctx.searchDocuments(q, { limit: 20, docTypes: ["note"] })` —
   the one server-side filter, no client-side re-filter.
 - Create dispatches `buildNoteDoc(ctx.world, name, "", { owner: ctx.selfId })`
-  — private by default; the sheet's visibility control shares it.
+  — private by default; the sheet's sharing control (the permissions editor) shares it.
 
 ## Pointers
 
